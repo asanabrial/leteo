@@ -244,7 +244,7 @@ there from any provenance, and how it says when something has gone wrong.
   test enforces this, after five separate occurrences of a formatted Rust string
   carrying its own leading whitespace into a user-facing line.
 - **No test opens the real store.** Unit and integration tests run against a
-  temporary database they create. `tests/documented_commands.rs` walks `src/`
+  temporary database they create. `tests/repository_guards.rs` walks `src/`
   and `tests/` and fails on any absolute `.db` path, `home_dir()` join, or data
   directory near a call that opens a store.
 

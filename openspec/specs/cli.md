@@ -180,7 +180,9 @@ duties about what an answer explains.
 - Every documented command exists, and every command is documented. A test in
   `tests/documented_commands.rs` walks the README against the parser.
 - A sentence printed to a person carries no source indentation from the Rust
-  string it was formatted in.
+  string it was formatted in. A guard in `tests/repository_guards.rs` reads
+  every string literal under `src/` and fails on either way of breaking one
+  across two source lines.
 - The CLI opens the store no earlier than the work needs it — see
   [`hooks.md`](hooks.md) §3.
 
@@ -189,7 +191,8 @@ duties about what an answer explains.
 - `src/cli/args.rs` — the parser, and the single list of hook event names
 - `src/cli/mod.rs` — the commands
 - `src/cli/projects.rs` — read scoping and project resolution
-- `tests/cli_integration.rs`, `tests/documented_commands.rs`
+- `tests/cli_integration.rs`, `tests/documented_commands.rs`,
+  `tests/repository_guards.rs`
 
 ## Related
 

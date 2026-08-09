@@ -46,7 +46,7 @@ it skips `tests/`, which is where the surface-level guards live.
 ## Rules that have cost this codebase real bugs
 
 1. **No test touches a real store.** Unit and integration tests create a
-   temporary database. `tests/documented_commands.rs` fails the build on an
+   temporary database. `tests/repository_guards.rs` fails the build on an
    absolute `.db` path, a `home_dir()` join, or a data directory used near
    anything that opens a store. Exploratory work against a copy is fine; a
    scheduled test against the user's database is not.

@@ -1,0 +1,93 @@
+/target
+
+# Local secrets for the cloud compose stack. Only .env.example is committed.
+#
+# Every variant, not just `.env`: `.env.local` and `.env.production` are the
+# ones people create without thinking about it, and a filled-in one holds the
+# database password and both service secrets.
+.env
+.env.*
+!.env.example
+
+# Leteo's own memories, in Leteo's own repository.
+#
+# The README tells teams to commit their `.leteo/` — that is how a project
+# shares what it has learned, and those chunks belong in version control. This
+# repository is the exception rather than a contradiction: the `.leteo/` here
+# would be the maintainer's own store, which is a record of somebody's working
+# day rather than a fact about the code.
+/.leteo
+
+# Databases, wherever they land.
+#
+# The tests build theirs in the system temp directory, but `--data-dir` and
+# `--database` take any path, and a store created while trying something out in
+# the checkout is somebody's memories: titles, prompts, and whatever was pasted
+# into a session. The sidecars go too — a `-wal` holds recently written rows.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Agent scratch state.
+#
+# Per-machine and per-session: a lock file naming the local scheduler, and
+# OpenCode's job queue keyed by a session id. Neither says anything about the
+# project, and both churn on every run.
+#
+# `.claude/scheduled_tasks.lock` was covered only by `.git/info/exclude`, which
+# belongs to one checkout and travels with nobody — so it was ignored here and
+# would have been committed by the next person to clone.
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.opencode/opencode-loop/
+
+# The mutation harness's scratch state: what is mid-edit while a sweep runs,
+# and the build output of cases that produced no test results, kept so a
+# "COMPILE ERROR" verdict can be diagnosed rather than guessed at.
+tools/.mutate-in-flight.json
+tools/.mutate-failed-builds/
+
+# Coverage and profiling output.
+*.profraw
+*.profdata
+lcov.info
+tarpaulin-report.*
+
+# Editors and operating systems.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+
+# The dev tools are their own workspaces, so their build output is their own too.
+tools/*/target/
+
+# Agent skills fetched from somewhere else, and their manifest.
+#
+# Nothing matches these today and that is the point: `npx skills add` installs
+# into the working directory unless it is given `-g`, and a checkout is the
+# working directory an agent is usually standing in. Three arrived here that
+# way — `clean-ddd-hexagonal`, `find-skills`, `rust-best-practices` — and they
+# are the equivalent of `node_modules`: fetched, not authored here, and two of
+# the three state no licence at all, so redistributing them is nobody's call.
+# They live in `~/.agents/skills/` now, which is where they were meant to go.
+#
+# A skill written *for this repository* — how to add an agent adapter, how a
+# migration goes — is the opposite case: it belongs in `.claude/skills/` and it
+# belongs in the commit, the same way `AGENTS.md` does. So this names what gets
+# fetched rather than the directory it lands in, because ignoring the directory
+# would swallow the first one somebody writes without saying anything.
+#
+# Leteo's own skill is shipped and lives in `plugin/*/skills/memory/`.
+#
+# So there is no pattern here on purpose. A fetched skill and a written one land
+# in the same place under the same shape, and nothing in the path tells them
+# apart — which means any rule broad enough to catch the first swallows the
+# second. Left visible instead: if `npx skills add` is ever run here without
+# `-g`, `.claude/skills/`, `.agents/skills/` and `skills-lock.json` all turn up
+# in `git status`, somebody sees it, and it is fixed with the flag. An ignore
+# rule would have made the same mistake silent, which is how it went unnoticed
+# for the five weeks it was already here.

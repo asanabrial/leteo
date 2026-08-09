@@ -1,0 +1,19 @@
+{
+  "name": "leteo",
+  "interface": {
+    "displayName": "Leteo Persistent Memory"
+  },
+  "plugins": [
+    {
+      "name": "leteo",
+      "source": {
+        "source": "local",
+        "path": "./plugin/codex"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

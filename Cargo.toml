@@ -1,0 +1,130 @@
+[package]
+name = "leteo"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Fast, local-first persistent memory for AI coding agents"
+repository = "https://github.com/asanabrial/leteo"
+homepage = "https://github.com/asanabrial/leteo"
+readme = "README.md"
+keywords = ["memory", "mcp", "agents", "sqlite", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.97"
+
+[features]
+# What the retrieval measurement under `tools/` needs, and nothing else.
+#
+# Off by default, so the published surface is unchanged: it exposes the one
+# query builder the ranking runs through, with its weights as a parameter, so a
+# tool comparing weight vectors measures the statement the product issues
+# rather than a copy of it that has drifted.
+measure = []
+
+[dependencies]
+anyhow = "1.0.100"
+axum = "0.8.9"
+base64 = "0.23.0"
+chrono = { version = "0.4.42", features = ["serde"] }
+clap = { version = "4.6.4", features = ["derive", "env"] }
+crossterm = "0.29.0"
+directories = "6.0.0"
+flate2 = "1.1.5"
+futures-util = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
+hex = "0.4.3"
+hmac = "0.13.0"
+rand = "0.10.2"
+ratatui = "0.30.2"
+regex = "1.12.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "gzip", "stream"] }
+rmcp = { version = "3.0.1", features = ["transport-io"] }
+# Held at 0.39 by sqlx, not by us. 0.40 wants libsqlite3-sys 0.38, sqlx 0.9
+# pins it below 0.38, and both link the native sqlite3 — which Cargo refuses
+# even though sqlx-sqlite is never compiled here (it is an optional dependency
+# we do not enable, but optional dependencies still land in the lockfile, and
+# `links` conflicts are settled there). Revisit when sqlx bumps it.
+rusqlite = { version = "0.39.0", features = ["bundled-full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+# `preserve_order` because Leteo edits configuration files that belong to
+# somebody else. Without it `serde_json`'s object is a sorted map, so writing
+# one back reorders every key: on a real `.claude.json` of 82 keys and 82 KB,
+# adding one server rewrote 240 lines of a file the user did not ask to have
+# touched.
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "json", "chrono", "uuid"] }
+subtle = "2.6.1"
+thiserror = "2.0.17"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd = "2.1.1"
+tempfile = "3.23.0"
+tower = { version = "0.5.3", features = ["util"] }
+
+# Only to ask Windows what language it is set to. Every other platform puts
+# that in the environment; Windows puts it nowhere a process can read without
+# calling for it. Already in the tree by way of tokio, so this costs a line.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
+
+[profile.release]
+codegen-units = 1
+# Thin rather than fat, measured rather than assumed. Fat takes 3.2 MB off an
+# 18.5 MB binary and roughly doubles the build — 56s to 3m13s — and buys
+# nothing where it would matter: interleaving 60 runs of each, process start
+# came out at 8.00 ms against 7.96 ms, which is noise.
+#
+# The 3.2 MB moving startup by nothing is the useful part of that result. It
+# says the ~3.8 ms this binary costs over a hello-world is not the loader
+# paging in an image, so making the image smaller is not the lever. Every hook
+# and every prompt pays that start, so if it is ever worth attacking, attack
+# what runs before `main`, not the size.
+#
+# Attacked, and here is the account. On a sixteen-core machine, against a bare
+# `fn main` at 4.51 ms:
+#
+#   the multi-threaded tokio scheduler   +0.88 ms   fixed: one-shot commands
+#                                                   now build the current-thread
+#                                                   one, see `wants_worker_threads`
+#   clap, at this CLI's size             +0.24 ms   61 subcommands, 101 arguments,
+#                                                   measured on a generated
+#                                                   equivalent — not the lever
+#   tracing_subscriber's init            +0.07 ms   not the lever
+#
+# That leaves about three milliseconds, and the loader is the remaining
+# suspect: this binary names 24 DLLs against a hello-world's 11, and the
+# thirteen extra are the network and crypto stack — ws2_32, crypt32, bcrypt,
+# advapi32 — plus combase, shell32, user32, userenv. Every hook loads and
+# initialises all of it without ever opening a socket.
+#
+# Attacked in turn, and taken: seven of those DLLs are now delay-loaded, which
+# is worth 2.5 to 2.8 ms on every hook. The account, including the one that
+# cannot be — ws2_32, which crashes tokio's socket driver when it is deferred —
+# is in `.cargo/config.toml`.
+#
+# The other way to avoid it was feature-gating the cloud out of a second
+# binary, and that is still not taken: it trades away "one binary, no
+# dependencies", which is the thing this product is easiest to install for.
+#
+# Where the 11 ms of a prompt hook goes now, measured stage by stage with the
+# process clock:
+#
+#   starting the process                 4.99 ms   Windows, and a bare `fn main`
+#                                                  is 4.51 of it
+#   clap, tracing, the runtime, config   0.60 ms
+#   creating the directory, opening      0.35 ms
+#   PRAGMA journal_mode = WAL            1.10 ms   attaching to the WAL, and
+#                                                  unavoidable — see
+#                                                  `schema::prepare_once`
+#   the other pragmas and the version    0.05 ms
+#   PRAGMA optimize = 0x10002            0.18 ms
+#   writing the prompt                   1.40 ms
+#   the recall query and its caveats     1.40 ms
+#
+# Which is to say: half of it is Windows starting a process, and of the rest,
+# the two-and-a-bit milliseconds that are actually Leteo's work are the work.
+# There is no obvious next milliseconds to take.
+lto = "thin"
+strip = true

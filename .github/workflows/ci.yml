@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Debug info is most of what a test build links, and nothing here reads a
+  # backtrace symbol. Set as an environment variable rather than in Cargo.toml
+  # so a local `cargo test` keeps its debugger.
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # A failing run saves its cache too. Without this the first red run
+          # leaves nothing behind, so the fix pushed after it compiles the whole
+          # dependency tree again — which is what happened here, twice, at three
+          # to eight minutes a platform.
+          cache-on-failure: true
+      # `--locked`, because the release workflow builds that way. Without it CI
+      # can resolve a newer dependency set than the one that ships, and "it
+      # passed CI" stops meaning what it appears to mean.
+      - run: cargo test --locked
+
+  # The analogue of an end-to-end suite: these need a real PostgreSQL, so
+  # `cargo test` skips them and the job above goes green without ever touching
+  # multi-tenant isolation, the fail-closed project allowlist, chunk forgery, or
+  # token revocation. Those are the parts of Leteo where a regression is worst.
+  cloud-tests:
+    name: Cloud Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: leteo-test
+          POSTGRES_DB: leteo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo test --locked -- --ignored
+        env:
+          TEST_DATABASE_URL: postgres://postgres:leteo-test@127.0.0.1:5432/leteo_test

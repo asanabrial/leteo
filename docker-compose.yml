@@ -1,0 +1,51 @@
+# Leteo cloud service with its PostgreSQL database.
+#
+# Every secret is required: the server refuses to start without them, and there
+# are no defaults to fall back on. Generate independent values, for example:
+#
+#   openssl rand -base64 48
+#
+# Copy .env.example to .env, fill it in, then run: docker compose up -d
+#
+# The published port is plain HTTP. Terminate TLS in front of it; Leteo clients
+# refuse plaintext for anything but loopback.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-leteo}
+    volumes:
+      - leteo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # The database is reachable only from the compose network.
+    expose:
+      - "5432"
+
+  leteo:
+    build: .
+    image: leteo:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LETEO_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-leteo}
+      LETEO_DASHBOARD_SECRET: ${LETEO_DASHBOARD_SECRET:?set LETEO_DASHBOARD_SECRET in .env}
+      LETEO_CLOUD_TOKEN_PEPPER: ${LETEO_CLOUD_TOKEN_PEPPER:?set LETEO_CLOUD_TOKEN_PEPPER in .env}
+      LETEO_CLOUD_HOST: 0.0.0.0
+      LETEO_CLOUD_PORT: 8080
+      LETEO_CLOUD_MAX_POOL: ${LETEO_CLOUD_MAX_POOL:-10}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:${LETEO_PUBLISH_PORT:-8080}:8080"
+
+volumes:
+  leteo-postgres:

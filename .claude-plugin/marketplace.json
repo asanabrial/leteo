@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "leteo",
+  "description": "Persistent memory for AI coding agents — agent-agnostic, single binary, zero dependencies",
+  "owner": {
+    "name": "Alexis Sanabria Lopez",
+    "url": "https://github.com/asanabrial"
+  },
+  "plugins": [
+    {
+      "name": "leteo",
+      "description": "Persistent memory with session tracking, compaction recovery, and a save protocol. Gives the agent a memory that survives across sessions.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Alexis Sanabria Lopez"
+      },
+      "source": "./plugin/claude-code",
+      "category": "productivity",
+      "homepage": "https://github.com/asanabrial/leteo"
+    }
+  ]
+}

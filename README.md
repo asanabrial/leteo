@@ -203,8 +203,10 @@ leteo conflicts stats --project leteo
 ```
 
 **Deleting.** Without `--hard` a memory is marked deleted and stops coming back
-in answers; with it, the row is gone and its relations are cut. A session or a
-project can go the same way:
+in answers; with it, the row is gone and its relations are cut. A project takes
+the same flag. A session takes none, and while it still holds memories deleting
+it is refused outright and says how many — a session goes when it is empty, not
+by taking its memories with it:
 
 ```powershell
 leteo delete observation 42 --hard
@@ -281,7 +283,7 @@ Nothing replicates until both are done, and the commands below say so rather
 than starting quietly:
 
 ```powershell
-leteo cloud config set --server https://memory.example.com --token <token>
+leteo cloud config set --server https://memory.example.com --token YOUR-TOKEN
 leteo cloud enroll --project leteo
 leteo cloud config show
 ```

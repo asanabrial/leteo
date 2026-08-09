@@ -16,6 +16,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg" /></a>
   <a href="https://www.rust-lang.org"><img alt="Rust 1.97+" src="https://img.shields.io/badge/rust-1.97%2B-orange.svg" /></a>
   <a href="#mcp"><img alt="MCP: 22 tools" src="https://img.shields.io/badge/MCP-22%20tools-purple.svg" /></a>
+  <a href="#install"><img alt="Linux, macOS, Windows" src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg" /></a>
 </p>
 
 ---
@@ -52,9 +53,13 @@ leteo tui
 ```
 
 That is all of it. Nothing else to install first — not Rust, not SQLite, not a
-runtime: the archives are prebuilt binaries with the database compiled into
-them, and each script checks its download against the published `SHA256SUMS`
-before installing anything.
+runtime: the archives are prebuilt binaries with SQLite compiled in, and each
+script checks its download against the published `SHA256SUMS` before installing
+anything. The binary lands in `~/.local/bin`, or `%LOCALAPPDATA%\leteo\bin` on
+Windows; `LETEO_INSTALL_DIR` moves that, `LETEO_VERSION` takes a tag other than
+the latest release, and `LETEO_BASE_URL` downloads from somewhere other than
+GitHub releases. Those three belong to the scripts rather than to the binary,
+which is why they are not in the [Environment](#environment) table.
 
 Releases carry five builds — x86-64 Linux, Windows and macOS, and arm64 Linux
 and macOS. On anything else, build from source, which is the one route that
@@ -63,6 +68,27 @@ needs Rust:
 ```bash
 cargo install --git https://github.com/asanabrial/leteo
 ```
+
+## Uninstall
+
+```powershell
+leteo uninstall
+leteo uninstall --yes
+```
+
+The first reports what would go and changes nothing. The second carries it out:
+Leteo leaves every agent it configured, and then the machine. On Windows it also
+registers itself in Installed apps, so it can be removed from there instead.
+
+To leave one agent and stay in the rest:
+
+```powershell
+leteo setup claude-code --uninstall
+```
+
+That takes out the MCP entry, the lifecycle hooks and the protocol block, and
+nothing else — other servers, other tools' hooks and your own notes stay where
+they are.
 
 ## What it feels like
 
@@ -85,8 +111,8 @@ with you, and `leteo delete` means it.
 
 ## MCP
 
-A 22-tool MCP server over standard input/output, run directly or installed into
-a client by the command above:
+A 22-tool MCP server over standard input/output, run directly or written into a
+client by `leteo setup`:
 
 ```powershell
 leteo mcp
@@ -101,7 +127,15 @@ setup support for twelve MCP clients — the list at the top of this page.
 
 ## What you type
 
-Rarely anything. This is the store from the outside, for when you want to look:
+Rarely anything: the saving and the recalling happen without you. This is the
+store from the outside, for the times you want to look yourself. Every command
+prints JSON, and the default database is `~/.leteo/leteo.db`.
+
+**Reading it.** `search` is the one you will actually use, and `--all-projects`
+widens it past the project you are standing in. `recent` is the last few in time
+order; `context` is the block an agent is handed when a session opens, so it
+shows what yours are starting with; `timeline` reads what was saved either side
+of one memory; `stats` counts what is there. `tui` is all of it on one screen.
 
 ```powershell
 leteo search "connection pool" --project leteo
@@ -111,38 +145,75 @@ leteo context leteo --scope project
 leteo timeline 42 --before 5 --after 5
 leteo stats
 leteo tui
+```
 
+**Writing by hand.** Seldom needed, since the agent saves as it works — but a
+memory you want in your own words, and the session boundaries an agent would
+otherwise draw for you:
+
+```powershell
 leteo save "SQLite architecture" "One writer, many readers" --project leteo --type architecture
 leteo session-start session-1 --project leteo
 leteo session-end session-1
+```
 
+**Setting an agent up.** On its own it walks through it; naming an agent does
+that one. `--hooks` adds the lifecycle hooks that make memory automatic, and
+`--dry-run` reports every file it would touch without writing one:
+
+```powershell
 leteo setup
 leteo setup claude-code --hooks
 leteo setup opencode --dry-run
+```
 
+**Keeping it well.** `doctor` runs every check and says which one failed and
+why; `--repair` carries out the two repairs that are safe to make on their own.
+`export` and `import` move a store between machines, and `obsidian-export`
+writes it into a vault as Markdown:
+
+```powershell
 leteo doctor
 leteo doctor --repair
 leteo export --project leteo --output leteo-export.json
 leteo import leteo-export.json
 leteo obsidian-export --vault C:\Vaults\Notes --project leteo
+```
 
+**Projects.** A project is worked out from the directory, so the same work can
+end up filed under two names. `consolidate` folds a group of them into one name,
+`prune` drops the ones holding no memories at all:
+
+```powershell
 leteo projects list
 leteo projects consolidate --project leteo --apply
 leteo projects prune --apply
+```
 
+**Conflicts.** When a new memory looks like it contradicts an older one the two
+are paired and the agent settles the pair. These read the same pairs from
+outside: `list` and `show` for what is there, `scan` to look for pairs nobody
+has recorded yet, `stats` to count them by verdict:
+
+```powershell
 leteo conflicts list --project leteo --status pending
 leteo conflicts show 7
 leteo conflicts scan --project leteo --apply
 leteo conflicts stats --project leteo
+```
 
+**Deleting.** Without `--hard` a memory is marked deleted and stops coming back
+in answers; with it, the row is gone and its relations are cut. A session or a
+project can go the same way:
+
+```powershell
 leteo delete observation 42 --hard
 leteo delete session session-1
 leteo delete project leteo --hard
 ```
 
-Every command prints JSON. `projects consolidate`, `projects prune` and
-`conflicts scan` report what they would change and only touch data with
-`--apply`. The default database is `~/.leteo/leteo.db`.
+`projects consolidate`, `projects prune` and `conflicts scan` change nothing
+until `--apply`: without it each one reports exactly what it would do.
 
 ## Languages
 
@@ -164,20 +235,76 @@ than parsed, so it is free text and not limited to the twelve above: `español`,
 `Spanish`, `português do Brasil` and `日本語` all work. Left unset, each memory
 is written in the language of the conversation that produced it.
 
+## Settings
+
+Those three and two more are kept in `settings.json`, in the data directory —
+`~/.leteo/settings.json` unless you moved it. The Setup screen writes the file,
+and it is also meant to be opened by hand: a value it cannot read costs that one
+setting rather than the whole file. Nothing says so at the time, though, because
+a hook must not fail while you are mid-edit — `leteo doctor` is what names a
+setting being read past.
+
+| Key | Values | Unset means |
+| --- | --- | --- |
+| `interface` | one of the twelve above | follow the machine's locale |
+| `voice_language` | one of the twelve above | follow `interface` |
+| `language` | free text | the language of each conversation |
+| `voice` | `all`, `reminders`, `quiet` | `all` |
+| `context_size` | `slim`, `full`, `deep` | `full` |
+
+The two languages are written as the language's own name — `español`, not `es` —
+and read back forgivingly, because this is a file people type into: the English
+name, the ISO code and the spelling without the accent all work.
+
+`voice` is how much of its own work Sardi says out loud — everything, the save
+reminder alone, or nothing. `context_size` is how many memories a session opens
+with: twenty, fifty or eighty, for a small context window or for a store that
+matters more than the budget.
+
+Two of the five are flags as well, because changing them should not mean
+reconfiguring an agent. Either one on its own is a whole command:
+
+```powershell
+leteo setup --language "español"
+leteo setup --context slim
+```
+
 ## Cloud
 
 Optional, off by default, and per project. Your machine is the client; the cloud
 never connects back.
 
+**Turning it on** takes two answers: where the server is, and which projects go
+to it. `config set` writes the first into the data directory — into a file with
+restricted permissions, because it holds a token — and `enroll` names a project.
+Nothing replicates until both are done, and the commands below say so rather
+than starting quietly:
+
 ```powershell
+leteo cloud config set --server https://memory.example.com --token <token>
 leteo cloud enroll --project leteo
+leteo cloud config show
+```
+
+`config show` reads the configuration back with the token replaced by a presence
+flag, so it is safe to paste.
+
+**Once it is on**, `health` asks the server whether it is there and answering.
+`status` contacts nothing at all: it reports this machine's own view — what is
+enrolled, how many changes are waiting and since when, and whether the last
+attempt failed and with what. `sync` runs one cycle now, and `leteo serve` keeps
+running them in the background until interrupted:
+
+```powershell
+leteo cloud health
 leteo cloud status
 leteo cloud sync
 leteo serve
 ```
 
-`leteo serve` replicates in the background until interrupted. The server side —
-Compose stack, managed tokens, project grants — is in
+Not to be confused with `leteo cloud serve`, which is the other end — the server
+itself, which you only run if you are hosting one. That side, with its Compose
+stack, managed tokens and project grants, is in
 [`openspec/specs/replication.md`](openspec/specs/replication.md).
 
 ## Coming From Engram
@@ -186,7 +313,9 @@ Leteo is an independent Rust product derived from the workflow and MIT-licensed
 implementation of Gentleman Programming's Engram. It is not affiliated with or
 endorsed by that project, and promises no drop-in CLI compatibility.
 
-It reads an Engram database directly, so moving across is a copy:
+It reads an Engram database directly, so moving across is a copy. The first
+reports what it would adopt and writes nothing; the second carries it out, and
+refuses a second time rather than importing everything twice:
 
 ```powershell
 leteo import --from-engram --dry-run
@@ -202,10 +331,15 @@ across and its own file is never written to.
 Leteo requires Rust 1.97 or newer.
 
 ```powershell
+cargo fmt --all
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
+
+CI runs the tests. The formatting and the lints are on you before you commit,
+which is why they are listed here and in [`AGENTS.md`](AGENTS.md) rather than
+only in a workflow.
 
 The cloud tests need a real PostgreSQL and are skipped without one. Point
 `TEST_DATABASE_URL` at a throwaway database and run `cargo test -- --ignored`;
@@ -231,36 +365,68 @@ This file is the user-facing guide. What the system *guarantees*, and why, is in
 
 ## Environment
 
+**None of these has to be set.** This is an inventory of every variable the
+binary reads — a test fails the build when the binary honours one this table
+leaves out — and not a list of things to configure. `leteo setup` writes what an
+installation needs into each agent's own configuration file, and the choices you
+make in the interface are kept in [`settings.json`](#settings). Neither of them
+sets a variable in your environment.
+
+All but the last are a command-line flag as well, and the flag wins: the
+variable is read only when the command line does not answer the same question.
+
+| Variable | Flag | Purpose |
+| --- | --- | --- |
+| `LETEO_DATA_DIR` | `--data-dir` | Local data directory; defaults to `~/.leteo` |
+| `LETEO_DATABASE` | `--database` | Explicit local SQLite path |
+| `LETEO_TOOLS` | `mcp --tools` | `agent`, `admin`, `all`, or single tool names. Every tool when nothing names any |
+| `LETEO_PROJECT` | `mcp --project` | Project the MCP server trusts for the whole process; without it, the working directory decides |
+| `LETEO_AGENT_CLI` | `conflicts scan --semantic` | Agent CLI that judges conflict candidates: `claude` or `opencode` |
+| `LETEO_SYSTEM_LANGUAGE` | — | Language this machine works in, when `LANG` does not say. Read once, to offer it in `leteo setup` |
+
+Two are worth a sentence more, because they are where the flag winning bites:
+
+- `LETEO_TOOLS` is already answered for every agent Leteo sets up: the MCP entry
+  it writes runs `leteo mcp --tools=agent`. Exporting the variable afterwards
+  changes nothing for that agent — edit the profile in its configuration file,
+  or run the setup again.
+- `LETEO_DATA_DIR` is the one with a real reason to be exported. The MCP server
+  is started by the agent rather than by you, so a database somewhere other than
+  `~/.leteo` has to reach it either through that agent's environment or as a
+  `--data-dir` in the command its configuration runs.
+
+### Cloud, on your machine
+
+`leteo cloud config set` persists the server and the token in the data directory
+and is how this is configured. These two are read only where that file leaves
+the field empty, so a setup that predates it keeps working unchanged.
+
 | Variable | Purpose |
 | --- | --- |
-| `LETEO_DATA_DIR` | Local data directory; defaults to `~/.leteo` |
-| `LETEO_DATABASE` | Explicit local SQLite path |
-| `LETEO_TOOLS` | MCP tool profiles or names; defaults to every tool |
-| `LETEO_PROJECT` | Trusted process-level project for the MCP server |
-| `LETEO_AGENT_CLI` | Agent CLI that judges conflict candidates: `claude` or `opencode` |
-| `LETEO_SYSTEM_LANGUAGE` | Language this machine works in, when `LANG` does not say — used only to offer it in `leteo setup` |
 | `LETEO_CLOUD_SERVER` | Cloud base URL for `cloud health`, `cloud sync` and the client config |
+| `LETEO_CLOUD_TOKEN` | Sync bearer token, at least 32 bytes |
+
+`leteo cloud serve` reads `LETEO_CLOUD_TOKEN` too, as its own legacy static
+token — on a machine that is both client and server, one name means two things.
+
+### Cloud, on the server
+
+These belong to whoever runs `leteo cloud serve`, and they are set where that
+service is defined — see [`docker-compose.yml`](docker-compose.yml). There is no
+wizard for them on purpose: they are deployment secrets rather than preferences,
+and none of this applies to a normal installation.
+
+| Variable | Purpose |
+| --- | --- |
 | `LETEO_DATABASE_URL` | PostgreSQL URL for cloud serve |
 | `LETEO_DASHBOARD_SECRET` | Dashboard signing secret, at least 32 bytes |
 | `LETEO_CLOUD_TOKEN_PEPPER` | Managed-token HMAC pepper, at least 32 bytes |
-| `LETEO_CLOUD_TOKEN` | Legacy sync bearer token, at least 32 bytes |
 | `LETEO_CLOUD_ADMIN` | Optional legacy admin bearer token, at least 32 bytes |
 | `LETEO_CLOUD_ALLOWED_PROJECTS` | Required allowlist for legacy cloud tokens |
 | `LETEO_CLOUD_HOST` | Cloud bind host; defaults to `127.0.0.1` |
 | `LETEO_CLOUD_PORT` | Cloud port; defaults to `8080` |
 | `LETEO_CLOUD_MAX_POOL` | PostgreSQL connection-pool limit |
 | `LETEO_CLOUD_MAX_PUSH_BYTES` | Maximum cloud push body size |
-
-## Uninstall
-
-```powershell
-leteo uninstall
-leteo uninstall --yes
-```
-
-The first reports what would go and changes nothing. The second carries it out:
-Leteo leaves every agent it configured, and then the machine. On Windows it also
-registers itself in Installed apps, so it can be removed from there instead.
 
 ## License And Attribution
 

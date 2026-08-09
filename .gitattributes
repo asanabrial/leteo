@@ -1,0 +1,26 @@
+# Everything text is stored and checked out with LF.
+#
+# Without this the working tree decides, and it had already drifted: eleven
+# source files carried CRLF while the rest carried LF, which turns a one-line
+# change into a whole-file diff and makes `git blame` name whoever last saved
+# the file rather than whoever wrote the line. Git detects binary content on
+# its own and leaves it alone.
+* text=auto eol=lf
+
+# Shell scripts must keep LF endings wherever they are checked out.
+#
+# `install.sh` is fetched with curl and piped straight to sh. A CRLF checkout
+# on a Windows machine would publish a script that fails on the first line for
+# every Linux and macOS user, with an error that names neither the cause nor
+# the file. Covered by the rule above, and kept explicit because this one is
+# not a matter of taste.
+*.sh text eol=lf
+
+# The migrations are read by SQLite, and the plugin manifests by other tools.
+# Keeping them stable avoids checksum churn between platforms.
+*.sql text eol=lf
+*.json text eol=lf
+
+# PowerShell is the exception: Windows PowerShell 5.1 is the reason these
+# scripts exist, and CRLF is what it expects.
+*.ps1 text eol=crlf

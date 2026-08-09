@@ -1,0 +1,10 @@
+target
+.git
+.github
+.leteo
+.env
+tests
+*.md
+THIRD_PARTY_LICENSES.html
+docker-compose.yml
+Dockerfile

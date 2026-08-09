@@ -1,0 +1,18 @@
+[package]
+name = "leteo-mutate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Breaks an invariant on purpose and reports which tests noticed"
+
+# Its own workspace on purpose, and the whole reason this is a separate crate.
+#
+# This tool edits `src/` and then runs `cargo test` on it. Built as part of the
+# crate it mutates, it would be rebuilt *from the mutated source* before the
+# suite could run — the harness measuring itself. Depending on nothing from
+# `leteo`, it is compiled once and is the same binary for every case.
+[workspace]
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"

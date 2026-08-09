@@ -1,0 +1,976 @@
+[
+  {
+    "name": "search: AND→OR widening removed",
+    "file": "src/store/search.rs",
+    "old": "if matched.is_empty() && results.is_empty() && !any {",
+    "new": "if false {"
+  },
+  {
+    "name": "search: widening always runs (dilutes exact hits)",
+    "file": "src/store/search.rs",
+    "old": "if matched.is_empty() && results.is_empty() && !any {",
+    "new": "if !any {"
+  },
+  {
+    "name": "search: topic key compared raw again",
+    "file": "src/store/search.rs",
+    "old": "let topic_key = crate::memory::normalize::topic_key(Some(query));",
+    "new": "let topic_key = Some(query.to_owned());"
+  },
+  {
+    "name": "mcp: partial-match hint suppressed",
+    "file": "src/mcp/output.rs",
+    "old": "} else if widened {",
+    "new": "} else if false {"
+  },
+  {
+    "name": "mcp: clamp notice suppressed",
+    "file": "src/mcp/tools.rs",
+    "old": "let clamped = params.limit.is_some_and(|asked| asked > cap) && results.len() >= cap;",
+    "new": "let clamped = false;"
+  },
+  {
+    "name": "mcp: mem_context stops folding summaries",
+    "file": "src/mcp/tools.rs",
+    "old": "let mut recent = crate::recall::fold_session_summaries(&mut sessions, recent);",
+    "new": "let mut recent = recent;"
+  },
+  {
+    "name": "mcp: mem_context fetches exactly the budget",
+    "file": "src/mcp/tools.rs",
+    "old": "Some(limit.saturating_mul(4))",
+    "new": "Some(limit)"
+  },
+  {
+    "name": "setup: duplicate-hooks branch removed",
+    "file": "src/setup/mod.rs",
+    "old": "let issue = if configured.is_some() && bundled.is_some() {",
+    "new": "let issue = if false {"
+  },
+  {
+    "name": "sync: unordered page accepted",
+    "file": "src/cloud/autosync.rs",
+    "old": "                if let Some(previous) = previous\n                    && mutation.seq <= previous\n                {",
+    "new": "                if let Some(previous) = previous\n                    && false\n                {"
+  },
+  {
+    "name": "hooks: last_assistant_message ignored",
+    "file": "src/hooks/mod.rs",
+    "old": "        if self.last_assistant_message.trim().is_empty() {",
+    "new": "        if true {"
+  },
+  {
+    "name": "hooks: agent_type loses to source",
+    "file": "src/hooks/mod.rs",
+    "old": "        self.agent_type\n            .as_deref()\n            .or(self.source.as_deref())",
+    "new": "        self.source\n            .as_deref()\n            .or(self.agent_type.as_deref())"
+  },
+  {
+    "name": "memory: passive no longer folds to discovery",
+    "file": "src/memory/normalize.rs",
+    "old": "\"learning\" | \"research\" | \"investigation\" | \"root_cause\" | \"root-cause\" | \"passive\" => {\n            \"discovery\"\n        }",
+    "new": "\"learning\" | \"research\" | \"investigation\" | \"root_cause\" | \"root-cause\" => \"discovery\","
+  },
+  {
+    "name": "project: detection cache removed",
+    "file": "src/project.rs",
+    "old": "    CURRENT_PROJECT\n        .get_or_init(detect_current_project_uncached)\n        .clone()",
+    "new": "    detect_current_project_uncached()"
+  },
+  {
+    "name": "project: git-root walk never climbs",
+    "file": "src/project.rs",
+    "old": "        current = candidate.parent();",
+    "new": "        current = None;"
+  },
+  {
+    "name": "project: origin parser accepts any section",
+    "file": "src/project.rs",
+    "old": "inside_origin = line.replace(' ', \"\") == \"[remote\\\"origin\\\"]\";",
+    "new": "inside_origin = true;"
+  },
+  {
+    "name": "privacy: <private> sections no longer redacted",
+    "file": "src/memory/normalize.rs",
+    "old": "    strip_nul(&PRIVATE_TAGS.replace_all(value, \"[REDACTED]\"))\n        .trim()\n        .to_owned()",
+    "new": "    strip_nul(value).trim().to_owned()"
+  },
+  {
+    "name": "safety: NUL bytes reach SQLite",
+    "file": "src/memory/normalize.rs",
+    "old": "    if value.contains('\\0') {",
+    "new": "    if false {"
+  },
+  {
+    "name": "limits: content length cap removed",
+    "file": "src/memory/normalize.rs",
+    "old": "    if value.len() <= max_bytes {\n        return value;\n    }",
+    "new": "    if true {\n        return value;\n    }"
+  },
+  {
+    "name": "path traversal: chunk id accepts anything",
+    "file": "src/sync/mod.rs",
+    "old": "    if id.len() == 8\n        && id\n            .bytes()\n            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))\n    {",
+    "new": "    if true {"
+  },
+  {
+    "name": "zip bomb: decompression limit lifted",
+    "file": "src/sync/mod.rs",
+    "old": "pub const MAX_UNCOMPRESSED_CHUNK_BYTES: u64 = 64 * 1024 * 1024;",
+    "new": "pub const MAX_UNCOMPRESSED_CHUNK_BYTES: u64 = u64::MAX;"
+  },
+  {
+    "name": "path traversal: vault components unsanitised",
+    "file": "src/obsidian.rs",
+    "old": "        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {\n            safe.push(character);\n        } else {\n            safe.push('-');\n        }",
+    "new": "        safe.push(character);"
+  },
+  {
+    "name": "scope: unknown scope no longer falls back to project",
+    "file": "src/memory/normalize.rs",
+    "old": "        \"personal\" => \"personal\",\n        \"global\" => \"global\",\n        _ => \"project\",",
+    "new": "        \"personal\" => \"personal\",\n        \"global\" => \"global\",\n        _ => \"global\","
+  },
+  {
+    "name": "project: empty name accepted",
+    "file": "src/project.rs",
+    "old": "    if trimmed.is_empty() {\n        return Err(\"project_name is required\".to_owned());\n    }",
+    "new": "    if false {\n        return Err(\"project_name is required\".to_owned());\n    }"
+  },
+  {
+    "name": "project: config name may be a path",
+    "file": "src/project.rs",
+    "old": "    if trimmed.contains(['/', '\\\\']) {",
+    "new": "    if false {"
+  },
+  {
+    "name": "dedupe: content hash ignores whitespace/case folding",
+    "file": "src/memory/normalize.rs",
+    "old": "    let normalized = content\n        .split_whitespace()\n        .collect::<Vec<_>>()\n        .join(\" \")\n        .to_lowercase();",
+    "new": "    let normalized = content.to_owned();"
+  },
+  {
+    "name": "search: CROSS JOIN downgraded to JOIN",
+    "file": "src/store/search.rs",
+    "old": "                bm25(observations_fts, 5.0, 1.0, 0.0, 0.0, 0.0, 3.0) AS rank\n         FROM observations_fts fts CROSS JOIN observations o ON o.id = fts.rowid",
+    "new": "                bm25(observations_fts, 5.0, 1.0, 0.0, 0.0, 0.0, 3.0) AS rank\n         FROM observations_fts fts JOIN observations o ON o.id = fts.rowid"
+  },
+  {
+    "name": "topic key: no longer normalised on write",
+    "file": "src/memory/normalize.rs",
+    "old": "    let mut normalized = value.split_whitespace().collect::<Vec<_>>().join(\"-\");",
+    "new": "    let mut normalized = value.clone();"
+  },
+  {
+    "name": "a new route that checks nobody",
+    "file": "src/cloud/cloudserver/mod.rs",
+    "edits": [
+      {
+        "old": "            .route(\"/health\", get(health))",
+        "new": "            .route(\"/health\", get(health))\n            .route(\"/leak\", get(leak_everything))"
+      },
+      {
+        "old": "async fn health(",
+        "new": "async fn leak_everything(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {\n    let stats = state.store.stats().await?;\n    Ok(format!(\"{stats:?}\").into_response())\n}\n\nasync fn health("
+      }
+    ]
+  },
+  {
+    "name": "auth: empty project passes the required check",
+    "file": "src/cloud/auth.rs",
+    "old": "    if project.is_empty() {\n        return Err(AuthError::ProjectRequired);\n    }",
+    "new": "    if false {\n        return Err(AuthError::ProjectRequired);\n    }"
+  },
+  {
+    "name": "auth: the project is no longer normalised on the way in",
+    "file": "src/cloud/auth.rs",
+    "old": "    let project = crate::memory::normalize::project(raw);",
+    "new": "    let project = raw.to_owned();"
+  },
+  {
+    "name": "graph: a deleted memory still overturns a live one",
+    "file": "src/store/relations.rs",
+    "old": "             FROM memory_relations r\n             JOIN observations src\n               ON src.sync_id = r.source_id AND src.deleted_at IS NULL",
+    "new": "             FROM memory_relations r\n             JOIN observations src\n               ON src.sync_id = r.source_id"
+  },
+  {
+    "name": "graph: supersedes warns the source instead of the target",
+    "file": "src/store/relations.rs",
+    "old": "                if named.contains(&target_id) {",
+    "new": "                if named.contains(&source_id) {"
+  },
+  {
+    "name": "graph: the same judgement is reported twice",
+    "file": "src/store/relations.rs",
+    "old": "                if !existing\n                    .iter()\n                    .any(|seen| seen.verb == caveat.verb && seen.other_id == caveat.other_id)\n                {",
+    "new": "                if true {"
+  },
+  {
+    "name": "graph: every relation kind becomes a caveat",
+    "file": "src/store/relations.rs",
+    "old": "               AND r.relation IN ('{RELATION_SUPERSEDES}', '{RELATION_CONFLICTS_WITH}')",
+    "new": "               AND r.relation IS NOT NULL"
+  },
+  {
+    "name": "ranking: weights retuned without measurement",
+    "file": "src/store/search.rs",
+    "old": "    format!(\n        \"SELECT {OBSERVATION_COLUMNS_JOINED},\n                bm25(observations_fts, 5.0, 1.0, 0.0, 0.0, 0.0, 3.0) AS rank",
+    "new": "    format!(\n        \"SELECT {OBSERVATION_COLUMNS_JOINED},\n                bm25(observations_fts, 20.0, 0.3, 0.0, 0.0, 0.0, 6.0) AS rank"
+  },
+  {
+    "name": "prompt link: capture_prompt=false is ignored",
+    "file": "src/mcp/tools.rs",
+    "old": "        let prompt_sync_id = params.capture_prompt.then(|| {",
+    "new": "        let prompt_sync_id = true.then(|| {"
+  },
+  {
+    "name": "prompt link: the lookup crosses sessions",
+    "file": "src/store/prompts.rs",
+    "old": "                 WHERE session_id = ?1 AND trim(ifnull(sync_id, '')) <> ''",
+    "new": "                 WHERE trim(ifnull(sync_id, '')) <> ''"
+  },
+  {
+    "name": "prompt link: no fallback to the store",
+    "file": "src/mcp/tools.rs",
+    "old": "                .or_else(|| {\n                    store\n                        .latest_session_prompt_sync_id(&context.id)\n                        .ok()\n                        .flatten()\n                })",
+    "new": "                .or_else(|| None)"
+  },
+  {
+    "name": "wire: an observation with no sync_id or session is accepted",
+    "file": "src/store/wire.rs",
+    "old": "    if payload.sync_id.trim().is_empty() || payload.session_id.trim().is_empty() {\n        return Err(invalid_parameter(\n            \"observation sync payload requires sync_id and session_id\",",
+    "new": "    if false {\n        return Err(invalid_parameter(\n            \"observation sync payload requires sync_id and session_id\","
+  },
+  {
+    "name": "wire: a prompt with no sync_id or session is accepted",
+    "file": "src/store/wire.rs",
+    "old": "    if payload.sync_id.trim().is_empty() || payload.session_id.trim().is_empty() {\n        return Err(invalid_parameter(\n            \"prompt sync payload requires sync_id and session_id\",",
+    "new": "    if false {\n        return Err(invalid_parameter(\n            \"prompt sync payload requires sync_id and session_id\","
+  },
+  {
+    "name": "language: the directive is not injected at session start",
+    "file": "src/hooks/mod.rs",
+    "old": "            context.push_str(&settings.language_directive());\n            if let Some((memory, _)) = memory_context(",
+    "new": "            if let Some((memory, _)) = memory_context("
+  },
+  {
+    "name": "language: a pinned language is ignored",
+    "file": "src/settings.rs",
+    "old": "                    \"Write and search memories in {language}, whatever language this conversation is in.\"",
+    "new": "                    \"Write and search memories in English, whatever language this conversation is in.\""
+  },
+  {
+    "name": "language: the wizard wipes a language set by hand",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "        let language = settings.language.clone();",
+    "new": "        let language: Option<String> = None;"
+  },
+  {
+    "name": "options: the page opens nothing",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "            Step::Options => self.open(OPTIONS[self.cursor]),",
+    "new": "            Step::Options => Step::Ready,"
+  },
+  {
+    "name": "language: auto is not offered as a choice",
+    "file": "src/settings.rs",
+    "old": "    let mut choices = vec![None];",
+    "new": "    let mut choices = vec![];"
+  },
+  {
+    "name": "language: a hand-set language is dropped from the menu",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "                choices.push(Some(current.clone()));",
+    "new": "                let _ = current;"
+  },
+  {
+    "name": "options: the machine's language is pinned as if chosen",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "                interface: self.interface_setting,",
+    "new": "                interface: Some(self.interface),"
+  },
+  {
+    "name": "widening: relaxes to any word instead of dropping one",
+    "file": "src/store/search.rs",
+    "old": "            let kept = terms\n                .iter()\n                .enumerate()\n                .filter(|(index, _)| *index != omitted)\n                .map(|(_, term)| term.as_str())\n                .collect::<Vec<_>>()\n                .join(\" \");",
+    "new": "            let _ = omitted;\n            let kept = terms.join(\" OR \");"
+  },
+  {
+    "name": "widening: a one-word question is widened anyway",
+    "file": "src/store/search.rs",
+    "old": "        if terms.len() < 2 || terms.len() > MAX_WIDENED_TERMS {",
+    "new": "        if false {"
+  },
+  {
+    "name": "engram: relations are not carried across",
+    "file": "src/engram.rs",
+    "old": "    (\"memory_relations\", \"memory_relations\"),\n    (\"sync_chunks\", \"sync_chunks\"),",
+    "new": "    (\"sync_chunks\", \"sync_chunks\"),"
+  },
+  {
+    "name": "engram: prompts are not carried across",
+    "file": "src/engram.rs",
+    "old": "    (ENGRAM_PROMPTS, \"prompts\"),\n    (\"memory_relations\", \"memory_relations\"),",
+    "new": "    (\"memory_relations\", \"memory_relations\"),"
+  },
+  {
+    "name": "engram: sessions are not carried across",
+    "file": "src/engram.rs",
+    "old": "    (\"sessions\", \"sessions\"),\n    (\"observations\", \"observations\"),",
+    "new": "    (\"observations\", \"observations\"),"
+  },
+  {
+    "name": "engram: foreign keys are off during the copy",
+    "file": "src/engram.rs",
+    "old": "                \"INSERT OR IGNORE INTO main.{ours} ({names}) SELECT {names} FROM engram.{theirs};\"",
+    "new": "                \"PRAGMA foreign_keys = OFF; INSERT OR IGNORE INTO main.{ours} ({names}) SELECT {names} FROM engram.{theirs};\""
+  },
+  {
+    "name": "files: writes in place instead of renaming",
+    "file": "src/files.rs",
+    "old": "fn write_then_rename(path: &Path, data: &[u8], visibility: Visibility) -> io::Result<()> {",
+    "new": "fn write_then_rename(path: &Path, data: &[u8], visibility: Visibility) -> io::Result<()> {\n    let _ = visibility;\n    if let Some(parent) = path.parent() {\n        fs::create_dir_all(parent)?;\n    }\n    return fs::write(path, data);\n    #[allow(unreachable_code)]"
+  },
+  {
+    "name": "obsidian: an existing graph config is overwritten",
+    "file": "src/obsidian.rs",
+    "old": "        GraphConfig::Preserve if path.exists() => Ok(false),",
+    "new": "        GraphConfig::Preserve if false => Ok(false),"
+  },
+  {
+    "name": "obsidian: notes bypass files::replace (caught via directory creation, not atomicity)",
+    "file": "src/obsidian.rs",
+    "old": "    crate::files::replace(path, content.as_bytes())\n        .with_context(|| format!(\"write {}\", path.display()))?;",
+    "new": "    std::fs::write(path, content.as_bytes())\n        .with_context(|| format!(\"write {}\", path.display()))?;"
+  },
+  {
+    "name": "obsidian: a note name loses the id that makes it unique",
+    "file": "src/obsidian.rs",
+    "old": "    format!(\"{slug}-{id}\")",
+    "new": "    format!(\"{slug}\")"
+  },
+  {
+    "name": "obsidian: an unchanged note is rewritten anyway",
+    "file": "src/obsidian.rs",
+    "old": "    if let Ok(existing) = std::fs::read_to_string(path)\n        && existing == content\n    {",
+    "new": "    if false {"
+  },
+  {
+    "name": "payload: a chunk keeps whatever project it claims",
+    "file": "src/sync/payload.rs",
+    "old": "    normalize_direct_rows(object, \"sessions\", project, |row| {",
+    "new": "    normalize_direct_rows(object, \"sessions\", \"\", |row| {"
+  },
+  {
+    "name": "payload: an observation may arrive with no title or content",
+    "file": "src/sync/payload.rs",
+    "old": "                    if value.is_empty() {\n                        return Err(invalid(format!(\n                            \"observation payload {field} is required for upsert\"\n                        )));\n                    }",
+    "new": "                    let _ = value;"
+  },
+  {
+    "name": "payload: a session may arrive with no id",
+    "file": "src/sync/payload.rs",
+    "old": "                return Err(invalid(\"session payload id is required\"));",
+    "new": "                {}"
+  },
+  {
+    "name": "payload: a prompt may arrive with no session",
+    "file": "src/sync/payload.rs",
+    "old": "                return Err(invalid(\"prompt payload session_id is required for upsert\"));",
+    "new": "                {}"
+  },
+  {
+    "name": "projects: merge accepts an empty canonical name",
+    "file": "src/store/projects.rs",
+    "old": "        let canonical = normalize::project(canonical);\n        if canonical.is_empty() {\n            return Err(invalid_parameter(crate::project::EMPTY_NAME));\n        }",
+    "new": "        let canonical = normalize::project(canonical);"
+  },
+  {
+    "name": "projects: delete accepts an empty project name",
+    "file": "src/store/projects.rs",
+    "old": "        let project = normalize::project(project);\n        if project.is_empty() {\n            return Err(invalid_parameter(crate::project::EMPTY_NAME));\n        }\n        let tx = self.write_transaction()?;\n        let sessions = collect_sessions_tx(&tx, &project)?;",
+    "new": "        let project = normalize::project(project);\n        let tx = self.write_transaction()?;\n        let sessions = collect_sessions_tx(&tx, &project)?;"
+  },
+  {
+    "name": "projects: prune accepts an empty project name",
+    "file": "src/store/projects.rs",
+    "old": "    pub fn prune_project(&mut self, project: &str) -> Result<PruneResult, StoreError> {",
+    "new": "    pub fn prune_project(&mut self, project: &str) -> Result<PruneResult, StoreError> {\n        let project = project.trim();\n        let project = if project.is_empty() { \"x\" } else { project };"
+  },
+  {
+    "name": "observations: a revision crosses into another project",
+    "file": "src/store/observations.rs",
+    "old": "                     WHERE topic_key = ?1 AND ifnull(project, '') = ifnull(?2, '')\n                       AND scope = ?3 AND deleted_at IS NULL",
+    "new": "                     WHERE topic_key = ?1 AND deleted_at IS NULL"
+  },
+  {
+    "name": "observations: a revision revives a deleted memory",
+    "file": "src/store/observations.rs",
+    "old": "                       AND scope = ?3 AND deleted_at IS NULL\n                     ORDER BY datetime(updated_at) DESC",
+    "new": "                       AND scope = ?3\n                     ORDER BY datetime(updated_at) DESC"
+  },
+  {
+    "name": "observations: dedupe ignores the time window",
+    "file": "src/store/observations.rs",
+    "old": "                   AND datetime(created_at) >= datetime('now', ?6)",
+    "new": "                   AND ?6 IS NOT NULL"
+  },
+  {
+    "name": "observations: dedupe ignores the title",
+    "file": "src/store/observations.rs",
+    "old": "                   AND scope = ?3 AND type = ?4 AND title = ?5 AND deleted_at IS NULL",
+    "new": "                   AND scope = ?3 AND type = ?4 AND ?5 IS NOT NULL AND deleted_at IS NULL"
+  },
+  {
+    "name": "observations: a revision does not bump the revision count",
+    "file": "src/store/observations.rs",
+    "old": "                     topic_key = ?5, normalized_hash = ?6, revision_count = revision_count + 1,",
+    "new": "                     topic_key = ?5, normalized_hash = ?6, revision_count = revision_count,"
+  },
+  {
+    "name": "recall: summaries are folded after the cut, not before",
+    "file": "src/recall.rs",
+    "old": "    let mut observations = fold_session_summaries(&mut sessions, observations);\n    observations.truncate(memories);",
+    "new": "    observations.truncate(memories);\n    let mut observations = fold_session_summaries(&mut sessions, observations);"
+  },
+  {
+    "name": "recall: pinned memories are not excluded from the recent list",
+    "file": "src/recall.rs",
+    "old": "        !observation.pinned && wanted_scope.is_none_or(|scope| observation.scope == scope)",
+    "new": "        wanted_scope.is_none_or(|scope| observation.scope == scope)"
+  },
+  {
+    "name": "recall: the context fetches exactly its budget",
+    "file": "src/recall.rs",
+    "old": "    let mut observations = store.recent_observations(project, Some(memories.saturating_mul(4)))?;",
+    "new": "    let mut observations = store.recent_observations(project, Some(memories))?;"
+  },
+  {
+    "name": "recall: every memory arrives with its full content",
+    "file": "src/recall.rs",
+    "old": "        let split = DETAILED.min(observations.len());",
+    "new": "        let split = observations.len();"
+  },
+  {
+    "name": "recall: a session already summarised is overwritten",
+    "file": "src/recall.rs",
+    "old": "        if session\n            .summary\n            .as_deref()\n            .is_some_and(|s| !s.trim().is_empty())\n        {\n            continue;\n        }",
+    "new": "        if false {\n            continue;\n        }"
+  },
+  {
+    "name": "hooks: a project rename folds without checking the directory",
+    "file": "src/hooks/session.rs",
+    "old": "    if !recorded_here {\n        return;\n    }",
+    "new": "    if false {\n        return;\n    }"
+  },
+  {
+    "name": "hooks: the agent's own project is ignored for the detected one",
+    "file": "src/hooks/session.rs",
+    "old": "    input\n        .project\n        .as_deref()\n        .map(normalize::project)\n        .filter(|project| !project.is_empty())\n        .unwrap_or_else(|| normalize::project(&detection.project))",
+    "new": "    normalize::project(&detection.project)"
+  },
+  {
+    "name": "hooks: an empty project from the agent wins over detection",
+    "file": "src/hooks/session.rs",
+    "old": "        .filter(|project| !project.is_empty())",
+    "new": "        .filter(|_| true)"
+  },
+  {
+    "name": "hooks: every agent shares one session id",
+    "file": "src/hooks/session.rs",
+    "old": "    if session_id.is_empty() {\n        crate::mcp::manual_session_id(project)\n    } else {\n        session_id.to_owned()\n    }",
+    "new": "    crate::mcp::manual_session_id(project)"
+  },
+  {
+    "name": "hooks: directories compare case-sensitively on Windows",
+    "file": "src/hooks/session.rs",
+    "old": "        if cfg!(windows) {\n            value.to_lowercase()\n        } else {\n            value\n        }",
+    "new": "        value"
+  },
+  {
+    "name": "mcp: an ambiguous choice needs no user selection",
+    "file": "src/mcp/mod.rs",
+    "old": "        if choice.reason.as_deref() != Some(SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT) {\n            return Err(self.project_detection_error(detection));\n        }",
+    "new": "        if false {\n            return Err(self.project_detection_error(detection));\n        }"
+  },
+  {
+    "name": "mcp: a project outside the offered list is accepted",
+    "file": "src/mcp/mod.rs",
+    "old": "        let matched = detection\n            .available_projects\n            .iter()\n            .find(|available| normalize::project(available) == requested)\n            .cloned();",
+    "new": "        let matched = Some(requested.to_owned());"
+  },
+  {
+    "name": "mcp: no recovery token is required",
+    "file": "src/mcp/mod.rs",
+    "old": "        let Some(token) = choice\n            .recovery_token\n            .filter(|token| !token.trim().is_empty())\n        else {",
+    "new": "        let Some(token) = choice.recovery_token.or(Some(String::from(\"x\"))) else {"
+  },
+  {
+    "name": "nudge: it fires in the first minutes of a session",
+    "file": "src/hooks/nudge.rs",
+    "old": "    if (now - started_at).num_minutes() < NUDGE_WARMUP_MINUTES {\n        return None;\n    }",
+    "new": "    if false {\n        return None;\n    }"
+  },
+  {
+    "name": "nudge: it fires however recently something was saved",
+    "file": "src/hooks/nudge.rs",
+    "old": "    if quiet_minutes < NUDGE_COOLDOWN_MINUTES {\n        return None;\n    }",
+    "new": "    if false {\n        return None;\n    }"
+  },
+  {
+    "name": "nudge: the debounce file is not consulted",
+    "file": "src/hooks/nudge.rs",
+    "old": "        && (now - last_nudge).num_minutes() < NUDGE_COOLDOWN_MINUTES\n    {\n        return None;\n    }",
+    "new": "        && false\n    {\n        return None;\n    }"
+  },
+  {
+    "name": "nudge: the debounce file is never written",
+    "file": "src/hooks/nudge.rs",
+    "old": "            && let Err(error) = std::fs::write(state_path, stamp)",
+    "new": "            && let Err(error) = Ok::<(), std::io::Error>(()).map(|()| { let _ = &stamp; })"
+  },
+  {
+    "name": "nudge: a project with nothing saved never counts as quiet",
+    "file": "src/hooks/nudge.rs",
+    "old": "        None => (now - started_at).num_minutes(),",
+    "new": "        None => 0,"
+  },
+  {
+    "name": "relations: a verdict may name a verb nobody documents",
+    "file": "src/store/relations.rs",
+    "old": "        validate_relation_verb(&input.relation)?;\n        validate_optional_confidence(input.confidence)?;",
+    "new": "        validate_optional_confidence(input.confidence)?;"
+  },
+  {
+    "name": "relations: a confidence outside zero to one is accepted",
+    "file": "src/store/relations.rs",
+    "old": "        validate_optional_confidence(input.confidence)?;\n\n        let tx = self.write_transaction()?;",
+    "new": "\n        let tx = self.write_transaction()?;"
+  },
+  {
+    "name": "relations: two projects may be linked to each other",
+    "file": "src/store/mod.rs",
+    "old": "    if !source_project.is_empty() && !target_project.is_empty() && source_project != target_project\n    {\n        return Err(StoreError::CrossProjectRelation);\n    }",
+    "new": "    if false {\n        return Err(StoreError::CrossProjectRelation);\n    }"
+  },
+  {
+    "name": "relations: judging leaves the status pending",
+    "file": "src/store/relations.rs",
+    "old": "                 judgment_status = 'judged', marked_by_actor = ?5,",
+    "new": "                 marked_by_actor = ?5,"
+  },
+  {
+    "name": "scan: a 'not a conflict' verdict is written to the graph",
+    "file": "src/llm.rs",
+    "old": "                Ok(verdict) if verdict.relation == RELATION_NOT_CONFLICT => summary.skipped += 1,",
+    "new": "                Ok(verdict) if false => summary.skipped += 1,"
+  },
+  {
+    "name": "scan: a verdict that could not be stored is not counted",
+    "file": "src/llm.rs",
+    "old": "                            tracing::warn!(%error, \"semantic verdict could not be stored\");\n                            summary.errors += 1;",
+    "new": "                            tracing::warn!(%error, \"semantic verdict could not be stored\");"
+  },
+  {
+    "name": "scan: a failed comparison is not counted",
+    "file": "src/llm.rs",
+    "old": "                    tracing::warn!(%error, \"semantic comparison failed\");\n                    summary.errors += 1;",
+    "new": "                    tracing::warn!(%error, \"semantic comparison failed\");"
+  },
+  {
+    "name": "scan: an impossible concurrency is not refused",
+    "file": "src/llm.rs",
+    "old": "pub fn collect_pairs(store: &mut Store, options: &SemanticOptions) -> Result<(Vec<Pair>, usize)> {\n    options.validate()?;",
+    "new": "pub fn collect_pairs(store: &mut Store, options: &SemanticOptions) -> Result<(Vec<Pair>, usize)> {"
+  },
+  {
+    "name": "wizard: a populated store is not warned about the language",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "                if self.offer.store_has_memories {",
+    "new": "                if false {"
+  },
+  {
+    "name": "wizard: an empty store is warned about memories it does not have",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "                if self.offer.store_has_memories {",
+    "new": "                if true {"
+  },
+  {
+    "name": "prompt link: the whole prompt row is fetched for its id",
+    "file": "src/store/prompts.rs",
+    "old": "pub(super) const LATEST_PROMPT_SYNC_ID: &'static str = \"SELECT ifnull(sync_id, '') FROM prompts",
+    "new": "pub(super) const LATEST_PROMPT_SYNC_ID: &'static str = \"SELECT ifnull(sync_id, ''), content FROM prompts"
+  },
+  {
+    "name": "sessions: another project's directories are returned too",
+    "file": "src/store/sessions.rs",
+    "old": "            .prepare(\"SELECT DISTINCT directory FROM sessions WHERE project = ?1\")?;",
+    "new": "            .prepare(\"SELECT DISTINCT directory FROM sessions\")?;"
+  },
+  {
+    "name": "sessions: the project is compared case-sensitively",
+    "file": "src/store/sessions.rs",
+    "old": "    pub fn session_directories(&self, project: &str) -> Result<Vec<String>, StoreError> {\n        let project = normalize::project(project);",
+    "new": "    pub fn session_directories(&self, project: &str) -> Result<Vec<String>, StoreError> {\n        let project = project.to_owned();"
+  },
+  {
+    "name": "detection: no origin falls back to spawning git again",
+    "file": "src/project.rs",
+    "old": "        OriginUrl::None => return None,",
+    "new": "        OriginUrl::None => run_git(git_root, &[\"remote\", \"get-url\", \"origin\"])?,"
+  },
+  {
+    "name": "detection: an unreadable config is treated as no origin",
+    "file": "src/project.rs",
+    "old": "    let Ok(text) = fs::read_to_string(config) else {",
+    "new": "    let Ok(text) = fs::read_to_string(config).map_err(|_| ()).or(Ok::<String, ()>(String::new())) else {"
+  },
+  {
+    "name": "adopt: project names arrive un-normalised",
+    "file": "src/engram.rs",
+    "old": "    normalize_projects(connection, &carried_a_project)?;",
+    "new": "    let _ = &carried_a_project;"
+  },
+  {
+    "name": "count_observations: optional filter back to a disjunction",
+    "file": "src/store/observations.rs",
+    "old": "        narrowing.equals(\"project\", project.as_ref());\n        let sql = format!(\n            \"SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL{}\",\n            narrowing.clauses()\n        );",
+    "new": "        let _ = &mut narrowing;\n        let sql = format!(\n            \"SELECT COUNT(*) FROM observations WHERE deleted_at IS NULL AND (?1 IS NULL OR project = ?1){}\",\n            \"\"\n        );"
+  },
+  {
+    "name": "tui: a replication queue nobody could read shows as zero",
+    "file": "src/tui/app.rs",
+    "old": "            Err(error) => overview.unreadable = Some(error.to_string()),",
+    "new": "            Err(_) => {}"
+  },
+  {
+    "name": "setup: a store nobody could read counts as empty",
+    "file": "src/cli/bootstrap.rs",
+    "old": "    stored_observations(cli) == Some(0)",
+    "new": "    stored_observations(cli).unwrap_or(0) == 0"
+  },
+  {
+    "name": "settings: Windows is never asked for its language",
+    "file": "src/settings.rs",
+    "old": "        .or_else(platform_locale)?;",
+    "new": "        ?;"
+  },
+  {
+    "name": "search: the widened retry builds its terms a second way",
+    "file": "src/memory/normalize.rs",
+    "old": "    fts_terms(query).join(if any { \" OR \" } else { \" \" })",
+    "new": "    strip_nul(query)\n        .split_whitespace()\n        .map(|term| format!(\"\\\"{}\\\"\", term))\n        .collect::<Vec<_>>()\n        .join(if any { \" OR \" } else { \" \" })"
+  },
+  {
+    "name": "summaries: every session is titled the same again",
+    "file": "src/mcp/tools.rs",
+    "old": "                    Some(headline) => {\n                        format!(\"Session summary: {} — {headline}\", context.project)\n                    }",
+    "new": "                    Some(headline) => {\n                        let _ = headline;\n                        format!(\"Session summary: {}\", context.project)\n                    }"
+  },
+  {
+    "name": "headline: a markdown heading is used as the title",
+    "file": "src/memory/normalize.rs",
+    "old": "        .filter(|line| !line.starts_with('#') && !line.starts_with(\"---\"))",
+    "new": "        .filter(|line| !line.starts_with(\"---\"))"
+  },
+  {
+    "name": "migration 0006: only the summaries with a plain second line are repaired",
+    "file": "src/store/schema.rs",
+    "old": "        let Some(headline) = crate::memory::normalize::headline(&content, SUMMARY_HEADLINE_CHARS)",
+    "new": "        let Some(headline) = content.lines().nth(1).map(str::to_owned).filter(|l| l.len() >= 12)"
+  },
+  {
+    "name": "mcp: mem_context stops carrying the language directive",
+    "file": "src/mcp/tools.rs",
+    "old": "        let language = crate::settings::load_beside(store.database_path()).language_directive();",
+    "new": "        let language = String::new();"
+  },
+  {
+    "name": "headline: a two-word label passes as a title",
+    "file": "src/memory/normalize.rs",
+    "old": "            line.chars().count() >= MIN_HEADLINE_CHARS\n                && line.split_whitespace().count() >= MIN_HEADLINE_WORDS",
+    "new": "            line.chars().count() >= MIN_HEADLINE_CHARS"
+  },
+  {
+    "name": "mcp: the instructions name a tool that does not exist",
+    "file": "src/mcp/mod.rs",
+    "old": "CONFLICTS: when mem_save reports candidates, judge each one with mem_judge \\",
+    "new": "CONFLICTS: when mem_save reports candidates, judge each one with mem_judgement \\"
+  },
+  {
+    "name": "mcp: the summary contract is dropped from the universal channel",
+    "file": "src/mcp/mod.rs",
+    "old": "line of the content that is not a heading, so open with what the session was",
+    "new": "line of the content, so open with what the session was"
+  },
+  {
+    "name": "setup: a Windows instruction file is rewritten to Unix endings",
+    "file": "src/setup/mod.rs",
+    "old": "        text.replace('\\n', \"\\r\\n\")",
+    "new": "        text"
+  },
+  {
+    "name": "setup: a file with no block comes back reformatted",
+    "file": "src/setup/mod.rs",
+    "old": "        return existing.to_owned();",
+    "new": "        return text;"
+  },
+  {
+    "name": "setup: a config file comes back with its keys resorted",
+    "file": "Cargo.toml",
+    "old": "serde_json = { version = \"1.0.149\", features = [\"preserve_order\"] }",
+    "new": "serde_json = \"1.0.149\""
+  },
+  {
+    "name": "setup: the codex config is flattened to Unix endings",
+    "file": "src/setup/mod.rs",
+    "old": "    Ok(with_line_endings_of(text, format!(\"{}\\n\", body.trim_end())))",
+    "new": "    Ok(format!(\"{}\n\", body.trim_end()))"
+  },
+  {
+    "name": "doctor: the schema version is not reported",
+    "file": "src/store/diagnostics.rs",
+    "old": "            schema_version: schema_version(&self.connection)?,\n            schema_supported: SCHEMA_VERSION,",
+    "new": "            schema_version: 0,\n            schema_supported: 0,"
+  },
+  {
+    "name": "obsidian: notes left by a renamed memory go uncounted",
+    "file": "src/obsidian.rs",
+    "old": "        summary.orphaned_notes = Some(orphaned_notes(&root, &written)?);",
+    "new": "        summary.orphaned_notes = Some(0);"
+  },
+  {
+    "name": "rules: a kind that goes stale is not one anybody can write",
+    "file": "src/memory/rules.rs",
+    "old": "&[(\"decision\", 6), (\"policy\", 12), (\"preference\", 3)]",
+    "new": "&[(\"decision\", 6), (\"policy\", 12), (\"preference\", 3), (\"retrospective\", 9)]"
+  },
+  {
+    "name": "baseline: the stemmer is dropped from the full-text index",
+    "file": "migrations/0001_baseline_tables.sql",
+    "old": "    content='observations', content_rowid='id',\n    tokenize = 'porter unicode61'",
+    "new": "    content='observations', content_rowid='id'"
+  },
+  {
+    "name": "baseline: the data rules never reach an adopted store",
+    "file": "src/store/schema.rs",
+    "old": "        connection.execute_batch(BASELINE_NORMALIZE_SQL)?;",
+    "new": "        let _ = BASELINE_NORMALIZE_SQL;"
+  },
+  {
+    "name": "baseline: summaries are never retitled on the way in",
+    "file": "src/store/schema.rs",
+    "old": "        summary_headlines(connection)?;",
+    "new": "        let _ = summary_headlines;"
+  },
+  {
+    "name": "context: an unbounded limit overflows the fetch",
+    "file": "src/recall.rs",
+    "old": "Some(memories.saturating_mul(4))",
+    "new": "Some(memories * 4)"
+  },
+  {
+    "name": "relations: the candidate floor is compared the other way round",
+    "file": "src/store/relations.rs",
+    "old": "                if candidate.score <= floor {",
+    "new": "                if candidate.score >= floor {"
+  },
+  {
+    "name": "relations: a pair already put up for judgement is proposed again",
+    "file": "src/store/relations.rs",
+    "old": "                   AND (?6 IS NULL OR NOT EXISTS (",
+    "new": "                   AND (?6 IS NULL OR EXISTS ("
+  },
+  {
+    "name": "prompts: a prompt with nothing in it is stored",
+    "file": "src/memory/rules.rs",
+    "old": "    content.trim().is_empty().then_some(Refusal::NoPrompt)",
+    "new": "    false.then_some(Refusal::NoPrompt)"
+  },
+  {
+    "name": "mcp: the context stops saying which memories were overturned",
+    "file": "src/mcp/tools.rs",
+    "old": "        let caveats = store.caveats_for(&named).unwrap_or_default();",
+    "new": "        let caveats = Default::default();"
+  },
+  {
+    "name": "mcp: a deduplicated save asks the conflict question again",
+    "file": "src/mcp/tools.rs",
+    "old": "        let candidates = if outcome.kind == AddOutcomeKind::Deduplicated {",
+    "new": "        let candidates = if false {"
+  },
+  {
+    "name": "store: the refusal nobody can retry stops saying so",
+    "file": "src/mcp/mod.rs",
+    "old": "Retrying will not help - say so rather than reporting that memory is empty.",
+    "new": "Something went wrong."
+  },
+  {
+    "name": "hooks: a sentence carries the indentation it was written in",
+    "file": "src/hooks/mod.rs",
+    "old": "check the field names \\\n             against session_id",
+    "new": "check the field names              against session_id"
+  },
+  {
+    "name": "doctor: a type no filter can name is not reported",
+    "file": "src/store/diagnostics.rs",
+    "old": "[] => DoctorCheck::passed(\"observation_type_searchable\"),",
+    "new": "_ => DoctorCheck::passed(\"observation_type_searchable\"),"
+  },
+  {
+    "name": "doctor: the unfiled types are counted as words, not memories",
+    "file": "src/store/diagnostics.rs",
+    "old": "let total: i64 = kinds.iter().map(|(_, count)| count).sum();",
+    "new": "let total: i64 = kinds.len() as i64;"
+  },
+  {
+    "name": "rules: Leteo's own summaries count as unfiled",
+    "file": "src/memory/rules.rs",
+    "old": "KINDS.contains(&kind) || kind == crate::memory::model::SESSION_SUMMARY",
+    "new": "KINDS.contains(&kind)"
+  },
+  {
+    "name": "stats: the project list reads every memory again",
+    "file": "src/store/diagnostics.rs",
+    "old": "pub(crate) const PROJECTS_BY_RECENCY: &str = \"SELECT p.project",
+    "new": "pub(crate) const PROJECTS_BY_RECENCY: &str = \"SELECT project FROM observations WHERE project IS NOT NULL AND deleted_at IS NULL GROUP BY project ORDER BY MAX(created_at) DESC\"; const UNUSED_BY_THE_MUTATION: &str = \"SELECT p.project"
+  },
+  {
+    "name": "capture: a subagent's learnings are written without a ceiling",
+    "file": "src/store/observations.rs",
+    "old": "for learning in learnings.into_iter().take(normalize::MAX_LEARNINGS) {",
+    "new": "for learning in learnings.into_iter() {"
+  },
+  {
+    "name": "capture: what did not fit is dropped in silence",
+    "file": "src/store/observations.rs",
+    "old": "let dropped = learnings.len().saturating_sub(normalize::MAX_LEARNINGS);",
+    "new": "let dropped = 0;"
+  },
+  {
+    "name": "capture: the hook stops saying how many were left",
+    "file": "src/hooks/mod.rs",
+    "old": "if result.dropped > 0 {",
+    "new": "if false {"
+  },
+  {
+    "name": "capture: the tool stops saying how many were left",
+    "file": "src/mcp/output.rs",
+    "old": "dropped: value.dropped,",
+    "new": "dropped: 0,"
+  },
+  {
+    "name": "hint: the per-prompt list forgets a whole conversation",
+    "file": "src/hooks/nudge.rs",
+    "old": "const MAX_REMEMBERED: usize = super::context::RECALL_LIMIT * LONGEST_CONVERSATION_PROMPTS;",
+    "new": "const MAX_REMEMBERED: usize = 128;"
+  },
+  {
+    "name": "hint: the shown list is trimmed from the wrong end",
+    "file": "src/hooks/nudge.rs",
+    "old": "self.shown.drain(..self.shown.len() - MAX_REMEMBERED);",
+    "new": "self.shown.truncate(MAX_REMEMBERED);"
+  },
+  {
+    "name": "mcp: a published ceiling stops being an applied one",
+    "file": "src/store/mod.rs",
+    "old": "max_context_results: 20,",
+    "new": "max_context_results: 50,"
+  },
+  {
+    "name": "mcp: the doctor's examples stop at a number of their own",
+    "file": "src/mcp/output.rs",
+    "old": "pub(super) const VIOLATION_EXAMPLES: usize = 20;",
+    "new": "pub(super) const VIOLATION_EXAMPLES: usize = 30;"
+  },
+  {
+    "name": "mcp: the elsewhere count loses its bound",
+    "file": "src/mcp/output.rs",
+    "old": "pub(crate) const ELSEWHERE_CAP: usize = 100;",
+    "new": "pub(crate) const ELSEWHERE_CAP: usize = 1;"
+  },
+  {
+    "name": "context: the configured size stops governing the pinned half",
+    "file": "src/recall.rs",
+    "old": "let (pinned, pinned_omitted) = store.pinned_observations(project, scope, memories)?;",
+    "new": "let (pinned, pinned_omitted) = store.pinned_observations(project, scope, crate::settings::ContextSize::Deep.memories())?;"
+  },
+  {
+    "name": "context: the tool's pinned half ignores what was asked for",
+    "file": "src/mcp/tools.rs",
+    "old": ".pinned_observations(project.as_deref(), params.scope.as_deref(), limit)",
+    "new": ".pinned_observations(project.as_deref(), params.scope.as_deref(), crate::settings::ContextSize::Deep.memories())"
+  },
+  {
+    "name": "store: a deleted memory is promised a way back nobody built",
+    "file": "src/store/mod.rs",
+    "old": "and saving the same thing again writes a new memory rather than restoring this one",
+    "new": "and saving it again is what brings it back"
+  },
+  {
+    "name": "save: a scope Leteo does not know is refiled in silence",
+    "file": "src/mcp/tools.rs",
+    "old": "!crate::memory::normalize::SCOPES.contains(&asked.as_str())",
+    "new": "false"
+  },
+  {
+    "name": "review: a page stops saying how much of the queue it is not",
+    "file": "src/mcp/output.rs",
+    "old": "due_omitted: due.saturating_sub(observations.len()),",
+    "new": "due_omitted: 0,"
+  },
+  {
+    "name": "review: the queue is counted for every project at once",
+    "file": "src/mcp/tools.rs",
+    "old": ".count_review_due(params.project.as_deref())",
+    "new": ".count_review_due(None)"
+  },
+  {
+    "name": "schema: the fast path opens another program's database",
+    "file": "src/store/schema.rs",
+    "old": "if schema_version(connection)? == SCHEMA_VERSION && table_exists(connection, \"prompts\")? {",
+    "new": "if schema_version(connection)? == SCHEMA_VERSION {"
+  },
+  {
+    "name": "schema: the pinned index stops being partial",
+    "file": "migrations/0001_baseline_after_the_tables.sql",
+    "old": " WHERE pinned = 1 AND deleted_at IS NULL;\n",
+    "new": ";\n"
+  },
+  {
+    "name": "wire: a mutation for a project nobody syncs is queued anyway",
+    "file": "src/store/wire.rs",
+    "old": "    if !is_enrolled_tx(tx, project)? {\n        return Ok(());\n    }",
+    "new": ""
+  },
+  {
+    "name": "wire: an empty project is treated as unenrolled",
+    "file": "src/store/wire.rs",
+    "old": "    if project.is_empty() {\n        return Ok(true);\n    }",
+    "new": "    if project.is_empty() {\n        return Ok(false);\n    }"
+  },
+  {
+    "name": "wire: the backfill queues memories before their session",
+    "file": "src/store/wire.rs",
+    "old": "    for id in query_column::<String>(tx, \"SELECT id FROM sessions WHERE project = ?1\", project)? {",
+    "new": "    for id in query_column::<String>(tx, \"SELECT id FROM sessions WHERE project = ?1 AND 1 = 0\", project)? {"
+  },
+  {
+    "name": "wire: acknowledged mutations are pruned whatever their age",
+    "file": "src/store/wire.rs",
+    "old": "           AND datetime(acked_at) < datetime('now', ?2)",
+    "new": ""
+  },
+  {
+    "name": "wire: a deferred attempt does not record what went wrong",
+    "file": "src/store/wire.rs",
+    "old": "    let status = if dead { \"dead\" } else { \"deferred\" };",
+    "new": "    let status = \"deferred\";\n    let _ = dead;"
+  },
+  {
+    "name": "wire: a blank sync target is accepted",
+    "file": "src/store/wire.rs",
+    "old": "        Err(invalid_parameter(\"sync target key is required\"))",
+    "new": "        Ok(String::new())"
+  }
+]

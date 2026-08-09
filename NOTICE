@@ -1,0 +1,21 @@
+Leteo
+Copyright (c) 2026 Alexis Sanabria Lopez
+
+Leteo includes implementation and behavioral compatibility work derived from
+the MIT-licensed Engram project by Alan Buscaglia and contributors:
+
+https://github.com/Gentleman-Programming/engram
+
+The reference revision used during the Rust reimplementation was:
+
+763a6ba432713725d6ce82a2416eec6cbd9ec94e
+
+Engram copyright (c) 2026 Alan Buscaglia. The applicable MIT copyright and
+permission notice is preserved in LICENSE.
+
+Leteo is an independent product and is not affiliated with or endorsed by the
+Engram project or Gentleman Programming.
+
+Rust dependency notices and source links are generated in
+THIRD_PARTY_LICENSES.html from Cargo.lock. Leteo does not modify the MPL-2.0
+dependency sources distributed through crates.io.

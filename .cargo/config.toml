@@ -1,0 +1,100 @@
+# Not counting the bytes SQLite allocates, since nobody reads the count.
+#
+# With `SQLITE_DEFAULT_MEMSTATUS` on — which is the default, and what
+# `libsqlite3-sys` compiles — every allocation and every free updates a set of
+# global counters under a mutex, so that `sqlite3_status()` can report them.
+# Leteo never calls it: no `sqlite3_status`, no `soft_heap_limit`, no memory
+# pragma anywhere in the tree.
+#
+# What it costs, measured by building the same commit twice and interleaving 35
+# runs of each binary against a copy of a real store, with two controls:
+#
+#   leteo search <ten-word question>  34.4 ms -> 32.1 ms   (-2.3 of 29.2 of work)
+#   leteo search bm25                 10.5 ms ->  9.8 ms   (-0.7 of  5.3 of work)
+#   leteo --version                    5.2 ms ->  5.1 ms   (the control)
+#
+# Around 8% of the work of a search and 11% of a short one, and it is uniform:
+# it is the per-allocation cost of every query, not a property of any one of
+# them. The control moving 1.9% is the measurement's own noise, which is why
+# both cases and the control are run in the same interleave.
+#
+# `SQLITE_ENABLE_MEMORY_MANAGEMENT` was measured at the same time on the same
+# suspicion — it adds LRU bookkeeping to the page cache — and is worth nothing:
+# -1.1% on the question against -6.1% on the control it should not have moved.
+# It stays.
+#
+# Cargo applies this only when the variable is not already set, so a build that
+# wants the stock flags can say so without editing this file.
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
+
+# Loading the DLLs a hook does not touch, at the moment it touches them.
+#
+# Every hook and every prompt pays for starting this process, and about three
+# milliseconds of that start was the loader: the binary named 24 DLLs against a
+# hello-world's 11, and the extra ones are the network, crypto, COM and shell
+# stack. A `leteo hook user-prompt-submit` opens SQLite, reads, writes one row
+# and exits without ever touching most of them.
+#
+# `/DELAYLOAD` makes the loader resolve one of these on the first call into it
+# rather than at process start. Measured on this machine, interleaving 30 runs
+# of each binary:
+#
+#   leteo --version                7.49 ms -> 4.80 ms   (-2.69, 36%)
+#   leteo hook user-prompt-submit 13.64 ms -> 11.10 ms  (-2.54, 19%)
+#   leteo hook session-start      14.90 ms -> 12.06 ms  (-2.84, 19%)
+#
+# `Cargo.toml` weighed this and did not take it, on the grounds that it "buys a
+# millisecond or two with a link-time trick that fails at the first socket if it
+# is set up wrong". Half of that was right, and the half that was right is the
+# reason `ws2_32.dll` is not on this list.
+#
+# **ws2_32 must load eagerly.** Delay-loading it builds cleanly, passes a manual
+# sync against a real HTTPS server, and then crashes the test binary with
+# STATUS_ACCESS_VIOLATION the first time tokio drives a socket
+# (`cloud::autosync::tests::a_page_that_arrives_out_of_order_is_refused_rather_than_half_applied`).
+# Delay-loaded it was worth 0.15 ms of the 2.7 and the whole of the risk, so it
+# stays where it is. That failure is only reachable by running the code — it
+# links, and a hook never opens a socket, so nothing short of the suite says so.
+#
+# The seven that remain are each exercised on purpose after every change to this
+# file, because a delay-loaded DLL that is never called is a bug that waits:
+#
+#   shell32, userenv, combase   `leteo context` with no LETEO_DATA_DIR, which
+#                               resolves the data directory through the shell's
+#                               known folders
+#   bcrypt, advapi32            `leteo save`, which draws a random sync id
+#   crypt32                     `leteo cloud sync` against an https:// server,
+#                               far enough to complete a TLS handshake and be
+#                               answered — a DNS failure does not reach it
+#   user32                      loaded by the above; nothing here calls it
+#                               directly, and it is on the list because it was
+#                               in the import table for something that does
+#
+# All seven ship with Windows and live in System32, so "the DLL is missing" is
+# not among the ways this fails.
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+  "-C", "link-arg=delayimp.lib",
+  "-C", "link-arg=/DELAYLOAD:crypt32.dll",
+  "-C", "link-arg=/DELAYLOAD:combase.dll",
+  "-C", "link-arg=/DELAYLOAD:shell32.dll",
+  "-C", "link-arg=/DELAYLOAD:userenv.dll",
+  "-C", "link-arg=/DELAYLOAD:user32.dll",
+  "-C", "link-arg=/DELAYLOAD:advapi32.dll",
+  "-C", "link-arg=/DELAYLOAD:bcrypt.dll",
+]
+
+# The same, for Windows on ARM. Not measured there — no machine to measure on —
+# but it is the same loader and the same DLLs.
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+  "-C", "link-arg=delayimp.lib",
+  "-C", "link-arg=/DELAYLOAD:crypt32.dll",
+  "-C", "link-arg=/DELAYLOAD:combase.dll",
+  "-C", "link-arg=/DELAYLOAD:shell32.dll",
+  "-C", "link-arg=/DELAYLOAD:userenv.dll",
+  "-C", "link-arg=/DELAYLOAD:user32.dll",
+  "-C", "link-arg=/DELAYLOAD:advapi32.dll",
+  "-C", "link-arg=/DELAYLOAD:bcrypt.dll",
+]

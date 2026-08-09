@@ -1,0 +1,17 @@
+{
+  "name": "leteo",
+  "displayName": "Leteo Persistent Memory",
+  "version": "0.1.0",
+  "description": "Persistent memory for AI coding agents. Survives across sessions and compactions.",
+  "shortDescription": "Persistent memory with session tracking, compaction recovery, and a save protocol.",
+  "author": {
+    "name": "Alexis Sanabria Lopez"
+  },
+  "homepage": "https://github.com/asanabrial/leteo",
+  "repository": "https://github.com/asanabrial/leteo",
+  "license": "MIT",
+  "category": "Productivity",
+  "keywords": ["memory", "persistence", "sessions", "context"],
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

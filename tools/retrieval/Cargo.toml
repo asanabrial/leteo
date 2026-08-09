@@ -1,0 +1,17 @@
+[package]
+name = "leteo-retrieval"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "How well a real store answers questions about what it holds"
+
+# Its own workspace, like the mutation bench, so neither is built as part of
+# the crate they measure.
+[workspace]
+
+[dependencies]
+# By path and with the `measure` feature, which is the whole point: the ranking
+# statement comes from the product rather than being written again here.
+leteo = { path = "../..", features = ["measure"] }
+rand = "0.10.2"
+rusqlite = { version = "0.39.0", features = ["bundled-full"] }

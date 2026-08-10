@@ -109,6 +109,8 @@ store — nudges it. That is the one line you are meant to notice.
 The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
 with you, and `leteo delete` means it.
 
+![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
+
 ## MCP
 
 A 22-tool MCP server over standard input/output, run directly or written into a

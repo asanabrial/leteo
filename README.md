@@ -34,6 +34,19 @@ on cloud replication for a project you name.
 **Works with:** Claude Code · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
 VS Code Copilot · Kilo Code · Qwen · Kiro · Antigravity · Pi
 
+## What it feels like
+
+You never prompt it to remember. That is the whole idea. Your agent opens each
+session already holding what the project knows, and saves as it goes while you
+work — a bug fixed, a convention agreed, something non-obvious learned. Those
+notes are written for its future self rather than for you, so they stay out of
+the conversation.
+
+The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
+with you, and `leteo delete` means it.
+
+![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
+
 ## Install
 
 ```bash
@@ -89,27 +102,6 @@ leteo setup claude-code --uninstall
 That takes out the MCP entry, the lifecycle hooks and the protocol block, and
 nothing else — other servers, other tools' hooks and your own notes stay where
 they are.
-
-## What it feels like
-
-You never prompt it to remember. That is the whole idea.
-
-After `leteo setup`, your agent opens each session already holding what the
-project knows: the recent decisions, what the last sessions were for, anything
-you pinned. You start where you left off instead of explaining yourself again.
-
-While you work, it saves as it goes — a bug fixed, a convention agreed,
-something non-obvious learned. Those are written for its future self rather than
-for you, so they stay out of the conversation. When a new memory looks like it
-contradicts an older one, Leteo says so and the agent settles it quietly.
-
-If a session goes a long time with nothing kept, Sardi — the cat who tends the
-store — nudges it. That is the one line you are meant to notice.
-
-The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
-with you, and `leteo delete` means it.
-
-![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
 
 ## MCP
 

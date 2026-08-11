@@ -79,8 +79,13 @@ and macOS. On anything else, build from source, which is the one route that
 needs Rust:
 
 ```bash
-cargo install --git https://github.com/asanabrial/leteo
+cargo install leteo
 ```
+
+That builds the released version from [crates.io](https://crates.io/crates/leteo).
+To build whatever is on `main` instead, including work that has not been
+released yet, ask for the repository:
+`cargo install --git https://github.com/asanabrial/leteo`.
 
 ## Uninstall
 

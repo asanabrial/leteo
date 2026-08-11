@@ -33,6 +33,24 @@ before any of it.
    long ones, and the widened retry found the memory every time, at rank one
    every time.
 
+   **The third stage's floor is dimensionless, and that is not a defect to be
+   tuned away.** It knows what an ordinary match looks like for this query; it
+   does not know whether the project holds an answer. Asked questions belonging
+   to another project, it still speaks 90.2% of the time, against 89.2% for
+   questions of its own — the control speaks *more*. Three alternatives were
+   swept over their whole useful range against 296 home and 399 foreign prompts,
+   scoped as reads always are to one project's memories: an absolute bm25 cut,
+   a minimum distance below the median, and the shipped ratio itself. None
+   separates the two by enough to be worth its cost. The widest lead the score
+   ever gives home is 4.8 points, which is about 1.4 standard errors at those
+   sample sizes and was picked out of dozens of thresholds, and reaching it
+   costs 17 points of real coverage. Word coverage does separate them — twelve
+   points, at 3.4 standard errors, which is why the widened stage above leans on
+   it — but only at 4.1 points of coverage per point of separation. Do not
+   re-tune these floors expecting the control to fall; the finding is that
+   nothing lexical is priced within reach, and the answers say `partial` because
+   that is the honest thing to put on them.
+
 4. **A widened answer says it is widened, and an empty one says why it is
    empty.** Results that matched only some of the words carry `partial: true`,
    and the answer carries a hint saying so. An empty answer has two possible

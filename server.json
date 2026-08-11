@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.asanabrial/leteo",
+  "title": "Leteo",
+  "description": "Persistent memory for AI coding agents: one Rust binary, one local SQLite database.",
+  "repository": {
+    "url": "https://github.com/asanabrial/leteo",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "leteo",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "named",
+          "name": "--tools",
+          "value": "agent",
+          "description": "Which tools the server exposes. `agent` is the nineteen an agent reaches for while it works; the three that change or count the whole store sit behind `admin`."
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "LETEO_DATA_DIR",
+          "description": "Where the database lives. Defaults to ~/.leteo, and only needs setting for a store kept somewhere else — the server is started by the agent rather than by a person, so it cannot inherit a shell's environment.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}

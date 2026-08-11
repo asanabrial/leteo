@@ -717,18 +717,7 @@ impl Store {
         // see `RECALL_SAMPLE`, where the measurement is. The median of three is
         // not a distribution, and the median of a hundred is a different query.
         let sample = RECALL_SAMPLE as i64;
-        // Four columns, not the whole row: these are ranked and mostly thrown
-        // away, and their bodies are never read.
-        let mut statement = self.connection.prepare(&format!(
-            "SELECT o.id, ifnull(o.sync_id, '') AS sync_id, o.type, o.title,
-                    bm25(observations_fts, {BM25_WEIGHTS}) AS rank
-             FROM observations_fts fts CROSS JOIN observations o ON o.id = fts.rowid
-             WHERE observations_fts MATCH ?1 AND o.deleted_at IS NULL
-               AND LOWER(o.project) = ?2
-               AND o.type <> 'session_summary'
-               AND trim(ifnull(o.title, '')) <> ''
-             ORDER BY rank LIMIT ?3"
-        ))?;
+        let mut statement = self.connection.prepare(&prompt_recall_sql())?;
         let scored = statement
             .query_map(params![terms, project, sample], |row| {
                 Ok((
@@ -806,6 +795,29 @@ impl Store {
     }
 }
 
+/// The statement the prompt hint ranks with.
+///
+/// Four columns, not the whole row: these are ranked and mostly thrown away,
+/// and their bodies are never read.
+///
+/// A function rather than a literal inside `prompt_matches` for the reason
+/// `matching_observations_sql` is one — the retrieval measurement under
+/// `tools/` asks what this stage would do under a different floor, and a
+/// harness holding its own copy of the SQL measures a query the product does
+/// not issue. That has already cost an afternoon once.
+pub(crate) fn prompt_recall_sql() -> String {
+    format!(
+        "SELECT o.id, ifnull(o.sync_id, '') AS sync_id, o.type, o.title,
+                bm25(observations_fts, {BM25_WEIGHTS}) AS rank
+         FROM observations_fts fts CROSS JOIN observations o ON o.id = fts.rowid
+         WHERE observations_fts MATCH ?1 AND o.deleted_at IS NULL
+           AND LOWER(o.project) = ?2
+           AND o.type <> 'session_summary'
+           AND trim(ifnull(o.title, '')) <> ''
+         ORDER BY rank LIMIT ?3"
+    )
+}
+
 /// Whether a candidate beats the bar for being named.
 ///
 /// Named rather than inlined so the rule can be tested on numbers instead
@@ -815,7 +827,7 @@ impl Store {
 ///
 /// The bar is relative and the scores are negative, so "better" is more
 /// negative and a *smaller* margin is a looser bar.
-pub(super) fn worth_naming(rank: f64, median: f64, already_in_the_opening_block: bool) -> bool {
+pub(crate) fn worth_naming(rank: f64, median: f64, already_in_the_opening_block: bool) -> bool {
     let margin = if already_in_the_opening_block {
         RECALL_MARGIN
     } else {

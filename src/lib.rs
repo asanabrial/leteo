@@ -78,9 +78,27 @@ pub mod store;
 /// issue measures nothing. See `store::search::matching_observations_sql`.
 #[cfg(feature = "measure")]
 pub mod measure {
-    pub use crate::memory::normalize::prompt_terms;
+    pub use crate::memory::normalize::{fts_any_of, fts_terms, fts_within_project, prompt_terms};
     pub use crate::store::BM25_WEIGHTS;
     pub use crate::store::search::{FTS_EXACT, FTS_STEMMED, matching_observations_sql};
+    // The prompt hint's own statement, its sample depth and its two floors.
+    //
+    // Here for the same reason the ranking statement is: "would a different
+    // floor separate a store that holds the answer from one that does not" can
+    // only be asked of the rule the product applies. Read from the constants
+    // rather than copied, so a floor that changes changes the measurement too.
+    pub const RECALL_SAMPLE: usize = crate::store::RECALL_SAMPLE;
+    pub const MIN_RECALL_SAMPLE: usize = crate::store::MIN_RECALL_SAMPLE;
+    pub const RECALL_MARGIN: f64 = crate::store::RECALL_MARGIN;
+    pub const RECALL_MARGIN_UNSEEN: f64 = crate::store::RECALL_MARGIN_UNSEEN;
+
+    pub fn prompt_recall_sql() -> String {
+        crate::store::search::prompt_recall_sql()
+    }
+
+    pub fn worth_naming(rank: f64, median: f64, already_in_the_opening_block: bool) -> bool {
+        crate::store::search::worth_naming(rank, median, already_in_the_opening_block)
+    }
 }
 pub mod sync;
 pub mod timestamp;

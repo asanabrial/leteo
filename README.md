@@ -365,6 +365,12 @@ This file is the user-facing guide. What the system *guarantees*, and why, is in
 | [`specs/cli.md`](openspec/specs/cli.md) | the command line and what its answers explain |
 | [`specs/replication.md`](openspec/specs/replication.md) | the optional PostgreSQL peer |
 
+Longer write-ups of individual measurements live in [`docs/`](docs/). The first
+is [*there was nothing worth tuning*](docs/nothing-worth-tuning.md): the third
+search stage answers questions belonging to another project 90.2% of the time,
+which is *more* often than it answers its own, and four rules swept across their
+whole range say that is not a threshold anybody can fix.
+
 ## Environment
 
 **None of these has to be set.** This is an inventory of every variable the

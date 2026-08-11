@@ -119,6 +119,12 @@ a profile or a single tool, and `--project` fixes the project for the process.
 Alongside it there is a JSON command line, an interactive terminal UI, and
 setup support for twelve MCP clients — the list at the top of this page.
 
+Its name in the [MCP Registry](https://registry.modelcontextprotocol.io) is
+`mcp-name: io.github.asanabrial/leteo`, which is what [`server.json`](server.json)
+publishes. The line is written out rather than hidden in a comment because that
+is what the registry reads to believe this repository owns the crate, and
+crates.io strips HTML comments when it renders this file.
+
 ## What you type
 
 Rarely anything: the saving and the recalling happen without you. This is the

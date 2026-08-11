@@ -307,7 +307,11 @@ useful part out of a context window has failed even if every field is right.
    still the agent's, because `mem_judge` replaces a verdict wholesale, reason
    included, so a wrong one is corrected rather than lived with.
 
-   The verdict is expected in the turn the candidate is reported. A pair left
+   The verdict is expected in the turn the candidate is reported, and
+   `mem_save`'s own description says so. That sentence used to live only in the
+   server's `instructions` block, which not every client shows: an agent reading
+   the tool alone got a reply with `candidates` in it and no way to know they
+   were work. A pair left
    unjudged is not deferred, it is dropped — this tool and a session opening are
    the only two places a `judgment_id` is ever handed out, so between them
    nothing raises the pair again. Which is why the second of those exists: see

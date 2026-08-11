@@ -53,7 +53,20 @@ impl LeteoMcpServer {
 impl LeteoMcpServer {
     #[tool(
         name = "mem_save",
-        description = "Save an observation to persistent memory. Without session_id, uses a stable manual-save session for the detected project.",
+        // The judgment sentence is here and not only in the server's
+        // `instructions`, which is where it used to live alone. A client that
+        // does not surface that block hands the agent a reply with `candidates`
+        // in it and nothing that says they have to be settled — and an
+        // unjudged pair is dropped, not deferred, so the cost of not knowing is
+        // silent. Continued with `\` rather than `\n`, for the reason written
+        // above `mem_search`.
+        description = "Save an observation to persistent memory — a decision, a fix, a \
+                       discovery, a convention — as it happens rather than at the end. \
+                       Without session_id, uses a stable manual-save session for the \
+                       detected project. A reply carrying `candidates` means this may \
+                       contradict memories already held: settle each one with mem_judge in \
+                       the same turn, because a pair left unjudged is dropped rather than \
+                       deferred.",
         annotations(
             title = "Save Memory",
             read_only_hint = false,

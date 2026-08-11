@@ -51,7 +51,7 @@ use crate::{
 /// limit of matching words rather than meanings, not of this number — a third
 /// of the misses are a prompt written in Spanish against a memory written in
 /// English, which no threshold can fix.
-const RECALL_MARGIN: f64 = 1.6;
+pub(crate) const RECALL_MARGIN: f64 = 1.6;
 
 /// The same test, for a memory the session did not open with.
 ///
@@ -60,7 +60,7 @@ const RECALL_MARGIN: f64 = 1.6;
 /// further back is the only way it hears of that memory at all. The measurement
 /// and the rows that rule out simply lowering `RECALL_MARGIN` instead are in
 /// `prompt_matches`.
-const RECALL_MARGIN_UNSEEN: f64 = 1.2;
+pub(crate) const RECALL_MARGIN_UNSEEN: f64 = 1.2;
 
 /// How much better than the ordinary a memory must score to be proposed as
 /// something a save might contradict.
@@ -152,7 +152,7 @@ pub(crate) const RECALL_SAMPLE: usize = 24;
 /// question. Past a dozen words, omitting one relaxes almost nothing anyway.
 const MAX_WIDENED_TERMS: usize = 12;
 /// Fewest matches worth calling a distribution.
-const MIN_RECALL_SAMPLE: usize = 3;
+pub(crate) const MIN_RECALL_SAMPLE: usize = 3;
 
 /// Every column an [`Observation`] is built from.
 ///

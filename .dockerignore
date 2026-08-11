@@ -5,6 +5,6 @@ target
 .env
 tests
 *.md
-THIRD_PARTY_LICENSES.html
+docs
 docker-compose.yml
 Dockerfile

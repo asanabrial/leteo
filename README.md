@@ -120,6 +120,10 @@ the release binary for your platform, checks it against the same published
 }
 ```
 
+`bunx @asanabrial/leteo mcp` works the same way — it is the same package from
+the same registry, and the wrapper depends on nothing but what both runtimes
+already have.
+
 The npm version *is* the release tag, so pinning one in npm pins the binary it
 fetches — a guard holds the two numbers together, because published one behind
 it would quietly serve the previous release to everybody arriving this way. It

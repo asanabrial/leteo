@@ -387,45 +387,80 @@ fn an_empty_full_text_index_is_reported_as_unhealthy() {
     );
 }
 
+/// A writer that meets a held lock waits for it instead of failing.
+///
+/// Two writers is the normal case: the MCP server, the HTTP server, the hooks
+/// and the autosync thread all open the same file. With a deferred transaction
+/// the second one used to fail immediately with "database is locked" — SQLite
+/// refuses to run the busy handler for a reader that is upgrading, so the
+/// five-second `busy_timeout` never applied. `write_transaction` asks for
+/// `IMMEDIATE`, which is what makes the handler run.
+///
+/// # Why the lock is held for a fixed time rather than fought over
+///
+/// This used to run two threads writing as fast as they could — one bounded at
+/// 600 observations, the other unbounded until told to stop — and assert that
+/// neither ever saw `DatabaseBusy`. That asserts something the code cannot
+/// promise. Under sustained contention the wait for a lock is a property of the
+/// machine, and a loaded runner can exceed five seconds; when it does, SQLite
+/// returns busy *correctly* and the test reads it as the promise broken. It
+/// failed exactly that way in CI on a commit that touched no Rust at all, then
+/// passed on a re-run of the same commit — the same shape of mistake as the
+/// timing guards in `Store::open`, which is why that one measures
+/// `budget_left_after_opening` rather than a stopwatch.
+///
+/// So the contention is arranged instead of provoked: one connection holds the
+/// write lock for a known interval, and the second writer must come through it.
+/// A slow machine makes the waiting longer, which is the direction that keeps
+/// this true rather than the direction that breaks it.
 #[test]
 fn a_second_writer_waits_for_the_lock_instead_of_failing() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
-    // Two writers is the normal case: the MCP server, the HTTP server, the
-    // hooks and the autosync thread all open the same file. With a deferred
-    // transaction the second one used to fail immediately with "database is
-    // locked" — SQLite refuses to run the busy handler for a reader that is
-    // upgrading, so the five-second busy_timeout never applied.
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("leteo.db");
     let mut one = Store::open(StoreConfig::new(path.clone())).unwrap();
-    let mut two = Store::open(StoreConfig::new(path)).unwrap();
     one.create_session("shared", "Leteo", "C:/repo").unwrap();
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let other_stop = Arc::clone(&stop);
-    let other = std::thread::spawn(move || {
-        let mut index = 0_u32;
-        while !other_stop.load(Ordering::Relaxed) {
-            two.add_observation(observation(
-                "shared",
-                "b",
-                &format!("second writer {index}"),
-            ))
-            .expect("the second writer waits for the lock");
-            index += 1;
-        }
-        index
+    // Opened before the lock is taken, because `Store::open` spends part of the
+    // same budget waiting and would arrive at the write with less of it left
+    // than a real second process has.
+    let mut two = Store::open(StoreConfig::new(path.clone())).unwrap();
+
+    // Long enough that the writer is certainly inside `add_observation` before
+    // the lock is released, and far short of the five seconds it is allowed to
+    // wait, so the margin absorbs a stall rather than being spent by one.
+    let held = Duration::from_secs(1);
+
+    let holder = rusqlite::Connection::open(&path).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let (about_to_write, waiting) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        about_to_write.send(()).unwrap();
+        let start = Instant::now();
+        let outcome = two.add_observation(observation("shared", "b", "second writer"));
+        (outcome, start.elapsed())
     });
 
-    for index in 0..600 {
-        one.add_observation(observation("shared", "a", &format!("first writer {index}")))
-            .expect("the first writer waits for the lock");
-    }
-    stop.store(true, Ordering::Relaxed);
-    let contended = other.join().unwrap();
-    assert!(contended > 0, "the two writers never actually overlapped");
+    waiting.recv().unwrap();
+    std::thread::sleep(held);
+    holder.execute_batch("ROLLBACK").unwrap();
+    drop(holder);
+
+    let (outcome, waited) = writer.join().unwrap();
+    outcome.expect("a writer that meets a held lock waits for it");
+
+    // And it reached the lock while it was held, rather than tidily after it
+    // was released — without this the assertion above would pass on a store
+    // that never waited for anything. A tenth of the hold, because what is
+    // being ruled out is "did not block at all".
+    assert!(
+        waited >= held / 10,
+        "the second writer returned in {waited:?}, so it never met the lock \
+         and this checked nothing"
+    );
 }
 
 #[test]

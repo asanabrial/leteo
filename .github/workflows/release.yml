@@ -13,6 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # The changelog's newest section carries the word "unreleased" from the
+      # moment it is written until somebody dates it, and the only moment that
+      # matters is this one — a tag is pushed and the section describing it
+      # still says it has not happened. Nothing would notice: the release would
+      # publish, and the file it points people at would disagree with it.
+      #
+      # It runs before `cargo about` and before five binaries are built, so the
+      # thing that fails is the cheapest job rather than the twelfth minute.
+      - name: The changelog names this release, and dates it
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -qE "^## \[${version}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [${version}] - YYYY-MM-DD' section."
+            echo "It currently opens with:"
+            grep -m1 '^## ' CHANGELOG.md
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:

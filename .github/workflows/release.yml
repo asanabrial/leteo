@@ -184,75 +184,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # The three registries a tag should reach on its own.
-  #
-  # Every one of them was done by hand for 0.1.0, and the cost showed: 0.1.1
-  # went out with crates.io and the MCP registry still describing 0.1.0, because
-  # publishing is four separate acts and only the first is the one anybody
-  # remembers. A release is either the whole thing or it is a set of registries
-  # quietly disagreeing about what Leteo is.
-  #
-  # All three authenticate with GitHub's OIDC rather than a stored token. That
-  # is not only tidier: npm revoked every classic token in November 2025, and a
-  # long-lived credential in a repository secret is the thing those revocations
-  # were about. `id-token: write` is what lets a job prove which workflow of
-  # which repository it is, and each registry trades that for a few minutes of
-  # access.
-  #
-  # They run after `publish`, so the GitHub release exists before anything
-  # points at it: the npm wrapper resolves `v<version>` against these very
-  # release assets, and a package published first is a package that 404s for
-  # however long the build takes.
-
-  crates-io:
+  # Everything a tag should reach beyond GitHub, in its own file so that a
+  # release which already happened can still be asked to publish — see the note
+  # at the top of `publish-registries.yml`. After `publish`, so that nothing
+  # points at release assets that do not exist yet.
+  registries:
     needs: publish
-    runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rust-lang/crates-io-auth-action@v1
-        id: auth
-      - run: cargo publish --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-
-  npm:
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      # Trusted publishing needs npm 11.5.1 and Node 22.14 at the least, and
-      # asks for the registry to be named here rather than in an .npmrc.
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-      - name: The versions trusted publishing needs
-        run: node --version && npm --version
-      # `npm/` and not the repository root: the wrapper is a subdirectory on
-      # purpose, kept out of the crate by `exclude` in Cargo.toml.
-      - run: npm publish --access public
-        working-directory: npm
-
-  mcp-registry:
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install mcp-publisher
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
-      # The registry believes this repository owns `io.github.asanabrial/leteo`
-      # because the OIDC token says which repository the job is running in.
-      - run: ./mcp-publisher login github-oidc
-      - run: ./mcp-publisher publish
+    uses: ./.github/workflows/publish-registries.yml
+    with:
+      ref: ${{ github.ref_name }}

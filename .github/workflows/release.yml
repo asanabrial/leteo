@@ -30,7 +30,25 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          # The two Linux builds pin an Ubuntu rather than taking `latest`,
+          # because on glibc the build host chooses who can run the result: a
+          # binary links the versioned symbols of the glibc it was built
+          # against and runs on that version or newer, never older.
+          #
+          # `ubuntu-latest` became 24.04, so v0.1.0 asked for GLIBC 2.38 and
+          # 2.39 and would not start on Debian 12 or Ubuntu 22.04 — current
+          # Debian stable, and an Ubuntu supported into 2027. Measured on
+          # `debian:12`: "version `GLIBC_2.38' not found", after the archive
+          # had downloaded and extracted perfectly. Nobody chose that floor; it
+          # moved when GitHub moved the label, and it would have moved again.
+          #
+          # 22.04 carries glibc 2.35, and the binary built there turns out to
+          # ask for no more than 2.34 — measured with `objdump -T`, then run:
+          # `leteo --version` answers on Rocky Linux 9 (2.34), Ubuntu 22.04
+          # (2.35) and Debian 12 (2.36), the last being where the released
+          # binary refuses to start. Pinned, so the next move of that floor is
+          # a commit somebody makes rather than a Tuesday.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             executable: leteo
             archive: tar.gz
@@ -55,7 +73,11 @@ jobs:
             target: aarch64-apple-darwin
             executable: leteo
             archive: tar.gz
-          - os: ubuntu-24.04-arm
+          # The sibling of the note above, and the reason it is a note rather
+          # than a one-line change: arm64 Linux had the same floor for the same
+          # reason, and fixing only the target somebody happened to report
+          # would have left half the Linux users where they were.
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             executable: leteo
             archive: tar.gz

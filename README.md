@@ -42,10 +42,12 @@ work — a bug fixed, a convention agreed, something non-obvious learned. Those
 notes are written for its future self rather than for you, so they stay out of
 the conversation.
 
+![A terminal: a new session asks what this project knows and gets back three memories an agent saved on its own — a connection pool that runs out at 20 workers, money kept as integer cents, Stripe retrying webhooks three times — then searches them mid-task](assets/leteo-loop.gif)
+
 The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
 with you, and `leteo delete` means it.
 
-![A terminal: a new session asks Leteo what this project knows, and gets back three memories an agent saved on its own — a connection pool that runs out at 20 workers, money kept as integer cents, Stripe retrying webhooks three times — then searches them mid-task](assets/leteo-loop.gif)
+![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
 
 ## Install
 
@@ -99,8 +101,9 @@ cargo install leteo
 ```
 
 That builds the released version from [crates.io](https://crates.io/crates/leteo).
-To build whatever is on `main` instead, including work that has not been
-released yet, ask for the repository:
+`cargo binstall leteo` fetches the same release binary instead of compiling it,
+which is the faster half of that sentence. To build whatever is on `main`
+instead, including work that has not been released yet, ask for the repository:
 `cargo install --git https://github.com/asanabrial/leteo`.
 
 ### Without installing anything

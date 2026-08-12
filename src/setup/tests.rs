@@ -1878,3 +1878,54 @@ fn files_naming_leteo(root: &Path) -> Vec<String> {
     found.sort();
     found
 }
+
+/// A binary npm is holding is not one to write into a configuration.
+///
+/// The npm wrapper leaves the real binary inside the package it downloaded it
+/// for, and `setup` writes the path of whatever binary is running. Together
+/// that puts `~/.npm/_npx/<hash>/node_modules/@asanabrial/leteo/vendor/…` into
+/// an agent's configuration, which `npm cache clean` deletes and the next
+/// version replaces. What follows is silent: the MCP server stops starting and
+/// every hook fails without saying so, because that is what hooks do.
+///
+/// Measured before the guard existed, in a container: `setup claude-code
+/// --hooks` through the wrapper wrote
+/// `"command": "/home/u/npm/vendor/v0.1.1-x86_64-unknown-linux-gnu-leteo"`.
+#[test]
+fn setup_refuses_a_binary_the_package_manager_is_holding() {
+    let temp = TempDir::new().unwrap();
+    let managed = temp
+        .path()
+        .join(".npm")
+        .join("_npx")
+        .join("1a19a25e")
+        .join("node_modules")
+        .join("@asanabrial")
+        .join("leteo")
+        .join("vendor")
+        .join("leteo");
+    let held_by_npm = SetupOptions {
+        executable: Some(managed.clone()),
+        ..options(&temp)
+    };
+
+    let error = setup("claude-code", &held_by_npm)
+        .expect_err("a path npm owns is refused")
+        .to_string();
+    assert!(
+        error.contains("npm is holding") && error.contains("npx"),
+        "the refusal names what is wrong and what to do instead: {error}"
+    );
+
+    // And nothing was written on the way to refusing, because a setup that
+    // half-configures an agent and then errors is worse than one that does not
+    // start: the file it left behind is the one nobody knows to look at.
+    assert!(
+        !temp.path().join(".claude.json").exists(),
+        "the refusal came before any write"
+    );
+
+    // The ordinary path is untouched — this must not refuse a binary somebody
+    // installed, which is every other run.
+    setup("claude-code", &options(&temp)).expect("an installed binary still configures");
+}

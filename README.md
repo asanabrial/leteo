@@ -87,6 +87,28 @@ To build whatever is on `main` instead, including work that has not been
 released yet, ask for the repository:
 `cargo install --git https://github.com/asanabrial/leteo`.
 
+### As a plugin
+
+Claude Code takes Leteo as a plugin, which registers the same MCP entry and the
+same five lifecycle hooks `leteo setup` writes, through Claude Code's own plugin
+machinery:
+
+```text
+/plugin marketplace add asanabrial/leteo
+/plugin install leteo@leteo
+```
+
+The plugin carries configuration, not the binary. Install `leteo` by one of the
+routes above first: the MCP entry and every hook the plugin registers run
+`leteo` from `PATH`, so without it they are five commands that are not there.
+What the plugin replaces is the setup step, and removing it takes those entries
+away again.
+
+Codex has the same bundle under [`plugin/codex`](plugin/codex), and there it is
+the only route to the hooks — `leteo setup codex` registers the MCP server and
+no hooks at all, which leaves Codex holding the tools with nothing telling it
+when to reach for them.
+
 ## Uninstall
 
 ```powershell

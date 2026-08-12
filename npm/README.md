@@ -33,8 +33,8 @@ npx leteo tui
 npx leteo search "connection pool"
 ```
 
-The npm version is the release tag, so `npx leteo@0.1.0` runs the 0.1.0 binary
-and nothing else.
+The npm version *is* the release tag, so pinning a version here pins the binary
+it fetches, and nothing else.
 
 ## What this package is not
 

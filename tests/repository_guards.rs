@@ -636,3 +636,65 @@ fn the_npm_wrapper_ships_this_version_for_the_targets_this_repository_builds() {
         "npm/bin/leteo.js offers {offered:?} and release.yml builds {built:?}"
     );
 }
+
+/// Every manifest in the repository publishes the version this crate is.
+///
+/// The number is written in six places and read by six different things:
+/// `Cargo.toml` for crates.io, `server.json` twice for the MCP registry,
+/// `npm/package.json` for the wrapper — which turns it into a release URL —
+/// and the marketplace and plugin manifests, which are what decides whether an
+/// installed plugin ever receives an update.
+///
+/// None of them can see the others. A release that bumps the crate and forgets
+/// `server.json` publishes a registry entry pointing at the previous version;
+/// one that forgets a plugin manifest leaves every installed plugin on the
+/// hooks of the release before, silently, because Claude Code only offers an
+/// update when that field moves.
+///
+/// So they are held to `CARGO_PKG_VERSION`, which is the one a build already
+/// reads. Adding a seventh manifest and not adding it here is the only way to
+/// fall out of this, and that is a visible act rather than a forgotten one.
+#[test]
+fn every_manifest_publishes_the_version_this_crate_is() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let crate_version = env!("CARGO_PKG_VERSION");
+
+    // How many `"version"` lines each file is expected to carry, because a
+    // check that finds the first and stops would have passed `server.json`
+    // while its second one said something else.
+    let manifests = [
+        ("server.json", 2),
+        ("npm/package.json", 1),
+        (".claude-plugin/marketplace.json", 1),
+        ("plugin/claude-code/.claude-plugin/plugin.json", 1),
+        ("plugin/codex/.codex-plugin/plugin.json", 1),
+    ];
+
+    for (relative, expected_count) in manifests {
+        let path = root.join(relative);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let published: Vec<String> = text
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                line.strip_prefix("\"version\":")
+                    .map(|rest| rest.trim().trim_matches(&[' ', '"', ','][..]).to_owned())
+            })
+            .collect();
+
+        assert_eq!(
+            published.len(),
+            expected_count,
+            "{relative} carries {} version fields and this expects {expected_count}; \
+             if one was added it needs checking too",
+            published.len()
+        );
+        for version in published {
+            assert_eq!(
+                version, crate_version,
+                "{relative} publishes {version} and the crate is {crate_version}"
+            );
+        }
+    }
+}

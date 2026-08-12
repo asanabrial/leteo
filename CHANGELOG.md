@@ -2,6 +2,50 @@
 
 All notable changes to Leteo are documented in this file.
 
+## [0.1.1] - unreleased
+
+A distribution release. The binary does what 0.1.0's did; what changed is who
+can run it and how many ways there are to get it.
+
+### Fixed
+
+- **The Linux builds run on Debian 12 and Ubuntu 22.04 again.** They were built
+  on `ubuntu-latest`, which became 24.04, and a glibc binary runs on the version
+  it was built against or newer and never older — so 0.1.0 asked for GLIBC 2.38
+  and would not start on current Debian stable, after downloading and extracting
+  perfectly. Both Linux targets now pin `ubuntu-22.04`, and the result asks for
+  no more than GLIBC 2.34: checked running on Rocky Linux 9, Ubuntu 22.04 and
+  Debian 12. The floor is written in the workflow and in the README rather than
+  inherited from a label that moves.
+- **The Codex plugin bundle registers the hooks the installer writes.** Its
+  `session-start` matched an extra `resume`, so a resumed session was handed an
+  opening block it already had, and its `SubagentStop` carried a matcher the
+  installer leaves empty. The guard that holds the bundles to `HOOK_EVENTS`
+  compared events and timeouts but not matchers — which is the whole of what
+  separates `session-start` from `post-compaction` — and now compares those too.
+
+### Added
+
+- **`npx leteo mcp`.** A zero-dependency npm wrapper that fetches the release
+  binary for your platform, checks it against the published `SHA256SUMS`, and
+  hands it every argument. It is a way in rather than the way to run Leteo: a
+  binary on your `PATH` starts without a download.
+- **The plugin marketplace is documented.** `/plugin marketplace add
+  asanabrial/leteo` has worked since before 0.1.0 and appeared in no file in
+  the repository. The Claude Code and Codex bundles now have READMEs, including
+  the two things that bite: installing the plugin *and* running `leteo setup
+  --hooks` registers every event twice, and Codex does not fire hooks until the
+  directory is trusted.
+
+### Internal
+
+- The version is written in six manifests and a guard now holds all six to the
+  crate's, because none of them can see the others and a plugin manifest left
+  behind means installed plugins never offer an update.
+- A test that asserted two racing writers never see `DatabaseBusy` was
+  measuring the runner rather than the store, and failed in CI on a commit that
+  touched no Rust. It arranges the contention now instead of fighting for it.
+
 ## [0.1.0] - 2026-08-09
 
 First release. Everything below is what this version does, rather than what

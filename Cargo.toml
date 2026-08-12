@@ -16,6 +16,28 @@ rust-version = "1.97"
 # they have no reason to make.
 exclude = ["npm"]
 
+# Where `cargo binstall` finds the release binary, said rather than guessed.
+#
+# It already finds it: measured against the published 0.1.2 with no metadata at
+# all, three runs out of three reported "has been downloaded from github.com".
+# binstall's built-in patterns happen to include the shape these assets have.
+#
+# Written down anyway, because of how that arrangement ends. If the patterns
+# change on their side, or an asset name changes on ours, binstall does not
+# fail — it falls back to `cargo install` and compiles, which works, takes the
+# minutes the prebuilt binaries exist to avoid, and looks like nothing wrong.
+# A mapping nobody wrote down is one nobody can be wrong about out loud.
+#
+# `bin-dir` because the archive holds a directory rather than a bare binary:
+# the licences, the README and the uninstaller travel with it.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [features]
 # What the retrieval measurement under `tools/` needs, and nothing else.
 #

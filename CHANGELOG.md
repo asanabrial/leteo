@@ -2,7 +2,7 @@
 
 All notable changes to Leteo are documented in this file.
 
-## [0.1.1] - unreleased
+## [0.1.1] - 2026-08-12
 
 A distribution release. The binary does what 0.1.0's did; what changed is who
 can run it and how many ways there are to get it.

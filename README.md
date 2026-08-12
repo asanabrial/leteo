@@ -87,6 +87,29 @@ To build whatever is on `main` instead, including work that has not been
 released yet, ask for the repository:
 `cargo install --git https://github.com/asanabrial/leteo`.
 
+### Without installing anything
+
+Most MCP documentation assumes `npx`, so there is a wrapper on npm that fetches
+the release binary for your platform, checks it against the same published
+`SHA256SUMS`, and hands it every argument:
+
+```json
+{
+  "mcpServers": {
+    "leteo": {
+      "command": "npx",
+      "args": ["-y", "leteo", "mcp"]
+    }
+  }
+}
+```
+
+The npm version is the release tag, so `npx leteo@0.1.0` runs that release and
+nothing else — a guard holds the two numbers together, because published one
+behind it would quietly serve the previous binary to everybody arriving this
+way. It is a way in rather than the way to run it: a binary on your `PATH`
+starts without a download and is what `leteo setup` writes into your agent.
+
 ### As a plugin
 
 Claude Code takes Leteo as a plugin, which registers the same MCP entry and the

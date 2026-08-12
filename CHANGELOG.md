@@ -2,6 +2,30 @@
 
 All notable changes to Leteo are documented in this file.
 
+## [0.1.2] - 2026-08-12
+
+The npm wrapper published in 0.1.1 could not download on Linux. This is that,
+and the hole it uncovered next to it.
+
+### Fixed
+
+- **`npx @asanabrial/leteo` downloads.** The wrapper used `fetch`, which
+  answered `UND_ERR_SOCKET` on the 7.9 MB archive three attempts out of three
+  in a container where `curl` fetched it with a 200 every time. It succeeded
+  from Windows and failed from Linux against the same URL in the same minute,
+  which is how it was published without anybody noticing: every check before
+  publishing ran on the machine where it works. It uses `node:https` now,
+  following GitHub's redirect by hand, with three retries and a timeout for the
+  failures that really are ordinary — and the error carries the cause, since
+  Node reports these as the bare words "fetch failed".
+- **`leteo setup` refuses a binary npm is holding.** It writes the path of the
+  running binary into an agent's configuration, and through the wrapper that
+  path is inside npm's cache — deleted by `npm cache clean` or by the next
+  version. The MCP server would stop starting and all five hooks would fail
+  without saying so, which is what hooks do here by design. It now refuses
+  while somebody is there to read it, and names the `npx` configuration to use
+  instead.
+
 ## [0.1.1] - 2026-08-12
 
 A distribution release. The binary does what 0.1.0's did; what changed is who

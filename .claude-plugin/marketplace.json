@@ -10,7 +10,7 @@
     {
       "name": "leteo",
       "description": "Persistent memory with session tracking, compaction recovery, and a save protocol. Gives the agent a memory that survives across sessions.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": {
         "name": "Alexis Sanabria Lopez"
       },

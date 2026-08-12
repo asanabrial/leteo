@@ -102,3 +102,4 @@ npm/vendor/
 # A database is never committed here, and this one is three sentences of
 # fixture that `tools/demo/build-store.sh` writes in a second.
 tools/demo/store/
+tools/demo/loop.cast

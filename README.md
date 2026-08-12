@@ -45,7 +45,7 @@ the conversation.
 The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
 with you, and `leteo delete` means it.
 
-![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
+![A terminal: a new session asks Leteo what this project knows, and gets back three memories an agent saved on its own — a connection pool that runs out at 20 workers, money kept as integer cents, Stripe retrying webhooks three times — then searches them mid-task](assets/leteo-loop.gif)
 
 ## Install
 

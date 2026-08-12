@@ -79,7 +79,13 @@ scoop install leteo
 npm install -g @asanabrial/leteo
 ```
 
-Either way, open Leteo and set your agent up from the Setup screen:
+That last one puts `leteo` on your `PATH` for the command line, and is the one
+route that cannot configure an agent: `leteo setup` refuses from a binary npm
+is holding, because the path it would write down is one npm deletes. Configure
+the agent with [the `npx` line](#without-installing-anything) instead, or
+install by any of the routes above.
+
+Then open Leteo and set your agent up from the Setup screen:
 
 ```bash
 leteo tui
@@ -132,9 +138,8 @@ the release binary for your platform, checks it against the same published
 
 `bunx @asanabrial/leteo mcp` works the same way — it is the same package from
 the same registry, and the wrapper depends on nothing but what both runtimes
-already have. `npm install -g @asanabrial/leteo` is the same package again,
-installed once instead of fetched per run, which puts `leteo` on your `PATH`
-like any other route here.
+already have. `npm install -g` above is that same package installed once
+instead of fetched per run.
 
 The npm version *is* the release tag, so pinning one in npm pins the binary it
 fetches — a guard holds the two numbers together, because published one behind
@@ -200,9 +205,11 @@ client by `leteo setup`:
 leteo mcp
 ```
 
-Nineteen of the tools are the everyday ones an agent reaches for while it works;
-three change or count the whole store and sit behind a profile. `--tools` picks
-a profile or a single tool, and `--project` fixes the project for the process.
+Run like that it offers all of them. Three of the twenty-two change or count
+the whole store, and `leteo setup` leaves those out: what it writes into an
+agent is `--tools=agent`, the nineteen an agent reaches for while it works.
+`--tools` picks a profile or a single tool, and `--project` fixes the project
+for the process.
 
 Alongside it there is a JSON command line, an interactive terminal UI, and
 setup support for twelve MCP clients — the list at the top of this page.
@@ -217,7 +224,8 @@ crates.io strips HTML comments when it renders this file.
 
 Rarely anything: the saving and the recalling happen without you. This is the
 store from the outside, for the times you want to look yourself. Every command
-prints JSON, and the default database is `~/.leteo/leteo.db`.
+that answers prints JSON — `tui` is the exception, being a screen rather than an
+answer — and the default database is `~/.leteo/leteo.db`.
 
 **Reading it.** `search` is the one you will actually use, and `--all-projects`
 widens it past the project you are standing in. `recent` is the last few in time
@@ -256,7 +264,9 @@ leteo setup opencode --dry-run
 ```
 
 **Keeping it well.** `doctor` runs every check and says which one failed and
-why; `--repair` carries out the two repairs that are safe to make on their own.
+why; `--repair` carries out the three that are safe to make on their own —
+restoring missing full-text triggers, rebuilding the indexes, and recomputing
+stale hashes.
 `export` and `import` move a store between machines, and `obsidian-export`
 writes it into a vault as Markdown:
 

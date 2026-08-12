@@ -13,7 +13,7 @@ survived.
 ```
 
 The plugin carries configuration, not the binary. Install `leteo` first —
-`curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/install.sh | sh`,
+`curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh | sh`,
 `cargo install leteo`, or the Windows script in the
 [main README](../../README.md#install) — because every hook here and the MCP
 entry itself invoke `leteo` from `PATH`.

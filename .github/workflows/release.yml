@@ -123,7 +123,7 @@ jobs:
           # `uninstall.ps1`, skips registering Leteo in Installed apps, and
           # says nothing about it — the install still works, so nobody learns
           # that removing it quietly stopped being possible from Settings.
-          cp uninstall.ps1 uninstall.sh "dist/$package/"
+          cp scripts/uninstall.ps1 scripts/uninstall.sh "dist/$package/"
           if [[ "${{ matrix.archive }}" == "zip" ]]; then
             (cd dist && 7z a "$package.zip" "$package")
           else

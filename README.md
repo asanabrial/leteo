@@ -61,15 +61,22 @@ curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/insta
 irm https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.ps1 | iex
 ```
 
-Or through a package manager, if you already keep your tools in one:
+Or through a package manager, if you already keep your tools in one. Homebrew
+covers macOS and Linux, on both architectures:
 
 ```sh
 brew tap asanabrial/leteo && brew install leteo
 ```
 
 ```powershell
+# Windows
 scoop bucket add leteo https://github.com/asanabrial/scoop-leteo
 scoop install leteo
+```
+
+```sh
+# Anywhere with Node, if that is what you already have
+npm install -g @asanabrial/leteo
 ```
 
 Either way, open Leteo and set your agent up from the Setup screen:
@@ -125,7 +132,9 @@ the release binary for your platform, checks it against the same published
 
 `bunx @asanabrial/leteo mcp` works the same way — it is the same package from
 the same registry, and the wrapper depends on nothing but what both runtimes
-already have.
+already have. `npm install -g @asanabrial/leteo` is the same package again,
+installed once instead of fetched per run, which puts `leteo` on your `PATH`
+like any other route here.
 
 The npm version *is* the release tag, so pinning one in npm pins the binary it
 fetches — a guard holds the two numbers together, because published one behind

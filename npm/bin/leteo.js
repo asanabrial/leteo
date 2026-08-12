@@ -15,6 +15,7 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
+const https = require("node:https");
 const { spawnSync, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -44,7 +45,7 @@ function say(message) {
 
 // Thrown rather than exited on, because `process.exit()` here crashes.
 //
-// Every failure below happens while `fetch` still holds handles open, and
+// Every failure below happens while a download still holds handles open, and
 // calling `process.exit()` from inside that on Windows aborts the process:
 //
 //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c:76
@@ -75,12 +76,69 @@ function resolveTarget() {
   return target;
 }
 
+// `node:https` rather than `fetch`, and redirects followed by hand.
+//
+// `fetch` fails on this download. Not intermittently and not because of the
+// network: in a container where `curl` fetches the 7.9 MB archive with a 200
+// every time, `fetch` answers `UND_ERR_SOCKET` — the socket closed mid-body —
+// on three attempts out of three. It succeeded from Windows and failed from
+// Linux against the same URL in the same minute, which is how it reached npm
+// before anybody noticed. undici is doing something to a large body over
+// GitHub's redirect that the classic stack does not.
+//
+// So this is not a retry around `fetch`. Retries are here too, because a
+// download really can fail for ordinary reasons, but they would not have saved
+// the case that motivated this: a bug that fails every time is not waited out.
+const MAX_REDIRECTS = 5;
+
+function get(url, redirectsLeft = MAX_REDIRECTS) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, { headers: { "user-agent": "leteo-npm" } }, (response) => {
+      const status = response.statusCode || 0;
+      // GitHub answers a release asset with a redirect to its object store,
+      // and `https.get` does not follow it on its own.
+      if (status >= 300 && status < 400 && response.headers.location) {
+        response.resume();
+        if (redirectsLeft === 0) {
+          reject(new Error(`too many redirects for ${url}`));
+          return;
+        }
+        const next = new URL(response.headers.location, url).toString();
+        resolve(get(next, redirectsLeft - 1));
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        response.resume();
+        reject(new Error(`${status} ${response.statusMessage || ""} for ${url}`.trim()));
+        return;
+      }
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve(Buffer.concat(chunks)));
+      response.on("error", reject);
+    });
+    request.on("error", reject);
+    // A socket that goes quiet is a download that never ends, and this runs
+    // inside an agent's start-up where nobody is watching a spinner.
+    request.setTimeout(60_000, () => {
+      request.destroy(new Error(`timed out after 60s for ${url}`));
+    });
+  });
+}
+
 async function download(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText} for ${url}`);
+  let last;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await get(url);
+    } catch (error) {
+      last = error;
+      if (attempt < 3) {
+        await new Promise((wait) => setTimeout(wait, attempt * 500));
+      }
+    }
   }
-  return Buffer.from(await response.arrayBuffer());
+  throw last;
 }
 
 // The checksum is not optional and there is no flag to skip it. This runs
@@ -180,7 +238,16 @@ async function fetchBinary(version, target, destination) {
       download(`${base}/SHA256SUMS`),
     ]);
   } catch (error) {
-    fail(`could not download ${version}: ${error.message}`);
+    // The cause, not just the message. Node's network errors arrive as the
+    // word "fetch failed" or "socket hang up" with everything that identifies
+    // them tucked into `cause` — the report that sent somebody hunting a
+    // GitHub outage said exactly `could not download v0.1.1: fetch failed`,
+    // while the code underneath was `UND_ERR_SOCKET` and named the bug.
+    const cause = error.cause && (error.cause.code || error.cause.message);
+    fail(
+      `could not download ${version}: ${error.message}` +
+        (cause ? ` (${cause})` : ""),
+    );
   }
 
   verify(archive, sums.toString("utf8"), archiveName);

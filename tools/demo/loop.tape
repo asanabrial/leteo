@@ -1,8 +1,13 @@
 # The GIF the README opens with, as a script rather than a binary nobody can
 # regenerate.
 #
-#   ./build-store.sh
-#   vhs loop.tape
+#   bash tools/demo/build-store.sh
+#   vhs tools/demo/loop.tape
+#
+# `bash <script>` rather than `./<script>`: the scripts here carry no execute
+# bit — none of the four in `scripts/` do either — and Windows has no notion of
+# one to carry. Spelling the interpreter works the same on all three platforms,
+# and this project is developed on the one where `./` does not.
 #
 # Every command below runs against the store that script builds, and what
 # appears is what the binary printed. `jq` renders the block because these

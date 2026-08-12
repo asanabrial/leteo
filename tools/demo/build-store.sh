@@ -11,6 +11,11 @@
 #
 # Never the real store: it lands under `store/` beside this script, and
 # `--database` keeps every command pointed at it.
+#   bash tools/demo/build-store.sh
+#
+# Called with an interpreter rather than executed, so it runs the same from a
+# Windows shell as from a Unix one, and from any directory: every path below is
+# resolved from the script's own location.
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"

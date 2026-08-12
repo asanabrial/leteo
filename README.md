@@ -42,10 +42,12 @@ work — a bug fixed, a convention agreed, something non-obvious learned. Those
 notes are written for its future self rather than for you, so they stay out of
 the conversation.
 
+![A terminal: a new session asks what this project knows and gets back three memories an agent saved on its own — a connection pool that runs out at 20 workers, money kept as integer cents, Stripe retrying webhooks three times — then searches them mid-task](assets/leteo-loop.gif)
+
 The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
 with you, and `leteo delete` means it.
 
-![A terminal: a new session asks Leteo what this project knows, and gets back three memories an agent saved on its own — a connection pool that runs out at 20 workers, money kept as integer cents, Stripe retrying webhooks three times — then searches them mid-task](assets/leteo-loop.gif)
+![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
 
 ## Install
 
@@ -59,15 +61,22 @@ curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/insta
 irm https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.ps1 | iex
 ```
 
-Or through a package manager, if you already keep your tools in one:
+Or through a package manager, if you already keep your tools in one. Homebrew
+covers macOS and Linux, on both architectures:
 
 ```sh
 brew tap asanabrial/leteo && brew install leteo
 ```
 
 ```powershell
+# Windows
 scoop bucket add leteo https://github.com/asanabrial/scoop-leteo
 scoop install leteo
+```
+
+```sh
+# Anywhere with Node, if that is what you already have
+npm install -g @asanabrial/leteo
 ```
 
 Either way, open Leteo and set your agent up from the Setup screen:
@@ -99,8 +108,9 @@ cargo install leteo
 ```
 
 That builds the released version from [crates.io](https://crates.io/crates/leteo).
-To build whatever is on `main` instead, including work that has not been
-released yet, ask for the repository:
+`cargo binstall leteo` fetches the same release binary instead of compiling it,
+which is the faster half of that sentence. To build whatever is on `main`
+instead, including work that has not been released yet, ask for the repository:
 `cargo install --git https://github.com/asanabrial/leteo`.
 
 ### Without installing anything
@@ -122,7 +132,9 @@ the release binary for your platform, checks it against the same published
 
 `bunx @asanabrial/leteo mcp` works the same way — it is the same package from
 the same registry, and the wrapper depends on nothing but what both runtimes
-already have.
+already have. `npm install -g @asanabrial/leteo` is the same package again,
+installed once instead of fetched per run, which puts `leteo` on your `PATH`
+like any other route here.
 
 The npm version *is* the release tag, so pinning one in npm pins the binary it
 fetches — a guard holds the two numbers together, because published one behind

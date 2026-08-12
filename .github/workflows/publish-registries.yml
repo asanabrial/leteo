@@ -116,4 +116,26 @@ jobs:
       # The registry believes this repository owns `io.github.asanabrial/leteo`
       # because the OIDC token says which repository the job is running in.
       - run: ./mcp-publisher login github-oidc
-      - run: ./mcp-publisher publish
+      # The registry rejects a version it already holds, the way crates.io and
+      # npm do, and re-running this for a tag that got halfway is the whole
+      # reason the workflow can be dispatched by hand. The other two jobs ask
+      # first; this one did not, so the second run of v0.1.2 went red on a
+      # registry that was already correct.
+      - name: Publish unless the registry already has it
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json;print(json.load(open("server.json"))["version"])')"
+          # The search returns every version the registry holds, oldest first,
+          # so this asks whether ours is among them rather than reading one of
+          # them. Taking the first answered 0.1.0 while 0.1.2 was published and
+          # flagged latest, which would have republished a duplicate and failed
+          # exactly as before.
+          held="$(curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.asanabrial/leteo"             | python3 -c 'import json,sys; print(" ".join(s["server"]["version"] for s in json.load(sys.stdin).get("servers", [])))')"
+          echo "registry holds: ${held:-nothing}"
+          for one in $held; do
+            if [ "$one" = "$version" ]; then
+              echo "the registry already has $version"
+              exit 0
+            fi
+          done
+          ./mcp-publisher publish

@@ -97,3 +97,8 @@ npm/vendor/
 # in `git status`, somebody sees it, and it is fixed with the flag. An ignore
 # rule would have made the same mistake silent, which is how it went unnoticed
 # for the five weeks it was already here.
+
+# The store the README's GIF is recorded against, rebuilt by its own script.
+# A database is never committed here, and this one is three sentences of
+# fixture that `tools/demo/build-store.sh` writes in a second.
+tools/demo/store/

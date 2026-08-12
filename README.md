@@ -59,7 +59,18 @@ curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/install.sh | 
 irm https://raw.githubusercontent.com/asanabrial/leteo/main/install.ps1 | iex
 ```
 
-Then open Leteo and set your agent up from the Setup screen:
+Or through a package manager, if you already keep your tools in one:
+
+```sh
+brew tap asanabrial/leteo && brew install leteo
+```
+
+```powershell
+scoop bucket add leteo https://github.com/asanabrial/scoop-leteo
+scoop install leteo
+```
+
+Either way, open Leteo and set your agent up from the Setup screen:
 
 ```bash
 leteo tui
@@ -68,11 +79,13 @@ leteo tui
 That is all of it. Nothing else to install first — not Rust, not SQLite, not a
 runtime: the archives are prebuilt binaries with SQLite compiled in, and each
 script checks its download against the published `SHA256SUMS` before installing
-anything. The binary lands in `~/.local/bin`, or `%LOCALAPPDATA%\leteo\bin` on
-Windows; `LETEO_INSTALL_DIR` moves that, `LETEO_VERSION` takes a tag other than
-the latest release, and `LETEO_BASE_URL` downloads from somewhere other than
-GitHub releases. Those three belong to the scripts rather than to the binary,
-which is why they are not in the [Environment](#environment) table.
+anything. From the scripts the binary lands in `~/.local/bin`, or
+`%LOCALAPPDATA%\leteo\bin` on Windows — Homebrew and Scoop put it where they
+put everything else. `LETEO_INSTALL_DIR` moves that, `LETEO_VERSION` takes a
+tag other than the latest release, and `LETEO_BASE_URL` downloads from
+somewhere other than GitHub releases. Those three belong to the scripts rather
+than to the binary, which is why they are not in the
+[Environment](#environment) table.
 
 Releases carry five builds — x86-64 Linux, Windows and macOS, and arm64 Linux
 and macOS. The two Linux ones ask for nothing newer than glibc 2.34, so they
@@ -106,6 +119,10 @@ the release binary for your platform, checks it against the same published
   }
 }
 ```
+
+`bunx @asanabrial/leteo mcp` works the same way — it is the same package from
+the same registry, and the wrapper depends on nothing but what both runtimes
+already have.
 
 The npm version *is* the release tag, so pinning one in npm pins the binary it
 fetches — a guard holds the two numbers together, because published one behind

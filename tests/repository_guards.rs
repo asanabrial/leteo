@@ -1,13 +1,14 @@
 //! Guards over the repository itself, rather than over what it documents.
 //!
-//! None of these four reads the README. They sat beside the documentation
-//! checks because that file was written first, and being there made them look
-//! like checks on prose — which is the one thing they are not. Each watches
+//! None of these reads the README. They sat beside the documentation checks
+//! because that file was written first, and being there made them look like
+//! checks on prose — which is the one thing they are not. Each watches
 //! something the compiler cannot see: a source file no `mod` declares and which
 //! therefore never compiles, a test that would open the store somebody keeps
-//! their real memories in, a schema column nothing writes, and a sentence that
+//! their real memories in, a schema column nothing writes, a sentence that
 //! reaches a person carrying the indentation of the Rust source it was
-//! formatted in.
+//! formatted in, and an npm package that would hand somebody a different
+//! version of Leteo than the one it says it is.
 
 use std::path::Path;
 
@@ -555,5 +556,83 @@ fn no_sentence_carries_the_indentation_of_the_source_it_was_written_in() {
         offenders.is_empty(),
         "these sentences carry the indentation of the source they were written in:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// The npm wrapper delivers this version, for the platforms this repository
+/// builds.
+///
+/// The wrapper downloads a release archive named after its own version and
+/// hands it to the caller as `leteo`. So its `package.json` version is not
+/// packaging metadata, it is a URL: published one number behind, `npx leteo`
+/// silently fetches the previous release and every user of that route is on
+/// software the release notes do not describe. Nothing in npm or in Cargo would
+/// say a word — the two version numbers live in different ecosystems and
+/// neither reads the other.
+///
+/// The target table is held the same way and for a sharper reason. A platform
+/// added to the release matrix and not to the wrapper does not fail loudly
+/// there: `resolveTarget` answers "no prebuilt Leteo for linux-riscv64", which
+/// reads exactly like a platform nobody builds for, so the person who sees it
+/// goes and builds from source instead of reporting anything.
+#[test]
+fn the_npm_wrapper_ships_this_version_for_the_targets_this_repository_builds() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let manifest = std::fs::read_to_string(root.join("npm").join("package.json"))
+        .expect("read npm/package.json");
+    let published = manifest
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("\"version\":")
+                .map(|rest| rest.trim().trim_matches(&[' ', '"', ','][..]).to_owned())
+        })
+        .expect("npm/package.json names a version");
+    assert_eq!(
+        published,
+        env!("CARGO_PKG_VERSION"),
+        "npm/package.json publishes {published} and the crate is {}, so `npx leteo` \
+         would fetch the wrong release",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    // Read from the workflow rather than from a list written here, so the
+    // release matrix stays the one place a target is added.
+    let workflow =
+        std::fs::read_to_string(root.join(".github").join("workflows").join("release.yml"))
+            .expect("read release.yml");
+    let mut built: Vec<String> = workflow
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("target: ")
+                .map(|target| target.trim().to_owned())
+        })
+        .collect();
+    built.sort();
+    built.dedup();
+    assert!(
+        built.len() > 3,
+        "only found {} targets in release.yml, so this is no longer reading it",
+        built.len()
+    );
+
+    let wrapper = std::fs::read_to_string(root.join("npm").join("bin").join("leteo.js"))
+        .expect("read npm/bin/leteo.js");
+    let mut offered: Vec<String> = wrapper
+        .lines()
+        .filter_map(|line| {
+            let (_, rest) = line.split_once("triple: \"")?;
+            let (triple, _) = rest.split_once('"')?;
+            Some(triple.to_owned())
+        })
+        .collect();
+    offered.sort();
+    offered.dedup();
+
+    assert_eq!(
+        offered, built,
+        "npm/bin/leteo.js offers {offered:?} and release.yml builds {built:?}"
     );
 }

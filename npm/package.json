@@ -1,0 +1,44 @@
+{
+  "name": "leteo",
+  "version": "0.1.0",
+  "description": "Local-first persistent memory for AI coding agents — one binary over one SQLite database",
+  "bin": {
+    "leteo": "bin/leteo.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "persistence",
+    "sqlite",
+    "ai",
+    "agent"
+  ],
+  "homepage": "https://github.com/asanabrial/leteo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asanabrial/leteo.git",
+    "directory": "npm"
+  },
+  "bugs": {
+    "url": "https://github.com/asanabrial/leteo/issues"
+  },
+  "author": "Alexis Sanabria Lopez",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["memory", "mcp", "agents", "sqlite", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.97"
+# `npm/` is the wrapper that downloads a *released* binary for people who reach
+# for `npx`. Inside the crate tarball it would be a JavaScript program shipped
+# to somebody who already has the source and a compiler, describing a download
+# they have no reason to make.
+exclude = ["npm"]
 
 [features]
 # What the retrieval measurement under `tools/` needs, and nothing else.

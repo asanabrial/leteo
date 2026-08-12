@@ -125,6 +125,34 @@ function extract(archivePath, into) {
   });
 }
 
+// Where the downloaded binary lives.
+//
+// Inside the package by preference, because then `npm uninstall` takes it away
+// and an `npx` cache entry stays self-contained. But a global install puts the
+// package somewhere the running user may not own — `npm i -g` under a root
+// prefix is the ordinary case on Linux — and the first run would die with
+// `EACCES: permission denied, mkdir '/usr/lib/node_modules/leteo/vendor'`,
+// which names a path the user did not choose and cannot obviously fix.
+//
+// So it is attempted and then given up on, rather than predicted: whether the
+// directory is writable is a question about this machine, and `access` answers
+// it in a syscall. The fallback is the user's own cache, which they always own.
+function cacheDirectory() {
+  const beside = path.join(__dirname, "..", "vendor");
+  try {
+    fs.mkdirSync(beside, { recursive: true });
+    fs.accessSync(beside, fs.constants.W_OK);
+    return beside;
+  } catch {
+    const home =
+      process.env.XDG_CACHE_HOME ||
+      path.join(os.homedir(), process.platform === "win32" ? "AppData" : ".cache");
+    const mine = path.join(home, "leteo", "bin");
+    fs.mkdirSync(mine, { recursive: true });
+    return mine;
+  }
+}
+
 async function fetchBinary(version, target, destination) {
   const packageName = `leteo-${version}-${target.triple}`;
   const archiveName = `${packageName}.${target.archive}`;
@@ -185,9 +213,10 @@ async function main() {
   // overrides it for the same reason the scripts allow it.
   const tag = process.env.LETEO_VERSION || `v${version}`;
 
-  const home = path.join(__dirname, "..", "vendor");
-  fs.mkdirSync(home, { recursive: true });
-  const binary = path.join(home, `${tag}-${target.triple}-${target.exe}`);
+  const binary = path.join(
+    cacheDirectory(),
+    `${tag}-${target.triple}-${target.exe}`,
+  );
 
   if (!fs.existsSync(binary)) {
     await fetchBinary(tag, target, binary);

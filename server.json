@@ -37,6 +37,35 @@
           "format": "filepath"
         }
       ]
+    },
+    {
+      "registryType": "npm",
+      "identifier": "@asanabrial/leteo",
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "named",
+          "name": "--tools",
+          "value": "agent",
+          "description": "Which tools the server exposes. `agent` is the nineteen an agent reaches for while it works; the three that change or count the whole store sit behind `admin`."
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "LETEO_DATA_DIR",
+          "description": "Where the database lives. Defaults to ~/.leteo, and only needs setting for a store kept somewhere else — the server is started by the agent rather than by a person, so it cannot inherit a shell's environment.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        }
+      ]
     }
   ]
 }

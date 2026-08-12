@@ -663,7 +663,10 @@ fn every_manifest_publishes_the_version_this_crate_is() {
     // check that finds the first and stops would have passed `server.json`
     // while its second one said something else.
     let manifests = [
-        ("server.json", 2),
+        // Three: the server's own, and one for each package it offers — the
+        // crate and the npm wrapper. It was two until the npm package was
+        // declared, and this line is what said so.
+        ("server.json", 3),
         ("npm/package.json", 1),
         (".claude-plugin/marketplace.json", 1),
         ("plugin/claude-code/.claude-plugin/plugin.json", 1),

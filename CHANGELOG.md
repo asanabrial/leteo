@@ -2,6 +2,21 @@
 
 All notable changes to Leteo are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The install scripts moved to `scripts/`.** The one-liners are now
+  `raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh` and
+  `.../scripts/install.ps1`. The old paths 404: they pointed at `main`, so
+  moving the files broke them the moment this landed, and there is no redirect
+  a raw URL can leave behind. Every copy this project controls was updated in
+  the same commit; a copy somebody else made was not, which is the whole cost
+  and the reason to do it at four days old rather than at four months.
+
+  Release archives already downloaded are unaffected — they carry the binary
+  and the uninstaller inside them and fetch nothing.
+
 ## [0.1.2] - 2026-08-12
 
 The npm wrapper published in 0.1.1 could not download on Linux. This is that,

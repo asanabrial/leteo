@@ -1,6 +1,6 @@
 # Installs Leteo on Windows.
 #
-#   irm https://raw.githubusercontent.com/asanabrial/leteo/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.ps1 | iex
 #
 # Downloads the release archive for this machine, checks it against the
 # published SHA-256 sums, and puts the binary on the user's PATH. Nothing is

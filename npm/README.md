@@ -47,7 +47,7 @@ It is not a JavaScript reimplementation, and it is not the recommended install.
 Leteo is a Rust binary; the shortest path to it is still
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh | sh
 ```
 
 which puts `leteo` on your `PATH` once, or `cargo install leteo`. This package

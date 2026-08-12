@@ -51,12 +51,12 @@ with you, and `leteo delete` means it.
 
 ```bash
 # Linux and macOS
-curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh | sh
 ```
 
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/asanabrial/leteo/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.ps1 | iex
 ```
 
 Or through a package manager, if you already keep your tools in one:

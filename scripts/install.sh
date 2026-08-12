@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Leteo on Linux or macOS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh | sh
 #
 # Downloads the release archive for this machine, checks it against the
 # published SHA-256 sums, and puts the binary somewhere on the path. Nothing is
@@ -35,7 +35,7 @@ target_triple() {
         # rather than to a build they did not ask for.
         MINGW*|MSYS*|CYGWIN*)
             fail "on Windows, run instead:
-    irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" ;;
+    irm https://raw.githubusercontent.com/$REPO/main/scripts/install.ps1 | iex" ;;
         *) fail "no prebuilt Leteo for $kernel; build from source with 'cargo install --git https://github.com/$REPO'" ;;
     esac
     case "$machine" in

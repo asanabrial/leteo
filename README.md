@@ -104,6 +104,12 @@ routes above first: the MCP entry and every hook the plugin registers run
 What the plugin replaces is the setup step, and removing it takes those entries
 away again.
 
+Pick one of the two, not both. Registered twice, every lifecycle event runs
+twice — which stored each prompt twice, 23 identical pairs on the machine where
+it was found, before anybody noticed anything was wrong. `leteo setup --hooks`
+now looks for an installed bundle and refuses rather than adding a second
+registration, naming the file it found.
+
 Codex has the same bundle under [`plugin/codex`](plugin/codex), and there it is
 the only route to the hooks — `leteo setup codex` registers the MCP server and
 no hooks at all, which leaves Codex holding the tools with nothing telling it

@@ -1,0 +1,119 @@
+name: Publish to registries
+
+# The three registries a tag should reach, callable two ways.
+#
+# `workflow_call` is how a release reaches them: `release.yml` invokes this
+# after the GitHub release exists, so nothing points at assets that are not
+# there yet — the npm wrapper resolves `v<version>` against those very assets,
+# and a package published first is a package that 404s for the length of a
+# build.
+#
+# `workflow_dispatch` is how a release that already happened reaches them.
+# v0.1.2 shipped before these jobs existed, and a tag cannot be pushed twice:
+# without a way to ask, the only routes left were publishing by hand — which is
+# the thing being replaced — or cutting a version whose only content is that
+# the last one did not publish. One registry failing while the others succeed
+# has the same shape, and it will happen: three services, three ways to be down.
+#
+# All three authenticate with GitHub's OIDC rather than a stored token. That is
+# not only tidier: npm revoked every classic token in November 2025, and a
+# long-lived credential in a repository secret is what those revocations were
+# about. `id-token: write` lets a job prove which workflow of which repository
+# it is, and each registry trades that for a few minutes of access. It is also
+# what makes this possible at all — publishing to npm by hand asks for a
+# one-time password from an authenticator app, and no workflow has one.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The tag to publish from.
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The tag to publish, for example v0.1.2.
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  crates-io:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      # Publishing a version that is already there is an error rather than a
+      # no-op, and re-running this for a tag whose crate went out is an ordinary
+      # thing to do — one registry can fail while the others succeed. So the
+      # version is asked about first.
+      - name: Publish unless crates.io already has it
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          version="${{ inputs.ref }}"
+          version="${version#v}"
+          if curl -fsS -H 'user-agent: leteo-release' \
+               "https://crates.io/api/v1/crates/leteo/$version" >/dev/null 2>&1; then
+            echo "crates.io already has leteo $version"
+            exit 0
+          fi
+          cargo publish --locked
+
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      # Trusted publishing needs npm 11.5.1 and Node 22.14 at the least, and
+      # asks for the registry to be named here rather than in an .npmrc.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: The versions trusted publishing needs
+        run: node --version && npm --version
+      # `npm/` and not the repository root: the wrapper is a subdirectory on
+      # purpose, kept out of the crate by `exclude` in Cargo.toml.
+      - name: Publish unless npm already has it
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if npm view "@asanabrial/leteo@$version" version >/dev/null 2>&1; then
+            echo "npm already has @asanabrial/leteo $version"
+            exit 0
+          fi
+          npm publish --access public
+
+  mcp-registry:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      # The registry believes this repository owns `io.github.asanabrial/leteo`
+      # because the OIDC token says which repository the job is running in.
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish

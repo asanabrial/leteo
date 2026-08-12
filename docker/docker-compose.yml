@@ -5,7 +5,8 @@
 #
 #   openssl rand -base64 48
 #
-# Copy .env.example to .env, fill it in, then run: docker compose up -d
+# Copy .env.example to .env beside it, fill it in, then from this directory:
+#   docker compose up -d
 #
 # The published port is plain HTTP. Terminate TLS in front of it; Leteo clients
 # refuse plaintext for anything but loopback.

@@ -7,5 +7,4 @@ tests
 *.md
 docs
 npm
-docker-compose.yml
-Dockerfile
+docker

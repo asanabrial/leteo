@@ -114,7 +114,15 @@ function extract(archivePath, into) {
     process.platform === "win32"
       ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
       : "tar";
-  execFileSync(tar, ["-xf", archivePath, "-C", into], { stdio: "inherit" });
+  // tar's stdout is discarded rather than inherited, for the reason every
+  // message in this file goes to stderr: this runs once, on the first call,
+  // which is the call carrying the MCP handshake. A tar that decides to say
+  // something on stdout — a warning about an ownership it could not set, say —
+  // would put it in the middle of the JSON-RPC stream. stderr is kept, because
+  // a failure here throws and the reason should be readable.
+  execFileSync(tar, ["-xf", archivePath, "-C", into], {
+    stdio: ["ignore", "ignore", "inherit"],
+  });
 }
 
 async function fetchBinary(version, target, destination) {
@@ -156,7 +164,14 @@ async function fetchBinary(version, target, destination) {
       fail(`${archiveName} did not contain ${packageName}/${target.exe}`);
     }
     fs.chmodSync(unpacked, 0o755);
-    fs.renameSync(unpacked, destination);
+    // Another process may have finished first — two MCP clients starting at
+    // once on a cold cache is an ordinary Tuesday. Its copy came through the
+    // same checksum, so it is the same bytes, and on Windows renaming over a
+    // binary that process is already executing fails with EPERM. Leaving the
+    // winner alone is both correct and the only thing that works.
+    if (!fs.existsSync(destination)) {
+      fs.renameSync(unpacked, destination);
+    }
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }

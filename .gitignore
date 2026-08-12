@@ -65,6 +65,12 @@ Thumbs.db
 # The dev tools are their own workspaces, so their build output is their own too.
 tools/*/target/
 
+# What the npm wrapper downloads, which is a release binary and not a source
+# file. `git add npm` swept 19 MB of `leteo.exe` into a commit the first time
+# this directory existed, because nothing here said otherwise and the wrapper
+# had already been run once to test it.
+npm/vendor/
+
 # Agent skills fetched from somewhere else, and their manifest.
 #
 # Nothing matches these today and that is the point: `npx skills add` installs

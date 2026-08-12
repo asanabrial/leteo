@@ -79,7 +79,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.mcp
+          file: docker/Dockerfile.mcp
           load: true
           tags: leteo-mcp:ci
           cache-from: type=gha
@@ -101,6 +101,6 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: docker/Dockerfile
           cache-from: type=gha
           cache-to: type=gha,mode=max

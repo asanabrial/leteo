@@ -496,9 +496,10 @@ token — on a machine that is both client and server, one name means two things
 ### Cloud, on the server
 
 These belong to whoever runs `leteo cloud serve`, and they are set where that
-service is defined — see [`docker-compose.yml`](docker-compose.yml). There is no
-wizard for them on purpose: they are deployment secrets rather than preferences,
-and none of this applies to a normal installation.
+service is defined — see
+[`docker/docker-compose.yml`](docker/docker-compose.yml). There is no wizard for
+them on purpose: they are deployment secrets rather than preferences, and none
+of this applies to a normal installation.
 
 | Variable | Purpose |
 | --- | --- |

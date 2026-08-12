@@ -1,5 +1,5 @@
 {
-  "name": "leteo",
+  "name": "@asanabrial/leteo",
   "version": "0.1.1",
   "description": "Local-first persistent memory for AI coding agents — one binary over one SQLite database",
   "bin": {

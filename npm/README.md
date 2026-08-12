@@ -1,8 +1,13 @@
-# leteo
+# @asanabrial/leteo
 
 Local-first persistent memory for AI coding agents. One binary over one SQLite
 database — decisions, bug fixes and conventions saved as they happen, handed
 back when they are relevant.
+
+The package is scoped and the command is not: `npx @asanabrial/leteo` and, for
+a global install, `leteo`. npm refuses the bare name — it reads `leteo` as too
+close to `level`, `leven` and `metro` — and a scope is what the MCP servers
+that ship this way use anyway.
 
 Full documentation lives at
 [github.com/asanabrial/leteo](https://github.com/asanabrial/leteo).
@@ -20,7 +25,7 @@ In an MCP client's configuration:
   "mcpServers": {
     "leteo": {
       "command": "npx",
-      "args": ["-y", "leteo", "mcp"]
+      "args": ["-y", "@asanabrial/leteo", "mcp"]
     }
   }
 }
@@ -29,8 +34,8 @@ In an MCP client's configuration:
 Or straight from a terminal:
 
 ```sh
-npx leteo tui
-npx leteo search "connection pool"
+npx @asanabrial/leteo tui
+npx @asanabrial/leteo search "connection pool"
 ```
 
 The npm version *is* the release tag, so pinning a version here pins the binary

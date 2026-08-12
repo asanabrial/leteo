@@ -101,7 +101,7 @@ the release binary for your platform, checks it against the same published
   "mcpServers": {
     "leteo": {
       "command": "npx",
-      "args": ["-y", "leteo", "mcp"]
+      "args": ["-y", "@asanabrial/leteo", "mcp"]
     }
   }
 }

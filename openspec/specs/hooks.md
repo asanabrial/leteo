@@ -332,6 +332,23 @@ deadline, so every promise here is a promise about time as much as content.
    milliseconds a learning eighty fits inside it with room. That one fails in
    microseconds and says why.
 
+19. **The plugin bundles register what the installer writes, matcher
+   included.** Leteo installs two ways — `leteo setup`, and the plugin bundles
+   under `plugin/`, which for Codex is the only route to hooks at all — and the
+   two have to arrive at the same five events, on the same triggers, with the
+   same deadlines. `HOOK_EVENTS` is the list that decides, and a guard reads
+   both bundles against it.
+
+   The matcher is part of that and was not always. Compared on event, subcommand
+   and timeout alone, the field that carries meaning by itself went unwatched:
+   `session-start` and `post-compaction` both sit on `SessionStart` and the
+   matcher is the whole of what separates them. Widening the guard to hold it
+   found the Codex bundle already drifted on two — `startup|resume|clear` where
+   the installer writes `startup|clear`, so a resumed session was handed an
+   opening block it already had, and a `.*` on `SubagentStop` that the installer
+   leaves empty. Neither was written down anywhere as a decision, and no version
+   of this test could see either.
+
 ## Invariants
 
 - Every event finishes inside its agent's patience even when the wait overruns.
@@ -357,6 +374,10 @@ deadline, so every promise here is a promise about time as much as content.
 - `src/hooks/context.rs` — what a session opening is built from
 - `src/hooks/nudge.rs` — the per-session record of what has been shown
 - `src/recall.rs` — the sizes and the rendering shared with the CLI
+- `src/setup/mod.rs` — `HOOK_EVENTS`, the one list of events, matchers and
+  deadlines that both install routes are held to
+- `plugin/claude-code/hooks/hooks.json`, `plugin/codex/hooks/hooks.json` — the
+  bundles, guarded by `the_plugin_bundles_register_the_hooks_the_binary_writes`
 - `src/hooks/tests.rs`
 
 ## Related

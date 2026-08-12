@@ -1208,11 +1208,27 @@ fn codex_hooks_land_in_config_toml_beside_the_server() {
 /// timeout to 3s". A warning on every session is the cheap version of this
 /// failure — the expensive one is an event a bundle registers and setup does
 /// not, firing for half the users.
+///
+/// # Why the matcher is compared and not only the timeout
+///
+/// This compared `(event, subcommand) -> timeout` and let the matcher through,
+/// which left the one field that carries meaning on its own unwatched. Both
+/// `session-start` and `post-compaction` sit on `SessionStart`; the matcher is
+/// the whole of what tells them apart. Editing the bundle's `compact` to
+/// `startup` was measured against this test before the matcher was added to
+/// it, and the test stayed green — a Leteo that reopens the session context at
+/// startup twice and never recovers after a compaction, which is the one
+/// moment the bundle exists for, with nothing anywhere saying so.
 #[test]
 fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
-    let expected: BTreeMap<(String, String), u64> = HOOK_EVENTS
+    let expected: BTreeMap<(String, String), (Option<String>, u64)> = HOOK_EVENTS
         .iter()
-        .map(|(event, slug, _, timeout)| (((*event).to_owned(), (*slug).to_owned()), *timeout))
+        .map(|(event, slug, matcher, timeout)| {
+            (
+                ((*event).to_owned(), (*slug).to_owned()),
+                (matcher.map(str::to_owned), *timeout),
+            )
+        })
         .collect();
 
     for bundle in [
@@ -1226,6 +1242,14 @@ fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
         let mut found = BTreeMap::new();
         for (event, groups) in manifest["hooks"].as_object().expect("an events object") {
             for group in groups.as_array().expect("a list of matcher groups") {
+                // Absent and empty mean the same thing to both agents — every
+                // invocation of the event — and `HOOK_EVENTS` spells that
+                // `None`. Left as `Some("")`, a bundle that writes the key out
+                // with nothing in it would fail this for no reason.
+                let matcher = group["matcher"]
+                    .as_str()
+                    .filter(|matcher| !matcher.is_empty())
+                    .map(str::to_owned);
                 for hook in group["hooks"].as_array().expect("a list of handlers") {
                     let command = hook["command"].as_str().expect("a command");
                     let slug = command
@@ -1233,14 +1257,14 @@ fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
                         .map(|(_, slug)| slug.to_owned())
                         .unwrap_or_else(|| panic!("{bundle} runs something else: {command}"));
                     let timeout = hook["timeout"].as_u64().expect("a timeout");
-                    found.insert((event.clone(), slug), timeout);
+                    found.insert((event.clone(), slug), (matcher.clone(), timeout));
                 }
             }
         }
 
         assert_eq!(
             found, expected,
-            "{bundle} and HOOK_EVENTS disagree about which hooks run for how long"
+            "{bundle} and HOOK_EVENTS disagree about which hooks run, on what, for how long"
         );
     }
 }

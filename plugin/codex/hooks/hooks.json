@@ -2,7 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear",
+        "matcher": "startup|clear",
         "hooks": [
           {
             "type": "command",
@@ -37,7 +37,6 @@
     ],
     "SubagentStop": [
       {
-        "matcher": ".*",
         "hooks": [
           {
             "type": "command",

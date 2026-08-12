@@ -144,9 +144,16 @@ function cacheDirectory() {
     fs.accessSync(beside, fs.constants.W_OK);
     return beside;
   } catch {
+    // `%LOCALAPPDATA%\leteo\bin` on Windows because that is where `install.ps1`
+    // already puts the binary, and `$XDG_CACHE_HOME`/`~/.cache` elsewhere by
+    // the same convention everything else on those systems follows. An earlier
+    // version joined `AppData` directly, which is writable and belongs to
+    // nobody: a `leteo` folder sitting beside `Local` and `Roaming` where no
+    // Windows program keeps anything.
     const home =
-      process.env.XDG_CACHE_HOME ||
-      path.join(os.homedir(), process.platform === "win32" ? "AppData" : ".cache");
+      process.platform === "win32"
+        ? process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local")
+        : process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
     const mine = path.join(home, "leteo", "bin");
     fs.mkdirSync(mine, { recursive: true });
     return mine;

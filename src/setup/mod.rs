@@ -554,6 +554,7 @@ fn remove_hooks(existing: &[u8]) -> Result<String> {
 pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
     let adapter = find_adapter(agent)?;
     let environment = SetupEnvironment::resolve(options)?;
+    refuse_a_path_that_will_not_be_there(&environment.executable)?;
     let paths = resolve_paths(adapter, &environment);
 
     let existing_config = read_optional(&paths.mcp_config)?;
@@ -660,6 +661,44 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
         dry_run: options.dry_run,
         actions,
     })
+}
+
+/// Refuse to write a path that the package manager owns.
+///
+/// `setup` writes the absolute path of the running binary into an agent's
+/// configuration, which is right for a binary somebody installed and wrong for
+/// one npm is holding on their behalf. Run through the npm wrapper, that path
+/// is inside the package's own cache:
+///
+/// ```text
+/// "command": "/home/u/.npm/_npx/1a19a25e/node_modules/@asanabrial/leteo/vendor/…"
+/// ```
+///
+/// and it goes away on `npm cache clean`, when npx evicts the entry, or when
+/// the version changes. When it does, the MCP server stops starting and all
+/// five hooks fail — silently, because a hook that fails says nothing by
+/// design so that a broken Leteo never blocks a prompt. The memory simply
+/// stops being recorded and nothing anywhere says why.
+///
+/// So it is refused where somebody is standing there to read the sentence,
+/// rather than left to break later with nobody watching. `node_modules` is the
+/// marker because it covers both routes npm has — the `_npx` cache and a global
+/// install — and appears in neither of the places a person installs a binary.
+fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
+    let managed = executable
+        .components()
+        .any(|component| component.as_os_str() == "node_modules");
+    if managed {
+        anyhow::bail!(
+            "this Leteo is the one npm is holding, at {}, and that path is deleted by \
+             `npm cache clean` or by the next version — the hooks written against it would \
+             then fail silently. Point your client at the wrapper instead, which stays \
+             put:\n\n  \"command\": \"npx\", \"args\": [\"-y\", \"@asanabrial/leteo\", \"mcp\"]\n\n\
+             Or install Leteo itself and run this again: https://github.com/asanabrial/leteo#install",
+            executable.display()
+        );
+    }
+    Ok(())
 }
 
 /// The lifecycle events Leteo registers, with the matcher and timeout each one

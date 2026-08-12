@@ -54,6 +54,14 @@ which puts `leteo` on your `PATH` once, or `cargo install leteo`. This package
 exists because most MCP documentation assumes `npx`, and pasting three lines
 into a JSON file should not require reading an install script first.
 
+It is also not the way to run `leteo setup`, and that command now refuses when
+it notices. `setup` writes the path of the running binary into your agent's
+configuration, and the binary this package downloads lives inside npm's cache —
+a path `npm cache clean` deletes and the next version replaces. The
+configuration would keep working until it suddenly did not, and the hooks would
+fail without saying so. The three lines above have no such problem: `npx` is on
+your `PATH` and resolves the package itself, every time.
+
 Five platforms have prebuilt binaries: Linux, macOS and Windows on x86-64, and
 Linux and macOS on arm64. Anywhere else, `cargo install leteo` builds it.
 

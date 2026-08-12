@@ -109,8 +109,9 @@ the release binary for your platform, checks it against the same published
 
 The npm version *is* the release tag, so pinning one in npm pins the binary it
 fetches — a guard holds the two numbers together, because published one behind
-it would quietly serve the previous release to everybody arriving this way. It is a way in rather than the way to run it: a binary on your `PATH`
-starts without a download and is what `leteo setup` writes into your agent.
+it would quietly serve the previous release to everybody arriving this way. It
+is a way in rather than the way to run it: a binary on your `PATH` starts
+without a download and is what `leteo setup` writes into your agent.
 
 ### As a plugin
 

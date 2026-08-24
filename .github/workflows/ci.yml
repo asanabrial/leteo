@@ -17,8 +17,59 @@ env:
 
 jobs:
   unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
+    # Renaming this job renames the checks that branch protection requires, and
+    # a matrix renames them whether you ask or not: GitHub appends the matrix
+    # values, so `Unit Tests` became `Unit Tests (ubuntu-latest)` and its two
+    # siblings. `main` required the old name with `enforce_admins` on, which
+    # made every pull request unmergeable the moment this landed — green, and
+    # BLOCKED, because the required check could no longer be produced by
+    # anything. Protection was updated to require the three names instead.
+    # Whoever changes this line next inherits the same trap.
+    name: Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Without this, the first leg to go red cancels the other two, so one push
+      # shows one platform's failures and the next platform's are only found
+      # after that one is fixed. The whole point of the matrix is to see all of
+      # it at once, and serialising the discovery is what makes a cross-platform
+      # fix take three rounds instead of one.
+      fail-fast: false
+      matrix:
+        # Three runners, and they execute three of the five released targets —
+        # not the three you would guess. `macos-latest` is an Apple Silicon
+        # image, which `release.yml` says in its own comment and relies on, so
+        # the macOS leg here is the `aarch64-apple-darwin` host triple and
+        # tests that target natively.
+        #
+        # So what ships without ever being executed is the other pair:
+        #
+        #   x86_64-apple-darwin      built on `macos-latest` by cross-compiling
+        #                            from arm64 (`release.yml`, the note about
+        #                            `macos-13` being the last Intel image and
+        #                            its pool being too small to wait on).
+        #                            Nothing runs it, here or there.
+        #   aarch64-unknown-linux-gnu  built natively on `ubuntu-22.04-arm`.
+        #                            That runner is hosted and already paid
+        #                            for by `release.yml`, so a fourth leg
+        #                            would cover it. Deliberately not added
+        #                            here — this change is the three-platform
+        #                            matrix issue #42 asked for. Filed as #45,
+        #                            which measures what arm64 Linux queue
+        #                            times cost before committing to a shape.
+        #
+        # And "executes the target" means the triple, not the artifact. The
+        # Linux leg runs on `ubuntu-latest`; `release.yml` pins `ubuntu-22.04`
+        # for that same target on purpose, because on glibc the build host
+        # chooses who can run the result — `ubuntu-latest` moving to 24.04 is
+        # what shipped a v0.1.0 that would not start on Debian 12. So the one
+        # Linux property that has actually broken a release is set by a host
+        # this matrix does not use, and testing here does not cover it.
+        #
+        # What the matrix buys is the file handling: `src/setup/` writes into
+        # other tools' configuration and `src/setup/removal/` takes it back
+        # out, and where those files live and how paths inside them are spelled
+        # is decided per operating system rather than per architecture.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -34,6 +85,11 @@ jobs:
       # passed CI" stops meaning what it appears to mean.
       - run: cargo test --locked
 
+  # Not on the matrix above, and not a trade-off that was weighed: this job
+  # needs the `services:` block below, and GitHub runs service containers on
+  # Linux runners only. There is no macOS or Windows version of this job to
+  # decline.
+  #
   # The analogue of an end-to-end suite: these need a real PostgreSQL, so
   # `cargo test` skips them and the job above goes green without ever touching
   # multi-tenant isolation, the fail-closed project allowlist, chunk forgery, or
@@ -64,6 +120,10 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:leteo-test@127.0.0.1:5432/leteo_test
 
+  # Not on the matrix above either, for the same kind of reason: the images are
+  # Linux images, so a Windows or macOS runner would either fail to build them
+  # or build the same Linux artifact more slowly.
+  #
   # Both images, built and one of them run. The cloud image shipped for weeks
   # unbuildable — it was missing the `migrations` directory that `include_str!`
   # needs — because nothing ever built it, and a Dockerfile nobody builds is a

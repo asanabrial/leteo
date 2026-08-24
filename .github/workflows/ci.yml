@@ -15,6 +15,63 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: always
 
+# Every job below gates a merge, and none of them is report-only. `main`
+# requires one status check per job with `enforce_admins` on, so a red one
+# blocks the pull request instead of sitting in it as advice. The count lives in
+# the note on `unit-tests` rather than here, because it changes with the matrix.
+#
+# Until #48 protection listed only the `unit-tests` legs, which left
+# `cloud-tests` and `container-images` running on every pull request and unable
+# to stop one. What each of them is for is argued where it lives, in the comment
+# above the job itself; it is not restated here, because a fact written twice is
+# a fact that gets edited once.
+#
+# Requiring them was measured rather than assumed: a check that flakes turns
+# somebody else's outage into a blocked repository, and both of these reach
+# outside the runner. The count is per ATTEMPT, not per run, which is the part
+# that makes it mean anything — GitHub reports a run's conclusion from its
+# latest attempt, so a job that failed and was re-run to green reads as
+# `success` at run level, and re-running is precisely what one does to a flake.
+# Counting runs would have hidden the thing being looked for.
+#
+# Census as of 2026-08-24T02:12Z, over every run of this workflow on every
+# branch and event: list `/actions/workflows/ci.yml/runs`, then read
+# `/actions/runs/{id}/attempts/{n}/jobs` for each attempt. A job counts as
+# failed on any conclusion that is not `success`, so `cancelled`, `timed_out`
+# and `startup_failure` are included — the last one matters here, because it is
+# how a `services:` container or a buildx cache problem surfaces, and it blocks
+# a merge exactly as a `failure` does. None of the three occurs.
+#
+# 99 runs, 102 attempts. The three extra attempts are accounted for: one is the
+# retry below, and two are deliberate re-runs of an already-green run, made
+# while measuring runner queue times for #45.
+#
+#   job                attempts   failures
+#   cloud-tests             102          0   since the first commit
+#   container-images         88          0   since it was added
+#   unit-tests              102          1   attempt 1 of run 31601355516,
+#                                            green on attempt 2 of the same
+#                                            commit
+#
+# So the only flake this WORKFLOW has recorded is in a job that has been
+# blocking merges all along, and the two being added have a clean attempt-level
+# record. Scope that deliberately: `release.yml` and `publish-registries.yml`
+# were not counted, and three of their runs have failed.
+#
+# Read it with its limit. The runs fall on five active days and 57 of them are
+# one of them; `container-images` is narrower still, its whole sample sitting in
+# the last three. Pool pressure and service-container availability vary by hour
+# and day, and a fortnight concentrated into five of them does not sample that.
+# By the rule of three, zero failures bounds each job's rate separately — 2.9%
+# for `cloud-tests` at 102 attempts, 3.4% for `container-images` at 88 — and the
+# younger job is the looser bound, which is the direction worth remembering. It
+# establishes the absence of a reproducible flake, which is the failure mode
+# that would make requiring these a mistake, and not more.
+#
+# The required contexts are a function of what is in this file, but nothing here
+# updates them: protection is configured out of band, by hand. Adding a job or a
+# matrix leg means adding a context yourself — see the note on `unit-tests` for
+# what happens when the list and the workflow disagree.
 jobs:
   unit-tests:
     # Renaming this job renames the checks that branch protection requires, and
@@ -26,9 +83,9 @@ jobs:
     # anything.
     #
     # Protection therefore lists one context per leg, and the count is part of
-    # the trap: #42 set it to three, and adding `ubuntu-22.04-arm` here made it
-    # four. Whoever changes the matrix next changes the required checks with
-    # it, whether or not they touch this line.
+    # the trap: #42 set it to three, #45 added `ubuntu-22.04-arm` for four, and
+    # #48 brought the other two jobs in for six. Whoever changes the matrix next
+    # changes the required checks with it, whether or not they touch this line.
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -102,9 +159,18 @@ jobs:
   # decline.
   #
   # The analogue of an end-to-end suite: these need a real PostgreSQL, so
-  # `cargo test` skips them and the job above goes green without ever touching
-  # multi-tenant isolation, the fail-closed project allowlist, chunk forgery, or
-  # token revocation. Those are the parts of Leteo where a regression is worst.
+  # `cargo test` skips them and the job above goes green without the behavioural
+  # half of multi-tenant isolation, the fail-closed project allowlist, chunk
+  # forgery, or token revocation. Those are the parts of Leteo where a
+  # regression is worst.
+  #
+  # The behavioural half, precisely: some of that ground is covered structurally
+  # without a service, and saying otherwise reads as though nothing guards it.
+  # `cloudstore/tests.rs` checks that every query narrows to its tenant by
+  # reading the source, and `auth.rs` splits the no-project refusal out so an
+  # unconditional test can reach it. What no unconditional test can do is run
+  # the grants, wildcards and revocation against a real database, which is what
+  # the eleven `#[ignore]`d tests are and what this job exists to run.
   cloud-tests:
     name: Cloud Tests
     runs-on: ubuntu-latest

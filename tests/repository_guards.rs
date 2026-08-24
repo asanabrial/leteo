@@ -1,20 +1,26 @@
 //! Guards over the repository itself, rather than over what it documents.
 //!
-//! None of these reads the README. They sat beside the documentation checks
-//! because that file was written first, and being there made them look like
-//! checks on prose — which is the one thing they are not. Each watches
-//! something the compiler cannot see: a source file no `mod` declares and which
-//! therefore never compiles, a test that would open the store somebody keeps
-//! their real memories in, a schema column nothing writes, a sentence that
-//! reaches a person carrying the indentation of the Rust source it was
-//! formatted in, and an npm package that would hand somebody a different
-//! version of Leteo than the one it says it is.
+//! Most of these watch something the compiler cannot see: a source file no
+//! `mod` declares and which therefore never compiles, a test that would open
+//! the store somebody keeps their real memories in, a schema column nothing
+//! writes, a sentence that reaches a person carrying the indentation of the
+//! Rust source it was formatted in, and an npm package that would hand somebody
+//! a different version of Leteo than the one it says it is.
+//!
+//! Two of them do read prose, and that is a deliberate reversal of what this
+//! header used to say. Comments in `ci.yml`, `tools/README.md` and `src/cloud/`
+//! — in a doc comment on production code as well as in its tests — state counts
+//! that other lists own: how many tests need a database, how many runners the
+//! matrix has. Four issues in a row corrected one of those sentences by hand
+//! and left a fresh miscount behind. A count in prose is a second copy of the
+//! list it counts, which `documented_commands.rs` says of the README and is no
+//! less true here.
 
 use std::path::Path;
 
 mod support;
 
-use support::source_under;
+use support::{source_under, spelled};
 
 #[test]
 fn every_source_file_is_reachable_from_a_module_declaration() {
@@ -700,4 +706,239 @@ fn every_manifest_publishes_the_version_this_crate_is() {
             );
         }
     }
+}
+
+/// Real `#[ignore]` attributes under `src/`, per file that carries any.
+///
+/// The distinction between an attribute and a mention of one is the whole
+/// guard. Doc comments in `src/cloud/` write `#[ignore]` in prose, so a
+/// matcher that counts occurrences counts those too and reports more tests
+/// than exist. That is not hypothetical: a sweep meant to repair miscounted
+/// sentences in this family introduced another, because the count behind it
+/// came from exactly such a matcher.
+///
+/// A line whose first non-space characters are the attribute is the attribute.
+/// A line reaching it through `///`, `//` or a string is prose about it.
+fn ignored_attributes(sources: &[(String, String)]) -> Vec<(String, usize)> {
+    let mut per_file: Vec<(String, usize)> = sources
+        .iter()
+        .map(|(path, text)| {
+            let count = text
+                .lines()
+                .filter(|line| line.trim_start().starts_with("#[ignore"))
+                .count();
+            (path.clone(), count)
+        })
+        .filter(|(_, count)| *count > 0)
+        .collect();
+    per_file.sort();
+    per_file
+}
+
+/// Every sentence that writes out how many tests need a database.
+///
+/// Deliberately a list rather than a count: the number of entries here is the
+/// number of places that state it, and writing that number in a sentence
+/// somewhere is how this went wrong the first time. Add a row when a sentence
+/// starts saying it; the guard reads the length.
+const COUNTED_IN: [(&str, &str); 7] = [
+    (
+        ".github/workflows/ci.yml",
+        "which is what the {n} `#[ignore]`d",
+    ),
+    (
+        ".github/workflows/ci.yml",
+        "What those {n} cover is not summarised here",
+    ),
+    (
+        "src/cloud/cloudstore/tests.rs",
+        "{N} such tests exist across the crate, {busiest} of them in this file",
+    ),
+    ("src/cloud/auth.rs", "were among the {n} carrying"),
+    (
+        "src/cloud/auth.rs",
+        "One of the {n} does assert the refusal",
+    ),
+    (
+        "src/cloud/auth.rs",
+        "none of the {n} that need one reaches it here",
+    ),
+    ("tools/README.md", "{N} tests carry"),
+];
+
+/// Collapses a comment block to one line so a reflow does not read as a change.
+///
+/// Whitespace alone is not enough: a sentence wrapped across two `///` lines
+/// keeps the markers as words, so "none of the eleven" reads as "none of the
+/// /// eleven" and matches nothing. That is this file's own subject one level
+/// down — a check that looks like it reads the prose and does not — and it is
+/// why the marker comes off before the join.
+fn flattened(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let line = line.trim_start();
+            line.strip_prefix("///")
+                .or_else(|| line.strip_prefix("//!"))
+                .or_else(|| line.strip_prefix("//"))
+                .or_else(|| line.strip_prefix('#'))
+                .unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every prose statement of how many tests need a database matches the tests.
+///
+/// A count in prose is a second copy of the list it counts — the README's own
+/// guard says so, and this is the same shape in files it does not read. The
+/// sentences in `COUNTED_IN` all move together: one more `#[ignore]`d test
+/// falsifies every one of them at once, silently, because nothing was reading
+/// them.
+///
+/// That is not hypothetical. Comments in this family were found wrong over
+/// three review rounds of one issue, and each prose repair introduced another:
+/// a gloss naming a few subjects became a gloss naming fewer than the set had,
+/// then a sentence promising not to summarise that summarised anyway. The
+/// sentences are now written so they can be checked, and this is what checks
+/// them. Note what is deliberately absent here: how many there are. That
+/// belongs to `COUNTED_IN` and to the attributes, not to a sentence.
+#[test]
+fn every_prose_count_of_the_tests_that_need_a_database_matches_the_attributes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let sources = source_under("src");
+    let per_file = ignored_attributes(&sources);
+
+    let total: usize = per_file.iter().map(|(_, count)| count).sum();
+    assert!(
+        total > 5,
+        "only found {total} `#[ignore]` attributes, so this is no longer reading them"
+    );
+
+    // The exclusion has to stay exercised, not merely have been exercised once
+    // by hand. If every prose mention were reworded away, a naive matcher would
+    // agree with this one forever and nobody would learn otherwise until the
+    // next off-by-one.
+    let mentions: usize = sources
+        .iter()
+        .map(|(_, text)| text.matches("#[ignore").count())
+        .sum();
+    assert!(
+        mentions > total,
+        "every `#[ignore` under src/ is now an attribute ({total} of {mentions}), so nothing \
+         here distinguishes one from a mention of one any more — restore a prose mention or \
+         retire this guard, but do not let it pass while measuring half of what it says"
+    );
+
+    // A line inside a string literal could open with the attribute and be
+    // counted. None does today, and this is what says so rather than the
+    // tree's current contents saying it for us.
+    for (path, text) in &sources {
+        for literal in string_literals(text) {
+            assert!(
+                !literal
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("#[ignore")),
+                "{path} has a string literal whose line opens with the attribute, so the \
+                 count above is reading it as one"
+            );
+        }
+    }
+
+    let (busiest_path, in_busiest) = per_file
+        .iter()
+        .max_by_key(|(_, count)| *count)
+        .expect("some file carries them");
+    assert!(
+        busiest_path
+            .replace('\\', "/")
+            .ends_with("cloud/cloudstore/tests.rs"),
+        "most of them used to live in cloudstore/tests.rs and now live in {busiest_path}, \
+         so the sentences in COUNTED_IN are pointing at the wrong file"
+    );
+
+    let lower = spelled(total);
+    let upper = format!("{}{}", lower[..1].to_uppercase(), &lower[1..]);
+    let busiest = spelled(*in_busiest);
+
+    for (path, template) in COUNTED_IN {
+        let claim = template
+            .replace("{n}", lower)
+            .replace("{N}", &upper)
+            .replace("{busiest}", busiest);
+        let text = std::fs::read_to_string(root.join(path)).unwrap_or_else(|_| {
+            panic!("read {path}, which COUNTED_IN names — update that table if it moved")
+        });
+        assert!(
+            flattened(&text).contains(&claim),
+            "{path} should say {claim:?}, because that is how many `#[ignore]` attributes \
+             there are ({total} across {} files, {busiest} in the busiest). Every entry in \
+             COUNTED_IN states this number and they move together.",
+            per_file.len()
+        );
+    }
+}
+
+/// The matrix comment counts the runners and the targets it describes.
+///
+/// `ci.yml` opens its coverage note by counting both sides — the runners it
+/// lists itself and the targets `release.yml` publishes. Both were true when
+/// written and neither was checked, which is the arrangement that let the
+/// sentence beneath them claim the wrong two targets were untested for the
+/// length of one release.
+///
+/// Read from the two workflows rather than from a list written here, the same
+/// way the npm wrapper's targets are, so each file stays the one place its own
+/// side is added.
+#[test]
+fn the_matrix_comment_counts_the_runners_and_the_targets_it_describes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".github")
+        .join("workflows");
+
+    let ci = std::fs::read_to_string(root.join("ci.yml")).expect("read ci.yml");
+    let lists: Vec<&str> = ci
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("os: [")?.strip_suffix(']'))
+        .collect();
+    assert_eq!(
+        lists.len(),
+        1,
+        "ci.yml has {} matrices spelled `os: [...]` on one line, and this guard reads the \
+         first — the coverage sentence describes one, so teach it which before adding another",
+        lists.len()
+    );
+    let runners = lists[0].split(',').count();
+
+    let release = std::fs::read_to_string(root.join("release.yml")).expect("read release.yml");
+    let mut targets: Vec<&str> = release
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("target: "))
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+
+    assert!(
+        runners > 2 && targets.len() > 3,
+        "found {runners} runners and {} targets, so this is no longer reading the workflows",
+        targets.len()
+    );
+
+    let runners_word = spelled(runners);
+    let claim = format!(
+        "{}{} runners against {} released targets",
+        runners_word[..1].to_uppercase(),
+        &runners_word[1..],
+        spelled(targets.len())
+    );
+    assert!(
+        flattened(&ci).contains(&claim),
+        "ci.yml should say {claim:?}: its own matrix lists {runners} runners and release.yml \
+         builds {} targets. The rest of that comment block — the host table, which targets \
+         ship unexecuted, how many legs match their release host — is derived from the same \
+         two lists and is not read here, so check it in the same pass.",
+        targets.len()
+    );
 }

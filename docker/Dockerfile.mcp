@@ -14,9 +14,14 @@
 # whole point.
 #
 # It is built and *run* by CI on every pull request, which is not ceremony: the
-# sibling shipped for weeks unbuildable, missing the `migrations` directory that
-# `include_str!` needs, because nothing ever built it. An image nobody builds is
-# a file that claims something.
+# sibling was once unbuildable, missing the `migrations` directory that
+# `include_str!` needs. That predates this repository — the fix has been in
+# `docker/Dockerfile` since the first commit — so how long it lasted is not
+# something this history can show, and the sentence no longer guesses. What is
+# checkable is the shape of the failure: an image built only at release time
+# tells you it is broken at the moment you are least able to act. `release.yml`
+# builds the cloud image only on a tag; what changed is that CI now builds both
+# images on every pull request, which is where that lesson landed.
 
 FROM rust:1.97-bookworm AS build
 WORKDIR /src
@@ -30,8 +35,9 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 # The migrations are `include_str!`d into the binary rather than read at run
-# time, so they are a build input and not data. This is the omission that kept
-# the sibling image from ever building.
+# time, so they are a build input and not data. Leaving them out is the omission
+# the header describes, and it is why that image is built here on every pull
+# request rather than only at release time.
 COPY migrations ./migrations
 RUN cargo build --release --locked --bin leteo
 

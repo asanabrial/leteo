@@ -16,9 +16,11 @@ env:
   CARGO_TERM_COLOR: always
 
 # Every job below gates a merge, and none of them is report-only. `main`
-# requires one status check per job with `enforce_admins` on, so a red one
-# blocks the pull request instead of sitting in it as advice. The count lives in
-# the note on `unit-tests` rather than here, because it changes with the matrix.
+# requires one status check for every matrix leg and one for every job that is
+# not a matrix, with `enforce_admins` on, so a red one blocks the pull request
+# instead of sitting in it as advice. The count lives in the note on
+# `unit-tests` rather than here, because it changes whenever this file gains a
+# leg or a job.
 #
 # Until #48 protection listed only the `unit-tests` legs, which left
 # `cloud-tests` and `container-images` running on every pull request and unable
@@ -53,6 +55,12 @@ env:
 #                                            green on attempt 2 of the same
 #                                            commit
 #
+# `attempts` counts workflow attempts in which the job ran, not job records:
+# `unit-tests` is a matrix, so the jobs endpoint returns one record per leg and
+# this row would be correspondingly larger counted that way. Attempts is the
+# unit that answers the question being asked — whether this job has ever stopped
+# a merge — and it is the same unit for all three rows.
+#
 # So the only flake this WORKFLOW has recorded is in a job that has been
 # blocking merges all along, and the two being added have a clean attempt-level
 # record. Scope that deliberately: `release.yml` and `publish-registries.yml`
@@ -82,18 +90,21 @@ jobs:
     # BLOCKED, because the required check could no longer be produced by
     # anything.
     #
-    # Protection therefore lists one context per leg, and the count is part of
-    # the trap: #42 set it to three, #45 added `ubuntu-22.04-arm` for four, and
-    # #48 brought the other two jobs in for six. Whoever changes the matrix next
-    # changes the required checks with it, whether or not they touch this line.
+    # Protection therefore lists one context per leg of this matrix plus one
+    # for each job that is not a matrix, and the count is part of the trap: #42
+    # set it to three, #45 added `ubuntu-22.04-arm` for four, and #48 brought
+    # `cloud-tests` and `container-images` in for six. Whoever changes the
+    # matrix next changes the required checks with it, whether or not they
+    # touch this line.
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      # Without this, the first leg to go red cancels the other two, so one push
-      # shows one platform's failures and the next platform's are only found
-      # after that one is fixed. The whole point of the matrix is to see all of
-      # it at once, and serialising the discovery is what makes a cross-platform
-      # fix take three rounds instead of one.
+      # Without this, the first leg to go red cancels every other leg, so one
+      # push shows one platform's failures and the next platform's are only
+      # found after that one is fixed. The whole point of the matrix is to see
+      # all of it at once, and serialising the discovery is what turns a
+      # cross-platform fix into one round per platform. The `os:` list owns how
+      # many that is; this sentence deliberately does not.
       fail-fast: false
       matrix:
         # Four runners against five released targets. `macos-latest` is an
@@ -122,16 +133,20 @@ jobs:
         #
         # So three of the four legs test on the host that builds what ships,
         # and `ubuntu-latest` is the single exception rather than the arm leg
-        # being the single match. It is the exception because it is the one
-        # place `release.yml` pins the image: `ubuntu-22.04`, chosen because on
-        # glibc the build host sets the floor for who can run the result, after
-        # `ubuntu-latest` moved to 24.04 and shipped a v0.1.0 that would not
-        # start on Debian 12. That floor is the half this matrix does not
-        # cover, and it is the half that has actually broken a release.
+        # being the single match. `release.yml` pins both of its Linux images —
+        # `ubuntu-22.04` and `ubuntu-22.04-arm` — because on glibc the build
+        # host sets the floor for who can run the result, after `ubuntu-latest`
+        # moved to 24.04 and shipped a v0.1.0 that would not start on Debian
+        # 12. This matrix matches the arm pin and not the x86-64 one, so that
+        # floor is the half it does not cover. Both Linux targets shipped 0.1.0
+        # with the raised floor — `release.yml` says so beside the arm entry,
+        # and 0.1.1 pinned both — so the uncovered half is the one that was
+        # reported, not the only one that broke.
         #
-        # Left as it is deliberately: pinning here would close that gap and
-        # stop testing the newer toolchain, which is a separate trade with its
-        # own measurement rather than a free win to fold in.
+        # `ubuntu-latest` is left floating deliberately: pinning it as well
+        # would close the gap and leave no Linux leg on a moving image. That is
+        # a separate trade with its own measurement rather than a free win to
+        # fold in.
         #
         # What the matrix buys beyond that is the file handling: `src/setup/`
         # writes into other tools' configuration and `src/setup/removal/` takes
@@ -143,10 +158,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          # A failing run saves its cache too. Without this the first red run
-          # leaves nothing behind, so the fix pushed after it compiles the whole
-          # dependency tree again — which is what happened here, twice, at three
-          # to eight minutes a platform.
+          # A failing run saves its cache too. Without this a red run leaves
+          # nothing behind, so the fix pushed after it recompiles the whole
+          # dependency tree — minutes per platform, on every red run rather
+          # than once. The reason stands on the mechanism. An earlier version
+          # of this note also counted how often it had bitten, and that count
+          # was not one this repository's own history could show.
           cache-on-failure: true
       # `--locked`, because the release workflow builds that way. Without it CI
       # can resolve a newer dependency set than the one that ships, and "it
@@ -169,8 +186,13 @@ jobs:
   # `cloudstore/tests.rs` checks that every query narrows to its tenant by
   # reading the source, and `auth.rs` splits the no-project refusal out so an
   # unconditional test can reach it. What no unconditional test can do is run
-  # the grants, wildcards and revocation against a real database, which is what
-  # the eleven `#[ignore]`d tests are and what this job exists to run.
+  # any of it against a real database, which is what the eleven `#[ignore]`d
+  # tests need and what this job exists to run.
+  #
+  # What those eleven cover is not summarised here. Every summary this comment
+  # has carried turned out narrower than the set it described, and a list that
+  # must be re-counted whenever a test is added is the same trap as a hard-coded
+  # leg count. `cargo test -- --ignored` is the list.
   cloud-tests:
     name: Cloud Tests
     runs-on: ubuntu-latest
@@ -201,12 +223,17 @@ jobs:
   # Linux images, so a Windows or macOS runner would either fail to build them
   # or build the same Linux artifact more slowly.
   #
-  # Both images, built and one of them run. The cloud image shipped for weeks
-  # unbuildable — it was missing the `migrations` directory that `include_str!`
-  # needs — because nothing ever built it, and a Dockerfile nobody builds is a
-  # file that claims something. Building is not enough on its own either: what
-  # the MCP directories check, and what a user actually needs, is that the
-  # container starts and answers. So this one is asked for its tools.
+  # Both images, built and one of them run. The cloud image was once
+  # unbuildable for want of the `migrations` directory that `include_str!`
+  # needs — `docker/Dockerfile` carries the exact error. That predates this
+  # repository: the fix has been in the file since the first commit, so the
+  # story is inherited and the duration is not one this history can show.
+  # `release.yml` does build this image on every tag, so the lesson is narrower
+  # than nobody building it: an image built only at release time tells you it is
+  # broken at the moment you are least able to act. That is why this job builds
+  # both images on every pull request instead. Building is not enough on its own
+  # either: what the MCP directories check, and what a user actually needs, is
+  # that the container starts and answers. So this one is asked for its tools.
   container-images:
     name: Container Images
     runs-on: ubuntu-latest

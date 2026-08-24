@@ -215,6 +215,11 @@ jobs:
       # label read `v0.1.3` while the tag beside it read `0.1.3` — one version
       # string spelled two ways in one file.
       #
+      # They are held to the merge's list by
+      # `every_metadata_action_derives_the_version_from_the_same_patterns` in
+      # `tests/repository_guards.rs`, which fails if the two stop matching —
+      # this comment used to be the only thing keeping them the same.
+      #
       # Not established: these labels sit in each architecture's image config,
       # and the index the tag resolves to after the merge carries no annotations
       # of its own. GHCR is documented to link a package to its repository by
@@ -279,6 +284,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+      # The tags actually published. Kept identical to the per-architecture
+      # step's, which derives the version label from them; the guard named
+      # above fails if they diverge.
       - id: meta
         uses: docker/metadata-action@v5
         with:

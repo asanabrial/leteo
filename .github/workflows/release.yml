@@ -157,11 +157,122 @@ jobs:
 
   # Container image for the optional cloud service. The local product ships as
   # a plain binary and needs no image.
+  #
+  # Each architecture on a runner of its own, and a manifest joining them
+  # afterwards. The shorter answer is one runner with QEMU and a `platforms:`
+  # line, and it was not taken for a reason this file already records: the
+  # binary matrix above builds `aarch64-unknown-linux-gnu` on a native
+  # `ubuntu-22.04-arm` runner rather than cross-compiling it from x86-64.
+  # Emulating that same architecture for the image, in the same file, would be
+  # answering one question two ways. (Why the binary is built natively is a
+  # separate question this file does not answer; the comment on that matrix
+  # entry records a glibc floor and nothing about hosts.)
+  #
+  # What it costs is this shape — a matrix that pushes by digest and a second
+  # job to merge them — against a QEMU step and one `platforms:` line. What it
+  # buys is that neither half of the image is built under emulation, which
+  # matters here more than it would for most images because `docker/Dockerfile`
+  # runs a full `cargo build --release`: a long CPU-bound compile is the worst
+  # case for user-mode emulation, not a file copy.
   container:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # So that a failing leg does not cancel the other mid-push, and so one
+      # run says whether one architecture broke or both. Either setting can
+      # leave the surviving architecture's digest in the registry belonging to
+      # no tag: `container-manifest` needs every leg, so a failed matrix skips
+      # the merge and no tag is ever written, but the pushed blob is there
+      # until it is pruned. That is the accepted cost of finding out about both
+      # failures at once, not something this line prevents.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-22.04-arm
+            platform: linux/arm64
     steps:
       - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # This step is here because an earlier draft moved it wholesale down to
+      # the merge along with the tags, which silently stopped the image carrying
+      # any `org.opencontainers.image.*` label: `imagetools create` builds an
+      # index over manifests that already exist and cannot write into their
+      # configs, and `docker/Dockerfile` has no `LABEL` of its own to fall back
+      # on.
+      #
+      # The tags it produces here are never pushed — the build below pushes by
+      # digest and the merge applies the tags. They are written out anyway, and
+      # kept identical to the merge's, because `metadata-action` derives
+      # `org.opencontainers.image.version` from whichever patterns it is given.
+      # Left to its defaults on a tag push it answers the raw ref name, so the
+      # label read `v0.1.3` while the tag beside it read `0.1.3` — one version
+      # string spelled two ways in one file.
+      #
+      # Not established: these labels sit in each architecture's image config,
+      # and the index the tag resolves to after the merge carries no annotations
+      # of its own. GHCR is documented to link a package to its repository by
+      # `.source`; whether it follows a child config to find one has not been
+      # measured here, and saying so is cheaper than assuming either way.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      # Pushed by digest rather than by tag, because two jobs writing the same
+      # tag would leave whichever finished last as the whole image and the other
+      # architecture unreachable. The tags are applied once, by the merge.
+      - id: built
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      # The file is named for the digest, which is what the merge assembles;
+      # its contents are the platform, which is what the merge then checks it
+      # published. The upload cannot be named for the platform, however much
+      # that would read better, because `linux/amd64` contains a `/` and an
+      # artifact name may not — hence the matrix index.
+      - name: Hand the digest and its platform to the merge
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.built.outputs.digest }}"
+          test -n "$digest" || {
+            echo "the build produced no digest, so there is nothing to merge"
+            exit 1
+          }
+          echo "${{ matrix.platform }}" > "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The tags live here and nowhere else, so a half-finished matrix publishes no
+  # tag at all rather than a tag that means one architecture.
+  container-manifest:
+    needs: container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -175,15 +286,50 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # No guard on the digests being there. `needs: container` is satisfied
+      # only when every leg succeeded, and every leg's upload carries
+      # `if-no-files-found: error`, so this job does not start with the
+      # directory empty. An earlier draft refused the empty set here and
+      # reported that every leg had failed — a sentence describing the case in
+      # which this job is skipped rather than run.
+      - name: Join the architectures under the release tags
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+      # Asked rather than assumed: `imagetools create` succeeds on a single-
+      # architecture list, so what the manifest ends up holding is the only
+      # thing that distinguishes this change from the one it replaces.
+      #
+      # The architectures come from the files the matrix wrote rather than from
+      # a list repeated here. Written out, this step would keep checking the
+      # old two after somebody added a third to the matrix, and pass — which is
+      # the failure it exists to catch.
+      - name: The published tag names every architecture that was built
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          manifest=$(docker buildx imagetools inspect \
+            "ghcr.io/${{ github.repository }}:${version}" --raw)
+          echo "$manifest"
+          # Read into a variable first. `bash -e` does not act on a command
+          # substitution used as a `for` word list, so written inline an empty
+          # or failed read would run the loop zero times and leave this step
+          # reporting that every architecture it built was present.
+          platforms=$(cat ./* | cut -d/ -f2 | sort -u)
+          test -n "$platforms" || {
+            echo "no platforms were handed over, so there is nothing to check"
+            exit 1
+          }
+          for platform in $platforms; do
+            echo "$manifest" | jq -e \
+              --arg want "$platform" \
+              '.manifests | map(.platform.architecture) | index($want)' > /dev/null \
+              || { echo "the published manifest does not name $platform"; exit 1; }
+          done
 
   # Everything a tag should reach beyond GitHub, in its own file so that a
   # release which already happened can still be asked to publish — see the note

@@ -17,6 +17,19 @@ All notable changes to Leteo are documented in this file.
   Release archives already downloaded are unaffected — they carry the binary
   and the uninstaller inside them and fetch nothing.
 
+### Fixed
+
+- **`ghcr.io/asanabrial/leteo` publishes `linux/arm64` as well as
+  `linux/amd64`.** It shipped amd64 alone, because the build step passed no
+  platform and took whatever the runner was, so an Apple Silicon Mac or an
+  arm64 server ran the cloud image under emulation — working, and slower for
+  no reason visible from the outside. Each architecture is now built on a
+  runner of its own and joined under the release tags, rather than emulated —
+  as the release binaries for that architecture already are.
+
+  The published tag names are unchanged, and nothing about the local product
+  changes — it ships as a plain binary and uses no image.
+
 ## [0.1.2] - 2026-08-12
 
 The npm wrapper published in 0.1.1 could not download on Linux. This is that,

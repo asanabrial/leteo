@@ -186,8 +186,9 @@ jobs:
   # `cloudstore/tests.rs` checks that every query narrows to its tenant by
   # reading the source, and `auth.rs` splits the no-project refusal out so an
   # unconditional test can reach it. What no unconditional test can do is run
-  # any of it against a real database, which is what the eleven `#[ignore]`d
-  # tests need and what this job exists to run.
+  # any of it against a real database, which is what the eleven tests carrying
+  # `#[ignore = "requires TEST_DATABASE_URL ..."]` need, and what this job
+  # exists to run.
   #
   # What those eleven cover is not summarised here. Every summary this comment
   # has carried turned out narrower than the set it described, and a list that

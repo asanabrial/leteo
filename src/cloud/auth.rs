@@ -454,8 +454,11 @@ fn normalize_environment(environment: &str) -> String {
 /// Split out of `authorize_project` because it is the half that needs no
 /// database. Inside that method it sat behind a `&CloudStore`, so the only
 /// tests that could reach it were among the eleven carrying
-/// `#[ignore = "requires TEST_DATABASE_URL"]` - and none of those covers an
-/// empty project. A mutation deleting the check survived the entire suite.
+/// `#[ignore = "requires TEST_DATABASE_URL"]` — and none of those reaches
+/// this check. One of the eleven does assert the refusal, at the store's own
+/// entry points rather than here; what none of them can do is reach the auth
+/// layer without a database. A mutation deleting the check survived the
+/// entire suite.
 ///
 /// Normalising here rather than at the caller is what makes the check mean
 /// something: `"   "` and `"--"` are not empty as strings and are empty as
@@ -475,8 +478,9 @@ mod tests {
     /// A request that names no project is refused before any grant is read.
     ///
     /// This check used to sit behind a `&CloudStore`, which put it out of
-    /// reach of every test that runs without PostgreSQL - and none of the
-    /// eleven that need one covers it. Deleting it survived the whole suite.
+    /// reach of every test that runs without PostgreSQL — and none of the
+    /// eleven that need one reaches it here. Deleting it survived the whole
+    /// suite.
     ///
     /// The cases that matter are the ones that are not empty as strings:
     /// whitespace only, which trims away to nothing.

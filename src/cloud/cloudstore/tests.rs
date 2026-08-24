@@ -491,10 +491,15 @@ async fn dashboard_session_rechecks_role_and_token_revocation() {
 /// Every query against a tenant's rows narrows to that tenant.
 ///
 /// The behavioural proof of this lives behind `#[ignore]` and a PostgreSQL
-/// service: ten tests covering grants, wildcards and revocation, none of which
-/// run on a developer's machine. So the structural half is checked here, the
-/// way the router's is — read out of the source, so a query added tomorrow
-/// either narrows or is written down as deliberately global.
+/// service. Eleven such tests exist across the crate, ten of them in this file,
+/// and none runs on a developer's machine; `cargo test -- --ignored` is what
+/// runs them and what names them. What they cover is not summarised here, and
+/// no one of them is singled out as the proof of this property: every summary
+/// this comment has carried turned out narrower than the set it described.
+///
+/// So the structural half is checked here, the way the router's is — read out
+/// of the source, so a query added tomorrow either narrows or is written down
+/// as deliberately global.
 ///
 /// What makes this worth having: `list_mutations_since` takes
 /// `Option<&[String]>`, and `None` means *every project*. That is correct — it

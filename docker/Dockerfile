@@ -18,8 +18,11 @@ COPY src ./src
 # The migrations are `include_str!`d into the binary rather than read at run
 # time, so they are a build input and not data. Left out, the build fails at
 # `src/store/schema.rs` with "couldn't read
-# src/store/../../migrations/0001_baseline_after_the_tables.sql" — which is how
-# this image had never once been built.
+# src/store/../../migrations/0001_baseline_after_the_tables.sql" — which is what
+# an image nobody builds looks like when somebody finally does. The fix has been
+# in this file since the first commit here, so how long that lasted is not
+# something this repository's history can show, and CI now builds this image on
+# every pull request.
 COPY migrations ./migrations
 RUN cargo build --release --locked --bin leteo
 

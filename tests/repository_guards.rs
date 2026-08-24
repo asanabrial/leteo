@@ -1020,3 +1020,158 @@ fn the_matrix_comment_counts_the_runners_and_the_targets_it_describes() {
         targets.len()
     );
 }
+
+/// The `tags:` block belonging to the `metadata-action` step beginning at `from`.
+///
+/// Read as text rather than through a YAML parser because every other guard in
+/// this file reads these workflows the same way. An earlier draft of this
+/// sentence also claimed a parser would burden the release build, which is
+/// false: it would be a dev-dependency, and `cargo build --release` compiles
+/// none of those.
+fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let mut opened_at = None;
+    for line in lines.iter().skip(from + 1) {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if let Some(key) = opened_at {
+            // A blank line inside a block scalar is part of it. YAML ends the
+            // block at the first non-empty line indented no further than the
+            // key that opened it — the next input, the next step, or a comment
+            // between them. Breaking on the blank instead would have stopped
+            // reading at a list somebody had grouped for readability, and a
+            // pattern added below that gap would have gone unheld.
+            if trimmed.is_empty() {
+                continue;
+            }
+            if indent <= key {
+                break;
+            }
+            // A `#` line inside this block is a comment to the action, so a
+            // note added to one list and not the other is not a difference
+            // between them. Trailing space is normalised for the same reason:
+            // it makes no difference visible in the rendered YAML, and a build
+            // should not fail over one. Not measured: whether the action
+            // itself trims — if it did not, the result would be an invalid tag
+            // and a loud failure rather than a quiet one.
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            patterns.push(trimmed.trim_end().to_owned());
+            continue;
+        }
+        if trimmed.starts_with("- ") {
+            break;
+        }
+        if let Some(rest) = trimmed.strip_prefix("tags:") {
+            let rest = rest.trim();
+            // `tags: |` opens a block scalar; `tags: type=semver,...` is the
+            // whole list on one line. Reading only the block form returned an
+            // empty list and then reported the step as having no patterns,
+            // which is a different thing from having them on one line.
+            if rest.is_empty() || rest.starts_with('|') || rest.starts_with('>') {
+                opened_at = Some(indent);
+            } else {
+                patterns.push(rest.to_owned());
+                break;
+            }
+        }
+    }
+    patterns
+}
+
+/// Every `metadata-action` step in `release.yml` derives the version alike.
+///
+/// `docker/metadata-action` computes `org.opencontainers.image.version` from
+/// whichever tag patterns it is given, and `release.yml` runs it twice: once in
+/// the per-architecture job, which uses it for `labels:` alone, and once in the
+/// merge, which publishes the tags. #14 restored the first of those without its
+/// patterns, so it fell back to the action's defaults and would have published
+/// `version=v0.1.3` beside a tag reading `0.1.3` — one version string spelled
+/// two ways in one file. Two blind reviewers found it independently, and the
+/// repair was to write the patterns out in both places.
+///
+/// Which left a hand-written second copy, and AGENTS.md rule 3 says how those
+/// end. This is a guard over that duplication rather than a removal of it.
+///
+/// Not established: GitHub Actions has no include — it does not honour YAML
+/// anchors — and the documented way to share a value is a workflow-level `env`
+/// referenced from a step's `with:`. That was not tried. Whether a reference
+/// that failed to resolve would fail the step or would quietly yield an empty
+/// `tags:`, sending the action back to the defaults that caused the defect
+/// above, has not been measured here. No workflow in this repository uses that
+/// form, and `release.yml` runs on `v*` only, so a release would be the first
+/// thing to exercise it — which is a reason to be careful where it is
+/// introduced, not evidence that it does not work. A single `env` list held by
+/// a guard like this one would answer the duplication and the check together,
+/// and whoever can exercise it should prefer that to this.
+#[test]
+fn every_metadata_action_derives_the_version_from_the_same_patterns() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow =
+        std::fs::read_to_string(root.join(".github").join("workflows").join("release.yml"))
+            .expect("read release.yml");
+
+    let lines: Vec<&str> = workflow.lines().collect();
+    let blocks: Vec<(usize, Vec<String>)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            // Either spelling, and either quoting. A step that needs no
+            // `id:` is written `- uses: ...`, which is how every other action
+            // step in this workflow is written, and matching only the bare
+            // form would have left a third one unheld while this guard
+            // reported success. The dash is stripped without assuming one
+            // space after it, and the value without assuming it is unquoted.
+            let step = line.trim();
+            let step = step.strip_prefix('-').unwrap_or(step).trim_start();
+            step.strip_prefix("uses:").is_some_and(|action| {
+                action
+                    .trim()
+                    .trim_start_matches(['"', '\''])
+                    .starts_with("docker/metadata-action")
+            })
+        })
+        .map(|(index, _)| (index + 1, tag_patterns_after(&lines, index)))
+        .collect();
+
+    assert!(
+        blocks.len() > 1,
+        "found {} metadata-action steps in release.yml. Either one has been removed — which is \
+         the defect this guard exists for, since the per-architecture step is where the labels \
+         come from — or it is written in a form this scan no longer matches",
+        blocks.len()
+    );
+
+    let (first_line, first) = &blocks[0];
+    // The first entry, not merely some entry. `metadata-action` sorts the
+    // parsed tags by priority — these are all `type=semver` at the same
+    // default — and the sort is stable, so input order survives it; the
+    // `version` output, which becomes `org.opencontainers.image.version`, is
+    // taken from the first tag of that list. A list containing the right
+    // pattern is not the same as a list led by it: `{{version}}` sitting
+    // behind `{{major}}.{{minor}}` labels the image `0.1` while publishing
+    // `0.1.3`.
+    let Some(leads) = first.first() else {
+        panic!(
+            "the metadata-action at release.yml:{first_line} has no `tags:` input at all, so it \
+             falls back to the action's own defaults and labels the image with the raw ref name"
+        );
+    };
+    assert!(
+        leads.contains("type=semver") && leads.contains("{{version}}"),
+        "the metadata-action at release.yml:{first_line} leads with {leads:?}. \
+         `org.opencontainers.image.version` is taken from the first pattern that resolves, so \
+         unless that is the full semver the label disagrees with the tag published beside it"
+    );
+
+    for (line, patterns) in &blocks[1..] {
+        assert_eq!(
+            patterns, first,
+            "the metadata-action steps at release.yml:{first_line} and release.yml:{line} were \
+             given different tag patterns. Both derive `org.opencontainers.image.version` and one \
+             of them also publishes the tags, so a difference here is an image whose version label \
+             disagrees with its own tag"
+        );
+    }
+}

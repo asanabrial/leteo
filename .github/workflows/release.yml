@@ -161,10 +161,12 @@ jobs:
   # Each architecture on a runner of its own, and a manifest joining them
   # afterwards. The shorter answer is one runner with QEMU and a `platforms:`
   # line, and it was not taken for a reason this file already records: the
-  # binary matrix above builds `aarch64-unknown-linux-gnu` on `ubuntu-22.04-arm`
-  # rather than cross-compiling it, because arm64 Linux needed a native host.
-  # Emulating that same architecture, in the same file as the decision not to
-  # cross-compile it, would contradict that decision.
+  # binary matrix above builds `aarch64-unknown-linux-gnu` on a native
+  # `ubuntu-22.04-arm` runner rather than cross-compiling it from x86-64.
+  # Emulating that same architecture for the image, in the same file, would be
+  # answering one question two ways. (Why the binary is built natively is a
+  # separate question this file does not answer; the comment on that matrix
+  # entry records a glibc floor and nothing about hosts.)
   #
   # What it costs is this shape — a matrix that pushes by digest and a second
   # job to merge them — against a QEMU step and one `platforms:` line. What it
@@ -198,18 +200,33 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # Here for `labels:` alone — the tags belong to the merge. An earlier
-      # draft of this change moved the whole `metadata-action` step down to the
-      # merge along with the tags, which silently stopped the image carrying any
-      # `org.opencontainers.image.*` label: `imagetools create` builds an index
-      # over manifests that already exist and cannot write into their configs,
-      # and `docker/Dockerfile` has no `LABEL` of its own to fall back on. The
-      # first of those labels, `.source`, is what GHCR reads to link a package
-      # to this repository.
+      # This step is here because an earlier draft moved it wholesale down to
+      # the merge along with the tags, which silently stopped the image carrying
+      # any `org.opencontainers.image.*` label: `imagetools create` builds an
+      # index over manifests that already exist and cannot write into their
+      # configs, and `docker/Dockerfile` has no `LABEL` of its own to fall back
+      # on.
+      #
+      # The tags it produces here are never pushed — the build below pushes by
+      # digest and the merge applies the tags. They are written out anyway, and
+      # kept identical to the merge's, because `metadata-action` derives
+      # `org.opencontainers.image.version` from whichever patterns it is given.
+      # Left to its defaults on a tag push it answers the raw ref name, so the
+      # label read `v0.1.3` while the tag beside it read `0.1.3` — one version
+      # string spelled two ways in one file.
+      #
+      # Not established: these labels sit in each architecture's image config,
+      # and the index the tag resolves to after the merge carries no annotations
+      # of its own. GHCR is documented to link a package to its repository by
+      # `.source`; whether it follows a child config to find one has not been
+      # measured here, and saying so is cheaper than assuming either way.
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
       # Pushed by digest rather than by tag, because two jobs writing the same
       # tag would leave whichever finished last as the whole image and the other
       # architecture unreachable. The tags are applied once, by the merge.
@@ -230,10 +247,13 @@ jobs:
       # artifact name may not — hence the matrix index.
       - name: Hand the digest and its platform to the merge
         run: |
-          set -o pipefail
+          set -euo pipefail
           mkdir -p /tmp/digests
           digest="${{ steps.built.outputs.digest }}"
-          test -n "$digest"
+          test -n "$digest" || {
+            echo "the build produced no digest, so there is nothing to merge"
+            exit 1
+          }
           echo "${{ matrix.platform }}" > "/tmp/digests/${digest#sha256:}"
       - uses: actions/upload-artifact@v6
         with:
@@ -275,7 +295,7 @@ jobs:
       - name: Join the architectures under the release tags
         working-directory: /tmp/digests
         run: |
-          set -o pipefail
+          set -euo pipefail
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
@@ -290,12 +310,21 @@ jobs:
       - name: The published tag names every architecture that was built
         working-directory: /tmp/digests
         run: |
-          set -o pipefail
+          set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           manifest=$(docker buildx imagetools inspect \
             "ghcr.io/${{ github.repository }}:${version}" --raw)
           echo "$manifest"
-          for platform in $(cat ./* | cut -d/ -f2 | sort -u); do
+          # Read into a variable first. `bash -e` does not act on a command
+          # substitution used as a `for` word list, so written inline an empty
+          # or failed read would run the loop zero times and leave this step
+          # reporting that every architecture it built was present.
+          platforms=$(cat ./* | cut -d/ -f2 | sort -u)
+          test -n "$platforms" || {
+            echo "no platforms were handed over, so there is nothing to check"
+            exit 1
+          }
+          for platform in $platforms; do
             echo "$manifest" | jq -e \
               --arg want "$platform" \
               '.manifests | map(.platform.architecture) | index($want)' > /dev/null \

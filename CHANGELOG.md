@@ -24,9 +24,8 @@ All notable changes to Leteo are documented in this file.
   platform and took whatever the runner was, so an Apple Silicon Mac or an
   arm64 server ran the cloud image under emulation — working, and slower for
   no reason visible from the outside. Each architecture is now built on a
-  runner of its own and joined under one tag, rather than emulated: the same
-  reasoning that already builds the arm64 binary natively instead of
-  cross-compiling it.
+  runner of its own and joined under the release tags, rather than emulated —
+  as the release binaries for that architecture already are.
 
   The published tag names are unchanged, and nothing about the local product
   changes — it ships as a plain binary and uses no image.

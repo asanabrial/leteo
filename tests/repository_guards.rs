@@ -1020,3 +1020,97 @@ fn the_matrix_comment_counts_the_runners_and_the_targets_it_describes() {
         targets.len()
     );
 }
+
+/// The `tags:` block belonging to the `metadata-action` step beginning at `from`.
+///
+/// Read from the file rather than from a YAML parser because every other guard
+/// here reads these workflows as text, and a dependency added for one test is a
+/// dependency the release build carries.
+fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let mut opened_at = None;
+    for line in lines.iter().skip(from + 1) {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if let Some(key) = opened_at {
+            // A block scalar ends at the first line indented no further than
+            // the key that opened it — the next input, the next step, or a
+            // comment between them.
+            if trimmed.is_empty() || indent <= key {
+                break;
+            }
+            patterns.push(trimmed.to_owned());
+            continue;
+        }
+        if trimmed.starts_with("- ") {
+            break;
+        }
+        if trimmed.starts_with("tags:") {
+            opened_at = Some(indent);
+        }
+    }
+    patterns
+}
+
+/// Every `metadata-action` derives the version label from the same patterns.
+///
+/// `docker/metadata-action` computes `org.opencontainers.image.version` from
+/// whichever tag patterns it is given, and `release.yml` runs it twice: once in
+/// the per-architecture job, which uses it for `labels:` alone, and once in the
+/// merge, which publishes the tags. #14 restored the first of those without its
+/// patterns, so it fell back to the action's defaults and would have published
+/// `version=v0.1.3` beside a tag reading `0.1.3` — one version string spelled
+/// two ways in one file. Two blind reviewers found it independently, and the
+/// repair was to write the patterns out in both places.
+///
+/// Which left a hand-written second copy, and AGENTS.md rule 3 says how those
+/// end. GitHub Actions has no include: it rejects YAML anchors, and the
+/// documented single source is a workflow-level `env` referenced from a step's
+/// `with:`. That was not taken, and the reason is worth recording, because it
+/// is a trade rather than an oversight. No workflow here uses that form yet;
+/// `release.yml` runs on `v*` only, so nothing exercises it before a release;
+/// and if the reference did not resolve, `tags:` would be empty and the action
+/// would fall back to its defaults — which is precisely the defect above,
+/// silently, at the one moment nobody is watching. A second copy that is
+/// checked beats a single copy that is not.
+#[test]
+fn every_metadata_action_derives_the_version_from_the_same_patterns() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow =
+        std::fs::read_to_string(root.join(".github").join("workflows").join("release.yml"))
+            .expect("read release.yml");
+
+    let lines: Vec<&str> = workflow.lines().collect();
+    let blocks: Vec<(usize, Vec<String>)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim().starts_with("uses: docker/metadata-action"))
+        .map(|(index, _)| (index + 1, tag_patterns_after(&lines, index)))
+        .collect();
+
+    assert!(
+        blocks.len() > 1,
+        "found {} metadata-action steps in release.yml, so this is no longer reading it",
+        blocks.len()
+    );
+
+    let (first_line, first) = &blocks[0];
+    assert!(
+        first
+            .iter()
+            .any(|pattern| pattern.contains("type=semver") && pattern.contains("{{version}}")),
+        "the metadata-action at release.yml:{first_line} has no semver pattern, so \
+         `org.opencontainers.image.version` falls back to the raw ref name and the label stops \
+         matching the tag published beside it"
+    );
+
+    for (line, patterns) in &blocks[1..] {
+        assert_eq!(
+            patterns, first,
+            "the metadata-action steps at release.yml:{first_line} and release.yml:{line} were \
+             given different tag patterns. Both derive `org.opencontainers.image.version` and one \
+             of them also publishes the tags, so a difference here is an image whose version label \
+             disagrees with its own tag"
+        );
+    }
+}

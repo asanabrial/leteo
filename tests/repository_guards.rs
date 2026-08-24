@@ -1021,14 +1021,6 @@ fn the_matrix_comment_counts_the_runners_and_the_targets_it_describes() {
     );
 }
 
-/// The same patterns in a stable order, so that reordering a list is not
-/// reported as changing it.
-fn sorted(patterns: &[String]) -> Vec<String> {
-    let mut ordered = patterns.to_vec();
-    ordered.sort();
-    ordered
-}
-
 /// The `tags:` block belonging to the `metadata-action` step beginning at `from`.
 ///
 /// Read as text rather than through a YAML parser because every other guard in
@@ -1055,22 +1047,40 @@ fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
             if indent <= key {
                 break;
             }
-            // Trailing space is not a difference `metadata-action` can see, so
-            // it must not be one this guard reports.
+            // A `#` line inside this block is a comment to the action, so a
+            // note added to one list and not the other is not a difference
+            // between them. Trailing space is normalised for the same reason:
+            // it makes no difference visible in the rendered YAML, and a build
+            // should not fail over one. Not measured: whether the action
+            // itself trims — if it did not, the result would be an invalid tag
+            // and a loud failure rather than a quiet one.
+            if trimmed.starts_with('#') {
+                continue;
+            }
             patterns.push(trimmed.trim_end().to_owned());
             continue;
         }
         if trimmed.starts_with("- ") {
             break;
         }
-        if trimmed.starts_with("tags:") {
-            opened_at = Some(indent);
+        if let Some(rest) = trimmed.strip_prefix("tags:") {
+            let rest = rest.trim();
+            // `tags: |` opens a block scalar; `tags: type=semver,...` is the
+            // whole list on one line. Reading only the block form returned an
+            // empty list and then reported the step as having no patterns,
+            // which is a different thing from having them on one line.
+            if rest.is_empty() || rest.starts_with('|') || rest.starts_with('>') {
+                opened_at = Some(indent);
+            } else {
+                patterns.push(rest.to_owned());
+                break;
+            }
         }
     }
     patterns
 }
 
-/// Both `metadata-action` steps in `release.yml` derive the version alike.
+/// Every `metadata-action` step in `release.yml` derives the version alike.
 ///
 /// `docker/metadata-action` computes `org.opencontainers.image.version` from
 /// whichever tag patterns it is given, and `release.yml` runs it twice: once in
@@ -1107,14 +1117,20 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
         .iter()
         .enumerate()
         .filter(|(_, line)| {
-            // Either spelling. A step that needs no `id:` is written
-            // `- uses: ...`, which is how every other action step in this
-            // workflow is written, and matching only the bare form would have
-            // left a third one unheld while this guard reported success.
+            // Either spelling, and either quoting. A step that needs no
+            // `id:` is written `- uses: ...`, which is how every other action
+            // step in this workflow is written, and matching only the bare
+            // form would have left a third one unheld while this guard
+            // reported success. The dash is stripped without assuming one
+            // space after it, and the value without assuming it is unquoted.
             let step = line.trim();
-            step.strip_prefix("- ")
-                .unwrap_or(step)
-                .starts_with("uses: docker/metadata-action")
+            let step = step.strip_prefix('-').unwrap_or(step).trim_start();
+            step.strip_prefix("uses:").is_some_and(|action| {
+                action
+                    .trim()
+                    .trim_start_matches(['"', '\''])
+                    .starts_with("docker/metadata-action")
+            })
         })
         .map(|(index, _)| (index + 1, tag_patterns_after(&lines, index)))
         .collect();
@@ -1128,19 +1144,30 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
     );
 
     let (first_line, first) = &blocks[0];
+    // The first entry, not merely some entry. `metadata-action` sorts the
+    // parsed tags by priority — these are all `type=semver` at the same
+    // default — and the sort is stable, so input order survives it; the
+    // `version` output, which becomes `org.opencontainers.image.version`, is
+    // taken from the first tag of that list. A list containing the right
+    // pattern is not the same as a list led by it: `{{version}}` sitting
+    // behind `{{major}}.{{minor}}` labels the image `0.1` while publishing
+    // `0.1.3`.
+    let Some(leads) = first.first() else {
+        panic!(
+            "the metadata-action at release.yml:{first_line} has no `tags:` input at all, so it \
+             falls back to the action's own defaults and labels the image with the raw ref name"
+        );
+    };
     assert!(
-        first
-            .iter()
-            .any(|pattern| pattern.contains("type=semver") && pattern.contains("{{version}}")),
-        "the metadata-action at release.yml:{first_line} has no semver pattern, so \
-         `org.opencontainers.image.version` falls back to the raw ref name and the label stops \
-         matching the tag published beside it"
+        leads.contains("type=semver") && leads.contains("{{version}}"),
+        "the metadata-action at release.yml:{first_line} leads with {leads:?}. \
+         `org.opencontainers.image.version` is taken from the first pattern that resolves, so \
+         unless that is the full semver the label disagrees with the tag published beside it"
     );
 
     for (line, patterns) in &blocks[1..] {
         assert_eq!(
-            sorted(patterns),
-            sorted(first),
+            patterns, first,
             "the metadata-action steps at release.yml:{first_line} and release.yml:{line} were \
              given different tag patterns. Both derive `org.opencontainers.image.version` and one \
              of them also publishes the tags, so a difference here is an image whose version label \

@@ -11,7 +11,7 @@ use std::path::Path;
 
 mod support;
 
-use support::source_under;
+use support::{source_under, spelled};
 
 use assert_cmd::Command;
 
@@ -204,18 +204,6 @@ fn every_environment_variable_the_binary_honours_is_documented() {
     );
 }
 
-/// Spells a small number the way the README's prose does.
-fn spelled(count: usize) -> String {
-    match count {
-        10 => "ten".to_owned(),
-        11 => "eleven".to_owned(),
-        12 => "twelve".to_owned(),
-        13 => "thirteen".to_owned(),
-        14 => "fourteen".to_owned(),
-        other => panic!("nobody has written the word for {other}"),
-    }
-}
-
 #[test]
 fn every_count_the_readme_writes_out_matches_the_list_it_describes() {
     // A count in prose is a second copy of the list it counts. The skill said
@@ -299,7 +287,7 @@ fn every_file_and_guard_the_specs_name_is_one_that_exists() {
     let mut sources = source_under("src");
     // The specs cite the integration guards too, and those are not under `src`.
     // Collected here rather than through `source_under`, which insists on
-    // finding more than fifteen files and there are three.
+    // finding more than fifteen files and there are nowhere near that many.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     for entry in std::fs::read_dir(&root).expect("read tests").flatten() {
         let path = entry.path();

@@ -19,12 +19,16 @@ jobs:
   unit-tests:
     # Renaming this job renames the checks that branch protection requires, and
     # a matrix renames them whether you ask or not: GitHub appends the matrix
-    # values, so `Unit Tests` became `Unit Tests (ubuntu-latest)` and its two
+    # values, so `Unit Tests` became `Unit Tests (ubuntu-latest)` and its
     # siblings. `main` required the old name with `enforce_admins` on, which
-    # made every pull request unmergeable the moment this landed — green, and
+    # made every pull request unmergeable the moment that landed — green, and
     # BLOCKED, because the required check could no longer be produced by
-    # anything. Protection was updated to require the three names instead.
-    # Whoever changes this line next inherits the same trap.
+    # anything.
+    #
+    # Protection therefore lists one context per leg, and the count is part of
+    # the trap: #42 set it to three, and adding `ubuntu-22.04-arm` here made it
+    # four. Whoever changes the matrix next changes the required checks with
+    # it, whether or not they touch this line.
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -35,41 +39,48 @@ jobs:
       # fix take three rounds instead of one.
       fail-fast: false
       matrix:
-        # Three runners, and they execute three of the five released targets —
-        # not the three you would guess. `macos-latest` is an Apple Silicon
-        # image, which `release.yml` says in its own comment and relies on, so
-        # the macOS leg here is the `aarch64-apple-darwin` host triple and
-        # tests that target natively.
+        # Four runners against five released targets. `macos-latest` is an
+        # Apple Silicon image — `release.yml` says so in its own comment and
+        # depends on it — so the macOS leg is the `aarch64-apple-darwin` host
+        # triple and tests that target natively.
         #
-        # So what ships without ever being executed is the other pair:
+        # What ships without ever being executed is now one target, not two:
         #
         #   x86_64-apple-darwin      built on `macos-latest` by cross-compiling
         #                            from arm64 (`release.yml`, the note about
         #                            `macos-13` being the last Intel image and
-        #                            its pool being too small to wait on).
-        #                            Nothing runs it, here or there.
-        #   aarch64-unknown-linux-gnu  built natively on `ubuntu-22.04-arm`.
-        #                            That runner is hosted and already paid
-        #                            for by `release.yml`, so a fourth leg
-        #                            would cover it. Deliberately not added
-        #                            here — this change is the three-platform
-        #                            matrix issue #42 asked for. Filed as #45,
-        #                            which measures what arm64 Linux queue
-        #                            times cost before committing to a shape.
+        #                            its pool too small to wait on). Nothing
+        #                            runs it, here or there, and adding the
+        #                            runner that would means re-adopting the
+        #                            image that measurement rejected.
         #
-        # And "executes the target" means the triple, not the artifact. The
-        # Linux leg runs on `ubuntu-latest`; `release.yml` pins `ubuntu-22.04`
-        # for that same target on purpose, because on glibc the build host
-        # chooses who can run the result — `ubuntu-latest` moving to 24.04 is
-        # what shipped a v0.1.0 that would not start on Debian 12. So the one
-        # Linux property that has actually broken a release is set by a host
-        # this matrix does not use, and testing here does not cover it.
+        # Covering a target is two separate claims — the triple, and the host
+        # that built the shipped artifact — and they come apart in exactly one
+        # place here. Against `release.yml`'s build matrix:
         #
-        # What the matrix buys is the file handling: `src/setup/` writes into
-        # other tools' configuration and `src/setup/removal/` takes it back
-        # out, and where those files live and how paths inside them are spelled
-        # is decided per operating system rather than per architecture.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        #   ubuntu-22.04-arm   aarch64-unknown-linux-gnu   same host
+        #   macos-latest       aarch64-apple-darwin        same host
+        #   windows-latest     x86_64-pc-windows-msvc      same host
+        #   ubuntu-latest      x86_64-unknown-linux-gnu    NOT the same host
+        #
+        # So three of the four legs test on the host that builds what ships,
+        # and `ubuntu-latest` is the single exception rather than the arm leg
+        # being the single match. It is the exception because it is the one
+        # place `release.yml` pins the image: `ubuntu-22.04`, chosen because on
+        # glibc the build host sets the floor for who can run the result, after
+        # `ubuntu-latest` moved to 24.04 and shipped a v0.1.0 that would not
+        # start on Debian 12. That floor is the half this matrix does not
+        # cover, and it is the half that has actually broken a release.
+        #
+        # Left as it is deliberately: pinning here would close that gap and
+        # stop testing the newer toolchain, which is a separate trade with its
+        # own measurement rather than a free win to fold in.
+        #
+        # What the matrix buys beyond that is the file handling: `src/setup/`
+        # writes into other tools' configuration and `src/setup/removal/` takes
+        # it back out, and where those files live and how paths inside them are
+        # spelled is decided per operating system rather than per architecture.
+        os: [ubuntu-latest, ubuntu-22.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

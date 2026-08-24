@@ -157,27 +157,32 @@ jobs:
 
   # Container image for the optional cloud service. The local product ships as
   # a plain binary and needs no image.
+  #
   # Each architecture on a runner of its own, and a manifest joining them
   # afterwards. The shorter answer is one runner with QEMU and a `platforms:`
   # line, and it was not taken for a reason this file already records: the
   # binary matrix above builds `aarch64-unknown-linux-gnu` on `ubuntu-22.04-arm`
   # rather than cross-compiling it, because arm64 Linux needed a native host.
-  # Emulating that same architecture twenty lines below that decision would
-  # contradict it.
+  # Emulating that same architecture, in the same file as the decision not to
+  # cross-compile it, would contradict that decision.
   #
   # What it costs is this shape — a matrix that pushes by digest and a second
-  # job to merge them — against three lines. What it buys is that neither half
-  # of the image is built under emulation, which matters here more than it
-  # would for most images because `docker/Dockerfile` runs a full
-  # `cargo build --release`: a long CPU-bound compile is the worst case for
-  # user-mode emulation, not a file copy.
+  # job to merge them — against a QEMU step and one `platforms:` line. What it
+  # buys is that neither half of the image is built under emulation, which
+  # matters here more than it would for most images because `docker/Dockerfile`
+  # runs a full `cargo build --release`: a long CPU-bound compile is the worst
+  # case for user-mode emulation, not a file copy.
   container:
     needs: build
     runs-on: ${{ matrix.runner }}
     strategy:
-      # Without this, one architecture failing leaves the other pushed and
-      # unreferenced: the merge below never runs, and the digest sits in the
-      # registry belonging to no tag.
+      # So that a failing leg does not cancel the other mid-push, and so one
+      # run says whether one architecture broke or both. Either setting can
+      # leave the surviving architecture's digest in the registry belonging to
+      # no tag: `container-manifest` needs every leg, so a failed matrix skips
+      # the merge and no tag is ever written, but the pushed blob is there
+      # until it is pruned. That is the accepted cost of finding out about both
+      # failures at once, not something this line prevents.
       fail-fast: false
       matrix:
         include:
@@ -193,6 +198,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+      # Here for `labels:` alone — the tags belong to the merge. An earlier
+      # draft of this change moved the whole `metadata-action` step down to the
+      # merge along with the tags, which silently stopped the image carrying any
+      # `org.opencontainers.image.*` label: `imagetools create` builds an index
+      # over manifests that already exist and cannot write into their configs,
+      # and `docker/Dockerfile` has no `LABEL` of its own to fall back on. The
+      # first of those labels, `.source`, is what GHCR reads to link a package
+      # to this repository.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
       # Pushed by digest rather than by tag, because two jobs writing the same
       # tag would leave whichever finished last as the whole image and the other
       # architecture unreachable. The tags are applied once, by the merge.
@@ -202,19 +219,23 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
-      # The digest is what the merge needs and the only thing carried between
-      # jobs. Named after the platform so the two uploads cannot collide.
-      - name: Hand the digest to the merge
+      # The file is named for the digest, which is what the merge assembles;
+      # its contents are the platform, which is what the merge then checks it
+      # published. The upload cannot be named for the platform, however much
+      # that would read better, because `linux/amd64` contains a `/` and an
+      # artifact name may not — hence the matrix index.
+      - name: Hand the digest and its platform to the merge
         run: |
           set -o pipefail
           mkdir -p /tmp/digests
           digest="${{ steps.built.outputs.digest }}"
           test -n "$digest"
-          touch "/tmp/digests/${digest#sha256:}"
-      - uses: actions/upload-artifact@v4
+          echo "${{ matrix.platform }}" > "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v6
         with:
           name: digest-${{ strategy.job-index }}
           path: /tmp/digests/*
@@ -227,7 +248,7 @@ jobs:
     needs: container
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: /tmp/digests
           pattern: digest-*
@@ -245,36 +266,40 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+      # No guard on the digests being there. `needs: container` is satisfied
+      # only when every leg succeeded, and every leg's upload carries
+      # `if-no-files-found: error`, so this job does not start with the
+      # directory empty. An earlier draft refused the empty set here and
+      # reported that every leg had failed — a sentence describing the case in
+      # which this job is skipped rather than run.
       - name: Join the architectures under the release tags
         working-directory: /tmp/digests
         run: |
           set -o pipefail
-          # Deliberately not counted against the matrix: a number here would be
-          # a second copy of that list, and the step below asks the published
-          # manifest which architectures it actually holds, which is the thing
-          # the count was standing in for. This only refuses an empty set, where
-          # the glob would otherwise expand to a literal `*`.
-          ls -1 | grep -q . || {
-            echo "no digests were handed over, so every architecture leg failed"
-            exit 1
-          }
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
       # Asked rather than assumed: `imagetools create` succeeds on a single-
-      # architecture list, so the only thing that distinguishes this change from
-      # the one it replaces is what the manifest ends up holding.
-      - name: The published tag names both architectures
+      # architecture list, so what the manifest ends up holding is the only
+      # thing that distinguishes this change from the one it replaces.
+      #
+      # The architectures come from the files the matrix wrote rather than from
+      # a list repeated here. Written out, this step would keep checking the
+      # old two after somebody added a third to the matrix, and pass — which is
+      # the failure it exists to catch.
+      - name: The published tag names every architecture that was built
+        working-directory: /tmp/digests
         run: |
           set -o pipefail
           version="${GITHUB_REF_NAME#v}"
           manifest=$(docker buildx imagetools inspect \
             "ghcr.io/${{ github.repository }}:${version}" --raw)
           echo "$manifest"
-          for platform in amd64 arm64; do
+          for platform in $(cat ./* | cut -d/ -f2 | sort -u); do
             echo "$manifest" | jq -e \
               --arg want "$platform" \
-              '.manifests | map(.platform.architecture) | index($want)' > /dev/null
+              '.manifests | map(.platform.architecture) | index($want)' > /dev/null \
+              || { echo "the published manifest does not name $platform"; exit 1; }
           done
 
   # Everything a tag should reach beyond GitHub, in its own file so that a

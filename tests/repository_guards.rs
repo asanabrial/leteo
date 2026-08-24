@@ -187,19 +187,19 @@ fn no_test_opens_the_real_store() {
     );
 }
 
-/// Every column is written by something, or is one of the six that are not.
+/// Every column is written by something, or is named in `WRITTEN_BY_NOTHING`.
 ///
 /// Found by counting non-null values on a real store and then looking for a
-/// writer: six columns across two tables have neither. Three of them — the
-/// embedding trio — are argued for in the baseline migration itself, and the
-/// other three said nothing at all, so a reader of the schema would reasonably
-/// have assumed a memory can expire and a relation can be superseded by a later
-/// one. Neither happens.
+/// writer: some columns across two tables have neither. The embedding trio is
+/// argued for in the baseline migration itself, and the rest said nothing at
+/// all, so a reader of the schema would reasonably have assumed a memory can
+/// expire and a relation can be superseded by a later one. Neither happens.
 ///
-/// The list is the point rather than an exemption: a seventh dead column fails
-/// here, and so does one of these six coming to life, because then the sentence
-/// in `store-and-schema.md` §10 has stopped being true and somebody has to say
-/// what it does now.
+/// The list is the point rather than an exemption: a dead column missing from
+/// it fails here, and so does one of the named ones coming to life, because
+/// then the sentence in `store-and-schema.md` §10 has stopped being true and
+/// somebody has to say what it does now. How many there are belongs to the
+/// list.
 #[test]
 fn every_column_has_a_writer_or_is_named_as_having_none() {
     // Written down in the spec, and here, in the same words.
@@ -645,11 +645,19 @@ fn the_npm_wrapper_ships_this_version_for_the_targets_this_repository_builds() {
 
 /// Every manifest in the repository publishes the version this crate is.
 ///
-/// The number is written in six places and read by six different things:
-/// `Cargo.toml` for crates.io, `server.json` twice for the MCP registry,
-/// `npm/package.json` for the wrapper — which turns it into a release URL —
-/// and the marketplace and plugin manifests, which are what decides whether an
-/// installed plugin ever receives an update.
+/// The number is written in more files than anybody holds in their head, and
+/// each is read by something different: `Cargo.toml` for crates.io,
+/// `server.json` for the MCP registry — once for the server and once for each
+/// package it offers — `npm/package.json` for the wrapper, which turns it into
+/// a release URL, and the marketplace and plugin manifests, which are what
+/// decides whether an installed plugin ever receives an update.
+///
+/// How many that is belongs to the `manifests` table below and not to the
+/// paragraph above, which used to total them and to disagree with that table
+/// about `server.json` — a count in prose contradicting the code under it, in
+/// the file that guards counts. The first repair of that sentence replaced its
+/// wrong total with a wrong distance, which is why neither it nor this one
+/// carries a numeral now.
 ///
 /// None of them can see the others. A release that bumps the crate and forgets
 /// `server.json` publishes a registry entry pointing at the previous version;
@@ -658,7 +666,7 @@ fn the_npm_wrapper_ships_this_version_for_the_targets_this_repository_builds() {
 /// update when that field moves.
 ///
 /// So they are held to `CARGO_PKG_VERSION`, which is the one a build already
-/// reads. Adding a seventh manifest and not adding it here is the only way to
+/// reads. Adding a manifest and not adding it to that table is the only way to
 /// fall out of this, and that is a visible act rather than a forgotten one.
 #[test]
 fn every_manifest_publishes_the_version_this_crate_is() {
@@ -708,7 +716,18 @@ fn every_manifest_publishes_the_version_this_crate_is() {
     }
 }
 
-/// Real `#[ignore]` attributes under `src/`, per file that carries any.
+/// Whether a line is the attribute that marks a test as needing a database.
+///
+/// Written once because both scans below ask it — the counter over `src/` and
+/// the walk over `tests/`. Spelled out in each, a rename of the reason string
+/// would leave them measuring different sets, which is the shape this file
+/// exists to catch.
+fn needs_a_database(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("#[ignore") && line.contains("TEST_DATABASE_URL")
+}
+
+/// Tests needing a database, per file under `src/` that carries any.
 ///
 /// The distinction between an attribute and a mention of one is the whole
 /// guard. Doc comments in `src/cloud/` write `#[ignore]` in prose, so a
@@ -719,14 +738,19 @@ fn every_manifest_publishes_the_version_this_crate_is() {
 ///
 /// A line whose first non-space characters are the attribute is the attribute.
 /// A line reaching it through `///`, `//` or a string is prose about it.
+///
+/// Only attributes naming `TEST_DATABASE_URL` count, because that is the set
+/// the sentences describe: `tools/README.md` says how many tests carry that
+/// reason, and `ci.yml` is about what needs a real database. Counting every
+/// `#[ignore]` would make an unrelated one — a slow test, a flaky one — fail
+/// this guard with a message telling somebody to raise the number of tests
+/// said to need PostgreSQL, which would then be one more than do. A guard that
+/// instructs a false sentence is worse than no guard, because it is obeyed.
 fn ignored_attributes(sources: &[(String, String)]) -> Vec<(String, usize)> {
     let mut per_file: Vec<(String, usize)> = sources
         .iter()
         .map(|(path, text)| {
-            let count = text
-                .lines()
-                .filter(|line| line.trim_start().starts_with("#[ignore"))
-                .count();
+            let count = text.lines().filter(|line| needs_a_database(line)).count();
             (path.clone(), count)
         })
         .filter(|(_, count)| *count > 0)
@@ -744,7 +768,7 @@ fn ignored_attributes(sources: &[(String, String)]) -> Vec<(String, usize)> {
 const COUNTED_IN: [(&str, &str); 7] = [
     (
         ".github/workflows/ci.yml",
-        "which is what the {n} `#[ignore]`d",
+        "which is what the {n} tests carrying",
     ),
     (
         ".github/workflows/ci.yml",
@@ -814,22 +838,74 @@ fn every_prose_count_of_the_tests_that_need_a_database_matches_the_attributes() 
     let total: usize = per_file.iter().map(|(_, count)| count).sum();
     assert!(
         total > 5,
-        "only found {total} `#[ignore]` attributes, so this is no longer reading them"
+        "only found {total} `#[ignore]` attributes naming TEST_DATABASE_URL, so this is \
+         no longer reading them"
     );
 
     // The exclusion has to stay exercised, not merely have been exercised once
     // by hand. If every prose mention were reworded away, a naive matcher would
     // agree with this one forever and nobody would learn otherwise until the
     // next off-by-one.
+    //
+    // Compared against every line-start attribute rather than against `total`:
+    // `total` counts only the ones naming TEST_DATABASE_URL, so measuring the
+    // gap against it would let an unrelated `#[ignore = "slow"]` stand in for a
+    // prose mention and keep this green with nothing actually excluded. The
+    // narrowing opened that hole and this is where it closes.
     let mentions: usize = sources
         .iter()
         .map(|(_, text)| text.matches("#[ignore").count())
         .sum();
+    let attributes: usize = sources
+        .iter()
+        .map(|(_, text)| {
+            text.lines()
+                .filter(|line| line.trim_start().starts_with("#[ignore"))
+                .count()
+        })
+        .sum();
     assert!(
-        mentions > total,
-        "every `#[ignore` under src/ is now an attribute ({total} of {mentions}), so nothing \
-         here distinguishes one from a mention of one any more — restore a prose mention or \
-         retire this guard, but do not let it pass while measuring half of what it says"
+        mentions > attributes,
+        "every `#[ignore` under src/ now opens a line ({attributes} of {mentions}), so \
+         nothing here distinguishes an attribute from a mention of one any more — restore a \
+         prose mention or retire this guard, but do not let it pass while measuring half of \
+         what it says"
+    );
+
+    // `cloudstore/tests.rs` says these exist "across the crate", and the scan
+    // above reads `src/` alone. The integration tests are separate crates and
+    // carry none today; widening the scan to them would drag this guard's own
+    // string literals in, so the claim is held by keeping that true rather than
+    // by counting there.
+    let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("tests")];
+    let mut walked = 0;
+    let mut seen_a_subdirectory = false;
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("read tests").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                seen_a_subdirectory = true;
+                pending.push(path);
+            } else if path.extension().is_some_and(|kind| kind == "rs") {
+                let text = std::fs::read_to_string(&path).expect("read an integration test");
+                walked += 1;
+                assert!(
+                    !text.lines().any(needs_a_database),
+                    "{} carries a test needing a database, and the sentences this guard \
+                     holds say those live across the crate while it counts only src/",
+                    path.display()
+                );
+            }
+        }
+    }
+    // Named rather than counted: `tests/` holds one more file at its top level
+    // than the floor a count would put here, so losing the recursion — the
+    // defect this walk was rewritten to fix — would leave a count green while
+    // the only file in a subdirectory went unread. Ask for that file instead.
+    assert!(
+        walked > 3 && seen_a_subdirectory,
+        "walked {walked} files under tests/ and none of them in a subdirectory, so this is \
+         reading one level deep again and `support/` is going unread"
     );
 
     // A line inside a string literal could open with the attribute and be
@@ -873,9 +949,11 @@ fn every_prose_count_of_the_tests_that_need_a_database_matches_the_attributes() 
         });
         assert!(
             flattened(&text).contains(&claim),
-            "{path} should say {claim:?}, because that is how many `#[ignore]` attributes \
-             there are ({total} across {} files, {busiest} in the busiest). Every entry in \
-             COUNTED_IN states this number and they move together.",
+            "{path} should say {claim:?}, because that is how many tests carry an \
+             `#[ignore]` naming TEST_DATABASE_URL ({total} across {} files, {busiest} in \
+             the busiest). Every entry in COUNTED_IN states this number and they move \
+             together; an ignored test that needs no database is deliberately not among \
+             them.",
             per_file.len()
         );
     }

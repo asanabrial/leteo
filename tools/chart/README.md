@@ -20,20 +20,49 @@ says its 14% median is smaller than the noise it sits in, and charting a
 difference its own author would not defend is the opposite of why the figure
 exists.
 
-Everything else is derived. The medians are computed from the run lists rather
-than written beside them, because the first draft hard-coded `63,113` next to
-the four numbers it is the median of — and a hand-copied median is exactly the
-kind of second copy that survives a change to its source. `check_readings()`
-then recomputes every percentage the figure prints and refuses to render if one
-of them is not what the runs support.
+Every number is derived from those lists. The medians are computed rather than
+written beside them, because the first draft hard-coded `63,113` next to the four
+numbers it is the median of — and a hand-copied median is exactly the kind of
+second copy that survives a change to its source. The correctness counts are
+`len(WITHOUT)` and `len(WITH)` for the same reason: a fourth run added to one arm
+used to leave the lane still saying `0 of 3 right` beside four dots.
 
-That check has been verified by breaking what it claims to protect. Changing one
-run value, renaming the off-protocol run, and swapping the two arms each make it
-refuse, naming the figure it disagrees with:
+## What the check covers, and what it does not
 
-```
-AssertionError: median of all seven runs: the figure says 27%, the runs say 24%
-```
+`check_readings()` recomputes the four percentages the figure prints and refuses
+to write if one of them is not what the runs support. It also refuses a run that
+does not fit the axis, which would otherwise be drawn outside the canvas in
+silence.
+
+**It does not notice every change to a run.** The percentages are computed from
+`min(WITH)`, `max(WITHOUT)`, the two medians, `median(STRICT)` and `min(STRICT)`.
+Two of the seven runs feed none of those — `27,394`, which is neither the median
+nor the maximum of its arm, and `100,417`, which is above the two-element middle
+that forms the median of `WITH`. Move either one to another value inside the axis
+and every assertion passes while its dot moves. Nor are the card labels checked
+against the pair beside them: swap two of those strings and nothing objects.
+
+So read it as *the printed percentages agree with the printed runs*, which is
+what it asserts, and not as *the figure is correct*.
+
+It has been verified by breaking what it protects. Each of these makes it refuse,
+and the generator was restored byte for byte after each:
+
+| broken | what it says |
+| --- | --- |
+| one run value that feeds a reading (`55,189` → `60,000`) | `median of all seven runs: the figure says 27%, the runs say 24%` |
+| the off-protocol run renamed | `median, strict protocol only: the figure says 17%, the runs say 27%` |
+| the two arms swapped | `median of all seven runs: the figure says 27%, the runs say -36%` |
+| a run past the end of the axis (`100,417` → `250,000`) | `a run of 250,000 does not fit an axis that stops at 105,000 -- it would be drawn outside the canvas, in silence` |
+
+The first three rows are caught by the percentage check and the fourth by the
+axis assertion. The three assertions after that one — that the off-protocol run
+is among the runs, that dropping it removes exactly one, and that the arrow
+points the way the medians do — have not fired under any mutation tried here,
+and are belt and braces rather than evidence.
+
+(The sentence above said something else until it was checked against the table
+directly beneath it, which is the point of writing the table.)
 
 ## Two choices that are not decoration
 

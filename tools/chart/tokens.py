@@ -24,7 +24,8 @@ import os
 # difference its own author would not defend is the opposite of the point.
 WITHOUT = [27_394, 85_950, 98_733]
 WITH = [29_996, 55_189, 71_037, 100_417]
-CORRECT_WITHOUT, CORRECT_WITH = "0 of 3 right", "4 of 4 right"
+CORRECT_WITHOUT = f"0 of {len(WITHOUT)} right"
+CORRECT_WITH = f"{len(WITH)} of {len(WITH)} right"
 
 # The one run whose prompt asked for a field the others did not. It is counted,
 # and it is marked wherever it appears -- a dashed dot, an asterisk on its
@@ -85,6 +86,10 @@ def check_readings():
                                                 STRICT_BEST[0], STRICT_BEST[1])]:
         got = f"{saving(a, b)}%"
         assert got == printed, f"{label}: the figure says {printed}, the runs say {got}"
+    assert max(WITHOUT + WITH) <= VMAX, (
+        f"a run of {max(WITHOUT + WITH):,} does not fit an axis that stops at "
+        f"{VMAX:,.0f} -- it would be drawn outside the canvas, in silence"
+    )
     assert OFF_PROTOCOL in WITH, "the off-protocol run is not among the runs"
     assert len(STRICT) == len(WITH) - 1, "the strict protocol dropped more than one run"
     assert MEDIAN_WITH < MEDIAN_WITHOUT, "the arrow points the wrong way"
@@ -221,8 +226,8 @@ def render():
     add(
         f'<text x="24" y="{H - 13}" fill="{AXIS}" font-size="10">* off-protocol: its prompt '
         "asked for one field the others did not. Drop it and the best run saves "
-        f"{STRICT_BEST[2]}, the median saves {READINGS[2][1]}, and it is 3 of 3 right "
-        "against 0 of 3.</text>"
+        f"{STRICT_BEST[2]}, the median saves {READINGS[2][1]}, and it is {len(STRICT)} of "
+        f"{len(STRICT)} right against 0 of {len(WITHOUT)}.</text>"
     )
     add("</svg>")
     return "\n".join(out)

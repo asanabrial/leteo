@@ -31,15 +31,19 @@ SQLite database and handed back when they are relevant.
 One binary, no server, no API key. Nothing leaves your machine unless you turn
 on cloud replication for a project you name.
 
-**Measured against itself:** on questions the code cannot answer, an agent with
-Leteo got four right out of four where the same agent without it got **none out
-of three**; drop the one off-protocol run and it is three out of three against
-that same none out of three. Tokens are the weaker half of the story — the same
-thirteen runs give a 27% median saving there and a 70% best case, or 17% and 44%
-without the run whose prompt differed by a field, and *costs 3.7x as much* if
-you pick the opposite pair. [All of them are
-here](docs/does-memory-save-tokens.md), with both baselines and the parts that
-do not flatter it.
+**Measured against itself** — the same agent, the same questions, once with it
+and once without:
+
+<p align="center">
+  <img width="880" alt="Tokens per run on the questions the code cannot answer. Without Leteo: three runs at 27,394, 85,950 and 98,733 tokens, none of the three answers correct. With Leteo: four runs at 29,996, 55,189, 71,037 and 100,417 tokens, all four correct. The median falls from 85,950 to 63,113, which is 27% fewer tokens. The best run saves 70%, the median of all seven saves 27%, and the median on the strict protocol saves 17%." src="assets/tokens.svg" />
+</p>
+
+**Four right answers out of four, where the agent without it got none out of
+three.** That is the finding that survives the variance, and the tokens are the
+noisier half of it. [Every run is here](docs/does-memory-save-tokens.md) — both
+baselines, the fixed cost of about 15,400 tokens a session that is already
+inside every green dot above, and the pairing from these same seven runs that
+says Leteo *costs 3.7x as much*.
 
 **Works with:** Claude Code · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
 VS Code Copilot · Kilo Code · Qwen · Kiro · Antigravity · Pi

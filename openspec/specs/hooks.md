@@ -373,7 +373,10 @@ deadline, so every promise here is a promise about time as much as content.
 - `src/hooks/mod.rs` — the events, the budgets, the dispatch
 - `src/hooks/context.rs` — what a session opening is built from
 - `src/hooks/nudge.rs` — the per-session record of what has been shown
-- `src/recall.rs` — the sizes and the rendering shared with the CLI
+- `src/recall.rs` — the sizes and the rendering shared with the CLI. §5 is
+  held by `a_session_line_and_a_prompt_line_are_cut_for_opposite_reasons` and,
+  for the two sections that also carry a content preview, by
+  `the_two_sections_that_carry_a_preview_cut_their_title_like_every_other_line`
 - `src/setup/mod.rs` — `HOOK_EVENTS`, the one list of events, matchers and
   deadlines that both install routes are held to
 - `plugin/claude-code/hooks/hooks.json`, `plugin/codex/hooks/hooks.json` — the

@@ -309,7 +309,7 @@ pub fn format_context(
                 "- #{} [{}] **{}**: {}\n",
                 observation.id,
                 observation.kind,
-                crate::memory::normalize::one_line(&observation.title),
+                truncate(&observation.title, TITLE_CHARS),
                 truncate(&observation.content, CONTEXT_PREVIEW_CHARS)
             ));
             push_caveats(&mut context, caveats, &observation.sync_id);
@@ -354,7 +354,7 @@ pub fn format_context(
                 "- #{} [{}] **{}**: {}\n",
                 observation.id,
                 observation.kind,
-                crate::memory::normalize::one_line(&observation.title),
+                truncate(&observation.title, TITLE_CHARS),
                 truncate(&observation.content, CONTEXT_PREVIEW_CHARS)
             ));
             push_caveats(&mut context, caveats, &observation.sync_id);
@@ -965,6 +965,89 @@ And the tests could not see it, because a small store scores near zero."
             assert!(
                 !context.contains(injected),
                 "a memory's own markdown reached the context as structure: {injected:?}"
+            );
+        }
+    }
+    #[test]
+    fn the_two_sections_that_carry_a_preview_cut_their_title_like_every_other_line() {
+        // `hooks.md` §5 promises that every line of the block is cut at a bound
+        // somebody measured, and names the title bound first. Of the four places
+        // in this file that print a title, two kept that promise — the `Also
+        // remembered` index and the title of the second memory named beside a
+        // caveat — and the two that also print a *content* preview did not. They
+        // passed the title through `one_line`, which folds whitespace and cuts
+        // nothing, so the only ceiling left on it was `max_observation_length`:
+        // fifty thousand bytes, the same cap a memory's body gets.
+        //
+        // The census is worth stating exactly, because an earlier version of
+        // this comment counted `one_line_title` as one of the sites that kept
+        // the promise and it prints nothing: no production path calls it, only
+        // `a_caveat_in_the_hint_prints_one_short_line`, which is a guard for
+        // the hint that never runs the hint. Two blind reviewers caught that
+        // independently. Three genuine sites are still unbounded and are not in
+        // this file — `src/hooks/context.rs:105`, `:112` and `:310` — so a
+        // reader auditing "every place a title is printed" should start there
+        // rather than believe this block is the whole surface.
+        //
+        // Nothing had fallen in when this was fixed. Measured over a copy of a
+        // real store, the two sections rendered 89 title lines across 27
+        // projects and the longest was 132 characters — but 93 of that store's
+        // 4,756 titles were already past the bound and would have been cut had
+        // they landed in either window.
+        //
+        // Both sections are driven here rather than one, because the pair is
+        // the defect: they were written together and skipped together.
+        let temp = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(crate::store::StoreConfig::new(temp.path().join("p.db")))
+                .unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        // Distinct text per memory, not the same one twice: an identical title
+        // and body normalise to the same hash and the store keeps one, which
+        // left this driving a single section and calling it both.
+        for nth in ["first", "second"] {
+            let long = format!("{} {nth}", "sostenido ".repeat(60));
+            assert!(
+                long.chars().count() > TITLE_CHARS,
+                "the title this drives with has to be past the bound to test it"
+            );
+            store
+                .add_observation(crate::memory::model::AddObservation {
+                    session_id: "s1".to_owned(),
+                    kind: "decision".to_owned(),
+                    title: long,
+                    content: format!("a body, the {nth} one"),
+                    tool_name: None,
+                    project: Some("leteo".to_owned()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                })
+                .unwrap();
+        }
+        // One of the two pinned, so the same assembly renders a `### Pinned`
+        // line and a `### Recent Observations` line and both are checked.
+        store.pin_observation(1).unwrap();
+
+        let context = assemble(&store, Some("leteo"), None, 10).unwrap();
+        let previewed: Vec<&str> = context
+            .lines()
+            .filter(|line| line.starts_with("- #") && line.contains("**"))
+            .collect();
+        assert_eq!(
+            previewed.len(),
+            2,
+            "expected one pinned line and one detailed line: {context}"
+        );
+        for line in previewed {
+            let title = line
+                .split("**")
+                .nth(1)
+                .expect("the title is the part between the asterisks");
+            assert!(
+                title.chars().count() <= TITLE_CHARS,
+                "a title reached the block uncut at {} characters: {line}",
+                title.chars().count()
             );
         }
     }

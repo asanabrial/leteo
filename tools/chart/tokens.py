@@ -10,9 +10,9 @@ carrier for a direction when the reader has not yet been told what is being
 subtracted from what. Every figure here is a verb and a magnitude instead.
 
 It also carries the correctness beside the tokens. The article's own conclusion
-is that 0 of 3 against 4 of 4 is what survives the variance and that the tokens
-are the noisier half; a token chart standing alone would invert the document it
-is drawn from.
+is that the correctness is what survives the variance and that the tokens are
+the noisier half; a token chart standing alone would invert the document it is
+drawn from.
 """
 
 import io
@@ -31,6 +31,11 @@ CORRECT_WITH = f"{len(WITH)} of {len(WITH)} right"
 # and it is marked wherever it appears -- a dashed dot, an asterisk on its
 # value, and a footnote saying what the numbers become without it.
 OFF_PROTOCOL = 29_996
+
+# How many runs the figure draws. Written out by hand in the subtitle and a card
+# label until a review pointed out that a fifth run would have drawn eight dots
+# under a subtitle still saying seven.
+RUNS = len(WITHOUT) + len(WITH)
 
 
 def median(values):
@@ -53,7 +58,7 @@ STRICT = [v for v in WITH if v != OFF_PROTOCOL]
 # them by check_readings() rather than trusted.
 READINGS = [
     ("saves", "70%", "best run · first search landed", min(WITH), max(WITHOUT)),
-    ("saves", "27%", "median of all seven runs", MEDIAN_WITH, MEDIAN_WITHOUT),
+    ("saves", "27%", f"median vs median, all {RUNS} runs", MEDIAN_WITH, MEDIAN_WITHOUT),
     ("saves", "17%", "median, strict protocol only", median(STRICT), MEDIAN_WITHOUT),
 ]
 STRICT_BEST = (min(STRICT), max(WITHOUT), "44%")  # the footnote's figure
@@ -62,6 +67,7 @@ STRICT_BEST = (min(STRICT), max(WITHOUT), "44%")  # the footnote's figure
 W, H = 880, 414
 X0, X1 = 168.0, 836.0
 VMAX = 105_000.0
+TICK = 25_000  # gridline spacing; the last one drawn is the last that fits VMAX
 TOP, LANE_1, ARROW, LANE_2, BOT = 96, 128, 176, 224, 258
 FOOTER = 348
 
@@ -88,7 +94,7 @@ def check_readings():
         assert got == printed, f"{label}: the figure says {printed}, the runs say {got}"
     assert max(WITHOUT + WITH) <= VMAX, (
         f"a run of {max(WITHOUT + WITH):,} does not fit an axis that stops at "
-        f"{VMAX:,.0f} -- it would be drawn outside the canvas, in silence"
+        f"{VMAX:,.0f} -- it would be drawn past the end of it, in silence"
     )
     assert OFF_PROTOCOL in WITH, "the off-protocol run is not among the runs"
     assert len(STRICT) == len(WITH) - 1, "the strict protocol dropped more than one run"
@@ -104,12 +110,17 @@ def render():
     add = out.append
 
     runs_without = ", ".join(f"{v:,}" for v in WITHOUT)
-    runs_with = ", ".join(f"{v:,}" for v in WITH)
+    runs_with = ", ".join(f"{v:,}*" if v == OFF_PROTOCOL else f"{v:,}" for v in WITH)
     alt = (
-        "Tokens per run on the questions the code cannot answer. Without Leteo: three runs at "
-        f"{runs_without} tokens, {CORRECT_WITHOUT}. With Leteo: four runs at {runs_with} tokens, "
-        f"{CORRECT_WITH}. The median falls from {MEDIAN_WITHOUT:,.0f} to {MEDIAN_WITH:,.0f}, which is "
-        f"{saving(MEDIAN_WITH, MEDIAN_WITHOUT)}% fewer tokens."
+        f"Tokens per run on the one question the code cannot answer. Without Leteo: "
+        f"{len(WITHOUT)} runs at {runs_without} tokens, {CORRECT_WITHOUT}. With Leteo: "
+        f"{len(WITH)} runs at {runs_with} tokens, {CORRECT_WITH}. The median falls from "
+        f"{MEDIAN_WITHOUT:,.0f} to {MEDIAN_WITH:,.0f}, which is "
+        f"{saving(MEDIAN_WITH, MEDIAN_WITHOUT)}% fewer tokens. The best run saves "
+        f"{READINGS[0][1]} and the median {READINGS[1][1]}. The run marked * is off-protocol: "
+        f"its prompt asked for one field the others did not, and dropping it leaves the best "
+        f"run saving {STRICT_BEST[2]}, the median {READINGS[2][1]}, and {len(STRICT)} of "
+        f"{len(STRICT)} right against 0 of {len(WITHOUT)}."
     )
     add(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
@@ -119,14 +130,14 @@ def render():
 
     add(
         f'<text x="24" y="36" fill="{TITLE}" font-size="17" font-weight="600">'
-        "Tokens per run — the questions the code cannot answer</text>"
+        "Tokens per run — the one question the code cannot answer</text>"
     )
     add(
-        f'<text x="24" y="57" fill="{SUB}" font-size="12.5">seven runs · same agent, '
-        "same questions, with and without Leteo · further left is cheaper</text>"
+        f'<text x="24" y="57" fill="{SUB}" font-size="12.5">{RUNS} runs · same agent, '
+        f"one question, with and without Leteo · further left is cheaper</text>"
     )
 
-    for value in range(0, 100_001, 25_000):
+    for value in range(0, int(VMAX) + 1, TICK):
         gx = x(value)
         add(
             f'<line x1="{gx:.1f}" y1="{TOP - 8}" x2="{gx:.1f}" y2="{BOT}" '

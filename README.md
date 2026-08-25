@@ -35,7 +35,7 @@ on cloud replication for a project you name.
 and once without:
 
 <p align="center">
-  <img width="880" alt="Tokens per run on the questions the code cannot answer. Without Leteo: three runs at 27,394, 85,950 and 98,733 tokens, none of the three answers correct. With Leteo: four runs at 29,996, 55,189, 71,037 and 100,417 tokens, all four correct. The median falls from 85,950 to 63,113, which is 27% fewer tokens. The best run saves 70%, the median of all seven saves 27%, and the median on the strict protocol saves 17%." src="assets/tokens.svg" />
+  <img width="880" alt="Tokens per run on the one question the code cannot answer. Without Leteo: 3 runs at 27,394, 85,950, 98,733 tokens, 0 of 3 right. With Leteo: 4 runs at 29,996*, 55,189, 71,037, 100,417 tokens, 4 of 4 right. The median falls from 85,950 to 63,113, which is 27% fewer tokens. The best run saves 70% and the median 27%. The run marked * is off-protocol: its prompt asked for one field the others did not, and dropping it leaves the best run saving 44%, the median 17%, and 3 of 3 right against 0 of 3." src="assets/tokens.svg" />
 </p>
 
 **Four right answers out of four, where the agent without it got none out of

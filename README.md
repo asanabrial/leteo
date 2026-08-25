@@ -33,10 +33,11 @@ on cloud replication for a project you name.
 
 **Measured against itself:** on questions the code cannot answer, an agent with
 Leteo got four right out of four where the same agent without it got **none out
-of three**. Tokens are the weaker half of the story — the same thirteen runs
-give a 27% median saving there and a 70% best case, or 17% and 44% without the
-one run whose prompt differed by a field, and *costs 3.7x as much* if you pick
-the opposite pair. [All of them are
+of three**; drop the one off-protocol run and it is three out of three against
+that same none out of three. Tokens are the weaker half of the story — the same
+thirteen runs give a 27% median saving there and a 70% best case, or 17% and 44%
+without the run whose prompt differed by a field, and *costs 3.7x as much* if
+you pick the opposite pair. [All of them are
 here](docs/does-memory-save-tokens.md), with both baselines and the parts that
 do not flatter it.
 
@@ -62,7 +63,8 @@ with you, and `leteo delete` means it.
 
 Measured rather than asserted, over thirteen runs: **four right answers out of
 four on the questions the code cannot answer, where an agent without it got none
-out of three.** That is the finding that survives the variance.
+out of three** — or three out of three against that same none out of three, on
+the strict protocol. That is the finding that survives the variance.
 
 The tokens are noisier. On those same questions the median saving is 27% and the
 best case 70% — or 17% and 44% if you drop the one run whose prompt differed by

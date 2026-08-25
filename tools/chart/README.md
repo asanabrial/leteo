@@ -20,22 +20,25 @@ says its 14% median is smaller than the noise it sits in, and charting a
 difference its own author would not defend is the opposite of why the figure
 exists.
 
-What the figure counts, it counts. The medians are computed rather than written
-beside the lists they come from; so are the correctness counts, the number of
-runs in the subtitle and on the middle card, and every count in the description
-it generates. Three reviews found the same shape of defect three times — `63,113`
-hard-copied beside the four numbers it is the median of, `0 of 3 right` beside
-a list whose length determines it, `seven runs` beside two lists that add up to
-it — so nothing the figure prints is spelled out by hand any more.
+**Measurements are written once; sentences about them are built.** The runs, how
+many answers were right in each arm (`RIGHT_WITHOUT`, `RIGHT_WITH`), and the axis
+are the measurements. Everything the figure says about them is assembled from
+those: the medians, the number of runs in the subtitle and on the middle card,
+both lane verdicts, the footnote's ratios and the whole description.
 
-This file still spells them out, above and below, and that is a second copy in
-the same sense. It is left as prose deliberately: a sentence explaining why B1
-is not drawn is not a thing the generator can produce, and a wrong count here
-misleads a maintainer rather than a reader of the front page. Change the runs
-and this file is one of the places to reread.
+Review found the same defect in this file three times over, each time in a
+sentence written to fix the previous one — `63,113` hard-copied beside the four
+numbers it is the median of, then `seven runs` beside two lists that add up to
+it, then a `0` typed into three separate f-strings. Each was a second copy of
+something a list already determined.
 
-What is literal: the four percentages, the card labels, and the canvas geometry.
-The percentages are checked below. The labels are not.
+**What is still literal, and why each is allowed.** The four percentages, which
+`check_readings()` recomputes and rejects. The card labels and the title, which
+are prose. The canvas geometry, which nothing else determines. And this file,
+which spells counts out in prose above and below — deliberately, because a
+sentence explaining why B1 is not drawn is not a thing a generator produces, and
+a wrong count here misleads a maintainer rather than a reader of the front page.
+Change the runs and this file is one of the places to reread.
 
 ## What the check covers, and what it does not
 
@@ -74,12 +77,15 @@ after each:
 | broken | what it says |
 | --- | --- |
 | a run that feeds a reading (`55,189` → `60,000`) | `median vs median, all 7 runs: the figure says 27%, the runs say 24%` |
-| the off-protocol run renamed | `median, strict protocol only: the figure says 17%, the runs say 27%` |
-| the two **medians** swapped (`MEDIAN_WITHOUT = median(WITH)` and back) | `median vs median, all 7 runs: the figure says 27%, the runs say -36%` |
+| the off-protocol run pointed at nothing (`OFF_PROTOCOL = 29_997`) | `median, strict protocol only: the figure says 17%, the runs say 27%` |
+| the two **medians** swapped, both lines (`MEDIAN_WITHOUT = median(WITH)` **and** `MEDIAN_WITH = median(WITHOUT)`) | `median vs median, all 7 runs: the figure says 27%, the runs say -36%` |
 | a run past the end of the axis (`100,417` → `250,000`) | `a run of 250,000 does not fit an axis that stops at 105,000 -- it would be drawn past the end of it, in silence` |
 
-Row three names the exact edit because the obvious reading — swapping the two
-run *lists* — fires a different assertion, at 73% rather than −36%. A row a
+Rows two and three name the exact edit because the obvious reading of each is
+something else. Pointing `OFF_PROTOCOL` at another run that *is* in `WITH` fires
+the footnote's reading instead; swapping the two run *lists* rather than the two
+medians fires the first reading, at 73%. And swapping one median line without
+the other makes both medians equal and reports 0%. A row a
 maintainer cannot reproduce from its own label is not evidence.
 
 ### Two of the remaining assertions are watching nothing
@@ -91,7 +97,9 @@ fire, and that is provable rather than merely unobserved:
   is `MEDIAN_WITH` — and the readings print `27%` and `17%` for that one value,
   which cannot both hold. The percentage check always fails first.
 - Reaching the second requires the `27%` reading to have passed, and
-  `round((1 - a/b) * 100) == 27` already puts `a` below `b`.
+  `round((1 - a/b) * 100) == 27` puts `a/b` below 1 — which puts `a` below `b`
+  because token counts are positive. (For a negative `b` it would not follow, so
+  the premise is doing work and is worth saying.)
 
 `assert len(STRICT) == len(WITH) - 1` is the one that is live: two runs sharing
 the off-protocol value would be double-starred, and
@@ -108,6 +116,20 @@ so the other is what goes stale, which is why
 `tests/repository_guards.rs::the_figure_describes_itself_the_same_way_twice`
 compares them and fails the build when they part. Change the figure, regenerate,
 and copy the new `aria-label` into the README rather than editing the `alt`.
+
+That guard was broken twice to check it is one — one figure drifting in the alt
+(`27%` to `37%`), and the off-protocol clause deleted from it, which is the
+defect it exists to prevent. Both fail, and `README.md` was restored byte for
+byte after each. It is not in `tools/guards.json`: every case there names a file
+under `src/`, and the mutation harness runs the whole suite per case, which is
+ten minutes for a string comparison. Broken by hand instead, and recorded here
+because that is the only place it would be recorded.
+
+**What it does not do.** It proves the two descriptions agree with each other,
+not that either agrees with the runs. Edit the same number in both and it
+passes; edit a dot label or a card figure, which are outside the `aria-label`,
+and it never looks. Nothing in this repository compares `assets/tokens.svg` to
+what `tokens.py` would generate.
 
 ## Two choices that are not decoration
 

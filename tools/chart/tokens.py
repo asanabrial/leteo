@@ -24,13 +24,19 @@ import os
 # difference its own author would not defend is the opposite of the point.
 WITHOUT = [27_394, 85_950, 98_733]
 WITH = [29_996, 55_189, 71_037, 100_417]
-CORRECT_WITHOUT = f"0 of {len(WITHOUT)} right"
-CORRECT_WITH = f"{len(WITH)} of {len(WITH)} right"
+# How many answers were right. A measurement like the token counts, so it is
+# written once and every sentence about it is built from here. The zero used to
+# be typed into three separate f-strings.
+RIGHT_WITHOUT = 0
+RIGHT_WITH = 4
 
 # The one run whose prompt asked for a field the others did not. It is counted,
 # and it is marked wherever it appears -- a dashed dot, an asterisk on its
 # value, and a footnote saying what the numbers become without it.
 OFF_PROTOCOL = 29_996
+
+# The off-protocol run was one of the right answers, so dropping it drops one.
+RIGHT_STRICT = RIGHT_WITH - 1
 
 # How many runs the figure draws. Written out by hand in the subtitle and a card
 # label until a review pointed out that a fifth run would have drawn eight dots
@@ -81,6 +87,16 @@ MONO = "ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'DejaVu Sans Mono', mon
 SANS = "-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
 
 
+def ratio(right, runs):
+    """How many of an arm's runs answered correctly, as `3 of 4`."""
+    return f"{right} of {len(runs)}"
+
+
+def correct(right, runs):
+    """The same, as the lane labels say it."""
+    return f"{ratio(right, runs)} right"
+
+
 def saving(with_leteo, without):
     """The percentage a pair supports, rounded the way the figure prints it."""
     return round((1 - with_leteo / without) * 100)
@@ -92,6 +108,14 @@ def check_readings():
                                                 STRICT_BEST[0], STRICT_BEST[1])]:
         got = f"{saving(a, b)}%"
         assert got == printed, f"{label}: the figure says {printed}, the runs say {got}"
+    for name, right, runs in (
+        ("without", RIGHT_WITHOUT, WITHOUT),
+        ("with", RIGHT_WITH, WITH),
+        ("strict", RIGHT_STRICT, STRICT),
+    ):
+        assert 0 <= right <= len(runs), (
+            f"the {name} arm is recorded as {right} right out of {len(runs)} runs"
+        )
     assert max(WITHOUT + WITH) <= VMAX, (
         f"a run of {max(WITHOUT + WITH):,} does not fit an axis that stops at "
         f"{VMAX:,.0f} -- it would be drawn past the end of it, in silence"
@@ -113,14 +137,14 @@ def render():
     runs_with = ", ".join(f"{v:,}*" if v == OFF_PROTOCOL else f"{v:,}" for v in WITH)
     alt = (
         f"Tokens per run on the one question the code cannot answer. Without Leteo: "
-        f"{len(WITHOUT)} runs at {runs_without} tokens, {CORRECT_WITHOUT}. With Leteo: "
-        f"{len(WITH)} runs at {runs_with} tokens, {CORRECT_WITH}. The median falls from "
+        f"{len(WITHOUT)} runs at {runs_without} tokens, {correct(RIGHT_WITHOUT, WITHOUT)}. With Leteo: "
+        f"{len(WITH)} runs at {runs_with} tokens, {correct(RIGHT_WITH, WITH)}. The median falls from "
         f"{MEDIAN_WITHOUT:,.0f} to {MEDIAN_WITH:,.0f}, which is "
         f"{saving(MEDIAN_WITH, MEDIAN_WITHOUT)}% fewer tokens. The best run saves "
         f"{READINGS[0][1]} and the median {READINGS[1][1]}. The run marked * is off-protocol: "
         f"its prompt asked for one field the others did not, and dropping it leaves the best "
-        f"run saving {STRICT_BEST[2]}, the median {READINGS[2][1]}, and {len(STRICT)} of "
-        f"{len(STRICT)} right against 0 of {len(WITHOUT)}."
+        f"run saving {STRICT_BEST[2]}, the median {READINGS[2][1]}, and "
+        f"{correct(RIGHT_STRICT, STRICT)} against {ratio(RIGHT_WITHOUT, WITHOUT)}."
     )
     add(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
@@ -187,8 +211,8 @@ def render():
                 f'font-family="{MONO}" text-anchor="middle">{value:,}{star}</text>'
             )
 
-    lane(LANE_1, "without Leteo", CORRECT_WITHOUT, WITHOUT, RED, RED_FILL)
-    lane(LANE_2, "with Leteo", CORRECT_WITH, WITH, GREEN, GREEN_FILL)
+    lane(LANE_1, "without Leteo", correct(RIGHT_WITHOUT, WITHOUT), WITHOUT, RED, RED_FILL)
+    lane(LANE_2, "with Leteo", correct(RIGHT_WITH, WITH), WITH, GREEN, GREEN_FILL)
 
     xa, xb = x(MEDIAN_WITH), x(MEDIAN_WITHOUT)
     ay = ARROW + 14
@@ -237,8 +261,9 @@ def render():
     add(
         f'<text x="24" y="{H - 13}" fill="{AXIS}" font-size="10">* off-protocol: its prompt '
         "asked for one field the others did not. Drop it and the best run saves "
-        f"{STRICT_BEST[2]}, the median saves {READINGS[2][1]}, and it is {len(STRICT)} of "
-        f"{len(STRICT)} right against 0 of {len(WITHOUT)}.</text>"
+        f"{STRICT_BEST[2]}, the median saves {READINGS[2][1]}, and it is "
+        f"{correct(RIGHT_STRICT, STRICT)} against "
+        f"{ratio(RIGHT_WITHOUT, WITHOUT)}.</text>"
     )
     add("</svg>")
     return "\n".join(out)

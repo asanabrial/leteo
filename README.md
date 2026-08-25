@@ -41,9 +41,9 @@ and once without:
 **Four right answers out of four, where the agent without it got none out of
 three.** That is the finding that survives the variance, and the tokens are the
 noisier half of it. [Every run is here](docs/does-memory-save-tokens.md) — both
-baselines, the fixed cost of about 15,400 tokens a session that **both arms pay**
-and that is already inside every dot above, and the pairing from these same seven
-runs that says Leteo *costs 3.7x as much*.
+baselines, the fixed cost of about 15,400 tokens a session that **both arms
+pay**, and the pairing from these same seven runs that says Leteo *costs 3.7x as
+much*.
 
 **Works with:** Claude Code · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
 VS Code Copilot · Kilo Code · Qwen · Kiro · Antigravity · Pi

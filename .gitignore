@@ -103,3 +103,7 @@ npm/vendor/
 # fixture that `tools/demo/build-store.sh` writes in a second.
 tools/demo/store/
 tools/demo/loop.cast
+
+# Python bytecode, from the chart generator under tools/chart.
+__pycache__/
+*.pyc

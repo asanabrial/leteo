@@ -31,6 +31,15 @@ SQLite database and handed back when they are relevant.
 One binary, no server, no API key. Nothing leaves your machine unless you turn
 on cloud replication for a project you name.
 
+**Measured against itself:** on questions the code cannot answer, an agent with
+Leteo got four right out of four where the same agent without it got **none out
+of three**. Tokens are the weaker half of the story — the same thirteen runs
+give a 27% median saving there and a 70% best case, or 17% and 44% without the
+one run whose prompt differed by a field, and *costs 3.7x as much* if you pick
+the opposite pair. [All of them are
+here](docs/does-memory-save-tokens.md), with both baselines and the parts that
+do not flatter it.
+
 **Works with:** Claude Code · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
 VS Code Copilot · Kilo Code · Qwen · Kiro · Antigravity · Pi
 
@@ -48,6 +57,23 @@ The rest is a SQLite file you own. `leteo tui` opens it, `leteo export` takes it
 with you, and `leteo delete` means it.
 
 ![The Leteo dashboard in a terminal: eleven memories across two projects, narrowed to one by typing "connection pool", then opened to show the whole memory](assets/leteo-tui.gif)
+
+## Does it pay for itself?
+
+Measured rather than asserted, over thirteen runs: **four right answers out of
+four on the questions the code cannot answer, where an agent without it got none
+out of three.** That is the finding that survives the variance.
+
+The tokens are noisier. On those same questions the median saving is 27% and the
+best case 70% — or 17% and 44% if you drop the one run whose prompt differed by
+a field, which the article does for you. On questions the code *does* answer the
+difference is inside the noise, and the same thirteen runs support *"costs 3.7x
+as much"* if you pick the opposite pair.
+
+[*does memory save tokens?*](docs/does-memory-save-tokens.md) shows every run,
+both baselines, the fixed per-session cost of about 15,400 tokens, and where the
+number is weak. The honest summary is that it does not reliably save you tokens
+— it stops your agent confidently answering something else.
 
 ## Install
 
@@ -468,6 +494,14 @@ is [*there was nothing worth tuning*](docs/nothing-worth-tuning.md): the third
 search stage answers questions belonging to another project 90.2% of the time,
 which is *more* often than it answers its own, and four rules swept across their
 whole range say that is not a threshold anybody can fix.
+
+The second is [*does memory save tokens?*](docs/does-memory-save-tokens.md),
+which asks the question this project was launched with and answers it against
+itself: on questions the repository already answers the saving is inside the
+noise, on questions it cannot answer the agent without memory spends more and
+still gets it wrong three times out of three, and six of eleven sampled memories
+from the opening block turn out to be recoverable from the repository anyway —
+code, specs, tests and the git history together.
 
 ## Environment
 

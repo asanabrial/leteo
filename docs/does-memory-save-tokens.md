@@ -78,9 +78,11 @@ A session pays this before anyone asks anything. Byte counts are measured; the t
 
 (The column rounds per row, so it sums to 15,420 where 61,684/4 is 15,421.)
 
-The schema figure is the one [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) publishes and owns; that document also breaks it down and explains why the last 610 tokens of it are staying.
+The schema figure is the one [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) publishes and owns.
 
-**78% of that is the tool schemas** — the toll for exposing nineteen tools over MCP, which has nothing to do with memory and which any server of that size pays. Everything Leteo writes itself is the other three rows: the block, the session-start directive and its own MCP server instructions, 13,345 B, about 3,340 tokens. I had spent weeks trimming the block's 2,542 and had never once measured the 12,000 sitting next to it.
+**78% of that is the tool schemas**, and I am not going to pretend they belong to somebody else. [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) already calls that figure what it is — *the largest fixed cost Leteo imposes* — and breaks it down there. Only one thing in it says nothing about my tools: the JSON-Schema dialect declaration, which that spec calls *the only pure ceremony left* and prices at 610 tokens. Even that is one line per schema, so it grows with how many tools I expose — what a server pays regardless is the declaration, not its size. Everything else is mine: the descriptions I wrote, the keywords carrying the shape of my own nineteen tools, and the names and structure under them. So the split is not schemas-versus-memory. It is 12,085 tokens of tool surface against 3,335 of context, and **both of those are mine**.
+
+That is the part worth taking away. I had spent weeks trimming the block's 2,542 tokens and had never once measured the 12,000 sitting next to it. The spec records what it took to get that number this small, and argues against cutting it further; either way it was never somebody else's number.
 
 ## Why the saving is small here, and where it would not be
 
@@ -118,7 +120,7 @@ None of that is caught by anything. Review windows are a calendar, and the calen
 
 ## What I am doing about it
 
-Publishing this, and not adjusting the number. What I will say out loud is **four right answers out of four where the same agent without memory got none out of three** — that is the finding that survives the variance. Beside it, and only beside it: up to 70% fewer tokens when the first search lands, 27% median on B2, 44% and 17% if you keep only the strict protocol, and *costs 3.7x as much* if you pick the opposite pair from the same thirteen runs.
+Publishing this, and not adjusting the number. What I will say out loud is **four right answers out of four where the same agent without memory got none out of three** — three out of three against none out of three if you drop the off-protocol run, which is the same answer in a smaller sample. That is the finding that survives the variance. Beside it, and only beside it: up to 70% fewer tokens when the first search lands, 27% median on B2, 44% and 17% if you keep only the strict protocol, and *costs 3.7x as much* if you pick the opposite pair from the same thirteen runs.
 
 If a memory tool tells you it saves you half your tokens and does not show you its runs, its baseline and its error bars, that number came from choosing a pair. Mine did too. The difference is that this page shows you which pair.
 

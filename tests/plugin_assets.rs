@@ -9,6 +9,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+/// The bundles that ship lifecycle hooks and a memory skill.
+///
+/// Named once here rather than at each loop, because the four places that
+/// iterate them were four places to forget a new one — which is how a third
+/// bundle can ship with nothing checking it at all.
+const BUNDLES: &[&str] = &["claude-code", "codex", "zcode"];
+
 /// Every event `leteo hook` accepts, as declared by the CLI.
 const HOOK_EVENTS: &[&str] = &[
     "session-start",
@@ -63,17 +70,20 @@ fn hook_commands(manifest: &Value) -> Vec<String> {
 
 #[test]
 fn every_plugin_hook_invokes_an_event_the_binary_accepts() {
-    for bundle in ["claude-code", "codex"] {
+    for bundle in BUNDLES {
         let path = repository_root()
             .join("plugin")
             .join(bundle)
             .join("hooks/hooks.json");
         let commands = hook_commands(&read_json(&path));
-        assert_eq!(
-            commands.len(),
-            HOOK_EVENTS.len(),
-            "{bundle} should register one hook per lifecycle event: {commands:?}"
-        );
+        // That a bundle carries exactly its agent's registrations — which
+        // events, on which matcher, for how long — is held in the crate by
+        // `the_plugin_bundles_register_the_hooks_the_binary_writes`, which can
+        // read `hook_registrations` and this test cannot. ZCode's three against
+        // the other two bundles' five is the difference that made a count here
+        // wrong. What is left for this one is that every command names an event
+        // the binary will actually accept.
+        assert!(!commands.is_empty(), "{bundle} registers no hooks at all");
         for command in &commands {
             let event = command
                 .strip_prefix("leteo hook ")
@@ -98,7 +108,7 @@ fn every_plugin_hook_invokes_an_event_the_binary_accepts() {
 
 #[test]
 fn every_plugin_registers_the_same_mcp_server_the_setup_command_does() {
-    for bundle in ["claude-code", "codex"] {
+    for bundle in BUNDLES {
         let path = repository_root()
             .join("plugin")
             .join(bundle)
@@ -121,13 +131,22 @@ fn every_plugin_registers_the_same_mcp_server_the_setup_command_does() {
 #[test]
 fn plugin_manifests_declare_the_crate_version_and_license() {
     let expected = env!("CARGO_PKG_VERSION");
-    for (bundle, manifest) in [
-        ("claude-code", ".claude-plugin/plugin.json"),
-        ("codex", ".codex-plugin/plugin.json"),
+    // Each client looks for its manifest under its own directory. ZCode reads
+    // `.zcode-plugin/` first and falls back to `.claude-plugin/` for Claude Code
+    // compatibility; the fallback is deliberately not used, because the bundle
+    // next door under that name is a different set of events.
+    for (bundle, manifest, name) in [
+        ("claude-code", ".claude-plugin/plugin.json", "leteo"),
+        ("codex", ".codex-plugin/plugin.json", "leteo"),
+        ("zcode", ".zcode-plugin/plugin.json", "leteo-zcode"),
     ] {
         let path = repository_root().join("plugin").join(bundle).join(manifest);
         let manifest = read_json(&path);
-        assert_eq!(manifest["name"].as_str(), Some("leteo"));
+        // A marketplace addresses a plugin by name, and the two bundles sharing
+        // one marketplace file cannot share one name — so ZCode's is
+        // `leteo-zcode` in both places. Named differently in the two, the entry
+        // resolves to a manifest calling itself something else.
+        assert_eq!(manifest["name"].as_str(), Some(name));
         assert_eq!(
             manifest["version"].as_str(),
             Some(expected),
@@ -137,21 +156,71 @@ fn plugin_manifests_declare_the_crate_version_and_license() {
     }
 }
 
+/// The marketplace and the manifest it points at agree on the plugin's name.
+///
+/// Two files, one fact. The marketplace entry is what somebody types to install
+/// and the manifest is what the client reads once it has; named differently,
+/// the entry resolves to a bundle calling itself something else, and nothing in
+/// either file would say so.
+#[test]
+fn every_marketplace_entry_names_the_plugin_its_manifest_does() {
+    let root = repository_root();
+    let marketplace = read_json(&root.join(".claude-plugin/marketplace.json"));
+    for entry in marketplace["plugins"]
+        .as_array()
+        .expect("the marketplace lists plugins")
+    {
+        let source = entry["source"].as_str().expect("an entry names a source");
+        let bundle = root.join(source.trim_start_matches("./"));
+        let manifest = ["/.zcode-plugin/plugin.json", "/.claude-plugin/plugin.json"]
+            .iter()
+            .map(|suffix| bundle.join(suffix.trim_start_matches('/')))
+            .find(|path| path.exists())
+            .unwrap_or_else(|| panic!("{source} ships no plugin manifest"));
+        assert_eq!(
+            read_json(&manifest)["name"].as_str(),
+            entry["name"].as_str(),
+            "{source}: the marketplace and the manifest disagree about the name"
+        );
+    }
+}
+
 #[test]
 fn marketplace_entries_point_at_bundles_that_exist() {
     let root = repository_root();
+    // Every entry, not the first one. ZCode reads this same file — it is the
+    // marketplace manifest both clients look for at the repository root — so it
+    // carries more than one plugin now, and a guard that checked `[0]` would
+    // have watched the Claude bundle forever and never the one added beside it.
     let claude = read_json(&root.join(".claude-plugin/marketplace.json"));
-    let source = claude["plugins"][0]["source"]
-        .as_str()
-        .expect("the Claude marketplace entry names a source");
-    assert!(
-        root.join(source.trim_start_matches("./")).is_dir(),
-        "the Claude marketplace points at {source}, which does not exist"
-    );
-    assert_eq!(
-        claude["plugins"][0]["version"].as_str(),
-        Some(env!("CARGO_PKG_VERSION"))
-    );
+    let entries = claude["plugins"]
+        .as_array()
+        .expect("the Claude marketplace lists plugins");
+    assert!(!entries.is_empty(), "the marketplace lists no plugins");
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let source = entry["source"]
+            .as_str()
+            .expect("a marketplace entry names a source");
+        assert!(
+            root.join(source.trim_start_matches("./")).is_dir(),
+            "the Claude marketplace points at {source}, which does not exist"
+        );
+        assert_eq!(
+            entry["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "{source} version drifted from Cargo.toml"
+        );
+        let name = entry["name"]
+            .as_str()
+            .expect("a marketplace entry is named");
+        // A marketplace addresses a plugin by name, so two entries answering to
+        // one name is an install nobody can ask for unambiguously.
+        assert!(
+            names.insert(name.to_owned()),
+            "two marketplace entries answer to {name:?}"
+        );
+    }
 
     let codex = read_json(&root.join(".agents/plugins/marketplace.json"));
     let source = codex["plugins"][0]["source"]["path"]
@@ -165,7 +234,7 @@ fn marketplace_entries_point_at_bundles_that_exist() {
 
 #[test]
 fn every_bundle_ships_a_memory_skill_with_frontmatter() {
-    for bundle in ["claude-code", "codex"] {
+    for bundle in BUNDLES {
         let path = repository_root()
             .join("plugin")
             .join(bundle)
@@ -203,24 +272,34 @@ fn every_bundle_ships_a_memory_skill_with_frontmatter() {
 }
 
 #[test]
-fn the_two_memory_skills_differ_only_in_the_setup_command() {
-    // They are the same protocol, kept as two files because each bundle ships
-    // its own. Editing one and forgetting the other is the obvious failure,
-    // and nothing else would notice.
-    let read = |bundle: &str| {
-        let path = repository_root()
-            .join("plugin")
-            .join(bundle)
-            .join("skills/memory/SKILL.md");
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-    };
-    let claude = read("claude-code");
-    let codex = read("codex");
+fn the_memory_skills_differ_only_in_the_setup_command() {
+    // They are the same protocol, kept as one file per bundle because each
+    // bundle ships its own. Editing one and forgetting the others is the
+    // obvious failure, and nothing else would notice.
+    //
+    // Held pairwise against the first while there were two of them, which is a
+    // rule that stops being one list the moment a third arrives. Every bundle
+    // is now normalised to the same text and they are compared as a set: a
+    // fourth is a line in `BUNDLES`, not a new comparison somebody has to
+    // remember to write.
+    let normalised: BTreeSet<String> = BUNDLES
+        .iter()
+        .map(|bundle| {
+            let path = repository_root()
+                .join("plugin")
+                .join(bundle)
+                .join("skills/memory/SKILL.md");
+            let skill = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            skill.replace(&format!("leteo setup {bundle}"), "leteo setup <agent>")
+        })
+        .collect();
     assert_eq!(
-        claude.replace("leteo setup claude-code", "leteo setup <agent>"),
-        codex.replace("leteo setup codex", "leteo setup <agent>"),
-        "the two memory skills have drifted apart"
+        normalised.len(),
+        1,
+        "the memory skills have drifted apart: {} distinct texts across {:?}",
+        normalised.len(),
+        BUNDLES
     );
 }
 
@@ -265,7 +344,7 @@ fn the_skill_names_the_tools_the_binary_has_and_no_others() {
         .map(|tool| (*tool).to_owned())
         .collect();
 
-    for bundle in ["claude-code", "codex"] {
+    for bundle in BUNDLES {
         let path = repository_root()
             .join("plugin")
             .join(bundle)
@@ -354,7 +433,7 @@ fn the_skill_teaches_the_kinds_the_tool_schema_asks_for() {
         .expect("read params.rs");
     let offered = kind_declaration(&schema, "/// One of:");
 
-    for bundle in ["claude-code", "codex"] {
+    for bundle in BUNDLES {
         let path = repository_root()
             .join("plugin")
             .join(bundle)
@@ -421,7 +500,7 @@ fn the_skill_says_which_tools_are_there_and_which_need_fetching() {
         .map(|tool| (*tool).to_owned())
         .collect();
 
-    for bundle in ["claude-code", "codex"] {
+    for bundle in BUNDLES {
         let path = repository_root()
             .join("plugin")
             .join(bundle)

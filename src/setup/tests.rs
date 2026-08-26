@@ -1228,32 +1228,42 @@ fn codex_hooks_land_in_config_toml_beside_the_server() {
 /// moment the bundle exists for, with nothing anywhere saying so.
 #[test]
 fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
-    let expected: BTreeMap<(String, String), (Option<String>, u64)> = HOOK_EVENTS
-        .iter()
-        .map(|registration| {
-            (
-                (registration.event.to_owned(), registration.slug.to_owned()),
+    // Read from the agent, not from the global list. ZCode's client fires
+    // neither `SubagentStop` nor `SessionEnd`, so a bundle carrying all five
+    // would register two that can never run — and held against `HOOK_EVENTS`
+    // the honest three-event bundle would fail instead. `hook_registrations` is
+    // the field the installer already writes from, so a bundle and a
+    // `leteo setup --hooks` cannot disagree about one agent without this
+    // noticing.
+    for slug in ["claude-code", "codex", "zcode"] {
+        let adapter = supported_agents()
+            .iter()
+            .find(|adapter| adapter.slug == slug)
+            .unwrap_or_else(|| panic!("{slug} is in the registry"));
+        let expected: BTreeMap<(String, String), (Option<String>, u64)> = adapter
+            .hook_registrations
+            .iter()
+            .map(|registration| {
                 (
-                    registration.matcher.map(str::to_owned),
-                    registration.timeout_seconds,
-                ),
-            )
-        })
-        .collect();
+                    (registration.event.to_owned(), registration.slug.to_owned()),
+                    (
+                        registration.matcher.map(str::to_owned),
+                        registration.timeout_seconds,
+                    ),
+                )
+            })
+            .collect();
 
-    for bundle in [
-        "plugin/claude-code/hooks/hooks.json",
-        "plugin/codex/hooks/hooks.json",
-    ] {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(bundle);
+        let bundle = format!("plugin/{slug}/hooks/hooks.json");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(&bundle);
         let manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap())
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
 
         let mut found = BTreeMap::new();
         for (event, groups) in manifest["hooks"].as_object().expect("an events object") {
             for group in groups.as_array().expect("a list of matcher groups") {
-                // Absent and empty mean the same thing to both agents — every
-                // invocation of the event — and `HOOK_EVENTS` spells that
+                // Absent and empty mean the same thing to every agent — every
+                // invocation of the event — and a registration spells that
                 // `None`. Left as `Some("")`, a bundle that writes the key out
                 // with nothing in it would fail this for no reason.
                 let matcher = group["matcher"]
@@ -1262,19 +1272,20 @@ fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
                     .map(str::to_owned);
                 for hook in group["hooks"].as_array().expect("a list of handlers") {
                     let command = hook["command"].as_str().expect("a command");
-                    let slug = command
+                    let hook_slug = command
                         .rsplit_once("hook ")
                         .map(|(_, slug)| slug.to_owned())
                         .unwrap_or_else(|| panic!("{bundle} runs something else: {command}"));
                     let timeout = hook["timeout"].as_u64().expect("a timeout");
-                    found.insert((event.clone(), slug), (matcher.clone(), timeout));
+                    found.insert((event.clone(), hook_slug), (matcher.clone(), timeout));
                 }
             }
         }
 
         assert_eq!(
             found, expected,
-            "{bundle} and HOOK_EVENTS disagree about which hooks run, on what, for how long"
+            "{bundle} and {slug}'s hook_registrations disagree about which hooks \
+             run, on what, for how long"
         );
     }
 }

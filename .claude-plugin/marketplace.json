@@ -17,6 +17,17 @@
       "source": "./plugin/claude-code",
       "category": "productivity",
       "homepage": "https://github.com/asanabrial/leteo"
+    },
+    {
+      "name": "leteo-zcode",
+      "description": "Persistent memory for ZCode: session tracking, compaction recovery, and a save protocol. Registers the three lifecycle events this client fires.",
+      "version": "0.1.2",
+      "author": {
+        "name": "Alexis Sanabria Lopez"
+      },
+      "source": "./plugin/zcode",
+      "category": "productivity",
+      "homepage": "https://github.com/asanabrial/leteo"
     }
   ]
 }

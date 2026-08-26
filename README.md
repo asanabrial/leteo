@@ -207,6 +207,19 @@ the only route to the hooks — `leteo setup codex` registers the MCP server and
 no hooks at all, which leaves Codex holding the tools with nothing telling it
 when to reach for them.
 
+ZCode has one under [`plugin/zcode`](plugin/zcode), from the same marketplace:
+
+```text
+zcode plugins marketplace add asanabrial/leteo
+zcode plugins install leteo-zcode@leteo
+```
+
+It registers three hooks rather than five, because that client fires neither
+`SubagentStop` nor `SessionEnd`. It is also the route that does not depend on
+somebody else's switch: ZCode runs configuration-file hooks only while
+`hooks.enabled` is true in `~/.zcode/cli/config.json`, which starts off, and
+enabling the plugin is what enables the plugin's hooks.
+
 ## Uninstall
 
 ```powershell

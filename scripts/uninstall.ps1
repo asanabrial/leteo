@@ -79,7 +79,7 @@ if (-not $Yes) {
 }
 
 # The agents and the data first, while the binary that knows how to find them
-# still exists. It resolves twelve agents' config files, strips the MCP server,
+# still exists. It resolves fourteen agents' config files, strips the MCP server,
 # the lifecycle hooks and the memory-protocol block from each, and removes the
 # data directory. Doing it here by hand would be a second, worse copy of that.
 if (Test-Path $binary) {

@@ -116,7 +116,7 @@ useful part out of a context window has failed even if every field is right.
    and publishes it in its own schema, so a caller can plan against it: a
    ceiling that lives only in the code is one nobody can read. `mem_timeline`
    was given one after a window of a million came back with a whole session,
-   191 KB, and `mem_context` — the only route to context nine of the thirteen
+   191 KB, and `mem_context` — the only route to context ten of the fourteen
    clients have — kept all three of its budgets open at the top. Asked for
    9,999 memories, sessions and prompts against a real store it answered with
    1,201, 212 and 120 of them, in one reply of 469 KB; with the ceilings, 43.7
@@ -392,7 +392,7 @@ useful part out of a context window has failed even if every field is right.
    and would make the empty answer the expensive one. `mem_search` and `mem_context` both answer this way and share the
    sentence — see [`search.md`](search.md) §4. `mem_context` matters most: every
    instruction file Leteo writes tells the agent to call it before acting, and
-   for the nine clients of twelve that run no hooks it is the first thing they
+   for the ten clients of fourteen that run no hooks it is the first thing they
    read.
 
 9. **A number is named after the question it answers.** `mem_timeline` reports

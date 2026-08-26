@@ -30,6 +30,7 @@ mod antigravity;
 mod claude_code;
 mod codex;
 mod cursor;
+mod deepseek_harness;
 mod gemini_cli;
 mod kilocode;
 mod kiro;
@@ -83,7 +84,7 @@ pub struct AgentAdapter {
     pub(super) new_instruction_file: &'static str,
     /// Whether that file is one Leteo invented rather than one the agent had.
     ///
-    /// Nine agents keep their instructions somewhere that was already theirs —
+    /// Ten agents keep their instructions somewhere that was already theirs —
     /// `CLAUDE.md`, `AGENTS.md` — and uninstalling takes Leteo's block out and
     /// leaves the document alone. Three get a file named after Leteo, and there
     /// taking the block out leaves an empty file with Leteo's name on it, which
@@ -142,6 +143,7 @@ pub const REGISTRY: &[AgentAdapter] = &[
     zcode::ADAPTER,
     gemini_cli::ADAPTER,
     codex::ADAPTER,
+    deepseek_harness::ADAPTER,
     cursor::ADAPTER,
     windsurf::ADAPTER,
     vscode_copilot::ADAPTER,
@@ -178,6 +180,7 @@ mod tests {
             config_home: None,
             app_data: None,
             claude_config: None,
+            dsh_home: None,
         }
     }
 
@@ -225,7 +228,7 @@ mod tests {
         }
         assert_eq!(
             theirs.len(),
-            9,
+            10,
             "keep a file that was already theirs: {theirs:?}"
         );
         assert_eq!(

@@ -511,7 +511,7 @@ impl LeteoMcpServer {
         // was already right. So the store is asked once more without the
         // narrowing, and only where that finds something does the reason
         // change. `leteo search` has answered this way since the CLI reads
-        // were scoped; the tool nine clients out of twelve actually use did
+        // were scoped; the tool ten clients of fourteen actually use did
         // not.
         //
         // Paid only on an empty answer, and only when nobody named a project:
@@ -644,7 +644,7 @@ impl LeteoMcpServer {
         //
         // `mem_timeline` was given a ceiling for exactly this reason — a window
         // of a million came back with a whole session, 191 KB — and this is the
-        // tool nine of the thirteen clients have as their only route to context.
+        // tool ten of the fourteen clients have as their only route to context.
         // Its three budgets were all open at the top: asked for 9,999 of each,
         // a real store answered with 1,201 memories, 212 sessions and 120
         // prompts, in one reply of 469 KB. A payload that pushes the useful
@@ -718,7 +718,7 @@ impl LeteoMcpServer {
         //
         // The hook's context has carried this since a superseded decision was
         // found being presented as current; this tool is the same handover for
-        // the nine clients of twelve that run no hooks, and it was the one
+        // the ten clients of fourteen that run no hooks, and it was the one
         // route left without it.
         //
         // Not fatal, for the same reason as there: losing the annotation costs
@@ -732,7 +732,7 @@ impl LeteoMcpServer {
         // directory is.
         //
         // Every instruction file Leteo writes tells the agent to call this
-        // before acting, and for the nine clients of twelve that run no hooks
+        // before acting, and for the ten clients of fourteen that run no hooks
         // it is the first thing they read. Coming back silent and empty reads
         // as "there is no memory here", and the agent works blind past a store
         // that holds thousands one project over — which is what a directory

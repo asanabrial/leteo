@@ -51,12 +51,12 @@ duties about what an answer explains.
    alone. `--language` alone is a complete command, and so is `--context`.
 
    Uninstalling removes what it wrote and nothing else, and both halves are
-   driven over the whole registry. Nine agents keep their instructions in a file
+   driven over the whole registry. Ten agents keep their instructions in a file
    that was already theirs, and lose only Leteo's block; three get a file Leteo
    invented and named after itself, and that file goes. Pi has no instruction
-   file at all — nine, three and one is the whole registry, and
+   file at all — ten, three and one is the whole registry, and
    `the_registry_splits_three_ways_and_the_counts_are_taken_from_it` is what
-   keeps that sentence true when a fourteenth agent arrives.
+   keeps that sentence true when a fifteenth agent arrives.
 
    **An agent gets only the registrations its client can fire.** ZCode holds
    providers, plugins, its own hooks and its MCP servers in one JSON document —

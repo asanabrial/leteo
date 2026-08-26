@@ -387,3 +387,127 @@ fn hooks_group_heading(line: &str) -> Option<&str> {
 fn is_leteo_hook_command(line: &str) -> bool {
     super::runs_a_leteo_hook(line)
 }
+
+/// The comment line marking the block Leteo owns in the DeepSeek Harness patch
+/// file.
+///
+/// Detection and removal both read this rather than re-parsing the YAML around
+/// it: the file belongs to the harness, and the one thing that is unambiguously
+/// Leteo is the block a past run wrote under its own marker, exactly like the
+/// instruction-file markers in [`super::MEMORY_PROTOCOL_BEGIN`].
+pub(super) const DSH_PATCH_MARKER: &str = "# leteo-mcp-client (managed by leteo setup)";
+
+/// The YAML Leteo inserts into `$DSH_HOME/cordis.patch.yml` to register the
+/// `leteo mcp` subprocess with the harness.
+///
+/// One row under an `insert:` patch directive. `serverName` must match the
+/// harness's `[A-Za-z0-9_-]{1,32}` budget, which `leteo` does, and the tools it
+/// names surface to the model as `mcp__leteo__<tool>`. The executable path is
+/// a single-quoted YAML scalar, where backslashes (Windows) need no escaping.
+fn dsh_patch_block(executable: &str, tools: &str) -> String {
+    let command = yaml_single_quoted(executable);
+    // Built line by line (rather than by indented continuation) so the block
+    // carries no trace of the Rust indentation it was written in.
+    [
+        DSH_PATCH_MARKER,
+        "- insert:",
+        &format!("    - id: mcp-{SERVER_NAME}"),
+        "      name: '@deepseek-ai/dsh-mcp-client'",
+        "      config:",
+        "        transport: stdio",
+        &format!("        serverName: {SERVER_NAME}"),
+        &format!("        command: {command}"),
+        &format!("        args: ['mcp', '--tools={tools}']"),
+        "        toolCallTimeoutMs: 60000",
+        "        failOnStartupError: false",
+    ]
+    .join("\n")
+        + "\n"
+}
+
+/// A YAML single-quoted scalar, where only a literal `'` needs escaping and a
+/// `\\` is kept as written — the shape Windows paths must have here.
+fn yaml_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Whether a DeepSeek Harness patch file carries Leteo's block.
+pub(super) fn dsh_names_leteo(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == DSH_PATCH_MARKER)
+}
+
+/// Inserts Leteo's `mcp-leteo` row into the harness patch file, replacing any
+/// block Leteo previously wrote and preserving everything else by line.
+///
+/// Edited by line rather than parsed, because the file is ordinary YAML the
+/// person writes by hand and this crate carries no YAML dependency. What is
+/// owned is a block under a marker, so the render drops any prior block and
+/// appends a fresh one; what is not owned — every other patch row, the user's
+/// own `- insert:` lists — stays where it was.
+pub(super) fn render_dsh_patch_config(
+    existing: Option<&[u8]>,
+    executable: &str,
+    tools: &str,
+) -> Result<String> {
+    let text = match existing {
+        Some(content) => std::str::from_utf8(content)
+            .map_err(|error| anyhow::anyhow!("patch file is not UTF-8: {error}"))?,
+        None => "",
+    };
+    let normalized = text.replace("\r\n", "\n");
+    let without_leteo = strip_dsh_block(&normalized);
+    let block = dsh_patch_block(executable, tools);
+    let base = without_leteo.trim_end();
+    let desired = if base.is_empty() {
+        format!("{block}\n")
+    } else {
+        format!("{base}\n\n{block}\n")
+    };
+    Ok(super::with_line_endings_of(text, desired))
+}
+
+/// Drops the marker block Leteo wrote, keeping every other line as it was.
+pub(super) fn remove_dsh_server(existing: &[u8]) -> String {
+    let text = std::str::from_utf8(existing).unwrap_or_default();
+    let normalized = text.replace("\r\n", "\n");
+    let stripped = strip_dsh_block(&normalized);
+    let body = stripped.trim_end();
+    let desired = if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    };
+    super::with_line_endings_of(text, desired)
+}
+
+/// Removes a complete Leteo block (its marker, the `- insert:` row and that
+/// row's indented body), keeping every other line.
+fn strip_dsh_block(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != DSH_PATCH_MARKER {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        // Take the marker's insert row and its indented body.
+        index += 1;
+        if index < lines.len() && lines[index].trim_start().starts_with("- insert:") {
+            index += 1;
+            while index < lines.len() {
+                let line = lines[index];
+                let trimmed = line.trim_start();
+                let blank = trimmed.is_empty();
+                let indented = line.len() > trimmed.len();
+                if blank || indented {
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    kept.join("\n")
+}

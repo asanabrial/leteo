@@ -10,6 +10,11 @@ fn options(temp: &TempDir) -> SetupOptions {
         config_home: Some(temp.path().join("config")),
         app_data: Some(temp.path().join("appdata")),
         executable: Some(temp.path().join("bin").join("leteo")),
+        // Point DeepSeek Harness at the scratch home too, rather than at
+        // whatever `$DSH_HOME` names on this machine — an environment that
+        // runs Leteo inside the harness would otherwise leak the real store
+        // into the test.
+        dsh_home: Some(temp.path().join(".dsh")),
         ..SetupOptions::default()
     }
 }
@@ -37,6 +42,7 @@ fn registry_contains_the_requested_agents() {
             "zcode",
             "gemini-cli",
             "codex",
+            "deepseek-harness",
             "cursor",
             "windsurf",
             "vscode-copilot",
@@ -1440,13 +1446,128 @@ fn zcode_uninstall_removes_an_events_map_it_emptied() {
     assert_eq!(hooks.map(|hooks| hooks.len()), Some(1), "{after}");
     assert_eq!(after["hooks"]["enabled"], true, "{after}");
 
-    // One instruction file goes beside all that, and uninstall takes its
-    // block without leaving the file: ~/.zcode/AGENTS.md did not exist before
-    // and installing created it.
     assert!(
         !temp.path().join(".zcode").join("AGENTS.md").exists(),
         "an instruction file nothing else reads is not left behind"
     );
+}
+
+/// DeepSeek Harness reads a machine-global patch layer under `$DSH_HOME`
+/// (`~/.dsh` by default), which `setup` edits for the server and a fixed
+/// user-global `AGENTS.md` for the protocol.
+#[test]
+fn deepseek_harness_registers_its_patch_and_protocol() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let paths = resolve_agent_paths("deepseek-harness", &setup_options).unwrap();
+
+    assert_eq!(
+        paths.mcp_config,
+        temp.path().join(".dsh").join("cordis.patch.yml")
+    );
+    assert_eq!(
+        paths.instructions,
+        Some(temp.path().join(".dsh").join("AGENTS.md"))
+    );
+    assert_eq!(paths.hooks, None, "DeepSeek Harness takes no hooks");
+
+    let result = setup(
+        "deepseek-harness",
+        &SetupOptions {
+            install_instructions: true,
+            ..setup_options.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.changed_files(), 2);
+
+    let patch = fs::read_to_string(&paths.mcp_config).unwrap();
+    assert!(patch.contains("@deepseek-ai/dsh-mcp-client"), "{patch}");
+    assert!(patch.contains("serverName: leteo"), "{patch}");
+    assert!(patch.contains("command: '"), "{patch}");
+    // The whole executable path is a single-quoted YAML scalar, so a Windows
+    // `\` inside it is literal rather than an escape.
+    assert!(patch.contains(r"command: '"), "{patch}");
+    let quoted = patch.lines().find(|line| line.contains("command: '"));
+    assert!(
+        quoted.is_some_and(|line| {
+            let rest = line.split_once("command: '").map(|(_, rest)| rest).unwrap();
+            rest.ends_with("\\bin\\leteo'") || rest.ends_with("/bin/leteo'")
+        }),
+        "executable path is single-quoted end to end: {patch}"
+    );
+
+    let instructions = fs::read_to_string(paths.instructions.unwrap()).unwrap();
+    assert!(instructions.contains(MEMORY_PROTOCOL_BEGIN));
+
+    // A second run is idempotent: one block, one row.
+    let second = setup(
+        "deepseek-harness",
+        &SetupOptions {
+            install_instructions: true,
+            ..setup_options.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        second.changed_files(),
+        0,
+        "second run should change nothing"
+    );
+}
+
+/// Setup never configures hooks for DeepSeek Harness, and refuses to be asked.
+#[test]
+fn deepseek_harness_has_no_hook_surface() {
+    let temp = TempDir::new().unwrap();
+    let error = setup(
+        "deepseek-harness",
+        &SetupOptions {
+            install_hooks: true,
+            ..options(&temp)
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("does not support Leteo lifecycle hooks"),
+        "{error}"
+    );
+}
+
+/// A patch a person wrote by hand stays intact; uninstall lifts only the block
+/// Leteo owns.
+#[test]
+fn deepseek_harness_preserves_foreign_patch_and_uninstalls_literally() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let patch_path = temp.path().join(".dsh").join("cordis.patch.yml");
+    let foreign = "- id: storage\n\
+        \x20 name: '@deepseek-ai/dsh-storage'\n\
+        \x20 config:\n\
+        \x20\x20  root: '~/.dsh/storages'\n";
+    write_fixture(&patch_path, foreign);
+
+    setup(
+        "deepseek-harness",
+        &SetupOptions {
+            install_instructions: true,
+            ..setup_options.clone()
+        },
+    )
+    .unwrap();
+    let installed = fs::read_to_string(&patch_path).unwrap();
+    assert!(installed.contains("mcp-leteo"), "{installed}");
+    assert!(installed.contains("dsh-storage"), "{installed}");
+
+    uninstall("deepseek-harness", &setup_options).unwrap();
+    let after = fs::read_to_string(&patch_path).unwrap();
+    assert!(!after.contains("mcp-lete"), "{after}");
+    assert!(after.contains("dsh-storage"), "{after}");
+    // The instruction file was created by install and emptied by uninstall.
+    let instructions = temp.path().join(".dsh").join("AGENTS.md");
+    let text = fs::read_to_string(&instructions).unwrap();
+    assert!(!text.contains(MEMORY_PROTOCOL_BEGIN));
 }
 
 /// A plugin bundle, in the cache the given agent reads it from.
@@ -1878,7 +1999,7 @@ fn a_hook_stops_waiting_before_the_agent_stops_waiting_for_it() {
 /// Uninstalling leaves nothing of Leteo's behind, on every agent.
 ///
 /// `leteo uninstall` says it removes Leteo from this machine entirely, and on
-/// three of the thirteen it did not. Nine agents keep their instructions in a file
+/// three of the fourteen it did not. Ten agents keep their instructions in a file
 /// that was already theirs — `CLAUDE.md`, `AGENTS.md` — and uninstalling takes
 /// Leteo's block out and leaves the rest, which is right. The other three get a
 /// file Leteo invented and named after itself: `leteo-memory-protocol.md` for

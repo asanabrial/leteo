@@ -155,6 +155,9 @@ impl McpFormat {
 pub enum ConfigFormat {
     Json(McpFormat),
     CodexToml,
+    /// DeepSeek Harness's `cordis.patch.yml`, a YAML patch layer with no
+    /// parser dependency in this crate, so edited by line like the TOML one.
+    DshPatch,
 }
 
 pub use agents::AgentAdapter;
@@ -181,6 +184,13 @@ pub struct SetupOptions {
     pub config_home: Option<PathBuf>,
     pub app_data: Option<PathBuf>,
     pub executable: Option<PathBuf>,
+    /// Explicit DeepSeek Harness home, for callers who know it and for tests.
+    ///
+    /// When absent, `$DSH_HOME` is honored, then `~/.dsh`. An explicit value
+    /// outranks the variable the way a `home_dir` here outranks the process's
+    /// home — otherwise a test could not point at a scratch directory without
+    /// fighting an environment that legitimately sets it.
+    pub dsh_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +258,8 @@ struct SetupEnvironment {
     executable: PathBuf,
     /// `CLAUDE_CONFIG_DIR`, read once, when it says anything.
     claude_config: Option<PathBuf>,
+    /// `DSH_HOME`, read once, when it says anything.
+    dsh_home: Option<PathBuf>,
 }
 
 impl SetupEnvironment {
@@ -295,6 +307,7 @@ pub fn is_configured(agent: &str, options: &SetupOptions) -> bool {
         ConfigFormat::CodexToml => text
             .lines()
             .any(|line| line.trim() == "[mcp_servers.leteo]"),
+        ConfigFormat::DshPatch => dsh_names_leteo(&text),
         ConfigFormat::Json(format) => serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|config| {
@@ -334,6 +347,7 @@ pub fn uninstall(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
         let desired = match adapter.config_format {
             ConfigFormat::Json(format) => remove_json_server(&existing, format)?,
             ConfigFormat::CodexToml => remove_codex_server(&existing)?,
+            ConfigFormat::DshPatch => remove_dsh_server(&existing),
         };
         actions.push(apply_content(
             &paths.mcp_config,
@@ -698,6 +712,11 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
             executable_string(&environment.executable)?,
             options.tools.as_deref().unwrap_or(DEFAULT_TOOLS),
         )?,
+        ConfigFormat::DshPatch => render_dsh_patch_config(
+            existing_config.as_deref(),
+            executable_string(&environment.executable)?,
+            options.tools.as_deref().unwrap_or(DEFAULT_TOOLS),
+        )?,
     };
 
     let mut actions = vec![apply_content(
@@ -787,6 +806,10 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
                     adapter.hook_registrations,
                     &environment.executable,
                 )?,
+                // Reached only when an agent claims hooks it has no file for;
+                // DeepSeek Harness declares `hooks_path: None`, so the error
+                // above already refused it.
+                ConfigFormat::DshPatch => unreachable!("DeepSeek Harness takes no hooks"),
             }
         };
         actions.push(apply_content(
@@ -1023,6 +1046,14 @@ impl SetupEnvironment {
                 None,
                 env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             ),
+            // The harness home, resolved once like `CLAUDE_CONFIG_DIR`. An explicit
+            // option outranks the variable, which a test pointing at a scratch
+            // directory cannot fight; otherwise `$DSH_HOME` is honored. A
+            // relative or empty value says nothing, as it does in the harness.
+            dsh_home: resolve_optional_root(
+                options.dsh_home.clone(),
+                env::var_os("DSH_HOME").map(PathBuf::from),
+            ),
         })
     }
 
@@ -1045,6 +1076,14 @@ impl SetupEnvironment {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(|| self.home.join(".pi").join("agent"))
+    }
+
+    /// DeepSeek Harness's home, `$DSH_HOME` when it is set and `~/.dsh` when
+    /// not — the same resolve-once contract as [`Self::claude_config_dir`].
+    fn dsh_home_dir(&self) -> PathBuf {
+        self.dsh_home
+            .clone()
+            .unwrap_or_else(|| self.home.join(".dsh"))
     }
 }
 
@@ -1387,6 +1426,7 @@ fn names_leteo(config: &[u8], format: ConfigFormat) -> bool {
             Err(_) => true,
         },
         ConfigFormat::CodexToml => text.contains(&format!("mcp_servers.{SERVER_NAME}")),
+        ConfigFormat::DshPatch => dsh_names_leteo(text),
     }
 }
 

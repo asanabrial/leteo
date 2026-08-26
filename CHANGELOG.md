@@ -6,6 +6,16 @@ All notable changes to Leteo are documented in this file.
 
 ### Added
 
+- **DeepSeek Harness joins the agents `leteo setup` configures.** Its global
+  patch layer, `$DSH_HOME/cordis.patch.yml` (`~/.dsh` by default, moved by the
+  `DSH_HOME` environment variable), is the file every profile reads to compose
+  its session, so an `mcp-client` row inserted there reaches the web GUI and
+  every other profile at once — the tools surface to the model as
+  `mcp__leteo__<tool>`. The protocol block goes to `$DSH_HOME/AGENTS.md`, the
+  fixed user-global instruction file loaded into every session. The harness
+  has no auto-discovered hook settings file, so — like Cursor, Gemini CLI and
+  the other MCP-only clients — it takes no lifecycle hooks.
+
 - **ZCode joins the agents `leteo setup` configures.** Its servers land under
   the nested `mcp.servers` of `~/.zcode/cli/config.json` — one JSON document
   the client also holds its providers, plugin state and hooks in, so every

@@ -56,25 +56,30 @@ duties about what an answer explains.
    invented and named after itself, and that file goes. Pi has no instruction
    file at all — ten, three and one is the whole registry, and
    `the_registry_splits_three_ways_and_the_counts_are_taken_from_it` is what
-   keeps that sentence true when a fifteenth agent arrives.
+   keeps that sentence true when a fifteenth agent arrives. That file goes only
+   when nothing else is in it — somebody's own paragraph in
+   `leteo-memory-protocol.md` keeps it — and a shared instruction file that was
+   there and empty before Leteo arrived is not read as Leteo's. Three of the
+   fourteen used to leave a file behind, one of them a Copilot instruction file
+   that still applied to every source file and said nothing.
 
    **An agent gets only the registrations its client can fire.** ZCode holds
    providers, plugins, its own hooks and its MCP servers in one JSON document —
    `~/.zcode/cli/config.json`, verified in the client's own source, servers
-   under the nested `mcp.servers`. Its hooks sit under `hooks.events.<Event>`
-   behind an `enabled` switch that starts off: Leteo turns the runner on,
-   refuses if somebody switched it off themselves, and prunes nothing but its
-   own entries when leaving. That client supports seven lifecycle events, and
-   neither `SubagentStop` nor `SessionEnd` is among them — three of Leteo's
-   five land, with ZCode's instruction file telling it to close sessions through
-   `mem_session_summary` itself. [`hooks.md`](hooks.md) records why
-   `session-stop` does not move onto `Stop` to fill the gap: registered there it
-   ended a session every turn, which broke the save reminder once for real. It goes only when
-   nothing else is in it — somebody's own paragraph in `leteo-memory-protocol.md`
-   keeps the file — and a shared instruction file that was there and empty
-   before Leteo arrived is not read as Leteo's. Three of the twelve used to
-   leave a file behind, one of them a Copilot instruction file that still
-   applied to every source file and said nothing.
+   under the nested `mcp.servers`. Its hooks sit under `hooks.events.<Event>`,
+   and Leteo prunes nothing there but its own entries when leaving. That client
+   supports seven lifecycle events, and neither `SubagentStop` nor `SessionEnd`
+   is among them — three of Leteo's five land, with ZCode's instruction file
+   telling it to close sessions through `mem_session_summary` itself.
+   [`hooks.md`](hooks.md) records why `session-stop` does not move onto `Stop`
+   to fill the gap: registered there it ended a session every turn, which broke
+   the save reminder once for real.
+
+   Those events sit behind an `enabled` switch that starts off. Leteo turns the
+   runner on; where somebody has deliberately turned it off, a typed
+   `--hooks` refuses and the wizard installs everything the refusal was not
+   about. [`hooks.md`](hooks.md) §20 has that rule and what `doctor` says when
+   the switch moves after the fact.
 
    **Each agent is configured where that agent actually reads.** The path is the
    one taken from the product's own source, not from the shape of its directory:

@@ -27,6 +27,50 @@ All notable changes to Leteo are documented in this file.
   that client, so setup turns the runner on — or refuses when somebody has
   deliberately turned it off.
 
+### Fixed
+
+- **A ZCode config holding an event in a shape Leteo does not write crashed
+  setup instead of refusing it.** `hooks.events.<Event>` was read straight into
+  `as_array_mut().expect(…)`, so an event the client had emptied to `null` — or
+  a hand-edited one holding an object — panicked, with a message claiming the
+  array had just been created. The nested renderer now makes the same two passes
+  the flat one always has: a `null` is normalised, anything else is refused with
+  the key and the file named, and an event Leteo never writes is left in
+  whatever shape it was found.
+
+- **Uninstalling DeepSeek Harness emptied a patch file it could not decode.**
+  `remove_dsh_server` took the bytes with `unwrap_or_default`, so one Latin-1
+  accent in `cordis.patch.yml` turned the whole document into the empty string
+  and the file went back to disk with nothing in it, reported as an ordinary
+  update. That file is the machine-global layer every profile composes. It is
+  now refused the way the install side of the same file always refused.
+
+- **A ZCode hook runner somebody had switched off cost that agent its memory
+  entirely.** The refusal lands before the MCP server is written, which is right
+  for a typed `leteo setup zcode --hooks` and wrong for the wizard, where a
+  ticked ZCode came out with nothing configured at all over the hooks half of an
+  answer. The wizard now asks first and installs everything the refusal was not
+  about — the same shape it already used for a plugin bundle that registers the
+  hooks itself.
+
+- **`doctor` called ZCode's hooks healthy when nothing could run them.** Setup
+  turns the runner on, so the case that reaches a machine is somebody turning it
+  back off afterwards: every hook stops and the file still names every command,
+  which is all the check read. It now reports the switch, the way Codex's
+  untrusted hooks are reported beside it.
+
+- **The `--tools` argument went unquoted into the DeepSeek Harness patch.** It is
+  free text off the command line, and an apostrophe closed the YAML scalar early
+  and wrote a row the harness cannot parse — which costs every profile its
+  session, not just Leteo's server. It goes through the same quoter as the
+  executable path.
+
+- **A malformed servers key no longer says which file it is in.** Walking a key
+  *path* rather than one key dropped both the file and the key that actually
+  failed from the message; with fourteen configuration files, "mcp.servers must
+  contain a JSON object" named neither the document to open nor which of the two
+  keys held something else. Both are back.
+
 ### Changed
 
 - **The install scripts moved to `scripts/`.** The one-liners are now

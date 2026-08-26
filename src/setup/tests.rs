@@ -1570,6 +1570,276 @@ fn deepseek_harness_preserves_foreign_patch_and_uninstalls_literally() {
     assert!(!text.contains(MEMORY_PROTOCOL_BEGIN));
 }
 
+/// An event this client already holds in a shape that is not a list is handled,
+/// not crashed over.
+///
+/// `serde_json`'s `entry(..).or_insert_with(..)` hands back whatever the key
+/// already held, so the write pass reached `as_array_mut()` on whatever was
+/// there and panicked with a message claiming it had created the array itself.
+/// The flat renderer beside it has always made two passes — normalise a `null`,
+/// refuse anything else by name — and that is the pass that was dropped on the
+/// way down two keys.
+///
+/// `null` is the shape a client leaves behind when it drops the last hook out
+/// of an event, so it is the one most likely to be on a real machine, and the
+/// one that must not be an error.
+#[test]
+fn zcode_handles_an_event_that_is_not_a_list_rather_than_panicking() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join(".zcode").join("cli").join("config.json");
+    write_fixture(
+        &config,
+        r#"{"hooks": {"enabled": true, "events": {"SessionStart": null}}}"#,
+    );
+    setup(
+        "zcode",
+        &SetupOptions {
+            install_hooks: true,
+            ..options(&temp)
+        },
+    )
+    .expect("an emptied event is normalised, not refused");
+    let written = read_json(&config);
+    assert_eq!(
+        written["hooks"]["events"]["SessionStart"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "{written}"
+    );
+
+    for (shape, held) in [
+        ("an object", r#"{"matcher": "startup"}"#),
+        ("a string", r#""leteo hook session-start""#),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join(".zcode").join("cli").join("config.json");
+        write_fixture(
+            &config,
+            &format!(r#"{{"hooks": {{"enabled": true, "events": {{"SessionStart": {held}}}}}}}"#),
+        );
+
+        let error = setup(
+            "zcode",
+            &SetupOptions {
+                install_hooks: true,
+                ..options(&temp)
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("hooks.events.SessionStart") && error.contains("must contain an array"),
+            "{shape} under an event must be refused by name: {error}"
+        );
+    }
+}
+
+/// An event Leteo never writes may hold anything, and setup goes through.
+///
+/// The pair to the test above: the validation is over the registrations about
+/// to be written, not over the whole block, so somebody else's `PostToolUse`
+/// in a shape Leteo would refuse for itself is not Leteo's to refuse.
+#[test]
+fn zcode_leaves_a_foreign_event_in_whatever_shape_it_found_it() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join(".zcode").join("cli").join("config.json");
+    write_fixture(
+        &config,
+        r#"{"hooks": {"enabled": true, "events": {"PostToolUse": {"matcher": "Bash"}}}}"#,
+    );
+
+    setup(
+        "zcode",
+        &SetupOptions {
+            install_hooks: true,
+            ..options(&temp)
+        },
+    )
+    .expect("an event Leteo does not write is not Leteo's to refuse");
+
+    let written = read_json(&config);
+    assert_eq!(written["hooks"]["events"]["PostToolUse"]["matcher"], "Bash");
+    assert!(written["hooks"]["events"]["SessionStart"].is_array());
+}
+
+/// `doctor` sees hooks that are installed and cannot fire.
+///
+/// The sibling of the Codex "installed but never trusted" check, which was
+/// there and this was not. Setup turns the runner on, so the case that reaches
+/// a real machine is somebody turning it back off afterwards: every Leteo hook
+/// stops, and a check that reads the file for the command alone calls that
+/// healthy.
+#[test]
+fn doctor_sees_zcode_hooks_that_a_switched_off_runner_will_never_run() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    setup(
+        "zcode",
+        &SetupOptions {
+            install_hooks: true,
+            ..setup_options.clone()
+        },
+    )
+    .unwrap();
+
+    let zcode_health = |options: &SetupOptions| {
+        hook_health(options)
+            .into_iter()
+            .find(|agent| agent.agent == "zcode")
+            .expect("zcode reports hook health")
+    };
+
+    let healthy = zcode_health(&setup_options);
+    assert!(healthy.configured.is_some(), "{healthy:?}");
+    assert!(healthy.issue.is_none(), "{healthy:?}");
+
+    // Somebody switches the runner off after the fact. The registrations are
+    // still in the file and none of them will ever fire again.
+    let config = temp.path().join(".zcode").join("cli").join("config.json");
+    let mut written = read_json(&config);
+    written["hooks"]["enabled"] = Value::Bool(false);
+    write_fixture(&config, &serde_json::to_string_pretty(&written).unwrap());
+
+    let broken = zcode_health(&setup_options);
+    assert!(broken.configured.is_some(), "{broken:?}");
+    let issue = broken.issue.expect("a runner that is off is an issue");
+    assert!(issue.contains("hooks.enabled"), "{issue}");
+    assert!(issue.contains("none of them run"), "{issue}");
+}
+
+/// A switched-off hook runner costs ZCode its hooks, not its memory.
+///
+/// `setup --hooks` refuses there, and the refusal lands before the server is
+/// written, which is the right answer to a command somebody typed and the wrong
+/// one to the wizard: a ticked ZCode came out of the loop with nothing at all,
+/// over the hooks half of an answer that was never about it. Asked here the way
+/// the wizard asks it — the same predicate, in front of the same decision.
+#[test]
+fn a_switched_off_runner_still_lets_zcode_be_configured() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let config = temp.path().join(".zcode").join("cli").join("config.json");
+    write_fixture(&config, r#"{"hooks": {"enabled": false}}"#);
+
+    assert!(
+        hook_runner_switched_off("zcode", &setup_options),
+        "the wizard has to be able to see the switch before it asks"
+    );
+    // And it is a question about this agent alone: nobody else has such a
+    // switch, and answering yes for them would cost them their hooks.
+    assert!(!hook_runner_switched_off("claude-code", &setup_options));
+    assert!(!hook_runner_switched_off("codex", &setup_options));
+
+    // What the wizard does with that answer: drop the hooks, keep the rest.
+    let result = setup(
+        "zcode",
+        &SetupOptions {
+            install_hooks: false,
+            install_instructions: true,
+            ..setup_options.clone()
+        },
+    )
+    .expect("the server goes in even where the hooks cannot");
+    assert!(result.changed_files() >= 2);
+
+    let written = read_json(&config);
+    assert_eq!(written["mcp"]["servers"]["leteo"]["type"], "stdio");
+    // The switch is left as the person set it, and nothing was written under it.
+    assert_eq!(written["hooks"]["enabled"], false, "{written}");
+    assert!(written["hooks"].get("events").is_none(), "{written}");
+}
+
+/// The `--tools` argument is somebody's free text, so it is quoted like the path.
+///
+/// An apostrophe closed the single-quoted scalar early and wrote a row the
+/// harness cannot parse — and this is the machine-global layer, so an
+/// unparseable row there costs every profile its session, not just Leteo's
+/// server.
+#[test]
+fn the_deepseek_patch_quotes_a_tools_argument_that_carries_an_apostrophe() {
+    let temp = TempDir::new().unwrap();
+    setup(
+        "deepseek-harness",
+        &SetupOptions {
+            tools: Some("agent,it's".to_owned()),
+            ..options(&temp)
+        },
+    )
+    .unwrap();
+
+    let patch = fs::read_to_string(temp.path().join(".dsh").join("cordis.patch.yml")).unwrap();
+    let args = patch
+        .lines()
+        .find(|line| line.trim_start().starts_with("args:"))
+        .expect("the row carries an args list");
+    assert!(
+        args.contains("'--tools=agent,it''s'"),
+        "an apostrophe is doubled inside the scalar, not left to close it: {args}"
+    );
+}
+
+/// A malformed servers key says which file it is in, and which key.
+///
+/// Both were lost when the walk became a key *path*: "mcp.servers must contain
+/// a JSON object" names neither which of fourteen configuration files to open,
+/// nor — for a nested path — which of the two keys holds something else.
+#[test]
+fn a_servers_key_that_is_not_an_object_names_the_file_and_the_key() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let flat = resolve_agent_paths("opencode", &setup_options)
+        .unwrap()
+        .mcp_config;
+    write_fixture(&flat, r#"{"mcp": "not an object"}"#);
+    let error = setup("opencode", &setup_options).unwrap_err().to_string();
+    assert!(error.contains("mcp in"), "the key that failed: {error}");
+    assert!(
+        error.contains("opencode.json"),
+        "the file it is in: {error}"
+    );
+
+    // And on the nested path it is the outer key that is named, not the whole
+    // walk: `mcp` is what holds something else, `mcp.servers` was never reached.
+    let temp = TempDir::new().unwrap();
+    let nested = temp.path().join(".zcode").join("cli").join("config.json");
+    write_fixture(&nested, r#"{"mcp": 42}"#);
+    let error = setup("zcode", &options(&temp)).unwrap_err().to_string();
+    assert!(
+        error.contains("mcp in") && !error.contains("mcp.servers"),
+        "the failing key is `mcp`, not the path below it: {error}"
+    );
+    assert!(error.contains("config.json"), "{error}");
+}
+
+/// A patch file Leteo cannot decode is refused, and left exactly as it was.
+///
+/// `remove_dsh_server` read the bytes with `unwrap_or_default`, so one Latin-1
+/// accent turned the whole document into the empty string and `uninstall`
+/// wrote a zero-byte file back — reported as an ordinary update, over the
+/// machine-global layer every profile of the harness composes. The install side
+/// of the same file has always refused; this is the sibling that had not.
+#[test]
+fn deepseek_harness_refuses_a_patch_file_it_cannot_decode() {
+    let temp = TempDir::new().unwrap();
+    let patch = temp.path().join(".dsh").join("cordis.patch.yml");
+    fs::create_dir_all(patch.parent().unwrap()).unwrap();
+    // `café` written by an editor that is not on UTF-8: 0xE9 is a valid
+    // Latin-1 `é` and not a valid UTF-8 sequence.
+    let theirs: Vec<u8> = b"- id: storage\n  name: 'caf\xe9'\n  root: '/srv'\n".to_vec();
+    fs::write(&patch, &theirs).unwrap();
+
+    let error = uninstall("deepseek-harness", &options(&temp))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not valid UTF-8"), "{error}");
+    assert_eq!(
+        fs::read(&patch).unwrap(),
+        theirs,
+        "the patch stack survives a refusal untouched"
+    );
+}
+
 /// A plugin bundle, in the cache the given agent reads it from.
 fn install_bundle(home: &Path, agent_dir: &str) {
     let hooks = home

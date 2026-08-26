@@ -188,6 +188,29 @@ pub(super) fn render_zcode_hooks(
             events.remove(&event);
         }
     }
+    // Every event about to be written is checked before any of them is — the
+    // same two passes [`render_hooks_config`] makes one level up. `entry` hands
+    // back whatever the key already held, so an event this client left as
+    // `null`, or as the bare object a hand-edited config can carry, went
+    // straight into `as_array_mut().expect(...)` below and panicked. The prune
+    // above steps over such a value rather than removing it, which is right —
+    // it is not Leteo's — so refusing with the key named is the only answer
+    // left, and it beats crashing over a config that was unusual, not broken.
+    for registration in registrations {
+        let entries = events
+            .entry(registration.event.to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if entries.is_null() {
+            *entries = Value::Array(Vec::new());
+        }
+        entries.as_array_mut().with_context(|| {
+            format!(
+                "hooks.events.{} in {} must contain an array",
+                registration.event,
+                path.display()
+            )
+        })?;
+    }
     for registration in registrations {
         let mut entry = Map::new();
         if let Some(matcher) = registration.matcher {
@@ -202,10 +225,9 @@ pub(super) fn render_zcode_hooks(
             }]),
         );
         events
-            .entry(registration.event.to_owned())
-            .or_insert_with(|| Value::Array(Vec::new()))
-            .as_array_mut()
-            .expect("hook event array was created above")
+            .get_mut(registration.event)
+            .and_then(Value::as_array_mut)
+            .expect("hook event array was created or refused above")
             .push(Value::Object(entry));
     }
 
@@ -265,7 +287,7 @@ pub(super) fn render_json_config(
     let object = root
         .as_object_mut()
         .with_context(|| format!("{} must contain a JSON object", path.display()))?;
-    let servers = super::open_servers_mut(object, format)?;
+    let servers = super::open_servers_mut(object, format, path)?;
     servers.insert(
         SERVER_NAME.to_owned(),
         mcp_entry(format, executable, tools)?,
@@ -402,8 +424,15 @@ pub(super) const DSH_PATCH_MARKER: &str = "# leteo-mcp-client (managed by leteo 
 ///
 /// One row under an `insert:` patch directive. `serverName` must match the
 /// harness's `[A-Za-z0-9_-]{1,32}` budget, which `leteo` does, and the tools it
-/// names surface to the model as `mcp__leteo__<tool>`. The executable path is
-/// a single-quoted YAML scalar, where backslashes (Windows) need no escaping.
+/// names surface to the model as `mcp__leteo__<tool>`. The executable path and
+/// the `--tools` argument are both single-quoted YAML scalars, where
+/// backslashes (Windows) need no escaping.
+///
+/// Both go through the quoter, not just the path. `--tools` is free text off
+/// the command line, and an apostrophe in it closed the scalar early and wrote
+/// a patch file the harness cannot parse — and because this is the
+/// machine-global layer, an unparseable row there costs every profile its
+/// session, not just Leteo's server.
 fn dsh_patch_block(executable: &str, tools: &str) -> String {
     let command = yaml_single_quoted(executable);
     // Built line by line (rather than by indented continuation) so the block
@@ -417,7 +446,10 @@ fn dsh_patch_block(executable: &str, tools: &str) -> String {
         "        transport: stdio",
         &format!("        serverName: {SERVER_NAME}"),
         &format!("        command: {command}"),
-        &format!("        args: ['mcp', '--tools={tools}']"),
+        &format!(
+            "        args: ['mcp', {}]",
+            yaml_single_quoted(&format!("--tools={tools}"))
+        ),
         "        toolCallTimeoutMs: 60000",
         "        failOnStartupError: false",
     ]
@@ -467,8 +499,20 @@ pub(super) fn render_dsh_patch_config(
 }
 
 /// Drops the marker block Leteo wrote, keeping every other line as it was.
-pub(super) fn remove_dsh_server(existing: &[u8]) -> String {
-    let text = std::str::from_utf8(existing).unwrap_or_default();
+///
+/// Refuses a file it cannot decode rather than reading it as empty. This took
+/// the bytes with `unwrap_or_default`, so a `cordis.patch.yml` carrying one
+/// Latin-1 byte — an accent from an editor that is not on UTF-8 — became the
+/// empty string, stripped to nothing, and went back to disk as a zero-byte file
+/// that `uninstall` reported as an ordinary update. That file is the
+/// machine-global layer every profile composes, so what was lost is the
+/// person's whole patch stack, not Leteo's row.
+///
+/// [`render_dsh_patch_config`], the install side of the very same file, has
+/// always refused; this is the sibling that did not.
+pub(super) fn remove_dsh_server(existing: &[u8]) -> Result<String> {
+    let text =
+        std::str::from_utf8(existing).context("DeepSeek Harness patch file is not valid UTF-8")?;
     let normalized = text.replace("\r\n", "\n");
     let stripped = strip_dsh_block(&normalized);
     let body = stripped.trim_end();
@@ -477,7 +521,7 @@ pub(super) fn remove_dsh_server(existing: &[u8]) -> String {
     } else {
         format!("{body}\n")
     };
-    super::with_line_endings_of(text, desired)
+    Ok(super::with_line_endings_of(text, desired))
 }
 
 /// Removes a complete Leteo block (its marker, the `- insert:` row and that

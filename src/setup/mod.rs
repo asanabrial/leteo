@@ -347,7 +347,7 @@ pub fn uninstall(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
         let desired = match adapter.config_format {
             ConfigFormat::Json(format) => remove_json_server(&existing, format)?,
             ConfigFormat::CodexToml => remove_codex_server(&existing)?,
-            ConfigFormat::DshPatch => remove_dsh_server(&existing),
+            ConfigFormat::DshPatch => remove_dsh_server(&existing)?,
         };
         actions.push(apply_content(
             &paths.mcp_config,
@@ -517,21 +517,21 @@ fn walk_to_servers_mut(
 /// missing or null along the way — the writing counterpart of
 /// [`walk_to_servers_mut`]. A key that holds something other than an object is
 /// refused with the path named, because continuing would overwrite it.
-fn open_servers_mut(
-    object: &mut serde_json::Map<String, Value>,
+fn open_servers_mut<'a>(
+    object: &'a mut serde_json::Map<String, Value>,
     format: McpFormat,
-) -> Result<&mut serde_json::Map<String, Value>> {
-    let path = format.key_path();
-    let described = format!("{} (the servers map)", path.join("."));
+    path: &Path,
+) -> Result<&'a mut serde_json::Map<String, Value>> {
+    let keys = format.key_path();
     let mut node = object;
-    for (index, key) in path.iter().enumerate() {
+    for (index, key) in keys.iter().enumerate() {
         let entry = node
             .entry((*key).to_owned())
             .or_insert_with(|| Value::Object(Map::new()));
         if entry.is_null() {
             *entry = Value::Object(Map::new());
         }
-        let last = index + 1 == path.len();
+        let last = index + 1 == keys.len();
         match entry.as_object_mut() {
             Some(inner) => {
                 if last {
@@ -539,7 +539,16 @@ fn open_servers_mut(
                 }
                 node = inner;
             }
-            None => anyhow::bail!("{described} must contain a JSON object"),
+            // The key that actually failed, and the file it is in. Both were
+            // lost when this replaced a single `top_level_key`: "mcp.servers
+            // must contain a JSON object" names neither which of fourteen
+            // configuration files to open, nor — for a nested path — which of
+            // the two keys is the one holding something else.
+            None => anyhow::bail!(
+                "{} in {} must contain a JSON object",
+                keys[..=index].join("."),
+                path.display()
+            ),
         }
     }
     unreachable!("a non-empty key path always returns inside the loop")
@@ -637,6 +646,12 @@ fn remove_hooks(existing: &[u8]) -> Result<String> {
     to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &settings)
 }
 
+/// Whether ZCode's config explicitly switches the configuration-hook runner
+/// off. A missing switch means on — it is the client's own default.
+fn zcode_hook_runner_disabled(config: &Value) -> bool {
+    config.get("hooks").and_then(|hooks| hooks.get("enabled")) == Some(&Value::Bool(false))
+}
+
 /// Drops Leteo's lifecycle hooks out of ZCode's config, where they sit one
 /// level deeper than everywhere else: `hooks.events.<Event>`.
 ///
@@ -644,13 +659,6 @@ fn remove_hooks(existing: &[u8]) -> Result<String> {
 /// no hooks at all is a key that says nothing, so it goes; whatever else the
 /// block carries — `enabled` above all — stays, because switching the hook
 /// runner off for somebody whose other hooks may need it is not Leteo's call.
-///
-/// Whether ZCode's config explicitly switches the configuration-hook runner
-/// off. A missing switch means on — it is the client's own default.
-fn zcode_hook_runner_disabled(config: &Value) -> bool {
-    config.get("hooks").and_then(|hooks| hooks.get("enabled")) == Some(&Value::Bool(false))
-}
-
 fn remove_nested_leteo_hooks(config: &mut Value) {
     let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
@@ -1549,7 +1557,21 @@ pub fn hook_health(options: &SetupOptions) -> Vec<HookHealth> {
                     adapter.display_name
                 ))
             } else {
-                None
+                // The same shape as the Codex arm above, and the sibling it was
+                // missing: hooks that are installed and cannot fire. Setup turns
+                // this switch on, so the case that matters is somebody turning
+                // it back off afterwards — every Leteo hook stops, and a check
+                // that reads the file for the command alone calls that healthy.
+                hook_runner_switch_is_off(&environment, adapter)
+                    .filter(|_| configured.is_some() || bundled.is_some())
+                    .map(|switch| {
+                        format!(
+                            "{} has hooks installed but {} sets hooks.enabled to \
+                             false, so none of them run. Set it back to true there.",
+                            adapter.display_name,
+                            switch.display()
+                        )
+                    })
             };
             HookHealth {
                 agent: adapter.slug,
@@ -1604,6 +1626,53 @@ pub fn plugin_registers_hooks(agent: &str, options: &SetupOptions) -> bool {
     SetupEnvironment::resolve(options)
         .ok()
         .and_then(|environment| installed_plugin_hooks(&environment, adapter))
+        .is_some()
+}
+
+/// Whether this agent's own configuration switches its hook runner off, and the
+/// file that says so.
+///
+/// One reader for the two questions that need the answer — the wizard, which
+/// must not ask for hooks that would be refused, and `doctor`, which must not
+/// call hooks healthy when nothing will run them. Written twice, one of them
+/// would learn about a second client with such a switch and the other would
+/// not.
+///
+/// Only ZCode has one today, and only an explicit `false` counts: a missing
+/// switch means on, which is that client's own default.
+fn hook_runner_switch_is_off(
+    environment: &SetupEnvironment,
+    adapter: &AgentAdapter,
+) -> Option<PathBuf> {
+    if adapter.config_format != ConfigFormat::Json(McpFormat::Zcode) {
+        return None;
+    }
+    let path = resolve_paths(adapter, environment).hooks?;
+    let existing = read_optional(&path).ok().flatten()?;
+    let config = serde_json::from_slice::<Value>(&existing).ok()?;
+    zcode_hook_runner_disabled(&config).then_some(path)
+}
+
+/// Whether asking this agent for hooks would be refused because its own
+/// configuration has the runner switched off.
+///
+/// The companion to [`plugin_registers_hooks`], and there for exactly the same
+/// reason. `setup --hooks` refuses rather than write registrations into a block
+/// the client will never read, which is the right answer to a command somebody
+/// typed and the wrong one to the wizard: the refusal comes before the server
+/// is written, so a ticked ZCode ended up with no memory at all over a hooks
+/// preference that was never about it. The wizard drops the hooks half and
+/// installs the rest, which is what it already does for a bundle.
+///
+/// Quiet about failure, like [`is_configured`] beside it: a file that cannot be
+/// read or parsed is not one that says no.
+pub fn hook_runner_switched_off(agent: &str, options: &SetupOptions) -> bool {
+    let Ok(adapter) = find_adapter(agent) else {
+        return false;
+    };
+    SetupEnvironment::resolve(options)
+        .ok()
+        .and_then(|environment| hook_runner_switch_is_off(&environment, adapter))
         .is_some()
 }
 

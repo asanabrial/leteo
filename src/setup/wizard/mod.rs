@@ -984,9 +984,17 @@ impl Wizard {
             // to install: `setup` refuses to write a second copy, which is the
             // right answer to a typed command and the wrong one to a flow that
             // gets re-run. Asked per agent, because the bundles are per agent.
+            //
+            // A hook runner the person switched off is the same story once
+            // more. `setup --hooks` refuses there too, and that refusal lands
+            // before the server is written — so a ticked ZCode came out of this
+            // loop with no memory at all, over the hooks half of an answer that
+            // was never about it. Both questions are asked here so the agent
+            // keeps everything the refusal was not about.
             let with_hooks = self.hooks
                 && agent.supports_hooks
-                && !crate::setup::plugin_registers_hooks(&agent.slug, &self.offer.probe);
+                && !crate::setup::plugin_registers_hooks(&agent.slug, &self.offer.probe)
+                && !crate::setup::hook_runner_switched_off(&agent.slug, &self.offer.probe);
             let options = SetupOptions {
                 install_hooks: with_hooks,
                 ..self.offer.probe.clone()

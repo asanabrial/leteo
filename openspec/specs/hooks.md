@@ -352,6 +352,26 @@ deadline, so every promise here is a promise about time as much as content.
    leaves empty. Neither was written down anywhere as a decision, and no version
    of this test could see either.
 
+20. **A client whose hook runner can be switched off costs the person their
+   hooks, never their memory.** ZCode is the one such client today: its
+   configuration hooks run only while `hooks.enabled` is true, which starts off
+   ([`cli.md`](cli.md) §5). Setup turns it on. What matters is the person who
+   deliberately turned it back off, and the answer differs by who is asking.
+
+   `leteo setup zcode --hooks` refuses, because somebody typed the word `hooks`
+   and writing registrations into a block the client will never read is a setup
+   reporting success over files nothing opens. The wizard does not refuse: it
+   asks the same question first, drops the hooks half, and installs the server
+   and the instructions — the refusal lands before the server is written, so
+   refusing there cost a ticked ZCode its memory entirely over a preference that
+   was never about it. This is the shape already used for a plugin bundle that
+   registers the hooks itself, and the same predicate answers both callers.
+
+   `doctor` reports the state that check cannot prevent: hooks installed, runner
+   switched off afterwards, nothing firing, and a file that still names every
+   command. Read for the command alone, that reports healthy — the same way
+   Codex's untrusted hooks did before they got their own line.
+
 ## Invariants
 
 - Every event finishes inside its agent's patience even when the wait overruns.

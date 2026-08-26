@@ -27,6 +27,30 @@ All notable changes to Leteo are documented in this file.
   that client, so setup turns the runner on — or refuses when somebody has
   deliberately turned it off.
 
+### Added
+
+- **A plugin bundle for ZCode, in the marketplace this repository already
+  serves.** `plugin/zcode` carries the MCP entry, the memory skill, and the
+  three lifecycle hooks that client fires, under `.zcode-plugin/plugin.json` —
+  the manifest path ZCode looks for first. It is listed in
+  `.claude-plugin/marketplace.json` beside the Claude Code bundle, which is the
+  file both clients read at the repository root, so
+  `zcode plugins marketplace add asanabrial/leteo` reaches it.
+
+  The bundle is not just a second way to install the same thing. ZCode runs
+  configuration-file hooks only while `hooks.enabled` is true, and that switch
+  starts off and belongs to the person, not to Leteo; enabling a plugin is what
+  enables the plugin's hooks. On a machine where that switch is somebody else's
+  decision, this is the route that works.
+
+  Which events a bundle carries is now taken from the agent rather than from the
+  global list. Held against `HOOK_EVENTS`, ZCode's honest three-event bundle
+  would have failed and a bundle carrying two events its client cannot fire
+  would have passed. The marketplace guard grew the same way: it checked
+  `plugins[0]` and would have watched the Claude bundle forever and never the one
+  added beside it, and the skills were compared as a pair, which stops being one
+  rule the moment a third arrives.
+
 ### Fixed
 
 - **A ZCode config holding an event in a shape Leteo does not write crashed

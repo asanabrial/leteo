@@ -684,9 +684,13 @@ fn every_manifest_publishes_the_version_this_crate_is() {
         // declared, and this line is what said so.
         ("server.json", 3),
         ("npm/package.json", 1),
-        (".claude-plugin/marketplace.json", 1),
+        // Two: one marketplace entry per bundle a client installs from here.
+        // Both ZCode and Claude Code read this same file, so it grew a second
+        // entry when the ZCode bundle shipped, and this line is what said so.
+        (".claude-plugin/marketplace.json", 2),
         ("plugin/claude-code/.claude-plugin/plugin.json", 1),
         ("plugin/codex/.codex-plugin/plugin.json", 1),
+        ("plugin/zcode/.zcode-plugin/plugin.json", 1),
     ];
 
     for (relative, expected_count) in manifests {

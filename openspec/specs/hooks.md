@@ -338,9 +338,15 @@ deadline, so every promise here is a promise about time as much as content.
 19. **The plugin bundles register what the installer writes, matcher
    included.** Leteo installs two ways — `leteo setup`, and the plugin bundles
    under `plugin/`, which for Codex is the only route to hooks at all — and the
-   two have to arrive at the same five events, on the same triggers, with the
-   same deadlines. `HOOK_EVENTS` is the list that decides, and a guard reads
-   both bundles against it.
+   two have to arrive at the same events, on the same triggers, with the same
+   deadlines.
+
+   The list that decides is the *agent's*, not the global one:
+   `AgentAdapter::hook_registrations`, which is also what the installer writes
+   from. Held against `HOOK_EVENTS` instead, ZCode's honest three-event bundle
+   would fail and a bundle carrying all five — two of them events its client
+   cannot fire — would pass. A guard reads every bundle against its own agent's
+   field.
 
    The matcher is part of that and was not always. Compared on event, subcommand
    and timeout alone, the field that carries meaning by itself went unwatched:
@@ -401,9 +407,12 @@ deadline, so every promise here is a promise about time as much as content.
   for the two sections that also carry a content preview, by
   `the_two_sections_that_carry_a_preview_cut_their_title_like_every_other_line`
 - `src/setup/mod.rs` — `HOOK_EVENTS`, the one list of events, matchers and
-  deadlines that both install routes are held to
-- `plugin/claude-code/hooks/hooks.json`, `plugin/codex/hooks/hooks.json` — the
-  bundles, guarded by `the_plugin_bundles_register_the_hooks_the_binary_writes`
+  deadlines that both install routes are held to, and `ZCODE_HOOK_REGISTRATIONS`,
+  the subset one client can fire
+- `plugin/claude-code/hooks/hooks.json`, `plugin/codex/hooks/hooks.json`,
+  `plugin/zcode/hooks/hooks.json` — the bundles, each guarded against its own
+  agent's registrations by
+  `the_plugin_bundles_register_the_hooks_the_binary_writes`
 - `src/hooks/tests.rs`
 
 ## Related

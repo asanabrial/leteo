@@ -51,12 +51,25 @@ duties about what an answer explains.
    alone. `--language` alone is a complete command, and so is `--context`.
 
    Uninstalling removes what it wrote and nothing else, and both halves are
-   driven over the whole registry. Eight agents keep their instructions in a file
+   driven over the whole registry. Nine agents keep their instructions in a file
    that was already theirs, and lose only Leteo's block; three get a file Leteo
    invented and named after itself, and that file goes. Pi has no instruction
-   file at all — eight, three and one is the whole registry, and
+   file at all — nine, three and one is the whole registry, and
    `the_registry_splits_three_ways_and_the_counts_are_taken_from_it` is what
-   keeps that sentence true when a thirteenth agent arrives. It goes only when
+   keeps that sentence true when a fourteenth agent arrives.
+
+   **An agent gets only the registrations its client can fire.** ZCode holds
+   providers, plugins, its own hooks and its MCP servers in one JSON document —
+   `~/.zcode/cli/config.json`, verified in the client's own source, servers
+   under the nested `mcp.servers`. Its hooks sit under `hooks.events.<Event>`
+   behind an `enabled` switch that starts off: Leteo turns the runner on,
+   refuses if somebody switched it off themselves, and prunes nothing but its
+   own entries when leaving. That client supports seven lifecycle events, and
+   neither `SubagentStop` nor `SessionEnd` is among them — three of Leteo's
+   five land, with ZCode's instruction file telling it to close sessions through
+   `mem_session_summary` itself. [`hooks.md`](hooks.md) records why
+   `session-stop` does not move onto `Stop` to fill the gap: registered there it
+   ended a session every turn, which broke the save reminder once for real. It goes only when
    nothing else is in it — somebody's own paragraph in `leteo-memory-protocol.md`
    keeps the file — and a shared instruction file that was there and empty
    before Leteo arrived is not read as Leteo's. Three of the twelve used to

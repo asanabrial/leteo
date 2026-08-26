@@ -2,9 +2,14 @@ use super::*;
 
 /// Merges Leteo's hooks into an agent settings file, replacing only the entries
 /// Leteo owns and preserving every other setting and hook.
+///
+/// The registrations come from the agent, not from the global list: an agent
+/// that cannot fire an event must not have it written where it would look
+/// installed.
 pub(super) fn render_hooks_config(
     path: &Path,
     existing: Option<&[u8]>,
+    registrations: &[HookRegistration],
     executable: &Path,
 ) -> Result<String> {
     let mut root = match existing {
@@ -51,36 +56,40 @@ pub(super) fn render_hooks_config(
         entries.retain(|entry| !is_leteo_hook_entry(entry));
         // An event Leteo has abandoned and nobody else writes under is Leteo's
         // own leftover, so the key goes rather than sitting there empty.
-        if entries.is_empty() && !HOOK_EVENTS.iter().any(|(name, ..)| *name == event) {
+        if entries.is_empty() && !registrations.iter().any(|item| item.event == event) {
             hooks.remove(&event);
         }
     }
-    for (event, _, _, _) in HOOK_EVENTS {
+    for registration in registrations {
         let entries = hooks
-            .entry((*event).to_owned())
+            .entry(registration.event.to_owned())
             .or_insert_with(|| Value::Array(Vec::new()));
         if entries.is_null() {
             *entries = Value::Array(Vec::new());
         }
         entries.as_array_mut().with_context(|| {
-            format!("hooks.{event} in {} must contain an array", path.display())
+            format!(
+                "hooks.{} in {} must contain an array",
+                registration.event,
+                path.display()
+            )
         })?;
     }
-    for (event, slug, matcher, timeout) in HOOK_EVENTS {
+    for registration in registrations {
         let mut entry = Map::new();
-        if let Some(matcher) = matcher {
-            entry.insert("matcher".to_owned(), Value::String((*matcher).to_owned()));
+        if let Some(matcher) = registration.matcher {
+            entry.insert("matcher".to_owned(), Value::String(matcher.to_owned()));
         }
         entry.insert(
             "hooks".to_owned(),
             json!([{
                 "type": "command",
-                "command": format!("{command} hook {slug}"),
-                "timeout": timeout,
+                "command": format!("{command} hook {}", registration.slug),
+                "timeout": registration.timeout_seconds,
             }]),
         );
         hooks
-            .get_mut(*event)
+            .get_mut(registration.event)
             .and_then(Value::as_array_mut)
             .expect("hook event array was created above")
             .push(Value::Object(entry));
@@ -88,6 +97,118 @@ pub(super) fn render_hooks_config(
 
     // Indented the way the file already was. Two spaces unconditionally meant
     // that adding one server to a four-space config rewrote every line of it.
+    super::to_json_like(
+        existing
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_default(),
+        &root,
+    )
+    .with_context(|| format!("serialize {}", path.display()))
+}
+
+/// Merges Leteo's hooks into ZCode's `config.json`, where they sit two keys
+/// deeper than everywhere else: `hooks.events.<Event>`.
+///
+/// Two things differ from [`render_hooks_config`] beyond the nesting.
+///
+/// **The runner starts switched off.** Configuration-file hooks run only while
+/// `hooks.enabled` is true — off by default, unlike a plugin bundle, which
+/// enables the runner merely by existing. So Leteo switches it on, and refuses
+/// where somebody has deliberately set it false: writing registrations into a
+/// block the client will not read is a setup reporting success over files
+/// nothing ever opens.
+///
+/// The rest holds all the way down. Commands are quoted unconditionally, each
+/// event carries the matcher the binary needs told apart (`startup|clear`
+/// against `compact`), and Leteo's own entries are pruned from every event
+/// present before anything is written, so a moved registration cannot leave
+/// its old copy firing beside the new one.
+pub(super) fn render_zcode_hooks(
+    path: &Path,
+    existing: Option<&[u8]>,
+    registrations: &[HookRegistration],
+    executable: &Path,
+) -> Result<String> {
+    let mut root = match existing {
+        Some(content) if !content.iter().all(u8::is_ascii_whitespace) => {
+            serde_json::from_slice::<Value>(content)
+                .with_context(|| format!("parse {}", path.display()))?
+        }
+        _ => Value::Object(Map::new()),
+    };
+    // Asked before anything is written — `setup` asks the same question earlier,
+    // over the file as it arrived, precisely so this can never be reached after
+    // a server entry went in. It stays here as the door this renderer closes on
+    // its own authority.
+    if super::zcode_hook_runner_disabled(&root) {
+        anyhow::bail!(
+            "{} sets hooks.enabled to false, which tells this client to run no \
+             configuration hooks at all — Leteo's registrations would be written \
+             and then ignored. Turn it back on there and run this again.",
+            path.display()
+        );
+    }
+    let object = root
+        .as_object_mut()
+        .with_context(|| format!("{} must contain a JSON object", path.display()))?;
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if hooks.is_null() {
+        *hooks = Value::Object(Map::new());
+    }
+    let hooks = hooks
+        .as_object_mut()
+        .with_context(|| format!("hooks in {} must contain a JSON object", path.display()))?;
+
+    hooks.insert("enabled".to_owned(), Value::Bool(true));
+
+    let events = hooks
+        .entry("events")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if events.is_null() {
+        *events = Value::Object(Map::new());
+    }
+    let events = events.as_object_mut().with_context(|| {
+        format!(
+            "hooks.events in {} must contain a JSON object",
+            path.display()
+        )
+    })?;
+
+    let executable = executable_string(executable)?;
+    let command = format!("\"{executable}\"");
+    let present: Vec<String> = events.keys().cloned().collect();
+    for event in present {
+        let Some(entries) = events.get_mut(&event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        entries.retain(|entry| !is_leteo_hook_entry(entry));
+        if entries.is_empty() && !registrations.iter().any(|item| item.event == event) {
+            events.remove(&event);
+        }
+    }
+    for registration in registrations {
+        let mut entry = Map::new();
+        if let Some(matcher) = registration.matcher {
+            entry.insert("matcher".to_owned(), Value::String(matcher.to_owned()));
+        }
+        entry.insert(
+            "hooks".to_owned(),
+            json!([{
+                "type": "command",
+                "command": format!("{command} hook {}", registration.slug),
+                "timeout": registration.timeout_seconds,
+            }]),
+        );
+        events
+            .entry(registration.event.to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("hook event array was created above")
+            .push(Value::Object(entry));
+    }
+
     super::to_json_like(
         existing
             .and_then(|bytes| std::str::from_utf8(bytes).ok())
@@ -144,19 +265,7 @@ pub(super) fn render_json_config(
     let object = root
         .as_object_mut()
         .with_context(|| format!("{} must contain a JSON object", path.display()))?;
-    let top_level_key = format.top_level_key();
-    let servers = object
-        .entry(top_level_key)
-        .or_insert_with(|| Value::Object(Map::new()));
-    if servers.is_null() {
-        *servers = Value::Object(Map::new());
-    }
-    let servers = servers.as_object_mut().with_context(|| {
-        format!(
-            "{top_level_key} in {} must contain a JSON object",
-            path.display()
-        )
-    })?;
+    let servers = super::open_servers_mut(object, format)?;
     servers.insert(
         SERVER_NAME.to_owned(),
         mcp_entry(format, executable, tools)?,
@@ -186,7 +295,11 @@ pub(super) fn render_json_config(
 /// unlike `[mcp_servers.leteo]` the name cannot say whose an entry is. Each
 /// entry spans a group of sections — the matcher table and the handler tables
 /// under it — which is why the whole group is gathered before it is judged.
-pub(super) fn render_codex_hooks(existing: Option<&[u8]>, executable: &Path) -> Result<String> {
+pub(super) fn render_codex_hooks(
+    existing: Option<&[u8]>,
+    registrations: &[HookRegistration],
+    executable: &Path,
+) -> Result<String> {
     let existing = match existing {
         Some(content) => std::str::from_utf8(content).context("Codex config is not valid UTF-8")?,
         None => "",
@@ -199,15 +312,17 @@ pub(super) fn render_codex_hooks(existing: Option<&[u8]>, executable: &Path) -> 
     // shell, and an unquoted Windows path loses its backslashes.
     let executable = executable_string(executable)?;
     let mut blocks = Vec::new();
-    for (event, slug, matcher, timeout) in HOOK_EVENTS {
-        let command = serde_json::to_string(&format!("\"{executable}\" hook {slug}"))
-            .context("quote a Leteo hook command for TOML")?;
-        let mut block = format!("[[hooks.{event}]]\n");
-        if let Some(matcher) = matcher {
+    for registration in registrations {
+        let command =
+            serde_json::to_string(&format!("\"{executable}\" hook {}", registration.slug))
+                .context("quote a Leteo hook command for TOML")?;
+        let mut block = format!("[[hooks.{}]]\n", registration.event);
+        if let Some(matcher) = registration.matcher {
             block.push_str(&format!("matcher = {}\n", serde_json::to_string(matcher)?));
         }
         block.push_str(&format!(
-            "\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = {command}\ntimeout = {timeout}\n"
+            "\n[[hooks.{}.hooks]]\ntype = \"command\"\ncommand = {command}\ntimeout = {}\n",
+            registration.event, registration.timeout_seconds
         ));
         blocks.push(block);
     }

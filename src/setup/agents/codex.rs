@@ -17,6 +17,8 @@ pub(super) const ADAPTER: AgentAdapter = AgentAdapter {
     // there is no second path to point at — and the two writes land in order,
     // the hooks reading back what the server write just left.
     hooks_path: Some(config_path),
+    hook_registrations: super::ALL_HOOK_REGISTRATIONS,
+    plugin_cache_root: Some(plugin_cache),
 };
 
 /// `~/.codex` on every platform, Windows included.
@@ -33,4 +35,8 @@ fn config_path(environment: &SetupEnvironment) -> PathBuf {
 
 fn instructions(_environment: &SetupEnvironment, config: &Path) -> PathBuf {
     config.with_file_name("AGENTS.md")
+}
+
+fn plugin_cache(environment: &SetupEnvironment) -> PathBuf {
+    environment.home.join(".codex")
 }

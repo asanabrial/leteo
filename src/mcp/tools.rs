@@ -644,7 +644,7 @@ impl LeteoMcpServer {
         //
         // `mem_timeline` was given a ceiling for exactly this reason — a window
         // of a million came back with a whole session, 191 KB — and this is the
-        // tool nine of the twelve clients have as their only route to context.
+        // tool nine of the thirteen clients have as their only route to context.
         // Its three budgets were all open at the top: asked for 9,999 of each,
         // a real store answered with 1,201 memories, 212 sessions and 120
         // prompts, in one reply of 469 KB. A payload that pushes the useful

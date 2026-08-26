@@ -13,6 +13,8 @@ pub(super) const ADAPTER: AgentAdapter = AgentAdapter {
     new_instruction_file: "",
     owns_instruction_file: false,
     hooks_path: Some(hooks),
+    hook_registrations: super::ALL_HOOK_REGISTRATIONS,
+    plugin_cache_root: Some(plugin_cache),
 };
 
 fn config_path(environment: &SetupEnvironment) -> PathBuf {
@@ -26,4 +28,10 @@ fn instructions(environment: &SetupEnvironment, _config: &Path) -> PathBuf {
 /// The only agent with a stable, documented hook settings file today.
 fn hooks(environment: &SetupEnvironment) -> PathBuf {
     environment.claude_config_dir().join("settings.json")
+}
+
+/// Its plugins cache under the config directory the way its settings do,
+/// which is why `CLAUDE_CONFIG_DIR` moves both.
+fn plugin_cache(environment: &SetupEnvironment) -> PathBuf {
+    environment.claude_config_dir()
 }

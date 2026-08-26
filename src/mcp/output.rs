@@ -1372,7 +1372,7 @@ pub(super) struct ObservationOutput {
     /// warning rather than as noise on every line.
     ///
     /// Filled by the context, which is the surface most clients have: of the
-    /// twelve agents Leteo configures, three run hooks and the other nine reach
+    /// thirteen agents Leteo configures, four run hooks and the other nine reach
     /// context through `mem_context` alone, which every instruction file tells
     /// them to call before acting. An agent is told a memory has been
     /// overturned on a prompt, at a session opening and when it fetches one

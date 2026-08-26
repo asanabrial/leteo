@@ -124,14 +124,29 @@ pub enum McpFormat {
     Servers,
     Mcp,
     Pi,
+    /// ZCode reads `mcp.servers` inside `~/.zcode/cli/config.json` — a path two
+    /// keys deep, unlike every other format here. Verified in the client's own
+    /// source, where the user scope resolves to `.zcode/cli` + `config.json`
+    /// with `mcp.servers` as its key (`userConfigDirSegments: [".zcode",
+    /// "cli"]`), and where a scope holding no servers falls back to
+    /// `.agents/mcp.json`. Writing the fallback file instead would demote
+    /// Leteo silently the moment a native server appeared, so the native key
+    /// gets the entry.
+    Zcode,
 }
 
 impl McpFormat {
-    fn top_level_key(self) -> &'static str {
+    /// The keys walked from the document root to the map of servers.
+    ///
+    /// A list rather than a single key so the ZCode nesting is just data. Every
+    /// walker over a config document goes through this, which is what keeps a
+    /// format from being written under one path and read back from another.
+    fn key_path(self) -> &'static [&'static str] {
         match self {
-            Self::McpServers | Self::Pi => "mcpServers",
-            Self::Servers => "servers",
-            Self::Mcp => "mcp",
+            Self::McpServers | Self::Pi => &["mcpServers"],
+            Self::Servers => &["servers"],
+            Self::Mcp => &["mcp"],
+            Self::Zcode => &["mcp", "servers"],
         }
     }
 }
@@ -283,13 +298,20 @@ pub fn is_configured(agent: &str, options: &SetupOptions) -> bool {
         ConfigFormat::Json(format) => serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|config| {
-                config
-                    .get(format.top_level_key())?
-                    .get(SERVER_NAME)
-                    .map(|_| true)
+                servers_at(&config, format).map(|servers| servers.contains_key(SERVER_NAME))
             })
             .unwrap_or(false),
     }
+}
+
+/// The map of servers a config document holds, following the format's key
+/// path and creating nothing along the way.
+fn servers_at(config: &Value, format: McpFormat) -> Option<&Map<String, Value>> {
+    let mut node = config;
+    for key in format.key_path() {
+        node = node.get(key)?;
+    }
+    node.as_object()
 }
 
 /// Removes Leteo from an agent's configuration, leaving everything else alone.
@@ -450,13 +472,63 @@ fn detected_indent(existing: &str) -> String {
 fn remove_json_server(existing: &[u8], format: McpFormat) -> Result<String> {
     let mut config: Value =
         serde_json::from_slice(existing).context("MCP configuration is not valid JSON")?;
-    if let Some(servers) = config
-        .get_mut(format.top_level_key())
-        .and_then(Value::as_object_mut)
-    {
+    // ZCode's hooks share this file — see `zcode.rs` — so taking the server
+    // out takes them, exactly as `remove_codex_server` does for the TOML its
+    // hooks live in. The generic hook-removal step in `uninstall` is skipped
+    // for a file that holds both.
+    if format == McpFormat::Zcode {
+        remove_nested_leteo_hooks(&mut config);
+    }
+    if let Some(servers) = walk_to_servers_mut(&mut config, format) {
         servers.remove(SERVER_NAME);
     }
     to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &config)
+}
+
+/// Walks to the last key of a format's server path, creating nothing.
+fn walk_to_servers_mut(
+    config: &mut Value,
+    format: McpFormat,
+) -> Option<&mut serde_json::Map<String, Value>> {
+    let path = format.key_path();
+    let (last, parents) = path.split_last()?;
+    let mut node = config;
+    for key in parents {
+        node = node.get_mut(key)?;
+    }
+    node.get_mut(last).and_then(Value::as_object_mut)
+}
+
+/// Walks to the last key of a format's server path, creating any key that is
+/// missing or null along the way — the writing counterpart of
+/// [`walk_to_servers_mut`]. A key that holds something other than an object is
+/// refused with the path named, because continuing would overwrite it.
+fn open_servers_mut(
+    object: &mut serde_json::Map<String, Value>,
+    format: McpFormat,
+) -> Result<&mut serde_json::Map<String, Value>> {
+    let path = format.key_path();
+    let described = format!("{} (the servers map)", path.join("."));
+    let mut node = object;
+    for (index, key) in path.iter().enumerate() {
+        let entry = node
+            .entry((*key).to_owned())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if entry.is_null() {
+            *entry = Value::Object(Map::new());
+        }
+        let last = index + 1 == path.len();
+        match entry.as_object_mut() {
+            Some(inner) => {
+                if last {
+                    return Ok(inner);
+                }
+                node = inner;
+            }
+            None => anyhow::bail!("{described} must contain a JSON object"),
+        }
+    }
+    unreachable!("a non-empty key path always returns inside the loop")
 }
 
 /// Drops `[mcp_servers.leteo]` from the Codex config, keeping every other one.
@@ -551,6 +623,41 @@ fn remove_hooks(existing: &[u8]) -> Result<String> {
     to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &settings)
 }
 
+/// Drops Leteo's lifecycle hooks out of ZCode's config, where they sit one
+/// level deeper than everywhere else: `hooks.events.<Event>`.
+///
+/// The same judgement as [`remove_hooks`] one layer down. An event left with
+/// no hooks at all is a key that says nothing, so it goes; whatever else the
+/// block carries — `enabled` above all — stays, because switching the hook
+/// runner off for somebody whose other hooks may need it is not Leteo's call.
+///
+/// Whether ZCode's config explicitly switches the configuration-hook runner
+/// off. A missing switch means on — it is the client's own default.
+fn zcode_hook_runner_disabled(config: &Value) -> bool {
+    config.get("hooks").and_then(|hooks| hooks.get("enabled")) == Some(&Value::Bool(false))
+}
+
+fn remove_nested_leteo_hooks(config: &mut Value) {
+    let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(events) = hooks.get_mut("events").and_then(Value::as_object_mut) else {
+        return;
+    };
+    // The shape under an event is the same wrapper every agent uses — matcher,
+    // then the list of commands — so entries are recognised by their command,
+    // not by their nesting.
+    for entries in events.values_mut() {
+        if let Some(entries) = entries.as_array_mut() {
+            entries.retain(|entry| !is_leteo_hook_entry(entry));
+        }
+    }
+    events.retain(|_, entries| entries.as_array().is_none_or(|list| !list.is_empty()));
+    if events.is_empty() {
+        hooks.remove("events");
+    }
+}
+
 pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
     let adapter = find_adapter(agent)?;
     let environment = SetupEnvironment::resolve(options)?;
@@ -558,6 +665,26 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
     let paths = resolve_paths(adapter, &environment);
 
     let existing_config = read_optional(&paths.mcp_config)?;
+
+    // ZCode's hook runner starts switched off, and Leteo refuses rather than
+    // write registrations the client will not read. The question is asked
+    // here, before anything is written: its hooks share the MCP config file,
+    // so a refusal that arrived after the server step would leave a
+    // half-install — a new server entry reporting failure beside it.
+    if options.install_hooks
+        && adapter.config_format == ConfigFormat::Json(McpFormat::Zcode)
+        && existing_config
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .is_some_and(|config| zcode_hook_runner_disabled(&config))
+    {
+        anyhow::bail!(
+            "{} sets hooks.enabled to false, which tells this client to run no \
+             configuration hooks at all — Leteo's registrations would be written \
+             and then ignored. Turn it back on there and run this again.",
+            paths.mcp_config.display()
+        );
+    }
     let desired_config = match adapter.config_format {
         ConfigFormat::Json(format) => render_json_config(
             &paths.mcp_config,
@@ -637,15 +764,30 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
         } else {
             read_optional(hooks_path)?
         };
-        let desired_hooks = match adapter.config_format {
-            ConfigFormat::CodexToml => {
-                render::render_codex_hooks(existing_hooks.as_deref(), &environment.executable)?
-            }
-            ConfigFormat::Json(_) => render_hooks_config(
+        // ZCode keeps its hooks in the same file as the server, as Codex does,
+        // but in JSON — so the file just written is parsed again rather than
+        // edited by line, and everything in it that is not a hook survives.
+        let desired_hooks = if adapter.config_format == ConfigFormat::Json(McpFormat::Zcode) {
+            render::render_zcode_hooks(
                 hooks_path,
                 existing_hooks.as_deref(),
+                adapter.hook_registrations,
                 &environment.executable,
-            )?,
+            )?
+        } else {
+            match adapter.config_format {
+                ConfigFormat::CodexToml => render::render_codex_hooks(
+                    existing_hooks.as_deref(),
+                    adapter.hook_registrations,
+                    &environment.executable,
+                )?,
+                ConfigFormat::Json(_) => render::render_hooks_config(
+                    hooks_path,
+                    existing_hooks.as_deref(),
+                    adapter.hook_registrations,
+                    &environment.executable,
+                )?,
+            }
         };
         actions.push(apply_content(
             hooks_path,
@@ -701,9 +843,22 @@ fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
     Ok(())
 }
 
+/// One lifecycle registration: which agent event runs which Leteo hook, on
+/// what matcher, with how long to live.
+///
+/// A named row rather than a tuple because agents subscribe to rows — see
+/// [`AgentAdapter::hook_registrations`] — and a fifth field can be added
+/// without rewriting every subscriber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookRegistration {
+    pub event: &'static str,
+    pub slug: &'static str,
+    pub matcher: Option<&'static str>,
+    pub timeout_seconds: u64,
+}
+
 /// The lifecycle events Leteo registers, with the matcher and timeout each one
-/// needs.
-/// `session-stop` sits on `SessionEnd`, not on `Stop`.
+/// needs. `session-stop` sits on `SessionEnd`, not on `Stop`.
 ///
 /// `Stop` fires when the agent finishes a reply — at the end of every turn, not
 /// at the end of the conversation. Registered there, the hook ended the session
@@ -711,18 +866,63 @@ fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
 /// the save reminder appear on every single prompt instead of every fifteen
 /// minutes. Anything named for a session belongs on the event that means the
 /// session is over.
-const HOOK_EVENTS: &[(&str, &str, Option<&str>, u64)] = &[
-    ("SessionStart", "session-start", Some("startup|clear"), 10),
-    ("SessionStart", "post-compaction", Some("compact"), 10),
-    ("UserPromptSubmit", "user-prompt-submit", None, 5),
-    ("SubagentStop", "subagent-stop", None, 10),
-    // Three, not five, because Codex caps this one: asking for more earns
-    // "clamping SessionEnd hook timeout to 3s" on every single session. It is
-    // the event that runs while the agent is shutting down, so the cap is fair.
-    // One number rather than one per agent, because there is room — against a
-    // 3530-memory store `session-stop` takes 34ms, and 742ms on a cold start.
-    ("SessionEnd", "session-stop", None, 3),
+pub const SESSION_START: HookRegistration = HookRegistration {
+    event: "SessionStart",
+    slug: "session-start",
+    matcher: Some("startup|clear"),
+    timeout_seconds: 10,
+};
+pub const POST_COMPACTION: HookRegistration = HookRegistration {
+    event: "SessionStart",
+    slug: "post-compaction",
+    matcher: Some("compact"),
+    timeout_seconds: 10,
+};
+pub const USER_PROMPT_SUBMIT: HookRegistration = HookRegistration {
+    event: "UserPromptSubmit",
+    slug: "user-prompt-submit",
+    matcher: None,
+    timeout_seconds: 5,
+};
+pub const SUBAGENT_STOP: HookRegistration = HookRegistration {
+    event: "SubagentStop",
+    slug: "subagent-stop",
+    matcher: None,
+    timeout_seconds: 10,
+};
+// Three, not five, because Codex caps this one: asking for more earns
+// "clamping SessionEnd hook timeout to 3s" on every single session. It is
+// the event that runs while the agent is shutting down, so the cap is fair.
+// One number rather than one per agent, because there is room — against a
+// 3530-memory store `session-stop` takes 34ms, and 742ms on a cold start.
+pub const SESSION_END: HookRegistration = HookRegistration {
+    event: "SessionEnd",
+    slug: "session-stop",
+    matcher: None,
+    timeout_seconds: 3,
+};
+
+/// Every registration Leteo knows how to write.
+const HOOK_EVENTS: &[HookRegistration] = &[
+    SESSION_START,
+    POST_COMPACTION,
+    USER_PROMPT_SUBMIT,
+    SUBAGENT_STOP,
+    SESSION_END,
 ];
+
+/// What ZCode can actually fire: three of the five.
+///
+/// Its client supports exactly seven events (`SessionStart`, `UserPromptSubmit`,
+/// `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`,
+/// `Stop`) — there is no `SubagentStop` and no `SessionEnd`, so those two
+/// hooks have nowhere to land. `session-stop` is *not* moved onto `Stop` for
+/// the reason written on `SESSION_END`: `Stop` fires at the end of every
+/// reply, where ending a session deletes the reminder debounce and broke the
+/// save reminder for real once. On ZCode the closing summary therefore comes
+/// from the agent calling `mem_session_summary` itself, or not at all.
+pub const ZCODE_HOOK_REGISTRATIONS: &[HookRegistration] =
+    &[SESSION_START, POST_COMPACTION, USER_PROMPT_SUBMIT];
 
 /// Whether a command line runs one of Leteo's own hooks.
 ///
@@ -745,9 +945,9 @@ const HOOK_EVENTS: &[(&str, &str, Option<&str>, u64)] = &[
 /// behind for somebody who renamed the binary; being wrong in the other costs
 /// somebody else's work.
 pub(super) fn runs_a_leteo_hook(command: &str) -> bool {
-    HOOK_EVENTS.iter().any(|(_, slug, _, _)| {
+    HOOK_EVENTS.iter().any(|registration| {
         command
-            .match_indices(&format!("hook {slug}"))
+            .match_indices(&format!("hook {}", registration.slug))
             .any(|(at, _)| names_the_leteo_binary(&command[..at]))
     })
 }
@@ -919,6 +1119,13 @@ fn mcp_entry(format: McpFormat, executable: &Path, tools: &str) -> Result<Value>
             "command": command,
             "args": ["mcp", profile],
             "lifecycle": "eager"
+        }),
+        // ZCode's canonical entry shape is what its own source converts every
+        // other dialect into: a stdio server with a command and arguments.
+        McpFormat::Zcode => json!({
+            "type": "stdio",
+            "command": command,
+            "args": ["mcp", profile]
         }),
     })
 }
@@ -1174,10 +1381,9 @@ fn names_leteo(config: &[u8], format: ConfigFormat) -> bool {
     };
     match format {
         ConfigFormat::Json(format) => match serde_json::from_str::<Value>(text) {
-            Ok(value) => value
-                .get(format.top_level_key())
-                .and_then(Value::as_object)
-                .is_some_and(|servers| servers.contains_key(SERVER_NAME)),
+            Ok(value) => {
+                servers_at(&value, format).is_some_and(|servers| servers.contains_key(SERVER_NAME))
+            }
             Err(_) => true,
         },
         ConfigFormat::CodexToml => text.contains(&format!("mcp_servers.{SERVER_NAME}")),
@@ -1372,21 +1578,20 @@ pub fn plugin_registers_hooks(agent: &str, options: &SetupOptions) -> bool {
 /// Only the shape is checked, not the version: any bundle under the cache whose
 /// hooks manifest invokes `leteo hook` is one that will fire.
 ///
-/// Asked per agent, because each keeps its own cache: Claude Code under its
-/// config directory, Codex under `~/.codex`. Asked once for the machine
-/// instead, a Claude Code bundle would block Codex from getting hooks it does
-/// not have — a refusal that reads exactly like the real duplicate it is meant
-/// to catch.
+/// Asked per agent, because each keeps its own cache, named by the agent's own
+/// [`AgentAdapter::plugin_cache_root`]: Claude Code under its config directory,
+/// Codex under `~/.codex`, ZCode under `.zcode/cli`. Guessed from anything
+/// else, a Claude Code bundle would block a *different* product from getting
+/// hooks it does not have — a refusal that reads exactly like the real
+/// duplicate it is meant to catch. Agents without a field carry no plugin
+/// bundle worth refusing today, and answer none.
 fn installed_plugin_hooks(
     environment: &SetupEnvironment,
     adapter: &AgentAdapter,
 ) -> Option<PathBuf> {
-    let cache = match adapter.config_format {
-        ConfigFormat::CodexToml => environment.home.join(".codex"),
-        ConfigFormat::Json(_) => environment.claude_config_dir(),
-    }
-    .join("plugins")
-    .join("cache");
+    let cache = adapter.plugin_cache_root?(environment)
+        .join("plugins")
+        .join("cache");
     let mut directories = vec![cache];
     // marketplace / plugin / version / hooks / hooks.json — walked rather than
     // spelled out, because the version is whatever was installed.

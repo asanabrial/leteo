@@ -109,14 +109,14 @@ useful part out of a context window has failed even if every field is right.
    Whether to stop sending the text half to clients that negotiate a protocol
    version which has structured output is open, and deliberately not decided
    here: it would halve every reply, the protocol says SHOULD rather than MUST,
-   and Leteo configures twelve clients whose behaviour without it has not been
+   and Leteo configures thirteen clients whose behaviour without it has not been
    measured.
 
    And so are the lists, at both ends. Every budget a tool takes has a ceiling
    and publishes it in its own schema, so a caller can plan against it: a
    ceiling that lives only in the code is one nobody can read. `mem_timeline`
    was given one after a window of a million came back with a whole session,
-   191 KB, and `mem_context` — the only route to context nine of the twelve
+   191 KB, and `mem_context` — the only route to context nine of the thirteen
    clients have — kept all three of its budgets open at the top. Asked for
    9,999 memories, sessions and prompts against a real store it answered with
    1,201, 212 and 120 of them, in one reply of 469 KB; with the ceilings, 43.7

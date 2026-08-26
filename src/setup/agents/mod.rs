@@ -24,7 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{ConfigFormat, McpFormat, SetupEnvironment};
+use super::{ConfigFormat, HOOK_EVENTS, HookRegistration, McpFormat, SetupEnvironment};
 
 mod antigravity;
 mod claude_code;
@@ -38,6 +38,15 @@ mod pi;
 mod qwen;
 mod vscode_copilot;
 mod windsurf;
+mod zcode;
+
+/// The five lifecycle registrations every agent takes unless it names fewer.
+///
+/// Pointed at rather than restated so an added deadline or matcher lands on
+/// every subscriber without anybody remembering them twice.
+pub(super) const ALL_HOOK_REGISTRATIONS: &[HookRegistration] = HOOK_EVENTS;
+
+pub(super) use super::ZCODE_HOOK_REGISTRATIONS;
 
 /// Everything the rest of setup needs to know about one agent.
 ///
@@ -74,7 +83,7 @@ pub struct AgentAdapter {
     pub(super) new_instruction_file: &'static str,
     /// Whether that file is one Leteo invented rather than one the agent had.
     ///
-    /// Eight agents keep their instructions somewhere that was already theirs —
+    /// Nine agents keep their instructions somewhere that was already theirs —
     /// `CLAUDE.md`, `AGENTS.md` — and uninstalling takes Leteo's block out and
     /// leaves the document alone. Three get a file named after Leteo, and there
     /// taking the block out leaves an empty file with Leteo's name on it, which
@@ -92,6 +101,27 @@ pub struct AgentAdapter {
     /// settings file gets one; the rest stay out rather than risk writing
     /// entries the agent would reject.
     pub(super) hooks_path: Option<fn(&SetupEnvironment) -> PathBuf>,
+    /// Which lifecycle registrations this agent can actually fire.
+    ///
+    /// Rows of [`super::HOOK_EVENTS`] pointed at, not restated — one list of
+    /// event, matcher and deadline, so an edit to a hook lands on every agent
+    /// that runs it. Most agents take all of them; ZCode names three because
+    /// its client has no `SubagentStop` and no `SessionEnd`, and its file says
+    /// why.
+    ///
+    /// A field rather than a default so adding an agent forces the question:
+    /// "can this client fire all five?" answered in the same file as everything
+    /// else about it.
+    pub(super) hook_registrations: &'static [HookRegistration],
+    /// Where its client caches installed plugin bundles, if it can install
+    /// any.
+    ///
+    /// The refusal in [`crate::setup::setup`] that keeps hooks from firing
+    /// twice needs this per agent. Guessed from anything coarser, one product's
+    /// installed bundle would block another product from getting hooks at all,
+    /// over a cache the second never reads. `None` means no bundle route worth
+    /// refusing today; those agents answer none.
+    pub(super) plugin_cache_root: Option<fn(&SetupEnvironment) -> PathBuf>,
 }
 
 impl AgentAdapter {
@@ -109,6 +139,7 @@ impl AgentAdapter {
 pub const REGISTRY: &[AgentAdapter] = &[
     opencode::ADAPTER,
     claude_code::ADAPTER,
+    zcode::ADAPTER,
     gemini_cli::ADAPTER,
     codex::ADAPTER,
     cursor::ADAPTER,
@@ -175,7 +206,7 @@ mod tests {
     /// went back: the doc comment above, `cli.md` §5 and the uninstall guard all
     /// said nine agents kept a file that was already theirs, and eight did.
     ///
-    /// A thirteenth agent fails this rather than quietly making four sentences
+    /// A fourteenth agent fails this rather than quietly making four sentences
     /// false, and the numbers to fix are here.
     #[test]
     fn the_registry_splits_three_ways_and_the_counts_are_taken_from_it() {
@@ -194,7 +225,7 @@ mod tests {
         }
         assert_eq!(
             theirs.len(),
-            8,
+            9,
             "keep a file that was already theirs: {theirs:?}"
         );
         assert_eq!(
@@ -216,7 +247,7 @@ mod tests {
             .collect();
         assert_eq!(
             with_hooks,
-            ["claude-code", "codex"],
+            ["claude-code", "zcode", "codex"],
             "hooks setup can install"
         );
     }

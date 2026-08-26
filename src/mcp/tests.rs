@@ -1997,9 +1997,9 @@ fn a_session_summary_is_titled_by_what_the_session_was_for() {
 
 /// The language setting has to reach the nine clients that run no hooks.
 ///
-/// Of the twelve agents `leteo setup` configures, three deliver the
-/// session-start directive: Claude Code, Codex, and OpenCode through its
-/// plugin. The other nine — Cursor, Gemini CLI, Windsurf, Kiro, Kilo Code,
+/// Of the thirteen agents `leteo setup` configures, four deliver the
+/// session-start directive: Claude Code, Codex, ZCode, and OpenCode through
+/// its plugin. The other nine — Cursor, Gemini CLI, Windsurf, Kiro, Kilo Code,
 /// Qwen, Pi, Antigravity, VS Code Copilot — are configured over MCP alone, so
 /// the wizard offered them a language setting that then governed nothing.
 ///
@@ -2045,8 +2045,8 @@ fn mem_context_carries_the_language_memories_are_written_in() {
 
 /// The server's own instructions are the only channel every client has.
 ///
-/// Hooks reach three of the twelve agents `leteo setup` configures, the plugin
-/// skill reaches two, and an instruction file reaches eleven — Pi has none, and
+/// Hooks reach four of the thirteen agents `leteo setup` configures, the plugin
+/// skill reaches two, and an instruction file reaches twelve — Pi has none, and
 /// `--instructions false` removes it for any of the others. What is left is
 /// this string, which the MCP handshake hands over before the first call.
 ///
@@ -2200,8 +2200,8 @@ fn saving_the_same_memory_again_asks_no_new_questions() {
 fn the_context_says_which_of_its_memories_were_overturned() {
     // An agent is told a memory has been overturned on a prompt, at a session
     // opening, and when it fetches one whole. Not here — and this is the one
-    // that matters most for most clients: of the twelve agents Leteo
-    // configures, three run hooks. The other nine reach context through this
+    // that matters most for most clients: of the thirteen agents Leteo
+    // configures, four run hooks. The other nine reach context through this
     // tool alone, and every instruction file Leteo writes tells them to call it
     // before acting.
     //

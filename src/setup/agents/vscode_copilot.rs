@@ -14,6 +14,8 @@ pub(super) const ADAPTER: AgentAdapter = AgentAdapter {
     new_instruction_file: FRONT_MATTER,
     owns_instruction_file: true,
     hooks_path: None,
+    hook_registrations: super::ALL_HOOK_REGISTRATIONS,
+    plugin_cache_root: None,
 };
 
 /// Copilot applies an instruction file only when it declares what it applies

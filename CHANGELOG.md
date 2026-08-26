@@ -4,6 +4,19 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **ZCode joins the agents `leteo setup` configures.** Its servers land under
+  the nested `mcp.servers` of `~/.zcode/cli/config.json` — one JSON document
+  the client also holds its providers, plugin state and hooks in, so every
+  edit splices in place and leaves the rest exactly as it arrived. Its
+  instruction block goes to `~/.zcode/AGENTS.md`. Three of the five lifecycle
+  hooks register: ZCode supports neither `SubagentStop` nor `SessionEnd`, and
+  `session-stop` stays unregistered rather than moving onto `Stop`, which
+  fires at the end of every reply. Config-file hooks start switched off in
+  that client, so setup turns the runner on — or refuses when somebody has
+  deliberately turned it off.
+
 ### Changed
 
 - **The install scripts moved to `scripts/`.** The one-liners are now

@@ -45,7 +45,7 @@ baselines, the fixed cost of about 15,400 tokens a session that **both arms
 pay**, and the pairing from these same seven runs that says Leteo *costs 3.7x as
 much*.
 
-**Works with:** Claude Code · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
+**Works with:** Claude Code · ZCode · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
 VS Code Copilot · Kilo Code · Qwen · Kiro · Antigravity · Pi
 
 ## What it feels like
@@ -244,7 +244,7 @@ agent is `--tools=agent`, the nineteen an agent reaches for while it works.
 for the process.
 
 Alongside it there is a JSON command line, an interactive terminal UI, and
-setup support for twelve MCP clients — the list at the top of this page.
+setup support for thirteen MCP clients — the list at the top of this page.
 
 Its name in the [MCP Registry](https://registry.modelcontextprotocol.io) is
 `mcp-name: io.github.asanabrial/leteo`, which is what [`server.json`](server.json)

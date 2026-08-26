@@ -13,7 +13,10 @@ deadline, so every promise here is a promise about time as much as content.
    `subagent-stop`, `session-stop`. The five names exist once, in the parser
    that reads them, and the installer writes what the parser accepts — they were
    spelled out in three places before, none of them bound to the one that
-   decides.
+   decides. An agent may subscribe to fewer of them than exist: ZCode takes
+   three because its client has no `SubagentStop` and no `SessionEnd`
+   ([`cli.md`](cli.md) §5), and the subscriptions are pointed at this list,
+   never restated beside an agent.
 
 2. **Leteo gives up before its agent does.** Each event knows how long its agent
    waits — 10 s for `session-start`, `post-compaction` and `subagent-stop`, 5 s

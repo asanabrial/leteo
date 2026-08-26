@@ -64,7 +64,7 @@ if [ "$YES" -eq 0 ]; then
 fi
 
 # The agents and the data first, while the binary that knows where they are is
-# still here. It resolves twelve agents' config files and strips the MCP server,
+# still here. It resolves fourteen agents' config files and strips the MCP server,
 # the hooks and the memory-protocol block from each; doing that here by hand
 # would be a second, worse copy of the same knowledge.
 if [ -x "$BINARY" ]; then

@@ -13,6 +13,8 @@ pub(super) const ADAPTER: AgentAdapter = AgentAdapter {
     new_instruction_file: "",
     owns_instruction_file: true,
     hooks_path: None,
+    hook_registrations: super::ALL_HOOK_REGISTRATIONS,
+    plugin_cache_root: None,
 };
 
 fn config_path(environment: &SetupEnvironment) -> PathBuf {

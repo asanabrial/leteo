@@ -1995,13 +1995,14 @@ fn a_session_summary_is_titled_by_what_the_session_was_for() {
     );
 }
 
-/// The language setting has to reach the nine clients that run no hooks.
+/// The language setting has to reach the ten clients that run no hooks.
 ///
-/// Of the twelve agents `leteo setup` configures, three deliver the
-/// session-start directive: Claude Code, Codex, and OpenCode through its
-/// plugin. The other nine — Cursor, Gemini CLI, Windsurf, Kiro, Kilo Code,
-/// Qwen, Pi, Antigravity, VS Code Copilot — are configured over MCP alone, so
-/// the wizard offered them a language setting that then governed nothing.
+/// Of the fourteen agents `leteo setup` configures, four deliver the
+/// session-start directive: Claude Code, Codex, ZCode, and OpenCode through
+/// its plugin. The other ten — Cursor, Gemini CLI, Windsurf, Kiro, Kilo Code,
+/// Qwen, Pi, Antigravity, VS Code Copilot, DeepSeek Harness — are configured
+/// over MCP alone, so the wizard offered them a language setting that then
+/// governed nothing.
 ///
 /// Every instruction file Leteo writes tells the agent to call `mem_context`
 /// before acting, which makes it the one route that reaches all of them.
@@ -2045,8 +2046,8 @@ fn mem_context_carries_the_language_memories_are_written_in() {
 
 /// The server's own instructions are the only channel every client has.
 ///
-/// Hooks reach three of the twelve agents `leteo setup` configures, the plugin
-/// skill reaches two, and an instruction file reaches eleven — Pi has none, and
+/// Hooks reach four of the fourteen agents `leteo setup` configures, the plugin
+/// skill reaches two, and an instruction file reaches thirteen — Pi has none, and
 /// `--instructions false` removes it for any of the others. What is left is
 /// this string, which the MCP handshake hands over before the first call.
 ///
@@ -2076,7 +2077,7 @@ fn the_server_instructions_name_real_tools_and_describe_real_behaviour() {
     }
     assert!(named >= 5, "the instructions stopped naming tools at all");
 
-    // And the claim added for the nine clients that never see the skill: a
+    // And the claim added for the ten clients that never see the skill: a
     // summary's title comes from the first line that is not a heading. Said
     // here and implemented in `normalize::headline`, two files apart.
     assert!(
@@ -2200,8 +2201,8 @@ fn saving_the_same_memory_again_asks_no_new_questions() {
 fn the_context_says_which_of_its_memories_were_overturned() {
     // An agent is told a memory has been overturned on a prompt, at a session
     // opening, and when it fetches one whole. Not here — and this is the one
-    // that matters most for most clients: of the twelve agents Leteo
-    // configures, three run hooks. The other nine reach context through this
+    // that matters most for most clients: of the fourteen agents Leteo
+    // configures, four run hooks. The other ten reach context through this
     // tool alone, and every instruction file Leteo writes tells them to call it
     // before acting.
     //
@@ -2455,7 +2456,7 @@ fn a_preview_is_no_longer_than_the_number_the_description_publishes() {
 /// fits inside them — the median runs to 1,991 characters. So the newest few
 /// carry a preview and everything behind them is a line, which is what the
 /// session-start hook has done since it was measured there and what this tool,
-/// the only route the nine clients without hooks have, was still not doing.
+/// the only route the ten clients without hooks have, was still not doing.
 ///
 /// Asserted on the split rather than on a byte count, because the saving is a
 /// consequence and the rule is the thing.
@@ -3585,7 +3586,7 @@ fn a_memory_filed_under_a_word_nothing_searches_for_is_told_so() {
 /// The typed handover says the same things the markdown one says.
 ///
 /// Two surfaces build the opening context: `recall::assemble_counted` renders
-/// the markdown a hook injects, and `mem_context` answers the nine clients of
+/// the markdown a hook injects, and `mem_context` answers the ten clients of
 /// twelve that run no hooks. Every time the rule was written twice, one copy
 /// was the worse of the two.
 ///
@@ -4094,7 +4095,7 @@ fn the_seven_tools_that_had_no_test_of_their_own_answer_what_they_promise() {
 /// the store does not know.
 ///
 /// `leteo search` has answered this way since the CLI reads were scoped. The
-/// tool nine clients out of twelve actually use had not.
+/// tool ten clients of fourteen actually use had not.
 #[test]
 fn an_empty_search_says_whether_the_words_or_the_directory_emptied_it() {
     let temp = tempfile::tempdir().unwrap();
@@ -4164,7 +4165,7 @@ fn an_empty_search_says_whether_the_words_or_the_directory_emptied_it() {
 /// And the context an agent reads first says the same thing.
 ///
 /// `mem_context` is what every instruction file Leteo writes tells the agent to
-/// call before acting, and for the nine clients of twelve that run no hooks it
+/// call before acting, and for the ten clients of fourteen that run no hooks it
 /// is the first thing they read. An empty, silent answer reads as "there is no
 /// memory here" — so an agent in a directory that resolved somewhere quiet
 /// works blind past a store holding thousands one project over.
@@ -4763,7 +4764,7 @@ fn no_write_door_lets_a_private_marker_reach_the_database() {
 /// on a real store, 72% of the CLI's answers came from another project before
 /// the reads were scoped. That was fixed one command at a time, and the guard
 /// was written one command at a time too — over the CLI, which is the surface
-/// three clients of twelve use.
+/// three clients of fourteen use.
 ///
 /// This asks it of the tools instead, and asks it of all of them at once: two
 /// projects holding the same distinctive word, a process standing in one of

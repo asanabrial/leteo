@@ -13,7 +13,10 @@ deadline, so every promise here is a promise about time as much as content.
    `subagent-stop`, `session-stop`. The five names exist once, in the parser
    that reads them, and the installer writes what the parser accepts — they were
    spelled out in three places before, none of them bound to the one that
-   decides.
+   decides. An agent may subscribe to fewer of them than exist: ZCode takes
+   three because its client has no `SubagentStop` and no `SessionEnd`
+   ([`cli.md`](cli.md) §5), and the subscriptions are pointed at this list,
+   never restated beside an agent.
 
 2. **Leteo gives up before its agent does.** Each event knows how long its agent
    waits — 10 s for `session-start`, `post-compaction` and `subagent-stop`, 5 s
@@ -348,6 +351,26 @@ deadline, so every promise here is a promise about time as much as content.
    opening block it already had, and a `.*` on `SubagentStop` that the installer
    leaves empty. Neither was written down anywhere as a decision, and no version
    of this test could see either.
+
+20. **A client whose hook runner can be switched off costs the person their
+   hooks, never their memory.** ZCode is the one such client today: its
+   configuration hooks run only while `hooks.enabled` is true, which starts off
+   ([`cli.md`](cli.md) §5). Setup turns it on. What matters is the person who
+   deliberately turned it back off, and the answer differs by who is asking.
+
+   `leteo setup zcode --hooks` refuses, because somebody typed the word `hooks`
+   and writing registrations into a block the client will never read is a setup
+   reporting success over files nothing opens. The wizard does not refuse: it
+   asks the same question first, drops the hooks half, and installs the server
+   and the instructions — the refusal lands before the server is written, so
+   refusing there cost a ticked ZCode its memory entirely over a preference that
+   was never about it. This is the shape already used for a plugin bundle that
+   registers the hooks itself, and the same predicate answers both callers.
+
+   `doctor` reports the state that check cannot prevent: hooks installed, runner
+   switched off afterwards, nothing firing, and a file that still names every
+   command. Read for the command alone, that reports healthy — the same way
+   Codex's untrusted hooks did before they got their own line.
 
 ## Invariants
 

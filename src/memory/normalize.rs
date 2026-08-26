@@ -936,7 +936,7 @@ const MIN_HEADLINE_CHARS: usize = 12;
 /// characters, says nothing, and the sentence worth titling is the line under
 /// it. That shape is reachable — the markdown skeleton with `## Goal` lives in
 /// the plugin skill, which only Claude Code and Codex are given, while the
-/// other nine clients get an instruction block naming the sections in prose
+/// other ten clients get an instruction block naming the sections in prose
 /// and showing no headings to skip.
 ///
 /// Free on what exists: all 898 summaries in a real store already produce a

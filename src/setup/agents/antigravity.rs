@@ -13,6 +13,8 @@ pub(super) const ADAPTER: AgentAdapter = AgentAdapter {
     new_instruction_file: "",
     owns_instruction_file: false,
     hooks_path: None,
+    hook_registrations: super::ALL_HOOK_REGISTRATIONS,
+    plugin_cache_root: None,
 };
 
 /// Antigravity reads the shared Gemini MCP config, which is a different file

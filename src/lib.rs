@@ -37,7 +37,7 @@
 //! # Who talks to it
 //!
 //! [`mcp`] for agents, [`cli`] for a terminal, [`tui`] for a screen, [`hooks`]
-//! for the agent lifecycle, and [`setup`] for putting Leteo into the twelve
+//! for the agent lifecycle, and [`setup`] for putting Leteo into the fourteen
 //! coding agents it knows about. These are adapters: they translate, and the
 //! behaviour they translate to lives further in.
 //!

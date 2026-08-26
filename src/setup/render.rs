@@ -2,9 +2,14 @@ use super::*;
 
 /// Merges Leteo's hooks into an agent settings file, replacing only the entries
 /// Leteo owns and preserving every other setting and hook.
+///
+/// The registrations come from the agent, not from the global list: an agent
+/// that cannot fire an event must not have it written where it would look
+/// installed.
 pub(super) fn render_hooks_config(
     path: &Path,
     existing: Option<&[u8]>,
+    registrations: &[HookRegistration],
     executable: &Path,
 ) -> Result<String> {
     let mut root = match existing {
@@ -51,36 +56,40 @@ pub(super) fn render_hooks_config(
         entries.retain(|entry| !is_leteo_hook_entry(entry));
         // An event Leteo has abandoned and nobody else writes under is Leteo's
         // own leftover, so the key goes rather than sitting there empty.
-        if entries.is_empty() && !HOOK_EVENTS.iter().any(|(name, ..)| *name == event) {
+        if entries.is_empty() && !registrations.iter().any(|item| item.event == event) {
             hooks.remove(&event);
         }
     }
-    for (event, _, _, _) in HOOK_EVENTS {
+    for registration in registrations {
         let entries = hooks
-            .entry((*event).to_owned())
+            .entry(registration.event.to_owned())
             .or_insert_with(|| Value::Array(Vec::new()));
         if entries.is_null() {
             *entries = Value::Array(Vec::new());
         }
         entries.as_array_mut().with_context(|| {
-            format!("hooks.{event} in {} must contain an array", path.display())
+            format!(
+                "hooks.{} in {} must contain an array",
+                registration.event,
+                path.display()
+            )
         })?;
     }
-    for (event, slug, matcher, timeout) in HOOK_EVENTS {
+    for registration in registrations {
         let mut entry = Map::new();
-        if let Some(matcher) = matcher {
-            entry.insert("matcher".to_owned(), Value::String((*matcher).to_owned()));
+        if let Some(matcher) = registration.matcher {
+            entry.insert("matcher".to_owned(), Value::String(matcher.to_owned()));
         }
         entry.insert(
             "hooks".to_owned(),
             json!([{
                 "type": "command",
-                "command": format!("{command} hook {slug}"),
-                "timeout": timeout,
+                "command": format!("{command} hook {}", registration.slug),
+                "timeout": registration.timeout_seconds,
             }]),
         );
         hooks
-            .get_mut(*event)
+            .get_mut(registration.event)
             .and_then(Value::as_array_mut)
             .expect("hook event array was created above")
             .push(Value::Object(entry));
@@ -88,6 +97,140 @@ pub(super) fn render_hooks_config(
 
     // Indented the way the file already was. Two spaces unconditionally meant
     // that adding one server to a four-space config rewrote every line of it.
+    super::to_json_like(
+        existing
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_default(),
+        &root,
+    )
+    .with_context(|| format!("serialize {}", path.display()))
+}
+
+/// Merges Leteo's hooks into ZCode's `config.json`, where they sit two keys
+/// deeper than everywhere else: `hooks.events.<Event>`.
+///
+/// Two things differ from [`render_hooks_config`] beyond the nesting.
+///
+/// **The runner starts switched off.** Configuration-file hooks run only while
+/// `hooks.enabled` is true — off by default, unlike a plugin bundle, which
+/// enables the runner merely by existing. So Leteo switches it on, and refuses
+/// where somebody has deliberately set it false: writing registrations into a
+/// block the client will not read is a setup reporting success over files
+/// nothing ever opens.
+///
+/// The rest holds all the way down. Commands are quoted unconditionally, each
+/// event carries the matcher the binary needs told apart (`startup|clear`
+/// against `compact`), and Leteo's own entries are pruned from every event
+/// present before anything is written, so a moved registration cannot leave
+/// its old copy firing beside the new one.
+pub(super) fn render_zcode_hooks(
+    path: &Path,
+    existing: Option<&[u8]>,
+    registrations: &[HookRegistration],
+    executable: &Path,
+) -> Result<String> {
+    let mut root = match existing {
+        Some(content) if !content.iter().all(u8::is_ascii_whitespace) => {
+            serde_json::from_slice::<Value>(content)
+                .with_context(|| format!("parse {}", path.display()))?
+        }
+        _ => Value::Object(Map::new()),
+    };
+    // Asked before anything is written — `setup` asks the same question earlier,
+    // over the file as it arrived, precisely so this can never be reached after
+    // a server entry went in. It stays here as the door this renderer closes on
+    // its own authority.
+    if super::zcode_hook_runner_disabled(&root) {
+        anyhow::bail!(
+            "{} sets hooks.enabled to false, which tells this client to run no \
+             configuration hooks at all — Leteo's registrations would be written \
+             and then ignored. Turn it back on there and run this again.",
+            path.display()
+        );
+    }
+    let object = root
+        .as_object_mut()
+        .with_context(|| format!("{} must contain a JSON object", path.display()))?;
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if hooks.is_null() {
+        *hooks = Value::Object(Map::new());
+    }
+    let hooks = hooks
+        .as_object_mut()
+        .with_context(|| format!("hooks in {} must contain a JSON object", path.display()))?;
+
+    hooks.insert("enabled".to_owned(), Value::Bool(true));
+
+    let events = hooks
+        .entry("events")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if events.is_null() {
+        *events = Value::Object(Map::new());
+    }
+    let events = events.as_object_mut().with_context(|| {
+        format!(
+            "hooks.events in {} must contain a JSON object",
+            path.display()
+        )
+    })?;
+
+    let executable = executable_string(executable)?;
+    let command = format!("\"{executable}\"");
+    let present: Vec<String> = events.keys().cloned().collect();
+    for event in present {
+        let Some(entries) = events.get_mut(&event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        entries.retain(|entry| !is_leteo_hook_entry(entry));
+        if entries.is_empty() && !registrations.iter().any(|item| item.event == event) {
+            events.remove(&event);
+        }
+    }
+    // Every event about to be written is checked before any of them is — the
+    // same two passes [`render_hooks_config`] makes one level up. `entry` hands
+    // back whatever the key already held, so an event this client left as
+    // `null`, or as the bare object a hand-edited config can carry, went
+    // straight into `as_array_mut().expect(...)` below and panicked. The prune
+    // above steps over such a value rather than removing it, which is right —
+    // it is not Leteo's — so refusing with the key named is the only answer
+    // left, and it beats crashing over a config that was unusual, not broken.
+    for registration in registrations {
+        let entries = events
+            .entry(registration.event.to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if entries.is_null() {
+            *entries = Value::Array(Vec::new());
+        }
+        entries.as_array_mut().with_context(|| {
+            format!(
+                "hooks.events.{} in {} must contain an array",
+                registration.event,
+                path.display()
+            )
+        })?;
+    }
+    for registration in registrations {
+        let mut entry = Map::new();
+        if let Some(matcher) = registration.matcher {
+            entry.insert("matcher".to_owned(), Value::String(matcher.to_owned()));
+        }
+        entry.insert(
+            "hooks".to_owned(),
+            json!([{
+                "type": "command",
+                "command": format!("{command} hook {}", registration.slug),
+                "timeout": registration.timeout_seconds,
+            }]),
+        );
+        events
+            .get_mut(registration.event)
+            .and_then(Value::as_array_mut)
+            .expect("hook event array was created or refused above")
+            .push(Value::Object(entry));
+    }
+
     super::to_json_like(
         existing
             .and_then(|bytes| std::str::from_utf8(bytes).ok())
@@ -144,19 +287,7 @@ pub(super) fn render_json_config(
     let object = root
         .as_object_mut()
         .with_context(|| format!("{} must contain a JSON object", path.display()))?;
-    let top_level_key = format.top_level_key();
-    let servers = object
-        .entry(top_level_key)
-        .or_insert_with(|| Value::Object(Map::new()));
-    if servers.is_null() {
-        *servers = Value::Object(Map::new());
-    }
-    let servers = servers.as_object_mut().with_context(|| {
-        format!(
-            "{top_level_key} in {} must contain a JSON object",
-            path.display()
-        )
-    })?;
+    let servers = super::open_servers_mut(object, format, path)?;
     servers.insert(
         SERVER_NAME.to_owned(),
         mcp_entry(format, executable, tools)?,
@@ -186,7 +317,11 @@ pub(super) fn render_json_config(
 /// unlike `[mcp_servers.leteo]` the name cannot say whose an entry is. Each
 /// entry spans a group of sections — the matcher table and the handler tables
 /// under it — which is why the whole group is gathered before it is judged.
-pub(super) fn render_codex_hooks(existing: Option<&[u8]>, executable: &Path) -> Result<String> {
+pub(super) fn render_codex_hooks(
+    existing: Option<&[u8]>,
+    registrations: &[HookRegistration],
+    executable: &Path,
+) -> Result<String> {
     let existing = match existing {
         Some(content) => std::str::from_utf8(content).context("Codex config is not valid UTF-8")?,
         None => "",
@@ -199,15 +334,17 @@ pub(super) fn render_codex_hooks(existing: Option<&[u8]>, executable: &Path) -> 
     // shell, and an unquoted Windows path loses its backslashes.
     let executable = executable_string(executable)?;
     let mut blocks = Vec::new();
-    for (event, slug, matcher, timeout) in HOOK_EVENTS {
-        let command = serde_json::to_string(&format!("\"{executable}\" hook {slug}"))
-            .context("quote a Leteo hook command for TOML")?;
-        let mut block = format!("[[hooks.{event}]]\n");
-        if let Some(matcher) = matcher {
+    for registration in registrations {
+        let command =
+            serde_json::to_string(&format!("\"{executable}\" hook {}", registration.slug))
+                .context("quote a Leteo hook command for TOML")?;
+        let mut block = format!("[[hooks.{}]]\n", registration.event);
+        if let Some(matcher) = registration.matcher {
             block.push_str(&format!("matcher = {}\n", serde_json::to_string(matcher)?));
         }
         block.push_str(&format!(
-            "\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = {command}\ntimeout = {timeout}\n"
+            "\n[[hooks.{}.hooks]]\ntype = \"command\"\ncommand = {command}\ntimeout = {}\n",
+            registration.event, registration.timeout_seconds
         ));
         blocks.push(block);
     }
@@ -271,4 +408,150 @@ fn hooks_group_heading(line: &str) -> Option<&str> {
 /// wrong drops a whole `[[hooks.<Event>]]` group belonging to somebody else.
 fn is_leteo_hook_command(line: &str) -> bool {
     super::runs_a_leteo_hook(line)
+}
+
+/// The comment line marking the block Leteo owns in the DeepSeek Harness patch
+/// file.
+///
+/// Detection and removal both read this rather than re-parsing the YAML around
+/// it: the file belongs to the harness, and the one thing that is unambiguously
+/// Leteo is the block a past run wrote under its own marker, exactly like the
+/// instruction-file markers in [`super::MEMORY_PROTOCOL_BEGIN`].
+pub(super) const DSH_PATCH_MARKER: &str = "# leteo-mcp-client (managed by leteo setup)";
+
+/// The YAML Leteo inserts into `$DSH_HOME/cordis.patch.yml` to register the
+/// `leteo mcp` subprocess with the harness.
+///
+/// One row under an `insert:` patch directive. `serverName` must match the
+/// harness's `[A-Za-z0-9_-]{1,32}` budget, which `leteo` does, and the tools it
+/// names surface to the model as `mcp__leteo__<tool>`. The executable path and
+/// the `--tools` argument are both single-quoted YAML scalars, where
+/// backslashes (Windows) need no escaping.
+///
+/// Both go through the quoter, not just the path. `--tools` is free text off
+/// the command line, and an apostrophe in it closed the scalar early and wrote
+/// a patch file the harness cannot parse — and because this is the
+/// machine-global layer, an unparseable row there costs every profile its
+/// session, not just Leteo's server.
+fn dsh_patch_block(executable: &str, tools: &str) -> String {
+    let command = yaml_single_quoted(executable);
+    // Built line by line (rather than by indented continuation) so the block
+    // carries no trace of the Rust indentation it was written in.
+    [
+        DSH_PATCH_MARKER,
+        "- insert:",
+        &format!("    - id: mcp-{SERVER_NAME}"),
+        "      name: '@deepseek-ai/dsh-mcp-client'",
+        "      config:",
+        "        transport: stdio",
+        &format!("        serverName: {SERVER_NAME}"),
+        &format!("        command: {command}"),
+        &format!(
+            "        args: ['mcp', {}]",
+            yaml_single_quoted(&format!("--tools={tools}"))
+        ),
+        "        toolCallTimeoutMs: 60000",
+        "        failOnStartupError: false",
+    ]
+    .join("\n")
+        + "\n"
+}
+
+/// A YAML single-quoted scalar, where only a literal `'` needs escaping and a
+/// `\\` is kept as written — the shape Windows paths must have here.
+fn yaml_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Whether a DeepSeek Harness patch file carries Leteo's block.
+pub(super) fn dsh_names_leteo(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == DSH_PATCH_MARKER)
+}
+
+/// Inserts Leteo's `mcp-leteo` row into the harness patch file, replacing any
+/// block Leteo previously wrote and preserving everything else by line.
+///
+/// Edited by line rather than parsed, because the file is ordinary YAML the
+/// person writes by hand and this crate carries no YAML dependency. What is
+/// owned is a block under a marker, so the render drops any prior block and
+/// appends a fresh one; what is not owned — every other patch row, the user's
+/// own `- insert:` lists — stays where it was.
+pub(super) fn render_dsh_patch_config(
+    existing: Option<&[u8]>,
+    executable: &str,
+    tools: &str,
+) -> Result<String> {
+    let text = match existing {
+        Some(content) => std::str::from_utf8(content)
+            .map_err(|error| anyhow::anyhow!("patch file is not UTF-8: {error}"))?,
+        None => "",
+    };
+    let normalized = text.replace("\r\n", "\n");
+    let without_leteo = strip_dsh_block(&normalized);
+    let block = dsh_patch_block(executable, tools);
+    let base = without_leteo.trim_end();
+    let desired = if base.is_empty() {
+        format!("{block}\n")
+    } else {
+        format!("{base}\n\n{block}\n")
+    };
+    Ok(super::with_line_endings_of(text, desired))
+}
+
+/// Drops the marker block Leteo wrote, keeping every other line as it was.
+///
+/// Refuses a file it cannot decode rather than reading it as empty. This took
+/// the bytes with `unwrap_or_default`, so a `cordis.patch.yml` carrying one
+/// Latin-1 byte — an accent from an editor that is not on UTF-8 — became the
+/// empty string, stripped to nothing, and went back to disk as a zero-byte file
+/// that `uninstall` reported as an ordinary update. That file is the
+/// machine-global layer every profile composes, so what was lost is the
+/// person's whole patch stack, not Leteo's row.
+///
+/// [`render_dsh_patch_config`], the install side of the very same file, has
+/// always refused; this is the sibling that did not.
+pub(super) fn remove_dsh_server(existing: &[u8]) -> Result<String> {
+    let text =
+        std::str::from_utf8(existing).context("DeepSeek Harness patch file is not valid UTF-8")?;
+    let normalized = text.replace("\r\n", "\n");
+    let stripped = strip_dsh_block(&normalized);
+    let body = stripped.trim_end();
+    let desired = if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    };
+    Ok(super::with_line_endings_of(text, desired))
+}
+
+/// Removes a complete Leteo block (its marker, the `- insert:` row and that
+/// row's indented body), keeping every other line.
+fn strip_dsh_block(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != DSH_PATCH_MARKER {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        // Take the marker's insert row and its indented body.
+        index += 1;
+        if index < lines.len() && lines[index].trim_start().starts_with("- insert:") {
+            index += 1;
+            while index < lines.len() {
+                let line = lines[index];
+                let trimmed = line.trim_start();
+                let blank = trimmed.is_empty();
+                let indented = line.len() > trimmed.len();
+                if blank || indented {
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    kept.join("\n")
 }

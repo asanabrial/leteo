@@ -1041,10 +1041,10 @@ pub(super) struct ContextOutput {
     /// What language to write and search memories in.
     ///
     /// Carried here because the session-start hook is not a delivery route most
-    /// agents have. Of the twelve Leteo configures, three run hooks —
-    /// Claude Code, Codex, and OpenCode through its plugin — and the other nine
-    /// are configured over MCP alone. The language setting was offered to all
-    /// twelve in the setup wizard and reached three of them.
+    /// agents have. Of the fourteen Leteo configures, four run hooks —
+    /// Claude Code, Codex, ZCode, and OpenCode through its plugin — and the
+    /// other ten are configured over MCP alone. The language setting was
+    /// offered to all fourteen in the setup wizard and reached four of them.
     ///
     /// This is the one place that covers the rest. Every instruction file Leteo
     /// writes tells the agent to call `mem_context` before acting, so it is
@@ -1071,7 +1071,7 @@ pub(super) struct ContextOutput {
     ///
     /// The session-start hook has worked this way since it was measured there —
     /// "an index of fifty beats a recital of twenty" — and this tool, which is
-    /// the only route the nine clients of twelve without hooks have, kept the
+    /// the only route the ten clients of fourteen without hooks have, kept the
     /// recital.
     pub(super) also_remembered: Vec<MemoryLineOutput>,
     /// How many pinned memories did not fit, when the shelf outgrew the block.
@@ -1243,9 +1243,9 @@ pub(super) struct SessionSummaryOutput {
     ///   2026-07-31      2026-08-01     6 memories
     /// ```
     ///
-    /// This is the surface the nine clients of twelve that run no hooks
+    /// This is the surface the ten clients of fourteen that run no hooks
     /// actually read, so the misleading date outlived the fix on the one that
-    /// nine of them never see.
+    /// ten of them never see.
     pub(super) last_activity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ended_at: Option<String>,
@@ -1372,7 +1372,7 @@ pub(super) struct ObservationOutput {
     /// warning rather than as noise on every line.
     ///
     /// Filled by the context, which is the surface most clients have: of the
-    /// twelve agents Leteo configures, three run hooks and the other nine reach
+    /// fourteen agents Leteo configures, four run hooks and the other ten reach
     /// context through `mem_context` alone, which every instruction file tells
     /// them to call before acting. An agent is told a memory has been
     /// overturned on a prompt, at a session opening and when it fetches one

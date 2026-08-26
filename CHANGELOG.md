@@ -34,8 +34,19 @@ All notable changes to Leteo are documented in this file.
   three lifecycle hooks that client fires, under `.zcode-plugin/plugin.json` —
   the manifest path ZCode looks for first. It is listed in
   `.claude-plugin/marketplace.json` beside the Claude Code bundle, which is the
-  file both clients read at the repository root, so
-  `zcode plugins marketplace add asanabrial/leteo` reaches it.
+  file both clients read at the repository root. Adding it is a desktop action —
+  **Settings → Plugins → Create → Add marketplace** — because that client's CLI
+  lists and enables installed plugins and does not add marketplaces at all.
+
+  Measured against a real ZCode 0.16.5 rather than taken from its documentation:
+  the client already carries `anthropics/claude-plugins-official` registered as a
+  `github` source in `~/.zcode/cli/plugins/known_marketplaces.json` and caches a
+  repo whose manifest is at `.claude-plugin/marketplace.json`, which is the path
+  Leteo publishes; its plugin cache is laid out
+  `plugins/cache/<marketplace>/<plugin>/<version>`, which is what
+  `AgentAdapter::plugin_cache_root` already assumed; and the installed binary
+  carries `userConfigDirSegments`, `.zcode/cli` and `hooks.enabled` as strings,
+  which is the config path and the runner switch the adapter was written against.
 
   The bundle is not just a second way to install the same thing. ZCode runs
   configuration-file hooks only while `hooks.enabled` is true, and that switch

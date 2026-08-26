@@ -207,11 +207,17 @@ the only route to the hooks — `leteo setup codex` registers the MCP server and
 no hooks at all, which leaves Codex holding the tools with nothing telling it
 when to reach for them.
 
-ZCode has one under [`plugin/zcode`](plugin/zcode), from the same marketplace:
+ZCode has one under [`plugin/zcode`](plugin/zcode), from the same marketplace.
+Adding a marketplace is a desktop action, not a command: **Settings → Plugins →
+Create → Add marketplace**, pointing at `asanabrial/leteo`. Then install
+`leteo-zcode` from the list.
+
+Its CLI does not add marketplaces — `zcode plugins` lists and enables what is
+already installed, and nothing more. Checked against `zcode 0.16.5`:
 
 ```text
-zcode plugins marketplace add asanabrial/leteo
-zcode plugins install leteo-zcode@leteo
+$ zcode plugins --help
+  plugins    List and enable installed plugins (`plugins list`)
 ```
 
 It registers three hooks rather than five, because that client fires neither

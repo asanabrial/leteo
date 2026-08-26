@@ -6,10 +6,25 @@ survived.
 
 ## Install
 
+Adding a marketplace is a desktop action rather than a command: **Settings →
+Plugins → Create → Add marketplace**, pointing at `asanabrial/leteo`. Then
+install `leteo-zcode` from the list it shows.
+
+ZCode's CLI does not add marketplaces. `zcode plugins` lists and enables what is
+already installed and nothing more, which is worth writing down because it is
+the obvious place to look first. Checked against `zcode 0.16.5`:
+
 ```text
-zcode plugins marketplace add asanabrial/leteo
-zcode plugins install leteo@leteo
+$ zcode plugins --help
+  plugins    List and enable installed plugins (`plugins list`)
 ```
+
+That the marketplace resolves at all is measured rather than assumed: this
+client already carries `anthropics/claude-plugins-official` registered as
+`{"source": "github", "repo": "..."}` in
+`~/.zcode/cli/plugins/known_marketplaces.json`, and the copy it cached is a repo
+whose manifest sits at `.claude-plugin/marketplace.json` — the same path Leteo
+publishes.
 
 The plugin carries configuration, not the binary. Install `leteo` first —
 `curl -fsSL https://raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh | sh`,

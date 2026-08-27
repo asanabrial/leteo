@@ -81,6 +81,18 @@ Comments say *why*, with the measurement or the failure that motivated the code
 where there was one. They are prose, in full sentences, aimed at whoever changes
 this next.
 
+There is no second kind. A comment that narrates what the next line does,
+restates an item's name, or captions a test is deleted on sight — the code is
+already saying it, and the copy drifts. A review that accepts one has accepted
+the drift. What stays is narrow: measurements, failure histories, ordering and
+locking invariants, workarounds for compiler/SQLite/OS quirks, and attribution.
+
+One exception, and it is not a comment: the `///` docs on the `schemars` types
+in `src/mcp/` are the `description` fields of the JSON Schema agents read, and
+the docs `tests/repository_guards.rs` quotes are its assertions' text. Both are
+published data; deleting either breaks the suite or the tool surface, which is
+how you know you were looking at the wrong category.
+
 Commit subjects are a sentence about what changed, not a label:
 `Notice a hash that has stopped describing its memory, and put it back`. The
 body says what was wrong, what it cost, and how it was measured.

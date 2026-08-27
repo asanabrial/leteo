@@ -468,6 +468,83 @@ pub(super) fn dsh_names_leteo(text: &str) -> bool {
     text.lines().any(|line| line.trim() == DSH_PATCH_MARKER)
 }
 
+/// What a patch file holds, as far as appending a row to it is concerned.
+///
+/// The file's own header calls it "a top-level YAML array of loader patch
+/// entries", and an array has two notations. Leteo writes the block one, so the
+/// flow one has to be recognised rather than appended to: a document is one
+/// node, and `[]` followed by `- insert:` is two.
+#[derive(Debug, PartialEq, Eq)]
+enum DshBody {
+    /// Nothing, or nothing but comments. A block row may follow.
+    NoEntries,
+    /// `[]` — an array notation saying the same thing as no entries at all, but
+    /// a node all the same, so it goes when the first row arrives.
+    EmptyFlowArray,
+    /// Rows already written the way Leteo writes them. Appending is safe.
+    BlockArray,
+    /// `[{...}]` with something in it, or a top-level mapping. Merging into
+    /// either needs a parser this crate does not carry.
+    Unappendable(&'static str),
+}
+
+/// Reads a patch file's shape without parsing it.
+///
+/// Only the first line that is neither blank nor a whole-line comment decides,
+/// because that is the document's node and everything after it belongs to it.
+fn dsh_body(text: &str) -> DshBody {
+    let Some(first) = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+    else {
+        return DshBody::NoEntries;
+    };
+    // `[]` on its own, with or without a comment after it.
+    if let Some(rest) = first.strip_prefix("[]")
+        && (rest.trim().is_empty() || rest.trim_start().starts_with('#'))
+    {
+        return DshBody::EmptyFlowArray;
+    }
+    if first == "-" || first.starts_with("- ") {
+        return DshBody::BlockArray;
+    }
+    if first.starts_with('[') {
+        return DshBody::Unappendable(
+            "holds a flow-style array (`[…]`) with entries in it, and a row \
+             cannot be appended to one by line",
+        );
+    }
+    DshBody::Unappendable(
+        "is a mapping rather than the top-level array of patch entries this \
+         file is",
+    )
+}
+
+/// Drops an `[]` node, keeping the comments above it.
+///
+/// Called only where [`dsh_body`] has already said there is one.
+fn drop_empty_flow_array(text: &str) -> String {
+    let mut dropped = false;
+    text.lines()
+        .filter(|line| {
+            if dropped {
+                return true;
+            }
+            let trimmed = line.trim();
+            let is_it = trimmed
+                .strip_prefix("[]")
+                .is_some_and(|rest| rest.trim().is_empty() || rest.trim_start().starts_with('#'));
+            if is_it {
+                dropped = true;
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Inserts Leteo's `mcp-leteo` row into the harness patch file, replacing any
 /// block Leteo previously wrote and preserving everything else by line.
 ///
@@ -476,6 +553,32 @@ pub(super) fn dsh_names_leteo(text: &str) -> bool {
 /// owned is a block under a marker, so the render drops any prior block and
 /// appends a fresh one; what is not owned — every other patch row, the user's
 /// own `- insert:` lists — stays where it was.
+///
+/// # Why appending is not enough
+///
+/// The row is appended, and for most of a year the shape of what it was
+/// appended to went unasked. Measured against a real harness home, a profile's
+/// patch layer ships holding this:
+///
+/// ```text
+/// # Your patch layer for this dsh profile, applied after every bundle layer:
+/// # a top-level YAML array of loader patch entries (id-targeted config
+/// # overrides, disables, and insert lists; `!!js` expressions allowed).
+/// []
+/// ```
+///
+/// `[]` is an empty array in flow notation and Leteo writes block notation, so
+/// appending produced `[]` followed by `- insert:` — two nodes in one document,
+/// which is not YAML at all. A parser stops at line 7 with "expected
+/// `<document start>`". The file is the layer every profile composes, so what
+/// that breaks is the harness, not the install: `leteo setup deepseek-harness`
+/// against the shape the harness itself writes left the person unable to open a
+/// session. The `[]` now goes when the first row arrives, which is the same
+/// array said the other way.
+///
+/// A flow array with entries in it, or a mapping, is refused instead. Merging
+/// into either needs the parser this crate deliberately does not carry, and
+/// writing a document nothing can read is worse than saying so.
 pub(super) fn render_dsh_patch_config(
     existing: Option<&[u8]>,
     executable: &str,
@@ -488,6 +591,17 @@ pub(super) fn render_dsh_patch_config(
     };
     let normalized = text.replace("\r\n", "\n");
     let without_leteo = strip_dsh_block(&normalized);
+    let without_leteo = match dsh_body(&without_leteo) {
+        DshBody::NoEntries | DshBody::BlockArray => without_leteo,
+        DshBody::EmptyFlowArray => drop_empty_flow_array(&without_leteo),
+        DshBody::Unappendable(why) => anyhow::bail!(
+            "the DeepSeek Harness patch file {why}. Leteo writes its row as a \
+             block entry (`- insert:`), and adding one here would leave a \
+             document the harness cannot parse — which would cost every profile \
+             its session, not just Leteo's server. Make it a block-style array \
+             and run this again."
+        ),
+    };
     let block = dsh_patch_block(executable, tools);
     let base = without_leteo.trim_end();
     let desired = if base.is_empty() {
@@ -510,11 +624,27 @@ pub(super) fn render_dsh_patch_config(
 ///
 /// [`render_dsh_patch_config`], the install side of the very same file, has
 /// always refused; this is the sibling that did not.
+///
+/// # Putting `[]` back
+///
+/// Install drops an `[]` when it writes the first row — see
+/// [`render_dsh_patch_config`]. Taking that row out again would otherwise leave
+/// a file holding nothing but its own header comments, and a document of only
+/// comments is `null`, not the empty array the header says the file is. So
+/// where the comments survive and no entry does, the `[]` goes back and the
+/// file is the shape the harness shipped.
+///
+/// A file with nothing left in it at all is one Leteo created, and it is left
+/// empty rather than given contents it never had.
 pub(super) fn remove_dsh_server(existing: &[u8]) -> Result<String> {
     let text =
         std::str::from_utf8(existing).context("DeepSeek Harness patch file is not valid UTF-8")?;
     let normalized = text.replace("\r\n", "\n");
     let stripped = strip_dsh_block(&normalized);
+    let stripped = match dsh_body(&stripped) {
+        DshBody::NoEntries if !stripped.trim().is_empty() => format!("{}\n[]", stripped.trim_end()),
+        _ => stripped,
+    };
     let body = stripped.trim_end();
     let desired = if body.is_empty() {
         String::new()

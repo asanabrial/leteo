@@ -64,6 +64,23 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Setting up DeepSeek Harness broke the harness on the shape the harness
+  itself ships.** Its patch layer is a top-level YAML array, and a profile's
+  arrives holding `[]`. Leteo appended its row as a block entry without asking
+  what notation was already there, so `[]` ended up followed by `- insert:` —
+  two nodes in one document, which no parser accepts. Measured end to end
+  against a real `~/.dsh`: `leteo setup deepseek-harness` produced a file that
+  fails at the first row with "expected `<document start>`", and because that
+  layer is what every profile composes, what it broke was every session on the
+  machine rather than Leteo's server.
+
+  `[]` is the same array said the other way, so it is replaced when the first
+  row arrives and put back when the last one leaves — a file of comments alone
+  would be `null`, not the empty array its header says it is. A flow array with
+  entries in it, or a top-level mapping, is now refused with the file named
+  rather than corrupted: merging into either needs the YAML parser this crate
+  deliberately does not carry.
+
 - **A ZCode config holding an event in a shape Leteo does not write crashed
   setup instead of refusing it.** `hooks.events.<Event>` was read straight into
   `as_array_mut().expect(…)`, so an event the client had emptied to `null` — or

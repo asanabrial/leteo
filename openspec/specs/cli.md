@@ -81,6 +81,25 @@ duties about what an answer explains.
    about. [`hooks.md`](hooks.md) §20 has that rule and what `doctor` says when
    the switch moves after the fact.
 
+   **A file edited by line is edited in the notation it already uses.** DeepSeek
+   Harness has no per-project configuration for an installer to write, so setup
+   edits one machine-global patch layer, `$DSH_HOME/cordis.patch.yml`, which
+   every profile composes. That file is a top-level YAML array, and an array has
+   two notations. Leteo writes the block one, so the flow one has to be
+   recognised rather than appended to: the harness ships the layer holding `[]`,
+   and `[]` followed by `- insert:` is two nodes in one document, which no
+   parser accepts. Appending it left people unable to open a session at all —
+   not a failed install, a broken harness.
+
+   So `[]` is replaced when the first row arrives, and put back when the last
+   one leaves, because a file of comments alone is `null` rather than the empty
+   array its own header says it is. A flow array with entries in it, or a
+   mapping, is refused with the file named: merging into either needs the YAML
+   parser this crate deliberately does not carry, and writing a document nothing
+   can read is worse than saying so. The same judgement governs the Codex TOML
+   and every JSON config — what is owned is spliced, and what is not owned
+   survives byte for byte or the write does not happen.
+
    **Each agent is configured where that agent actually reads.** The path is the
    one taken from the product's own source, not from the shape of its directory:
    the Gemini CLI resolves `~/.gemini/settings.json` on every platform including

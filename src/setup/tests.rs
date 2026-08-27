@@ -1495,10 +1495,11 @@ fn deepseek_harness_registers_its_patch_and_protocol() {
     let patch = fs::read_to_string(&paths.mcp_config).unwrap();
     assert!(patch.contains("@deepseek-ai/dsh-mcp-client"), "{patch}");
     assert!(patch.contains("serverName: leteo"), "{patch}");
-    assert!(patch.contains("command: '"), "{patch}");
     // The whole executable path is a single-quoted YAML scalar, so a Windows
-    // `\` inside it is literal rather than an escape.
-    assert!(patch.contains(r"command: '"), "{patch}");
+    // `\` inside it is literal rather than an escape. Asserted by the line
+    // below and not by a bare `contains("command: '")`, which was here twice
+    // and was the same string both times: it says the key is quoted, not that
+    // the quoting reaches the end of the path, which is the part that breaks.
     let quoted = patch.lines().find(|line| line.contains("command: '"));
     assert!(
         quoted.is_some_and(|line| {
@@ -1573,7 +1574,7 @@ fn deepseek_harness_preserves_foreign_patch_and_uninstalls_literally() {
 
     uninstall("deepseek-harness", &setup_options).unwrap();
     let after = fs::read_to_string(&patch_path).unwrap();
-    assert!(!after.contains("mcp-lete"), "{after}");
+    assert!(!after.contains("mcp-leteo"), "{after}");
     assert!(after.contains("dsh-storage"), "{after}");
     // The instruction file was created by install and emptied by uninstall.
     let instructions = temp.path().join(".dsh").join("AGENTS.md");
@@ -1821,6 +1822,93 @@ fn a_servers_key_that_is_not_an_object_names_the_file_and_the_key() {
         "the failing key is `mcp`, not the path below it: {error}"
     );
     assert!(error.contains("config.json"), "{error}");
+}
+
+/// The shape the harness itself ships is `[]`, and a row may not be appended
+/// to it.
+///
+/// Taken from a real `~/.dsh/profiles/<name>/cordis.patch.yml`, which arrives
+/// holding its own header and an empty flow array. `[]` is an array in flow
+/// notation and Leteo writes block notation, so appending produced `[]`
+/// followed by `- insert:` — two nodes in one document, which is not YAML.
+/// A parser stops at the first row with "expected `<document start>`", and
+/// because this is the layer every profile composes, what that broke was the
+/// harness rather than the install.
+///
+/// The `[]` is the same array said the other way, so it goes when the first
+/// row arrives, and comes back when the last one leaves.
+#[test]
+fn the_deepseek_patch_replaces_an_empty_flow_array_instead_of_appending_to_it() {
+    const SHIPPED: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n\
+        # a top-level YAML array of loader patch entries (id-targeted config\n\
+        # overrides, disables, and insert lists; `!!js` expressions allowed).\n\
+        []\n";
+
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let patch = temp.path().join(".dsh").join("cordis.patch.yml");
+    write_fixture(&patch, SHIPPED);
+
+    setup("deepseek-harness", &setup_options).unwrap();
+    let installed = fs::read_to_string(&patch).unwrap();
+
+    // One node, and it is the row. The header the harness wrote stays.
+    assert!(installed.contains("# Your patch layer"), "{installed}");
+    assert!(installed.contains("- insert:"), "{installed}");
+    let entries: Vec<&str> = installed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(
+        !entries.contains(&"[]"),
+        "an `[]` left above a block row is a second node: {installed}"
+    );
+    assert!(
+        entries[0].starts_with("- "),
+        "the document's node must be the block array: {installed}"
+    );
+
+    // Taking the row out again puts the file back the way the harness ships it,
+    // rather than leaving comments alone — which would be `null`, not an array.
+    uninstall("deepseek-harness", &setup_options).unwrap();
+    assert_eq!(fs::read_to_string(&patch).unwrap(), SHIPPED);
+}
+
+/// An array Leteo cannot append to by line is refused, not corrupted.
+///
+/// A flow array with entries in it, and a mapping, each need the YAML parser
+/// this crate deliberately does not carry. Writing a row into either leaves a
+/// document nothing can read, and this file is the one every profile composes.
+#[test]
+fn the_deepseek_patch_refuses_a_shape_it_cannot_append_to() {
+    for (shape, content, expected) in [
+        (
+            "a flow array with entries",
+            "[{ id: storage, name: '@deepseek-ai/dsh-storage' }]\n",
+            "flow-style array",
+        ),
+        (
+            "a top-level mapping",
+            "patches:\n  - id: storage\n",
+            "is a mapping",
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let setup_options = options(&temp);
+        let patch = temp.path().join(".dsh").join("cordis.patch.yml");
+        write_fixture(&patch, content);
+
+        let error = setup("deepseek-harness", &setup_options)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{shape}: {error}");
+        assert_eq!(
+            fs::read_to_string(&patch).unwrap(),
+            content,
+            "{shape}: a refusal leaves the file as it was"
+        );
+    }
 }
 
 /// A patch file Leteo cannot decode is refused, and left exactly as it was.

@@ -1,5 +1,3 @@
-//! DeepSeek Harness.
-
 use std::path::{Path, PathBuf};
 
 use super::{AgentAdapter, ConfigFormat, SetupEnvironment};
@@ -36,8 +34,6 @@ fn config_path(environment: &SetupEnvironment) -> PathBuf {
     environment.dsh_home_dir().join("cordis.patch.yml")
 }
 
-/// The fixed user-global instruction file, loaded into every session before any
-/// project-level `AGENTS.md` or `CLAUDE.md`.
 fn instructions(environment: &SetupEnvironment, _config: &Path) -> PathBuf {
     environment.dsh_home_dir().join("AGENTS.md")
 }

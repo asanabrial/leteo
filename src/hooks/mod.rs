@@ -38,7 +38,6 @@ use session::{
     resolve_session_id,
 };
 
-/// Lifecycle events Leteo reacts to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     SessionStart,
@@ -229,7 +228,6 @@ impl HookInput {
     }
 }
 
-/// What the hook did, plus the text handed back to the agent.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct HookOutcome {
     pub event: &'static str,
@@ -269,7 +267,6 @@ pub struct HookOutcome {
 }
 
 impl HookOutcome {
-    /// Renders the JSON an agent expects on standard output.
     pub fn response(&self) -> serde_json::Value {
         let mut response = serde_json::Map::new();
         if let Some(context) = &self.additional_context {

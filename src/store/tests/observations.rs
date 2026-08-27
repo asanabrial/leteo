@@ -441,7 +441,6 @@ fn an_older_database_gets_its_index_restemmed_without_losing_a_memory() {
         .search("evaluation", SearchOptions::default())
         .unwrap();
     assert_eq!(hits.len(), 5);
-    // Every memory still there, and still itself.
     let mut found: Vec<i64> = hits.iter().map(|hit| hit.observation.id).collect();
     found.sort_unstable();
     assert_eq!(found, ids);
@@ -961,7 +960,6 @@ fn the_same_memory_saved_long_afterwards_is_a_new_memory() {
     assert_eq!(first.kind, AddOutcomeKind::Inserted);
     assert_eq!(write(&mut store).kind, AddOutcomeKind::Deduplicated);
 
-    // Push it back beyond the window rather than waiting for one.
     store
         .connection
         .execute(
@@ -1185,7 +1183,6 @@ fn a_title_that_spans_lines_cannot_forge_a_second_memory() {
         "folded rather than cut, because the words are still what somebody saved"
     );
 
-    // And the block an agent reads has one bullet for one memory.
     let context = crate::recall::assemble(&store, Some("leteo"), None, 10).unwrap();
     let forged = context
         .lines()
@@ -1375,11 +1372,9 @@ fn the_count_of_what_lives_elsewhere_stops_at_the_cap_it_was_given() {
             })
             .unwrap();
     }
-    // Every one of them is in `otro`, so from anywhere else they are elsewhere.
     assert_eq!(store.memories_outside("leteo", 100).unwrap(), 5);
     assert_eq!(store.memories_outside("leteo", 2).unwrap(), 2);
     assert_eq!(store.memories_outside("leteo", 1).unwrap(), 1);
-    // And from inside, there is nothing anywhere else.
     assert_eq!(store.memories_outside("otro", 100).unwrap(), 0);
 
     // The sentence says "or more" exactly where the count stopped early, and
@@ -1400,7 +1395,6 @@ fn the_count_of_what_lives_elsewhere_stops_at_the_cap_it_was_given() {
         .contains("or more"),
         "a number that was never counted must not be printed as if it had been"
     );
-    // The same five, counted by a search that could only see ten: still five.
     assert!(crate::mcp::no_match_here_hint("leteo", 5, 10, "--all-projects").contains("but 5 "));
     // And ten out of ten is a floor, not a total — which is what a search
     // returning a full page has.
@@ -1622,7 +1616,6 @@ fn one_order_of_operations(seed: u64, exhaustive: bool) {
         }
     }
 
-    // Whatever that did, all of this has to hold.
     let mut drifted = Vec::new();
     {
         let connection = store.connection();
@@ -2136,14 +2129,12 @@ fn the_pinned_list_has_a_ceiling_and_says_what_it_left_out() {
         store.pin_observation(*id).unwrap();
     }
 
-    // Por debajo del techo no se corta nada y no se anuncia nada.
     let (todas, fuera) = store
         .pinned_observations(Some("leteo"), None, sobre_el_techo)
         .unwrap();
     assert_eq!(todas.len(), sobre_el_techo);
     assert_eq!(fuera, 0);
 
-    // Y por encima, se corta por las más nuevas y se dice cuántas faltan.
     let (cortadas, fuera) = store.pinned_observations(Some("leteo"), None, 12).unwrap();
     assert_eq!(cortadas.len(), 12, "el techo manda");
     assert_eq!(fuera, sobre_el_techo - 12, "y lo que no cupo se cuenta");
@@ -2153,8 +2144,6 @@ fn the_pinned_list_has_a_ceiling_and_says_what_it_left_out() {
         "las más nuevas primero, que es el orden que ya tenía"
     );
 
-    // El bloque de apertura lo dice en su propia línea, porque nadie puede
-    // pedirle un límite y el silencio sería la única señal.
     let bloque = crate::recall::assemble(&store, Some("leteo"), None, 5).unwrap();
     assert!(
         bloque.contains("more pinned, not shown"),
@@ -2227,7 +2216,6 @@ fn a_session_that_was_summarised_again_hands_back_only_the_last_one() {
         "la sesion con uno solo sigue estando"
     );
 
-    // Y el bloque cuenta lo que ese resumen dice, que es la razon de traerlo.
     let bloque = crate::recall::assemble(&store, Some("leteo"), None, 10).unwrap();
     assert!(
         bloque.contains("la sesion reutilizada hizo en su vuelta 2"),
@@ -2272,7 +2260,6 @@ fn what_is_elsewhere_is_counted_up_to_the_cap_and_the_sentence_says_which() {
         "a count that stopped early does not claim to be the answer: {said}"
     );
 
-    // And below the cap it is the answer, and says it plainly.
     assert_eq!(store.memories_outside("nowhere", 4).unwrap(), 4);
     let said = crate::mcp::no_match_here_hint("here", 3, cap, "all_projects=true");
     assert!(

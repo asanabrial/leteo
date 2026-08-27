@@ -1,8 +1,3 @@
-//! What a caller is told when something goes wrong.
-//!
-//! One shape for every failure, and the conversions that keep a store or auth
-//! error from reaching the wire with more in it than the caller should see.
-
 use super::*;
 
 #[derive(Debug)]

@@ -16,7 +16,6 @@ fn deleting_a_project_keeps_the_sessions_that_hold_another_projects_rows() {
     let mut input = observation("s1", "Theirs", "body");
     input.project = Some("atlas".to_owned());
     store.add_observation(input).unwrap();
-    // The awkward one: a quarry prompt inside an atlas session.
     store
         .add_prompt(AddPrompt {
             session_id: "s2".to_owned(),
@@ -95,12 +94,10 @@ fn deleting_a_session_cascades_in_one_transaction() {
     assert_eq!(store.session_counts("s1").unwrap(), (0, 0));
     assert!(store.get_session("s1").is_ok(), "the session row stays");
 
-    // Hard: the row goes too.
     let hard = store.delete_session_and_contents("s2", true).unwrap();
     assert_eq!(hard.observations_deleted, 1);
     assert!(store.get_session("s2").is_err(), "and now it does not");
 
-    // And it was aimed: s1's tombstoned memory is still a row.
     assert_eq!(
         store
             .connection

@@ -1,8 +1,3 @@
-//! The parts that exist because a browser is on the other end.
-//!
-//! Cookies, the headers a reverse proxy rewrites, and the escaping that keeps a
-//! project name out of the dashboard's markup.
-
 use super::*;
 
 pub(super) fn dashboard_cookie(value: &str, secure: bool) -> String {
@@ -52,10 +47,6 @@ pub(super) fn requires_secure_cookie(headers: &HeaderMap) -> bool {
     !request_host_is_loopback(headers)
 }
 
-/// Reports whether the `Host` header names this machine.
-///
-/// A caller that lies here only weakens the cookie it receives itself; a
-/// victim's browser always sends the real host.
 fn request_host_is_loopback(headers: &HeaderMap) -> bool {
     let Some(host) = headers
         .get(header::HOST)
@@ -64,7 +55,6 @@ fn request_host_is_loopback(headers: &HeaderMap) -> bool {
         return false;
     };
     let host = host.trim();
-    // Strip the port, taking care of the bracketed IPv6 form.
     let host = match host.strip_prefix('[') {
         Some(rest) => rest.split_once(']').map_or(rest, |(host, _)| host),
         None => host.split_once(':').map_or(host, |(host, _)| host),

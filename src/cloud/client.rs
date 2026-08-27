@@ -1,11 +1,3 @@
-//! Persisted client configuration for cloud replication.
-//!
-//! The cloud server reads its settings from the environment because it runs as
-//! a service. A workstation is different: a developer configures the endpoint
-//! once and expects `leteo serve`, `leteo mcp`, and `leteo cloud sync` to keep
-//! working across restarts, so the client settings live in a file next to the
-//! database.
-
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -16,24 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::normalize;
 
-/// File name inside the Leteo data directory.
 pub const CLIENT_CONFIG_FILE: &str = "cloud.json";
-/// Poll interval used when the configuration does not set one.
 pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientConfig {
-    /// Cloud endpoint, for example `https://memory.example.com`.
     pub server: String,
-    /// Bearer or managed token presented to that endpoint.
     pub token: String,
-    /// Projects replicated to the cloud.
     pub projects: Vec<String>,
-    /// Seconds between background sync cycles.
     pub poll_interval_seconds: Option<u64>,
-    /// Whether background sync may run. Configuration can be kept while sync
-    /// is paused.
     pub enabled: bool,
 }
 
@@ -42,8 +26,6 @@ impl ClientConfig {
         data_directory.as_ref().join(CLIENT_CONFIG_FILE)
     }
 
-    /// Loads the configuration, falling back to the cloud environment variables
-    /// so an existing environment-driven setup keeps working unchanged.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut config = match std::fs::read(path) {
@@ -86,8 +68,6 @@ impl ClientConfig {
         self.projects = projects;
     }
 
-    /// Writes the configuration, restricting permissions where the platform
-    /// supports it because the file holds a token.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let mut body = serde_json::to_string_pretty(self).context("serialize cloud config")?;
@@ -99,7 +79,6 @@ impl ClientConfig {
             .with_context(|| format!("write {}", path.display()))
     }
 
-    /// Whether background sync should start.
     pub fn is_runnable(&self) -> bool {
         self.enabled
             && !self.server.is_empty()
@@ -115,7 +94,6 @@ impl ClientConfig {
         )
     }
 
-    /// A view safe to print: the token becomes a presence flag.
     pub fn redacted(&self) -> serde_json::Value {
         serde_json::json!({
             "server": self.server,

@@ -1446,7 +1446,6 @@ is per host",
         assert_eq!(kind("CI"), "config");
         assert_eq!(kind("user"), "preference");
 
-        // Already canonical, and left exactly as it is.
         for documented in [
             "bugfix",
             "decision",
@@ -1459,7 +1458,6 @@ is per host",
             assert_eq!(kind(documented), documented);
         }
 
-        // Internal, and nothing folds onto it or away from it.
         assert_eq!(kind("session_summary"), "session_summary");
 
         // No documented type means these, so they keep their own word rather
@@ -1634,7 +1632,6 @@ is per host",
             assert_eq!(extract_learnings(&text).len(), 1, "{heading:?}");
         }
 
-        // And a heading that is not one is still not one.
         assert!(
             extract_learnings("## Notes\n1. Una cosa que merece recordarse y tiene palabras\n")
                 .is_empty()
@@ -1709,7 +1706,6 @@ export A=1
 ";
         assert_eq!(extract_learnings(solo_codigo), Vec::<String>::new());
 
-        // Y una valla sin cerrar dice justo eso: de aquí en adelante es código.
         let sin_cerrar = "## Key Learnings:
              1. The index was left without its triggers and nothing said so
              
@@ -2050,7 +2046,6 @@ mod plumbing {
 
     #[test]
     fn a_project_name_that_is_a_directory_is_reduced_to_its_last_segment() {
-        // The three real ones, spelled the way they were stored.
         assert_eq!(project(r"h:\repo\nas.archive"), "nas.archive");
         assert_eq!(project(r"h:\repo"), "repo");
         assert_eq!(
@@ -2107,7 +2102,6 @@ mod plumbing {
             fts_terms("bm25 suelo bm25 conflictos"),
             vec!["\"bm25\"", "\"suelo\"", "\"conflictos\""]
         );
-        // And nothing is lost from a query with no repeats.
         assert_eq!(fts_terms("uno dos tres").len(), 3);
     }
 
@@ -2222,7 +2216,6 @@ mod plumbing {
         assert!(cualesquiera.starts_with("\"palabra0\""), "{cualesquiera}");
         assert!(!cualesquiera.contains("\"palabra40\""), "{cualesquiera}");
 
-        // Y la conjunción, que no lleva tope.
         let todas = fts_query(&largo, false);
         assert_eq!(todas.matches('"').count(), 160, "{todas}");
         assert!(todas.contains("\"palabra79\""), "{todas}");
@@ -2447,7 +2440,6 @@ mod idempotence_tests {
     /// one in the middle of the text proves nothing about the edge.
     #[test]
     fn no_bound_ever_cuts_a_character_in_half() {
-        // The two byte-counted bounds and the four counted in characters.
         let bounds = [
             crate::mcp::PREVIEW_BYTES,
             crate::memory::normalize::TITLE_CHARS,

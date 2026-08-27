@@ -33,8 +33,6 @@ use actions::*;
 use chrome::*;
 use views::*;
 
-/// Every screen below reads its words from the catalogue rather than carrying
-/// them, so the import belongs here with the other things they all use.
 use crate::i18n::fill;
 
 /// How many rows a page of a list holds.
@@ -121,11 +119,9 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Where a home screen entry leads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuTarget {
     Open(Page),
-    /// Take Leteo off the machine. Asks first, like every other removal here.
     Uninstall,
     Quit,
 }
@@ -212,11 +208,9 @@ enum Focus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
-    /// The landing screen: the drawing, the wordmark and [`MENU`].
     Home,
     Dashboard,
     Detail,
-    /// One session: what it was, and everything it recorded.
     Session,
     Timeline,
     Setup,
@@ -256,7 +250,6 @@ enum Action {
     None,
     Quit,
     OpenObservation(i64),
-    /// Open one session, with everything it recorded.
     OpenSession(String),
     LoadTimeline(i64),
     /// Reload every list from the store.
@@ -274,7 +267,6 @@ enum Action {
     /// store's totals and the replication state — a file off disk — per letter
     /// typed, and neither of those changes while somebody is typing.
     Narrow,
-    /// Copy text to the system clipboard.
     Copy(String),
     /// Work out what a delete would destroy, and put it up for agreement.
     ///
@@ -357,7 +349,6 @@ struct App {
     /// reading the same memory here was the one surface left that showed a
     /// stale decision as though it still held.
     detail_caveats: Vec<Caveat>,
-    /// The session the session page is showing, and what it recorded.
     session: Option<(SessionSummary, Vec<Observation>)>,
     timeline: Option<TimelineResult>,
     /// The words every list on the dashboard is limited to.
@@ -369,7 +360,6 @@ struct App {
     query: String,
     recent_selected: usize,
     session_selected: usize,
-    /// Which row of the open session's observations is under the cursor.
     session_entry_selected: usize,
     /// How far into each list the page in hand starts.
     ///
@@ -404,9 +394,7 @@ struct App {
     /// sandbox. Reading the real files from inside a unit test made the setup
     /// page's behaviour depend on which agents the developer had installed.
     setup_probe: crate::setup::SetupOptions,
-    /// Which list is on screen.
     list: ListKind,
-    /// Where the keys are pointed.
     focus: Focus,
     /// The projects every list on the dashboard is limited to.
     ///
@@ -423,10 +411,8 @@ struct App {
     wizard: Option<crate::setup::wizard::Wizard>,
     detail_scroll: u16,
     status: Option<StatusMessage>,
-    /// An action waiting for the user to confirm it.
     pending: Option<PendingAction>,
     cloud: CloudOverview,
-    /// Why the dashboard is closing, read by [`run`] once it has.
     exit: Exit,
 }
 
@@ -438,7 +424,6 @@ struct App {
 /// screen while it is being asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingAction {
-    /// What is about to go, named.
     heading: String,
     /// What goes with it, a line each, counted from the store.
     detail: Vec<String>,
@@ -479,7 +464,6 @@ fn clamp_index(selected: usize, len: usize) -> usize {
     if len == 0 { 0 } else { selected.min(len - 1) }
 }
 
-/// Where a window that ends at the end of a list of this length begins.
 fn last_window(total: i64) -> usize {
     usize::try_from(total).unwrap_or(0).saturating_sub(WINDOW)
 }
@@ -502,7 +486,6 @@ fn page_of<T>(
     fetch(*offset)
 }
 
-/// One counter, and a tab for the list it counts.
 fn render_stat(frame: &mut Frame<'_>, area: Rect, title: &str, value: &str, showing: bool) {
     let widget = Paragraph::new(value.to_owned())
         .alignment(Alignment::Center)

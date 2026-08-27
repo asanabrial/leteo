@@ -614,8 +614,6 @@ impl Store {
             return Err(invalid_parameter(crate::project::EMPTY_NAME));
         }
         let tx = self.write_transaction()?;
-        // Preguntado antes de mover nada, que es lo único que lo hace medible:
-        // en cuanto la primera fila cambia de nombre, el destino existe.
         let canonical_existed: bool = tx.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1

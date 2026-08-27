@@ -1,98 +1,38 @@
-//! Taking Leteo off a machine entirely.
-//!
-//! [`super::uninstall`] takes Leteo out of *one* agent. This takes it out of
-//! all of them and then removes what the install left behind: the store, the
-//! settings, the reminder clocks, and — where the platform allows it — the
-//! binary itself.
-//!
-//! # What it deliberately does not touch
-//!
-//! A `.leteo/config.json` **inside a repository** is not part of an install. It
-//! names the project that checkout belongs to and is usually tracked, so it is
-//! the repository's file. An uninstaller that walked the filesystem removing
-//! every `.leteo/` it found would delete other people's tracked files, on a
-//! machine where the person asked only to remove a program. The data directory
-//! and that one share a name and nothing else.
-//!
-//! # The binary
-//!
-//! Unix allows unlinking a running executable — the file goes and the image
-//! stays mapped until the process ends — so this removes it and the job is
-//! finished in one command.
-//!
-//! Windows holds the image open and refuses, and there is no honest way around
-//! that from inside the process being removed. So there the binary is reported
-//! rather than deleted, and `uninstall.ps1` finishes it: PowerShell reads a
-//! script into memory before running it, which is what lets that file delete
-//! the binary, its own directory, the PATH entry and its registry key. The
-//! installer registers that script as the `UninstallString`, which is also the
-//! only reason Leteo appears in Windows' list of installed programs at all.
-
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use super::{SetupOptions, agents};
 
-/// What one agent's removal did.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentRemoval {
     pub agent: &'static str,
-    /// Whether Leteo was in this agent before anything was done.
     pub was_configured: bool,
-    /// How many of that agent's files changed.
     pub files_changed: usize,
-    /// Why this one failed, when it did. One agent's failure is not a reason
-    /// to leave Leteo installed in the other eleven.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// Everything an uninstall found, and what became of it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Removal {
-    /// True when nothing was actually touched.
     pub dry_run: bool,
     pub agents: Vec<AgentRemoval>,
     pub data_dir: PathBuf,
-    /// Whether the directory itself went.
-    ///
-    /// False when something Leteo did not put there kept it alive, which is not
-    /// a failure — see [`Removal::complete`].
     pub data_dir_removed: bool,
-    /// Whether Leteo's own files in it are gone.
-    ///
-    /// The one that decides whether the uninstall did its job. The directory
-    /// surviving because it holds a note somebody filed beside the store is a
-    /// success with a leftover, not a partial removal.
     pub data_removed: bool,
-    /// What the store held, counted before it went.
-    ///
-    /// `None` when it could not be read, which is not a reason to refuse: a
-    /// store too broken to count is a store somebody is especially likely to
-    /// be uninstalling.
     pub memories: Option<i64>,
-    /// The running binary, when it could be located.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary: Option<PathBuf>,
     pub binary_removed: bool,
-    /// What is left, and what to do about it. Never empty on Windows.
     pub remaining: Vec<String>,
 }
 
 impl Removal {
-    /// Whether every agent came out cleanly.
     pub fn complete(&self) -> bool {
         self.agents.iter().all(|agent| agent.error.is_none()) && (self.data_removed || self.dry_run)
     }
 }
 
-/// Takes Leteo out of every agent it knows about, then off the machine.
-///
-/// Ordered so that the parts needing the most knowledge happen while that
-/// knowledge is still there: the agents first, because resolving twelve config
-/// files is the one step the shell scripts could not repeat, then the data, then
-/// the binary.
 pub fn uninstall_everything(options: &SetupOptions, data_dir: &Path) -> Removal {
     let memories = count_memories(data_dir);
     let mut removed = Removal {
@@ -152,12 +92,6 @@ const DATA_DIR_FILES: &[&str] = &["leteo.db", "settings.json", "cloud.json", "st
 const DATA_DIR_PREFIXES: &[&str] = &["leteo.db", "store.db", "backup-"];
 const DATA_DIR_SUBDIRECTORIES: &[&str] = &["hooks"];
 
-/// Empties the data directory of Leteo's own files, and removes it only if that
-/// left nothing behind.
-///
-/// A file somebody else put in there keeps the directory alive and is reported,
-/// rather than being taken along with the rest. Uninstalling a memory tool
-/// should not be a way to lose a note that happened to be filed beside it.
 fn remove_data_directory(removed: &mut Removal, data_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(data_dir) else {
         removed
@@ -189,7 +123,6 @@ fn remove_data_directory(removed: &mut Removal, data_dir: &Path) {
                 .push(format!("{}: {error}", entry.path().display()));
         }
     }
-    // Leteo's own files are gone unless removing one of them failed.
     removed.data_removed = removed.remaining.len() == failures_before;
     if foreign.is_empty() {
         match std::fs::remove_dir(data_dir) {
@@ -212,8 +145,6 @@ fn remove_data_directory(removed: &mut Removal, data_dir: &Path) {
     }
 }
 
-/// Removes the running binary where the platform allows it, and says so where
-/// it does not.
 #[cfg(not(windows))]
 fn remove_binary(removed: &mut Removal, dry_run: bool) {
     let Some(binary) = removed.binary.clone() else {
@@ -246,10 +177,6 @@ fn remove_binary(removed: &mut Removal, _dry_run: bool) {
     ));
 }
 
-/// What the store holds, without opening it for writing.
-///
-/// Read-only and forgiving: this runs to put a number in front of somebody
-/// before they destroy it, and a store that cannot answer must not stop them.
 fn count_memories(data_dir: &Path) -> Option<i64> {
     let database = data_dir.join("leteo.db");
     if !database.exists() {

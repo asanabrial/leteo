@@ -84,7 +84,6 @@ Guidance:
 Reply with one line of JSON, nothing before or after it:
 {\"Relation\":\"<verb>\",\"Confidence\":<0.0-1.0>,\"Reasoning\":\"<200 chars or fewer>\"}";
 
-/// A judged relationship between two observations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Verdict {
     pub relation: String,
@@ -95,7 +94,6 @@ pub struct Verdict {
     pub model: Option<String>,
 }
 
-/// Agent CLIs Leteo knows how to drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Runner {
     Claude,
@@ -183,14 +181,11 @@ pub struct SemanticSummary {
     pub pairs: usize,
     pub judged: usize,
     pub skipped: usize,
-    /// Pairs left alone because the store already holds a verdict on them.
     pub already_judged: usize,
     pub errors: usize,
-    /// True when `max_pairs` cut the run short.
     pub capped: bool,
 }
 
-/// One observation pair awaiting a verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pair {
     pub source_id: String,
@@ -782,7 +777,6 @@ mod tests {
         );
         assert_eq!(already, 1, "y se dice cuántos se dejaron en paz");
 
-        // The verdict is still where it was, which is what this was about.
         assert!(
             store
                 .pair_is_judged(&pairs[0].source_id, &pairs[0].target_id)

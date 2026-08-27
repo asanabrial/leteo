@@ -4,28 +4,9 @@
 //! that module holds labels, this one holds sentences whose wording changes with
 //! a number. A label is a string; "kept 1 memory" against "kept 3 memories" is a
 //! rule about counting, and the rule is not the same in every language.
-//!
-//! # Why this stopped being a `match`
-//!
-//! Each of these lines used to be a `match (language, count)` in the function
-//! that built it — two languages, two or three arms each, perfectly readable.
-//! At twelve languages the same shape is thirteen functions of thirty arms, and
-//! the arm for a language is not next to the other arms for that language, so
-//! translating one means editing thirteen places and reviewing a diff that
-//! interleaves all twelve. Here a language is one `const`, and the compiler will
-//! not accept it until every sentence is filled in.
 
 use crate::settings::Interface;
 
-/// One sentence in the three shapes a count can put it in.
-///
-/// Most languages here have two — one and not-one — and say so with
-/// [`Counted::same`]. Polish has three: `1 wspomnienie`, `2 wspomnienia`,
-/// `5 wspomnień`, where the middle form takes 2–4 and the last takes everything
-/// else including 12–14. That is the case the module docs of [`crate::i18n`]
-/// named as the point where a table of fixed strings stops paying, and it does
-/// stop paying — for *labels*. For a sentence about a number, three fields cost
-/// three fields.
 pub struct Counted {
     pub one: &'static str,
     pub few: &'static str,
@@ -33,7 +14,6 @@ pub struct Counted {
 }
 
 impl Counted {
-    /// A language where "not one" is one shape, which is all of them but Polish.
     const fn same(one: &'static str, many: &'static str) -> Self {
         Self {
             one,
@@ -43,7 +23,6 @@ impl Counted {
     }
 }
 
-/// Which of the three forms a count takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plural {
     One,
@@ -73,7 +52,6 @@ pub fn plural(language: Interface, count: i64) -> Plural {
 }
 
 impl Counted {
-    /// The wording for this count, in this language.
     pub fn pick(&self, language: Interface, count: i64) -> &'static str {
         match plural(language, count) {
             Plural::One => self.one,
@@ -83,73 +61,28 @@ impl Counted {
     }
 }
 
-/// Everything Sardi says, in one language.
-///
-/// The marks and the name are not here: they are the same in every language, and
-/// a table that repeated them would be a table that could get one of them wrong.
-/// Each sentence below is the words *after* the mark and, where the name comes
-/// first in that language's word order, after the name too — which is why the
-/// name is a `{name}` placeholder rather than a prefix bolted on at the call
-/// site. Spanish says "a Sardi no le han dado…"; English says "Sardi has been
-/// given…". A prefix cannot do both.
 pub struct Lines {
-    /// `{name}`.
     pub reading: &'static str,
-    /// `{name}`.
     pub adopted_none: &'static str,
-    /// `{name}`, and `{count}` in every form but the singular.
     pub adopted: Counted,
-    /// `{name}`, `{agent}`.
     pub listening: &'static str,
-    /// `{name}`, `{agent}`.
     pub available: &'static str,
-    /// `{name}`.
     pub idle: &'static str,
-    /// `{name}`, `{memories}`, `{projects}`.
     pub watching: &'static str,
-    /// `{name}`.
     pub empty: &'static str,
-    /// `{name}`, `{count}`.
     pub remembers: Counted,
-    /// `{name}`, `{count}`.
     pub due: Counted,
-    /// `{name}`, `{count}`.
     pub restored: Counted,
-    /// `{name}`, `{count}`.
     pub recalls: Counted,
-    /// `{name}`, `{count}`.
     pub captured: Counted,
-    /// `{name}`, `{project}`, `{span}`.
     pub nudge: &'static str,
-    /// How long the silence has been, for `{span}` above. `{count}` except in
-    /// the singular, which spells the number out the way a person would.
-    /// How long something has gone without happening, in whichever unit
-    /// still reads as a length of time.
-    ///
-    /// Three of them because one is not enough: a reminder that says 7,504
-    /// minutes is arithmetically right and tells a reader nothing, and that
-    /// number came off a real store.
     pub minutes: Counted,
     pub hours: Counted,
     pub days: Counted,
 }
 
-/// Read only by the guard that no two languages say the same thing, which is
-/// where the reason for both of these lives.
 #[cfg(test)]
 impl Lines {
-    /// Every sentence in this table, spans excluded, in a fixed order.
-    ///
-    /// Read off the table rather than off rendered lines, which is what the
-    /// guard used to do and why a Swedish table holding Polish text went
-    /// unnoticed for as long as it did: rendered at a count of two, Polish
-    /// takes its `few` form and every other language takes `many`, so the two
-    /// came out looking different while the table underneath was a copy. Here
-    /// all three forms are compared and a copy has nowhere to hide.
-    ///
-    /// The destructuring is the point of the first statement rather than
-    /// style: a field added to [`Lines`] and not added here stops this
-    /// compiling, which is the only way a list like this stays complete.
     pub fn sentences(&self) -> Vec<&'static str> {
         let Self {
             reading,
@@ -186,14 +119,6 @@ impl Lines {
         all
     }
 
-    /// The three lengths of time, which are the fields the check above leaves
-    /// out.
-    ///
-    /// Two or three words each, and close languages genuinely agree on them:
-    /// Spanish and Galician both say "un minuto" and "{count} minutos", which
-    /// is correct in both and would fail a slot-by-slot comparison. They are
-    /// held to the weaker rule instead — no language may have the whole set
-    /// identical to another's.
     pub fn spans(&self) -> Vec<&'static str> {
         [&self.minutes, &self.hours, &self.days]
             .into_iter()
@@ -202,7 +127,6 @@ impl Lines {
     }
 }
 
-/// The words for a language.
 pub fn lines(language: Interface) -> &'static Lines {
     match language {
         Interface::English => &ENGLISH,
@@ -571,11 +495,6 @@ const BASQUE: Lines = Lines {
     nudge: "{name}ri ez diote {project} proiekturako ezer gordetzeko eman {span}. \
             Erabaki bat hartu bada, akats bat konpondu bada, edo agerikoa ez zen zerbait ikasi \
             bada, deitu mem_save orain.",
-    // Declined here rather than at the `{span}` that uses it. Basque marks
-    // "in a minute" on the noun, and the ending depends on the noun — so a
-    // sentence that appended the case to a placeholder could only be written
-    // `{span}(e)an`, which is the notation for not knowing. The two forms are
-    // known; they go in already inflected.
     minutes: Counted::same("minutu batean", "{count} minutuan"),
     hours: Counted::same("ordu batean", "{count} ordutan"),
     days: Counted::same("egun batean", "{count} egunetan"),

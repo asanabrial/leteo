@@ -906,11 +906,9 @@ mod hydrate_tests {
                 .collect()
         };
 
-        // Las tres vivas llegan enteras.
         let vivas = store.hydrate(candidatos(&ids)).unwrap();
         assert_eq!(vivas.len(), 3);
 
-        // And the one somebody deleted out from under the ranking is not.
         store.delete_observation(ids[1], false).unwrap();
         let despues = store.hydrate(candidatos(&ids)).unwrap();
         assert_eq!(
@@ -919,8 +917,6 @@ mod hydrate_tests {
             "una memoria borrada no vuelve de una búsqueda"
         );
 
-        // Un borrado duro tampoco, que es el caso que el comentario anterior
-        // creía cubrir con esto y era el único.
         store.delete_observation(ids[0], true).unwrap();
         assert_eq!(store.hydrate(candidatos(&ids)).unwrap().len(), 1);
     }

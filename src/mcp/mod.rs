@@ -5,11 +5,6 @@
 //! threshold when `serde_json` gained `preserve_order` — an `IndexMap` is
 //! wider than the sorted map it replaced — and the lint fires on all
 //! twenty-eight tool signatures at once.
-//!
-//! Boxing them would put a `Box<CallToolResult>` in the return type of every
-//! tool and at every `?` that produces one, to save copying two hundred bytes
-//! on a path taken once per tool call. The signatures are what somebody reads
-//! to learn this module; the two hundred bytes are not worth obscuring them.
 #![allow(clippy::result_large_err)]
 
 use std::{
@@ -37,7 +32,6 @@ use crate::{
     store::{Store, StoreError, suggest_topic_key},
 };
 
-/// Tools an AI agent uses during a coding session.
 pub const PROFILE_AGENT: &[&str] = &[
     "mem_capture_passive",
     "mem_compare",
@@ -55,31 +49,19 @@ pub const PROFILE_AGENT: &[&str] = &[
     "mem_session_start",
     "mem_session_summary",
     "mem_suggest_topic_key",
-    // The middle of the three-layer retrieval pattern: search finds an id,
-    // timeline shows what surrounded it, and get_observation opens it whole.
-    // The other two layers are here, and without this one an agent can find a
-    // decision but not what led to it.
     "mem_timeline",
     "mem_unpin",
     "mem_update",
 ];
 
-/// Tools for manual curation, dashboards, and the terminal UI.
 pub const PROFILE_ADMIN: &[&str] = &["mem_delete", "mem_merge_projects", "mem_stats"];
 
-/// Process-level MCP configuration supplied by the host command.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
-    /// Trusted project override for this process. It is applied before
-    /// directory detection but never overrides a session's own project.
     pub default_project: Option<String>,
-    /// Comma-separated profile and tool names. Empty or `all` registers every
-    /// tool.
     pub tools: Option<String>,
 }
 
-/// Resolves a profile and tool specification into the set of tools to expose.
-/// `None` means every tool stays registered.
 pub fn resolve_tools(specification: &str) -> Result<Option<BTreeSet<String>>, String> {
     let specification = specification.trim();
     if specification.is_empty() || specification == "all" {
@@ -92,13 +74,6 @@ pub fn resolve_tools(specification: &str) -> Result<Option<BTreeSet<String>>, St
             "all" => return Ok(None),
             "agent" => tools.extend(PROFILE_AGENT.iter().map(|tool| (*tool).to_owned())),
             "admin" => tools.extend(PROFILE_ADMIN.iter().map(|tool| (*tool).to_owned())),
-            // A name that is neither a profile nor a tool used to be kept as if
-            // it were one, so it matched nothing and every route was removed:
-            // `--tools=agnet` started a memory server with no memory tools on
-            // it, in silence, and `--tools=AGENT` did the same. The symptom is
-            // "Leteo's tools are missing", which the skill tells an agent to
-            // fix by reinstalling — a typo sending somebody to reinstall a
-            // working install.
             tool if PROFILE_AGENT.contains(&tool) || PROFILE_ADMIN.contains(&tool) => {
                 tools.insert(tool.to_owned());
             }
@@ -122,20 +97,12 @@ pub fn resolve_tools(specification: &str) -> Result<Option<BTreeSet<String>>, St
 #[derive(Clone)]
 struct LeteoMcpServer {
     store: Arc<Mutex<Store>>,
-    /// Trusted process-level project, already normalized.
     default_project: Option<String>,
     recovery: Arc<Mutex<RecoveryTokens>>,
-    /// The prompt this process last recorded, so a save made while answering it
-    /// can say what it was answering.
     prompt_context: Arc<Mutex<Option<PromptContext>>>,
     router: rmcp::handler::server::router::tool::ToolRouter<Self>,
 }
 
-/// The prompt currently being answered, as far as this process knows.
-///
-/// It is deliberately process-local and never persisted: it exists only to link
-/// a memory to the request that produced it, and a stale link is worse than
-/// none, so it is scoped to the project and session that recorded it.
 #[derive(Debug, Clone)]
 struct PromptContext {
     sync_id: String,
@@ -144,7 +111,6 @@ struct PromptContext {
 }
 
 impl PromptContext {
-    /// Whether this prompt belongs to the same work as the save being made.
     fn matches(&self, project: &str, session_id: &str) -> bool {
         self.project == project && self.session_id == session_id
     }
@@ -183,19 +149,6 @@ impl LeteoMcpServer {
         }
     }
 
-    /// Removes the `format` keywords JSON Schema does not define.
-    ///
-    /// `schemars` describes a Rust `usize` as `"format": "uint"`, an `i64` as
-    /// `"int64"` and an `f64` as `"double"`. None of those are registered JSON
-    /// Schema formats — `uint` is not even an OpenAPI one — and a client that
-    /// validates strictly rejects them. OpenCode reports `unknown format
-    /// "uint"` on every tool that takes a limit.
-    ///
-    /// Nothing is lost by dropping them. `format` is an annotation, not a
-    /// constraint, and the schema already says everything that matters: the
-    /// type is `integer`, and `usize` also carries `"minimum": 0`. What the
-    /// keyword added was a Rust type name leaking into a wire format that has
-    /// no word for it.
     fn drop_nonstandard_formats(
         router: &mut rmcp::handler::server::router::tool::ToolRouter<Self>,
     ) {
@@ -206,10 +159,6 @@ impl LeteoMcpServer {
             if let serde_json::Value::Object(schema) = schema {
                 route.attr.input_schema = Arc::new(schema);
             }
-            // And the output schemas, which is where most of them are: a tool
-            // takes two or three numbers and hands back a dozen. Sanitising
-            // only the input halved the problem and left OpenCode reporting the
-            // rest — `unknown format "uint"` on `#/properties/duplicates`.
             if let Some(existing) = route.attr.output_schema.as_ref() {
                 let mut schema = serde_json::Value::Object((**existing).clone());
                 strip_numeric_formats(&mut schema);
@@ -222,18 +171,6 @@ impl LeteoMcpServer {
         }
     }
 
-    /// The store, or the one refusal on this surface that nothing can retry.
-    ///
-    /// A poisoned lock means something panicked while holding the store, so
-    /// every call after it fails the same way for as long as the process
-    /// lives. The message said "the Leteo store lock is poisoned", which is
-    /// the state in Rust's words and not a thing anybody can do: an agent
-    /// reading it retries, gets it again, and reports that memory is broken.
-    ///
-    /// Every other refusal here carries its own remedy — a busy store says to
-    /// call again in a moment, a replay without its token says which token —
-    /// and this one is the only kind where the remedy is not the caller's at
-    /// all. So it says whose it is.
     fn lock_store(&self) -> Result<MutexGuard<'_, Store>, CallToolResult> {
         self.store.lock().map_err(|_| {
             structured_error(
@@ -245,8 +182,6 @@ impl LeteoMcpServer {
         })
     }
 
-    /// Resolves the session a write belongs to, enforcing that the project is
-    /// backed by real context instead of an invented name.
     fn write_session(
         &self,
         store: &mut Store,
@@ -314,14 +249,6 @@ impl LeteoMcpServer {
         })
     }
 
-    /// Decides which project a sessionless write targets.
-    ///
-    /// Detection stays authoritative. An explicit project is honored only when
-    /// it matches the detected project, the process override, or a project the
-    /// store already knows. Ambiguous directories require the agent to replay
-    /// the user's choice with the recovery token from the previous error.
-    /// Returns the project and the authority it came from, so the response
-    /// envelope can tell the agent why this project was chosen.
     fn resolve_write_project(
         &self,
         store: &Store,
@@ -381,8 +308,6 @@ impl LeteoMcpServer {
         ))
     }
 
-    /// Accepts a project the user picked after an `ambiguous_project` error,
-    /// but only when the agent replays a valid, unexpired recovery token.
     fn accept_ambiguous_choice(
         &self,
         requested: &str,
@@ -433,8 +358,6 @@ impl LeteoMcpServer {
         }
     }
 
-    /// Builds the detection failure envelope, issuing a recovery token when the
-    /// directory holds more than one candidate project.
     fn project_detection_error(&self, detection: &ProjectDetection) -> CallToolResult {
         if detection.available_projects.is_empty() {
             return project_detection_error(detection);
@@ -463,28 +386,19 @@ impl LeteoMcpServer {
     }
 }
 
-/// Lifetime of an ambiguous-project recovery token.
 const RECOVERY_TOKEN_TTL: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
 
-/// The only accepted value of `project_choice_reason`.
 pub const SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT: &str =
     "user_selected_after_ambiguous_project";
-/// The project came from the session the caller named.
 pub const SOURCE_SESSION_PROJECT: &str = "session_project";
-/// The project was requested explicitly and the store already knows it.
 pub const SOURCE_KNOWN_PROJECT: &str = "known_project";
-/// The caller asked for this project on a read.
 pub const SOURCE_REQUEST: &str = "request";
-/// A read that deliberately spans every project.
 pub const SOURCE_ALL_PROJECTS: &str = "all_projects";
 
-/// Tells the agent which project a result belongs to and why, so a memory can
-/// never silently land in, or come from, a bucket the agent did not expect.
 #[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub struct ProjectEnvelope {
     project: String,
     project_source: String,
-    /// Where the project lives, when the answer came from a directory.
     ///
     /// `Option` rather than a `String` skipped when empty. The two look alike
     /// from Rust and are not the same thing on the wire: serde omits an empty
@@ -498,13 +412,6 @@ pub struct ProjectEnvelope {
 }
 
 impl ProjectEnvelope {
-    /// Envelope for a read whose scope the caller chose.
-    ///
-    /// `fallback` is the project a read narrows to when the caller named none,
-    /// with the name of where it came from — an override given on the command
-    /// line, or the directory this server was started in. `None` is every
-    /// project, which is what an explicit widening asks for and what an
-    /// undetectable directory leaves.
     fn for_read(requested: Option<&str>, fallback: Option<&(String, String)>) -> Self {
         match requested.map(normalize::project).filter(|p| !p.is_empty()) {
             Some(project) => Self {
@@ -528,7 +435,6 @@ impl ProjectEnvelope {
     }
 }
 
-/// A user project choice replayed by the agent after an ambiguous_project error.
 #[derive(Debug, Default)]
 struct ProjectChoice {
     reason: Option<String>,
@@ -564,9 +470,6 @@ impl RecoveryTokens {
         token
     }
 
-    /// Consumes a token for one project choice. The same token may be replayed
-    /// for the same project, but never for a different one, another directory,
-    /// a changed candidate list, or a name that was never on it.
     fn redeem(&mut self, token: &str, choice: &str, detection: &ProjectDetection) -> bool {
         self.prune();
         let Some(entry) = self.entries.get_mut(token.trim()) else {
@@ -576,14 +479,6 @@ impl RecoveryTokens {
         if entry.available_projects != available || entry.path != detection.path {
             return false;
         }
-        // And the choice has to be one the token was issued over.
-        //
-        // `resolve_ambiguous_project` checks this before it gets here, and is
-        // the only caller — so today this is belt and braces. It is here
-        // because the entry holds the list and the check costs a lookup: a
-        // rule enforced only by a caller is a rule one new caller away from not
-        // existing, which is what put the same guard on `mem_update` after
-        // `mem_save` had it alone.
         if !entry.available_projects.contains(choice) {
             return false;
         }
@@ -710,27 +605,6 @@ const RUST_NUMERIC_FORMATS: &[&str] = &[
     "double",
 ];
 
-/// Removes those keywords wherever they appear, however deeply nested.
-/// Keeps the summary sentence of every field description and drops the rest.
-///
-/// `schemars` builds these from the Rust doc comments, so whatever is written
-/// above a serialized field is shipped to every client that lists the tools.
-/// Those comments are written for whoever maintains this: they argue about
-/// `Option` against a skipped `String`, name Rust types, and carry intra-doc
-/// links that arrive as literal brackets. Measured on the running server, 42 of
-/// 130 field descriptions were paragraphs of that.
-///
-/// The first paragraph is the summary by Rust's own convention, and it is the
-/// part written for a reader — "What language to write and search memories in",
-/// "What the graph says about this memory, when anything does". Keeping only
-/// that took `tools/list` from 56,862 bytes to under 48,000, which is about
-/// 2,200 tokens off every client connection, and left the descriptions saying
-/// what the field is rather than why it is typed the way it is.
-///
-/// Sanitised here rather than by rewriting forty doc comments: the rule is
-/// "agents get the summary, maintainers get the whole thing", and a rule
-/// enforced at the boundary cannot be forgotten by the next comment somebody
-/// writes.
 fn summarise_descriptions(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -750,7 +624,6 @@ fn summarise_descriptions(value: &mut serde_json::Value) {
     }
 }
 
-/// The first paragraph of a doc comment, on one line.
 fn summary_of(description: &str) -> String {
     description
         .split("\n\n")
@@ -761,8 +634,6 @@ fn summary_of(description: &str) -> String {
         .join(" ")
 }
 
-/// Lets a tool's schema describe the answer it gives when it fails, too.
-///
 /// A failure comes back as `structuredContent` — that is what carries
 /// `error.code`, the `available_projects` an ambiguous directory offers and the
 /// `recovery_token` an agent has to replay — and it carries none of the fields
@@ -771,22 +642,10 @@ fn summary_of(description: &str) -> String {
 /// returns: driven through the built binary, twelve error replies out of twelve
 /// failed their own tool's schema, each on the first required field of the
 /// answer they are not.
-///
-/// That client is not hypothetical. OpenCode validates, and two defects on this
-/// surface were found by it doing so — a `format` JSON Schema has never defined,
-/// and a field the reply may omit declared required. Both were about the answer;
-/// this is the same defect about the refusal, which is the half an agent most
-/// needs to read, because the recovery flows live in it.
-///
-/// The union is expressed through `required` alone, so the root keeps its
-/// `type` and its `properties` for anything that reads a schema rather than
-/// validating against it. It costs about sixty bytes a tool in `tools/list`.
 fn allow_the_error_shape(value: &mut serde_json::Value) {
     let serde_json::Value::Object(schema) = value else {
         return;
     };
-    // Only where the success shape demands something. A schema with no
-    // required fields already accepts an error envelope.
     let Some(required) = schema.remove("required") else {
         return;
     };
@@ -822,7 +681,6 @@ fn strip_numeric_formats(value: &mut serde_json::Value) {
     }
 }
 
-/// Guidance sent to MCP clients during initialization.
 const SERVER_INSTRUCTIONS: &str = "\
 Local-first persistent memory tools backed by the Leteo SQLite store.
 
@@ -864,14 +722,10 @@ SUMMARIES: mem_session_summary takes the session's own title from the first \
 line of the content that is not a heading, so open with what the session was \
 for. A summary beginning with a date is one nobody can find again.";
 
-/// Run the Leteo MCP server with a process-level project override and an
-/// optional tool profile selection.
 pub async fn run_stdio_with_options(
     store: Arc<Mutex<Store>>,
     options: McpOptions,
 ) -> anyhow::Result<()> {
-    // Refused here rather than served empty: a server with no tools answers
-    // every question by not being asked, and nothing about it says why.
     if let Some(specification) = options.tools.as_deref() {
         resolve_tools(specification).map_err(|why| anyhow::anyhow!("{why}"))?;
     }
@@ -904,17 +758,6 @@ impl From<MatchMode> for SearchMode {
     }
 }
 
-/// How much of a memory a listing shows before it costs more than it is worth.
-///
-/// A list is for choosing, not for reading. Returning every memory in full made
-/// one ten-result `mem_search` cost 11,341 tokens against Engram's 2,026 for the
-/// same ten memories — the bodies in that single response ran to 2,294, 3,243,
-/// 874, 6,170, 1,174, 7,374, 769, 1,644, 8,726 and 4,445 characters, and the
-/// agent had asked which of them was relevant, not to read all ten.
-///
-/// The skill already tells the agent to follow a search with
-/// `mem_get_observation` for anything that looks right, so the whole text was
-/// always one call away; sending it unasked billed for it twice.
 pub(crate) const PREVIEW_BYTES: usize = 400;
 
 fn default_observation_type() -> String {
@@ -933,13 +776,6 @@ fn default_timeline_window() -> usize {
     5
 }
 
-// The same numbers the markdown context uses, read from where it reads them.
-//
-// They were written out again here, a third hand-written copy of two constants
-// that already lived in `recall`. They agreed on the day this was noticed, and
-// that is the whole hazard: `REVIEW_WINDOWS` and `KINDS` were each consolidated
-// in this codebase after a second copy drifted, and `policy` spent a release
-// with a review window nothing could ever fire because of it.
 fn default_context_sessions() -> usize {
     crate::recall::RECENT_SESSIONS
 }
@@ -960,15 +796,6 @@ struct WriteSession {
     id: String,
     project: String,
     envelope: ProjectEnvelope,
-    /// Whether this landed in the per-project bucket rather than in a session
-    /// somebody named.
-    ///
-    /// The difference decides what a memory may be attributed to. A named
-    /// session is one conversation, and a question asked in another one is not
-    /// what this memory answers — there is a test that says so. The bucket is
-    /// not a conversation at all: it is where every save that named nothing
-    /// goes, and prompts are never written to it, so the only question it could
-    /// ever be linked to is one asked elsewhere.
     named: bool,
 }
 
@@ -1010,19 +837,6 @@ fn outcome_label(kind: AddOutcomeKind) -> &'static str {
 }
 
 fn store_error(error: StoreError) -> CallToolResult {
-    // Another writer holding the lock is the one store failure with a next
-    // step, and it deserves to be told apart from the store being broken.
-    //
-    // Leteo is multi-writer by design — the hooks, this server, the CLI and
-    // the background sync all open the same file — so a save landing while a
-    // hook is writing is ordinary rather than exceptional. What the agent used
-    // to get was `store_error: database is locked`, which is SQLite's sentence
-    // about itself: nothing in it says the memory was not written, and nothing
-    // says that asking again is the whole remedy. Measured with the lock held,
-    // a `mem_save` waits its five seconds and then says exactly that.
-    //
-    // Every other refusal in this file names what to do next. This one now
-    // does too.
     if error.is_busy() {
         return structured_error(
             error_code::STORE_BUSY,
@@ -1047,23 +861,14 @@ fn store_error(error: StoreError) -> CallToolResult {
         StoreError::PromptNotFound(_) => "prompt_not_found",
         StoreError::SchemaTooNew { .. } => "schema_too_new",
         StoreError::EngramDatabase => "engram_database",
-        // The caller's mistake, not the store's, so it must not be reported as
-        // a store failure the agent can do nothing about.
         StoreError::InvalidParameter(_) => error_code::INVALID_PARAMS,
         StoreError::Database(_) | StoreError::Io(_) | StoreError::Json(_) => "store_error",
     };
     structured_error(code, error.to_string())
 }
 
-/// The `error.code` values MCP tools return.
-///
-/// Agents branch on these and the memory skill documents them, so they are a
-/// contract rather than prose. The tests below keep asserting the literals on
-/// purpose: if both sides went through these constants, renaming one would
-/// change what goes out on the wire without failing anything.
 mod error_code {
     pub const INVALID_PARAMS: &str = "invalid_params";
-    /// Another writer holds the lock: nothing happened, and asking again works.
     pub const STORE_BUSY: &str = "store_busy";
     pub const INVALID_PROJECT: &str = "invalid_project";
     pub const INVALID_PROJECT_CHOICE: &str = "invalid_project_choice";
@@ -1085,7 +890,6 @@ fn structured_error(code: &str, message: impl Into<String>) -> CallToolResult {
     }))
 }
 
-/// Builds a structured error carrying extra machine-readable context.
 fn structured_error_with(
     code: &str,
     message: impl Into<String>,
@@ -1105,7 +909,6 @@ fn structured_error_with(
     CallToolResult::structured_error(payload)
 }
 
-/// Reports that an explicit project is not backed by any known context.
 fn unknown_project_error(
     requested: &str,
     detected: &str,
@@ -1124,21 +927,6 @@ fn unknown_project_error(
     )
 }
 
-/// The same failure without a recovery token, for the door that needs none.
-///
-/// There are two functions of this name — this one and the method above — and
-/// which one a call site reaches depends only on whether it has a `self`.
-/// `resolve_detected_project` is free, so `mem_session_start` reached this one
-/// and answered an ambiguous directory with `project_detection_failed`: a code
-/// that says detection is broken for a directory where nothing is broken, and
-/// the one code the server instructions tell an agent to recognise so it can
-/// ask the user. It named the candidates and then hid what they were for.
-///
-/// The code is the ambiguous one here too, because that is what happened. What
-/// differs is the remedy, and each says its own: a write has to prove the user
-/// was asked, with the token the method issues, while creating a session is the
-/// sanctioned way to introduce a project — it takes the name directly, one of
-/// these or a new one, which is why no token is minted for it.
 fn project_detection_error(detection: &ProjectDetection) -> CallToolResult {
     if detection.available_projects.is_empty() {
         return CallToolResult::structured_error(json!({
@@ -1175,8 +963,6 @@ mod params;
 mod tools;
 
 use output::*;
-// What a search answer means when it is empty or partial, said the same way on
-// both surfaces: the tool puts it in the answer, `leteo search` on stderr.
 pub(crate) use output::{
     ELSEWHERE_CAP, MORE_MATCHED_HINT, NO_MATCH_HINT, PARTIAL_MATCH_HINT, UNFILED_KIND_HINT,
     clamped_hint, no_match_here_hint,

@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// How much of its own work Sardi says out loud.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Voice {
@@ -31,7 +30,6 @@ pub enum Voice {
 }
 
 impl Voice {
-    /// Whether Sardi describes what it just did.
     pub fn reports(self) -> bool {
         matches!(self, Self::All)
     }
@@ -56,7 +54,6 @@ impl Voice {
         }
     }
 
-    /// Reads a level by name, case and surrounding space forgiven.
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "all" => Some(Self::All),
@@ -399,7 +396,6 @@ pub enum ContextSize {
 }
 
 impl ContextSize {
-    /// How many memories this size names.
     pub fn memories(self) -> usize {
         match self {
             Self::Slim => 20,
@@ -426,7 +422,6 @@ impl ContextSize {
     }
 }
 
-/// Everything a person can set.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub voice: Voice,
@@ -553,7 +548,6 @@ impl<'de> Deserialize<'de> for Settings {
 }
 
 impl Settings {
-    /// How many memories a session opens with, resolved.
     pub fn context_size(&self) -> ContextSize {
         self.context_size.unwrap_or_default()
     }
@@ -744,7 +738,6 @@ fn setting_names() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The settings that belong to a store, found from its database path.
 pub fn load_beside(database_path: &Path) -> Settings {
     database_path.parent().map(load).unwrap_or_default()
 }
@@ -821,13 +814,11 @@ mod tests {
             "{said:?}"
         );
 
-        // A file that is not JSON is one entry, not five.
         std::fs::write(path_in(temp.path()), "not json at all").unwrap();
         assert_eq!(ignored(temp.path()), vec!["the file is not JSON"]);
         std::fs::write(path_in(temp.path()), "[1, 2]").unwrap();
         assert_eq!(ignored(temp.path()), vec!["the file is not a JSON object"]);
 
-        // And a directory with no settings file is not a complaint.
         assert!(ignored(TempDir::new().unwrap().path()).is_empty());
     }
 
@@ -861,7 +852,6 @@ mod tests {
             .unwrap();
             assert_eq!(load(temp.path()).voice, voice, "{voice:?}");
         }
-        // And it is a file somebody can open and understand.
         let body = std::fs::read_to_string(path_in(temp.path())).unwrap();
         assert!(body.contains("\"voice\": \"quiet\""), "{body}");
     }
@@ -917,7 +907,6 @@ mod tests {
             "the field that could not be read is the one that goes"
         );
 
-        // Whichever field it is, and whatever shape the bad value has.
         let kept = written(r#"{"voice":7,"language":"español","interface":"español"}"#);
         assert_eq!(kept.voice, Voice::All, "an unreadable level is no level");
         assert_eq!(kept.language.as_deref(), Some("español"));
@@ -950,7 +939,6 @@ mod tests {
         settings.interface = Some(Interface::Basque);
         assert_eq!(settings.voice_language(), Interface::Basque);
 
-        // Given one of its own, it stops following.
         settings.voice_language = Some(Interface::English);
         assert_eq!(settings.voice_language(), Interface::English);
         assert_eq!(
@@ -1011,7 +999,6 @@ mod tests {
         .unwrap();
         let database = temp.path().join("leteo.db");
         assert_eq!(load_beside(&database).voice, Voice::Quiet);
-        // A different data directory answers for itself rather than borrowing.
         let other = TempDir::new().unwrap();
         assert_eq!(
             load_beside(&other.path().join("leteo.db")).voice,
@@ -1161,7 +1148,6 @@ mod context_size_tests {
         assert_eq!(ContextSize::parse(""), None);
     }
 
-    /// A typo in this field costs this field, like every other one.
     #[test]
     fn an_unreadable_size_does_not_take_the_other_settings_with_it() {
         let settings: Settings = serde_json::from_str(

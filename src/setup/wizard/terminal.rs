@@ -1,15 +1,8 @@
-//! The only part that knows there is a terminal.
-//!
-//! It maps keys onto the state machine and paints what it hands back. Nothing
-//! here decides anything, which is why the flow can be driven by a test that
-//! never opens a screen.
-
 use anyhow::Result;
 
 use super::screen::palette;
 use super::{Offer, Outcome, Wizard};
 
-/// Runs the wizard against the real terminal.
 pub fn run_interactive(offer: Offer) -> Result<Outcome> {
     use crossterm::event::{self, Event, KeyCode, KeyEventKind};
     use crossterm::style::{Attribute, SetAttribute, SetForegroundColor};
@@ -24,10 +17,6 @@ pub fn run_interactive(offer: Offer) -> Result<Outcome> {
     // shell is left unusable.
     let result = (|| -> Result<()> {
         let mut painted = 0_u16;
-        // Only paint when something has actually changed. The terminal reports
-        // more than key presses — key releases, focus changes, resizes — and
-        // repainting for each of them means several full redraws per keystroke,
-        // which flickers on a slow connection and costs nothing to avoid.
         let mut dirty = true;
         loop {
             if dirty {
@@ -67,10 +56,6 @@ pub fn run_interactive(offer: Offer) -> Result<Outcome> {
                     queue!(stdout, SetAttribute(Attribute::Reset))?;
                     write!(stdout, "\r\n")?;
                 }
-                // A shorter screen than the one before it leaves the tail of
-                // the old screen sitting underneath — the agent list is twelve
-                // lines longer than what follows it, so without this the list
-                // stays on screen after the question is over.
                 queue!(stdout, Clear(ClearType::FromCursorDown))?;
                 painted = u16::try_from(lines.len()).unwrap_or(u16::MAX);
                 stdout.flush()?;
@@ -93,7 +78,6 @@ pub fn run_interactive(offer: Offer) -> Result<Outcome> {
                 KeyCode::Enter => wizard.advance(),
                 KeyCode::Backspace => wizard.back(),
                 KeyCode::Esc | KeyCode::Char('q') => wizard.cancel(),
-                // A key the wizard has no use for leaves the screen alone.
                 _ => false,
             };
         }

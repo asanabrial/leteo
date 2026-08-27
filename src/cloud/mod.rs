@@ -16,5 +16,4 @@ pub use remote::RemoteClient;
 
 pub const MAX_MUTATION_BATCH_SIZE: usize = 100;
 
-/// Sync-state key for the cloud replication target.
 pub const CLOUD_SYNC_TARGET: &str = "cloud";

@@ -184,7 +184,6 @@ pub fn default_memories(store: &crate::store::Store) -> usize {
         .memories()
 }
 
-/// How many sessions and prompts the opening context names.
 pub const RECENT_SESSIONS: usize = 5;
 pub const RECENT_PROMPTS: usize = 10;
 
@@ -219,7 +218,6 @@ pub fn fold_session_summaries(sessions: &mut [SessionSummary], summaries: Vec<Ob
     }
 }
 
-/// The ids of the sessions about to be listed.
 fn session_ids(sessions: &[SessionSummary]) -> Vec<String> {
     sessions.iter().map(|session| session.id.clone()).collect()
 }
@@ -482,7 +480,6 @@ mod tests {
             session_id: "s1".to_owned(),
             kind: "decision".to_owned(),
             title: title.to_owned(),
-            // Three hundred characters, which is what the formatter keeps.
             content: "x".repeat(600),
             tool_name: None,
             project: Some("leteo".to_owned()),
@@ -560,7 +557,6 @@ mod tests {
             "a session that already had a summary keeps it"
         );
 
-        // And the goal is what shows, not the heading above it.
         let context = format_context(&sessions, &[], &[], 0, &memories, &BTreeMap::new());
         assert!(context.contains("Ship the pagination work"), "{context}");
         assert!(!context.contains("## Goal"), "{context}");

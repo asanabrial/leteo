@@ -9,10 +9,6 @@ use crate::sync::Manifest;
 
 use super::cloudstore::{MutationEntry, StoredMutation};
 
-/// Largest response body the client buffers, for any endpoint.
-///
-/// It matches the ceiling on an imported sync chunk, which is the largest thing
-/// the cloud legitimately returns.
 const MAX_RESPONSE_BYTES: u64 = crate::sync::MAX_UNCOMPRESSED_CHUNK_BYTES;
 
 #[derive(Debug, Clone)]
@@ -336,7 +332,6 @@ fn is_loopback_host(host: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Serves a fixed chunk body on loopback and returns its address.
     async fn chunk_server(bytes: usize) -> std::net::SocketAddr {
         use axum::{Router, routing::get};
 
@@ -372,7 +367,6 @@ mod tests {
             "unexpected error: {error}"
         );
 
-        // A body within the ceiling still arrives whole.
         let body = read_bounded(fetch().await.unwrap(), limit * 8)
             .await
             .unwrap();

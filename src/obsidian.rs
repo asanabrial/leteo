@@ -15,7 +15,6 @@ use serde::Serialize;
 
 use crate::{Observation, Store, memory::normalize};
 
-/// Directory created inside the vault.
 pub const VAULT_SUBDIRECTORY: &str = "leteo";
 const SESSIONS_DIRECTORY: &str = "_sessions";
 const TOPICS_DIRECTORY: &str = "_topics";
@@ -69,7 +68,6 @@ pub struct ExportSummary {
     pub orphaned_notes: Option<usize>,
 }
 
-/// Exports observations into an Obsidian vault.
 pub fn export(store: &Store, options: &ExportOptions) -> Result<ExportSummary> {
     let root = options.vault.join(VAULT_SUBDIRECTORY);
     // `--limit` is optional, and an absent optional limit means no limit —
@@ -211,7 +209,6 @@ pub fn slugify(title: &str, id: i64) -> String {
     format!("{slug}-{id}")
 }
 
-/// Renders one observation as an Obsidian note.
 pub fn observation_markdown(observation: &Observation) -> String {
     let project = observation.project.clone().unwrap_or_default();
     let topic_key = observation.topic_key.clone().unwrap_or_default();
@@ -343,7 +340,6 @@ fn write_if_changed(path: &Path, content: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Colour groups that make Leteo notes readable in the Obsidian graph view.
 const GRAPH_CONFIG: &str = r#"{
   "collapse-filter": false,
   "search": "",
@@ -516,7 +512,6 @@ mod tests {
             std::fs::read_to_string(vault.path().join(".obsidian").join("graph.json")).unwrap();
         assert!(graph.contains("path:leteo/_sessions"));
 
-        // A second run rewrites nothing.
         let second = export(&store, &options).unwrap();
         assert_eq!(second.notes_written, 0);
         assert_eq!(second.notes_unchanged, 3);
@@ -679,7 +674,6 @@ mod orphan_tests {
             "a fresh vault holds nothing but what was just written"
         );
 
-        // Rename one, the way the retitle migration renamed nine hundred.
         let id = store
             .recent_observations(None, Some(1), true)
             .unwrap()

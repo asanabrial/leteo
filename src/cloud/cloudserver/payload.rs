@@ -1,9 +1,3 @@
-//! What a push is allowed to contain.
-//!
-//! Everything here runs before a byte reaches the store. A chunk arrives
-//! compressed and self-described, and believing either the description or the
-//! size is how a peer turns into a way to fill somebody's disk.
-
 use super::*;
 
 pub(super) fn validate_chunk_payload(payload: &[u8]) -> Result<ChunkData, ApiError> {

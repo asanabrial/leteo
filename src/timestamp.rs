@@ -12,15 +12,12 @@
 
 use chrono::NaiveDateTime;
 
-/// The shape of a timestamp as SQLite stores it.
 pub const FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
-/// Renders a time the way the database expects it.
 pub fn format(value: NaiveDateTime) -> String {
     value.format(FORMAT).to_string()
 }
 
-/// The current UTC time, ready to store.
 pub fn now() -> String {
     format(chrono::Utc::now().naive_utc())
 }

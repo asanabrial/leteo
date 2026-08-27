@@ -71,7 +71,6 @@ fn antigravity_uses_the_shared_gemini_mcp_config_and_context_file() {
         paths.instructions,
         Some(temp.path().join(".gemini").join("GEMINI.md"))
     );
-    // The shared file must stay distinct from the Gemini CLI's own settings.
     let gemini = resolve_agent_paths("gemini-cli", &setup_options).unwrap();
     assert_ne!(paths.mcp_config, gemini.mcp_config);
 
@@ -103,7 +102,6 @@ fn pi_registers_the_agent_profile_and_has_no_instruction_file() {
     assert_eq!(paths.instructions, None, "Pi reads no instruction file");
     assert_eq!(paths.hooks, None);
 
-    // A foreign server and unrelated settings must survive.
     write_fixture(
         &paths.mcp_config,
         r#"{"mcpServers":{"other":{"command":"other"}},"theme":"dark"}"#,
@@ -115,16 +113,9 @@ fn pi_registers_the_agent_profile_and_has_no_instruction_file() {
     assert_eq!(config["theme"], "dark");
     assert_eq!(config["mcpServers"]["other"]["command"], "other");
     let leteo = &config["mcpServers"]["leteo"];
-    // Pi renders one row per tool, so it gets the agent profile.
     assert_eq!(leteo["args"], json!(["mcp", "--tools=agent"]));
-    // `pi-mcp-extension` is what reads this file, and there `lazy` — its own
-    // default — holds the server down until somebody types `/mcp:start leteo`.
-    // Leteo wrote `lazy`, so its tools were missing from every Pi session
-    // nobody turned them on in.
     assert_eq!(leteo["lifecycle"], "eager");
 
-    // Asking for instructions fails loudly instead of writing a file Pi
-    // would never read.
     let error = setup(
         "pi",
         &SetupOptions {
@@ -214,21 +205,6 @@ fn hooks_are_installed_idempotently_and_preserve_foreign_entries() {
 
 #[test]
 fn another_tool_using_the_same_event_names_keeps_its_hooks() {
-    // Found on a real machine, and the reason this is a test rather than a
-    // comment: `warden` registers `hook session-start` and `hook session-end`
-    // in the same `settings.json`, because those are the names the events
-    // have. Leteo recognized its own entries by the subcommand alone, so every
-    // one of them read as Leteo's.
-    //
-    // What that costs, in the three places that asked:
-    //   - installing hooks **deleted** them, on the way to writing its own;
-    //   - uninstalling deleted them and left nothing behind to say so;
-    //   - `leteo doctor` reported "Claude Code runs every Leteo hook twice"
-    //     and told the person to remove hooks Leteo had never installed.
-    //
-    // A tool that eats another tool's configuration is the complaint that
-    // started the uninstaller being written in the first place. The subcommand
-    // is a name anybody may use; the binary in front of it is the identity.
     let temp = TempDir::new().unwrap();
     let setup_options = SetupOptions {
         install_hooks: true,
@@ -236,9 +212,6 @@ fn another_tool_using_the_same_event_names_keeps_its_hooks() {
     };
     let paths = resolve_agent_paths("claude-code", &setup_options).unwrap();
     let hooks_path = paths.hooks.expect("Claude Code supports hooks");
-    // Written through `json!` rather than as a literal: the command is a quoted
-    // Windows path inside a JSON string, and hand-escaping it is how a fixture
-    // ends up testing its own backslashes.
     let foreign = "\"C:\\Users\\me\\.cargo\\bin\\warden.exe\" hook session-start";
     write_fixture(
         &hooks_path,
@@ -288,15 +261,12 @@ fn another_tool_using_the_same_event_names_keeps_its_hooks() {
         commands("SessionEnd")
     );
 
-    // And Leteo's own still went in beside them, so this refuses what belongs
-    // to somebody else rather than refusing to install.
     assert!(
         commands("SessionStart")
             .iter()
             .any(|command| command.ends_with("hook session-start") && !command.contains("warden"))
     );
 
-    // Taking Leteo out again leaves the other tool exactly as it was.
     let removal = SetupOptions {
         install_hooks: true,
         ..options(&temp)
@@ -364,12 +334,6 @@ fn generated_commands_never_contain_a_windows_verbatim_path() {
 
 #[test]
 fn hook_commands_quote_a_path_with_no_space_in_it() {
-    // The failure this guards is the ordinary install path, not an exotic
-    // one: hooks run through bash, bash reads a backslash as an escape, and
-    // an unquoted `C:\Users\me\AppData\Local\leteo\bin\leteo.exe` reaches it
-    // as `C:UsersmeAppDataLocalleteobinleteo.exe`. Quoting was conditional
-    // on a space, so every default Windows install failed with "command not
-    // found" on every prompt.
     let temp = TempDir::new().unwrap();
     let plain = temp.path().join("AppData").join("Local").join("leteo");
     fs::create_dir_all(&plain).unwrap();
@@ -403,10 +367,6 @@ fn hook_commands_quote_a_path_with_no_space_in_it() {
 
 #[test]
 fn a_hook_that_changed_events_leaves_nothing_where_it_used_to_be() {
-    // `session-stop` used to sit on `Stop`, which fires at the end of every
-    // turn rather than at the end of the conversation. Every machine that ran
-    // an older setup still holds that entry, and pruning only the events about
-    // to be written would leave it there firing forever beside its replacement.
     let temp = TempDir::new().unwrap();
     let setup_options = SetupOptions {
         install_hooks: true,
@@ -438,8 +398,6 @@ fn a_hook_that_changed_events_leaves_nothing_where_it_used_to_be() {
         settings["hooks"].get("Stop").is_none(),
         "an event holding nothing but Leteo's leftover should go with it: {settings}"
     );
-    // Somebody else's event is a different matter: Leteo's entry comes out of
-    // it, and the event stays because it was never Leteo's to remove.
     let guarded = settings["hooks"]["PreToolUse"]
         .as_array()
         .expect("the foreign event survives");
@@ -470,7 +428,6 @@ fn hook_commands_quote_an_executable_path_containing_spaces() {
     assert!(command.starts_with('"'), "{command}");
     assert!(command.ends_with("\" hook session-stop"), "{command}");
 
-    // The MCP entry is argv[0], never a shell string, so it stays unquoted.
     let config = read_json(&paths.mcp_config);
     let mcp_command = config["mcpServers"]["leteo"]["command"]
         .as_str()
@@ -545,9 +502,6 @@ fn fixtures_cover_all_json_formats_and_preserve_existing_values() {
         let leteo = &config[fixture.top_key][SERVER_NAME];
         assert_eq!(leteo["type"].as_str(), fixture.expected_type);
         assert_eq!(leteo["command"].is_array(), fixture.command_is_array);
-        // Every format asks for the same tool profile, so installing
-        // through setup and installing the plugin bundle give an agent the
-        // same set rather than differing by route.
         if fixture.command_is_array {
             assert_eq!(leteo["command"][1], "mcp");
             assert_eq!(leteo["command"][2], "--tools=agent");
@@ -674,9 +628,6 @@ args = ["old"]
 
 #[test]
 fn uninstalling_takes_leteo_out_and_leaves_everything_else() {
-    // These files hold other people's servers, other tools' hooks and
-    // somebody's own notes. Removing Leteo must cost them none of it, so
-    // this asserts what survives rather than only what goes.
     let temp = TempDir::new().unwrap();
     let setup_options = SetupOptions {
         install_hooks: true,
@@ -733,7 +684,6 @@ fn uninstalling_takes_leteo_out_and_leaves_everything_else() {
         "somebody's own notes must survive: {instructions}"
     );
 
-    // And doing it twice is not an error, nor a second round of changes.
     let again = uninstall("claude-code", &setup_options).unwrap();
     assert_eq!(again.changed_files(), 0, "{:?}", again.actions);
 }
@@ -755,11 +705,6 @@ fn uninstalling_an_agent_that_never_had_leteo_changes_nothing() {
 
 #[test]
 fn codex_keeps_its_home_under_dot_codex_on_every_platform() {
-    // Codex reads `~/.codex/config.toml` whatever the operating system.
-    // Windows used to be sent to `%APPDATA%\codex`, so `leteo setup codex`
-    // wrote a file Codex never read, reported success, and the setup screen
-    // read the same file back and called Codex configured. Nothing failed
-    // anywhere; it simply did not work.
     let temp = TempDir::new().unwrap();
     let mut setup_options = options(&temp);
     let expected = temp.path().join(".codex").join("config.toml");
@@ -813,14 +758,6 @@ fn platform_specific_paths_use_the_expected_roots() {
     );
 }
 
-/// The Gemini CLI resolves its user settings as `join(homedir(), '.gemini')`
-/// with no branch on the operating system, and loads `GEMINI.md` from beside
-/// them as context. Writing to `%APPDATA%\gemini` on Windows instead produced a
-/// setup that reported success over a file the agent never opens; a real Gemini
-/// session asked to list its tools named the servers from `~/.gemini` and none
-/// of the ones from `%APPDATA%`. `system.md` was the other half of the same
-/// mistake: it is read only when `GEMINI_SYSTEM_MD` is set, and it replaces the
-/// whole system prompt when it is.
 #[test]
 fn the_gemini_cli_is_configured_where_it_actually_reads() {
     let temp = TempDir::new().unwrap();
@@ -841,11 +778,6 @@ fn the_gemini_cli_is_configured_where_it_actually_reads() {
     }
 }
 
-/// The Gemini CLI and Antigravity read one `~/.gemini/GEMINI.md` between them.
-/// Taking Leteo out of the first used to splice the block out from under the
-/// second, which kept its MCP server and would have run with the tools and none
-/// of the instructions for using them — the kind of half-removal nothing
-/// reports. The block goes when the last of the two lets go of it.
 #[test]
 fn taking_leteo_out_of_one_gemini_leaves_the_block_the_other_still_reads() {
     let temp = TempDir::new().unwrap();
@@ -919,8 +851,6 @@ fn invalid_server_block_does_not_overwrite_the_existing_config() {
 
 #[test]
 fn a_block_that_lost_its_end_marker_keeps_what_was_written_after_it() {
-    // The end marker went missing — a hand-edit, or a write that did not
-    // finish. Whatever follows the orphaned body belongs to the person.
     let damaged = format!("{MEMORY_PROTOCOL_BEGIN}\n\nold body\n\nMy own notes.\n");
 
     let repaired = upsert_memory_protocol(&damaged);
@@ -947,7 +877,6 @@ fn writing_the_block_twice_over_a_damaged_file_changes_nothing_the_second_time()
 
 #[test]
 fn a_file_carrying_two_blocks_comes_back_with_one() {
-    // What the old behaviour left behind, and what a file on disk may hold now.
     let doubled = format!(
         "Header.\n\n{MEMORY_PROTOCOL_BEGIN}\n\nfirst\n\n{MEMORY_PROTOCOL_END}\n\nBetween them.\n\n{MEMORY_PROTOCOL_BEGIN}\n\nsecond\n\n{MEMORY_PROTOCOL_END}\n\nFooter.\n"
     );
@@ -975,15 +904,11 @@ fn removing_the_protocol_takes_every_block_and_leaves_the_rest() {
 
 #[test]
 fn a_file_with_no_block_is_handed_back_untouched() {
-    // Setup compares this against what is on disk to decide whether to write.
-    // Reformatting a file it has nothing to remove from would report a change
-    // that is not one.
     let plain = "# Notes\n\nSomething.\n\n\n";
 
     assert_eq!(remove_memory_protocol(plain), plain);
 }
 
-/// Writes a plugin bundle's hooks manifest where the agent would find one.
 fn install_plugin_bundle(temp: &TempDir, version: &str) -> PathBuf {
     let manifest = temp
         .path()
@@ -999,10 +924,6 @@ fn install_plugin_bundle(temp: &TempDir, version: &str) -> PathBuf {
 
 #[test]
 fn setup_refuses_to_install_hooks_the_plugin_already_registers() {
-    // The bundle and this command write to two different files and the agent
-    // reads both, so two registrations fire every event twice — the session
-    // opening reported twice, and every prompt stored twice. It looked like a
-    // repeated line on screen and it was duplicated data.
     let temp = TempDir::new().unwrap();
     install_plugin_bundle(&temp, "0.1.0");
     let setup_options = SetupOptions {
@@ -1028,8 +949,6 @@ fn setup_refuses_to_install_hooks_the_plugin_already_registers() {
 
 #[test]
 fn a_bundle_of_any_version_is_the_one_that_would_fire() {
-    // The path carries whatever version was installed, so the check walks the
-    // cache rather than spelling one out.
     let temp = TempDir::new().unwrap();
     install_plugin_bundle(&temp, "9.9.9-rc1");
 
@@ -1066,13 +985,6 @@ fn setup_still_installs_hooks_when_no_plugin_is_present() {
 
 #[test]
 fn claude_paths_follow_the_config_directory_rather_than_assuming_the_profile() {
-    // `CLAUDE_CONFIG_DIR` moves the whole directory — settings, hooks and the
-    // plugin cache — and writing to `~/.claude` anyway is the failure the Codex
-    // adapter already carries a note about: setup reports success and the agent
-    // reads a different file.
-    //
-    // The variable is process-wide, so this reads the resolution rule rather
-    // than mutating it, the way `paths.rs` does for HOME.
     let temp = TempDir::new().unwrap();
     let relocated = temp.path().join("elsewhere").join("claude");
 
@@ -1088,8 +1000,6 @@ fn claude_paths_follow_the_config_directory_rather_than_assuming_the_profile() {
     };
     assert_eq!(untouched.claude_config_dir(), temp.path().join(".claude"));
 
-    // An empty or relative value says nothing, and taking it literally would
-    // send every Claude path to the filesystem root or to the process's cwd.
     assert_eq!(resolve_optional_root(None, Some(PathBuf::from(""))), None);
     assert_eq!(
         resolve_optional_root(None, Some(PathBuf::from("relative/claude"))),
@@ -1099,8 +1009,6 @@ fn claude_paths_follow_the_config_directory_rather_than_assuming_the_profile() {
 
 #[test]
 fn hooks_and_the_plugin_guard_read_the_same_relocated_directory() {
-    // Both have to move together. A guard looking in the old place while the
-    // write goes to the new one would install the duplicate it exists to stop.
     let temp = TempDir::new().unwrap();
     let relocated = temp.path().join("elsewhere").join("claude");
     let manifest = relocated.join("plugins/cache/leteo/leteo/0.1.0/hooks/hooks.json");
@@ -1118,8 +1026,6 @@ fn hooks_and_the_plugin_guard_read_the_same_relocated_directory() {
         installed_plugin_hooks(&environment, claude_code),
         Some(manifest)
     );
-    // Codex keeps its bundles under its own home, so a Claude Code plugin is
-    // not a reason to withhold hooks from it.
     assert_eq!(
         installed_plugin_hooks(&environment, find_adapter("codex").unwrap()),
         None
@@ -1130,18 +1036,10 @@ fn hooks_and_the_plugin_guard_read_the_same_relocated_directory() {
     );
 }
 
-/// Codex gets hooks, in the file it actually reads, beside the server.
-///
-/// Codex takes hooks as `[[hooks.<Event>]]` in `config.toml` — the same file
-/// the MCP server goes in, not a settings file of its own. That shape is what
-/// makes this worth a test: two renders write one file in sequence, and the
-/// second has to build on the first rather than replace it.
 #[test]
 fn codex_hooks_land_in_config_toml_beside_the_server() {
     let temp = TempDir::new().unwrap();
     let config = temp.path().join(".codex").join("config.toml");
-    // Something of the user's, including a hook that is none of Leteo's
-    // business, to be sure neither is lost.
     write_fixture(
         &config,
         "model = \"gpt-5\"\n\n[[hooks.SessionStart]]\n\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = \"echo mine\"\n",
@@ -1173,8 +1071,6 @@ fn codex_hooks_land_in_config_toml_beside_the_server() {
         "somebody else's hook is not Leteo's to remove: {written}"
     );
 
-    // Run again: an upsert, not an append. Registering twice is what makes
-    // every event fire twice, which is the whole reason the plugin guard exists.
     setup(
         "codex",
         &SetupOptions {
@@ -1192,8 +1088,6 @@ fn codex_hooks_land_in_config_toml_beside_the_server() {
     assert_eq!(again.matches("[mcp_servers.leteo]").count(), 1, "{again}");
     assert_eq!(again.matches("echo mine").count(), 1, "{again}");
 
-    // Taking Leteo out has to take both, since both are in this file. A hook
-    // left behind goes on invoking a binary that is no longer configured.
     uninstall("codex", &options(&temp)).unwrap();
     let after = fs::read_to_string(&config).unwrap();
     assert!(!after.contains("[mcp_servers.leteo]"), "{after}");
@@ -1206,35 +1100,8 @@ fn codex_hooks_land_in_config_toml_beside_the_server() {
     );
 }
 
-/// The bundles declare the same hooks the setup command writes.
-///
-/// Two ways to install Leteo, two places the events and their timeouts are
-/// spelled out, and nothing held them together. They had already drifted where
-/// it showed: both bundles asked five seconds for `SessionEnd`, which Codex
-/// caps at three, so every session opened with "clamping SessionEnd hook
-/// timeout to 3s". A warning on every session is the cheap version of this
-/// failure — the expensive one is an event a bundle registers and setup does
-/// not, firing for half the users.
-///
-/// # Why the matcher is compared and not only the timeout
-///
-/// This compared `(event, subcommand) -> timeout` and let the matcher through,
-/// which left the one field that carries meaning on its own unwatched. Both
-/// `session-start` and `post-compaction` sit on `SessionStart`; the matcher is
-/// the whole of what tells them apart. Editing the bundle's `compact` to
-/// `startup` was measured against this test before the matcher was added to
-/// it, and the test stayed green — a Leteo that reopens the session context at
-/// startup twice and never recovers after a compaction, which is the one
-/// moment the bundle exists for, with nothing anywhere saying so.
 #[test]
 fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
-    // Read from the agent, not from the global list. ZCode's client fires
-    // neither `SubagentStop` nor `SessionEnd`, so a bundle carrying all five
-    // would register two that can never run — and held against `HOOK_EVENTS`
-    // the honest three-event bundle would fail instead. `hook_registrations` is
-    // the field the installer already writes from, so a bundle and a
-    // `leteo setup --hooks` cannot disagree about one agent without this
-    // noticing.
     for slug in ["claude-code", "codex", "zcode"] {
         let adapter = supported_agents()
             .iter()
@@ -1262,10 +1129,6 @@ fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
         let mut found = BTreeMap::new();
         for (event, groups) in manifest["hooks"].as_object().expect("an events object") {
             for group in groups.as_array().expect("a list of matcher groups") {
-                // Absent and empty mean the same thing to every agent — every
-                // invocation of the event — and a registration spells that
-                // `None`. Left as `Some("")`, a bundle that writes the key out
-                // with nothing in it would fail this for no reason.
                 let matcher = group["matcher"]
                     .as_str()
                     .filter(|matcher| !matcher.is_empty())
@@ -1290,19 +1153,6 @@ fn the_plugin_bundles_register_the_hooks_the_binary_writes() {
     }
 }
 
-/// ZCode gets its hooks registered inside the same JSON document as the
-/// server, and the client keeps everything else it owns in that document too.
-///
-/// Providers, plugin state and MCP servers all live in `~/.zcode/cli/config.json`,
-/// alongside hooks nested two keys deep (`hooks.events.<Event>`) behind an
-/// `enabled` switch that starts off. So this has more to lose than any other
-/// agent's file: a render that replaced rather than spliced would drop
-/// somebody's provider configuration out from under them.
-///
-/// Three registrations land, not five: this client supports neither
-/// `SubagentStop` nor `SessionEnd`, and `session-stop` deliberately does not
-/// move onto `Stop`, which fires at the end of every reply — see the note on
-/// `ZCODE_HOOK_REGISTRATIONS`.
 #[test]
 fn zcode_hooks_land_in_config_json_beside_the_server() {
     const OFF: &str = r#"{
@@ -1320,28 +1170,16 @@ fn zcode_hooks_land_in_config_json_beside_the_server() {
 
     let temp = TempDir::new().unwrap();
     let config = temp.path().join(".zcode").join("cli").join("config.json");
-    // Something of the person's on every axis this touches: another MCP
-    // server, a hook that is none of Leteo's business, a scalar setting, and
-    // the runner deliberately left off before Leteo ever arrived.
     write_fixture(&config, OFF);
 
     let setup_options = SetupOptions {
         install_hooks: true,
         ..options(&temp)
     };
-    // Switched off at the wall: refusing beats writing registrations into a
-    // block the client will never read, which is success shaped exactly like
-    // the failure that follows silently otherwise.
     let error = setup("zcode", &setup_options).unwrap_err().to_string();
     assert!(error.contains("hooks.enabled"), "{error}");
-    // And nothing went in ahead of the refusal — not even a server entry whose
-    // hooks could never run.
     assert_eq!(fs::read_to_string(&config).unwrap(), OFF);
 
-    // The person turns their own runner on, and now Leteo may join it.
-    // Anchored on the trailing comma, which only the hooks switch has — the
-    // client's own off-switch for its provider reads `"enabled": false}`
-    // without one, and stays as it was.
     write_fixture(
         &config,
         &OFF.replace("\"enabled\": false,", "\"enabled\": true,"),
@@ -1387,8 +1225,6 @@ fn zcode_hooks_land_in_config_json_beside_the_server() {
     );
     assert_eq!(events["UserPromptSubmit"][0]["hooks"][0]["timeout"], 5);
 
-    // A second run is an upsert, not a duplicate registration: every event
-    // firing twice stores each prompt twice.
     setup("zcode", &setup_options).unwrap();
     let again = fs::read_to_string(&config).unwrap();
     assert_eq!(
@@ -1396,13 +1232,9 @@ fn zcode_hooks_land_in_config_json_beside_the_server() {
         1,
         "a second run duplicated the hooks: {again}"
     );
-    // The one server named leteo, twice written once — and "other" untouched.
     assert_eq!(again.matches("other-mcp").count(), 1, "{again}");
     assert_eq!(again.matches("warden watch").count(), 1, "{again}");
 
-    // Taking Leteo out takes the hooks with it, and leaves every other thing
-    // in the document — including the runner's switch itself, which was not
-    // ours to turn either way.
     uninstall("zcode", &options(&temp)).unwrap();
     let after = fs::read_to_string(&config).unwrap();
     let parsed = read_json(&config);
@@ -1428,8 +1260,6 @@ fn zcode_hooks_land_in_config_json_beside_the_server() {
     assert_eq!(parsed["mcp"]["servers"]["other"]["command"], "uvx");
 }
 
-/// And an empty hook block goes entirely when uninstall empties it: a key
-/// saying nothing about hooks says nothing by being there.
 #[test]
 fn zcode_uninstall_removes_an_events_map_it_emptied() {
     let temp = TempDir::new().unwrap();
@@ -1448,11 +1278,6 @@ fn zcode_uninstall_removes_an_events_map_it_emptied() {
 
     uninstall("zcode", &options(&temp)).unwrap();
     let after = read_json(&config);
-    // Every registration removed was Leteo's, so the events map went with
-    // them — emptied keys say nothing and do not stay (the same judgement the
-    // flat settings-file uninstall makes one level up). What remains is the
-    // runner switch alone: inert with nothing under it to run, and not ours
-    // to turn back off once somebody else may have come to rely on.
     let hooks = after.get("hooks").and_then(serde_json::Value::as_object);
     assert_eq!(hooks.map(|hooks| hooks.len()), Some(1), "{after}");
     assert_eq!(after["hooks"]["enabled"], true, "{after}");
@@ -1463,9 +1288,6 @@ fn zcode_uninstall_removes_an_events_map_it_emptied() {
     );
 }
 
-/// DeepSeek Harness reads a machine-global patch layer under `$DSH_HOME`
-/// (`~/.dsh` by default), which `setup` edits for the server and a fixed
-/// user-global `AGENTS.md` for the protocol.
 #[test]
 fn deepseek_harness_registers_its_patch_and_protocol() {
     let temp = TempDir::new().unwrap();
@@ -1495,11 +1317,6 @@ fn deepseek_harness_registers_its_patch_and_protocol() {
     let patch = fs::read_to_string(&paths.mcp_config).unwrap();
     assert!(patch.contains("@deepseek-ai/dsh-mcp-client"), "{patch}");
     assert!(patch.contains("serverName: leteo"), "{patch}");
-    // The whole executable path is a single-quoted YAML scalar, so a Windows
-    // `\` inside it is literal rather than an escape. Asserted by the line
-    // below and not by a bare `contains("command: '")`, which was here twice
-    // and was the same string both times: it says the key is quoted, not that
-    // the quoting reaches the end of the path, which is the part that breaks.
     let quoted = patch.lines().find(|line| line.contains("command: '"));
     assert!(
         quoted.is_some_and(|line| {
@@ -1512,7 +1329,6 @@ fn deepseek_harness_registers_its_patch_and_protocol() {
     let instructions = fs::read_to_string(paths.instructions.unwrap()).unwrap();
     assert!(instructions.contains(MEMORY_PROTOCOL_BEGIN));
 
-    // A second run is idempotent: one block, one row.
     let second = setup(
         "deepseek-harness",
         &SetupOptions {
@@ -1528,7 +1344,6 @@ fn deepseek_harness_registers_its_patch_and_protocol() {
     );
 }
 
-/// Setup never configures hooks for DeepSeek Harness, and refuses to be asked.
 #[test]
 fn deepseek_harness_has_no_hook_surface() {
     let temp = TempDir::new().unwrap();
@@ -1547,8 +1362,6 @@ fn deepseek_harness_has_no_hook_surface() {
     );
 }
 
-/// A patch a person wrote by hand stays intact; uninstall lifts only the block
-/// Leteo owns.
 #[test]
 fn deepseek_harness_preserves_foreign_patch_and_uninstalls_literally() {
     let temp = TempDir::new().unwrap();
@@ -1576,25 +1389,11 @@ fn deepseek_harness_preserves_foreign_patch_and_uninstalls_literally() {
     let after = fs::read_to_string(&patch_path).unwrap();
     assert!(!after.contains("mcp-leteo"), "{after}");
     assert!(after.contains("dsh-storage"), "{after}");
-    // The instruction file was created by install and emptied by uninstall.
     let instructions = temp.path().join(".dsh").join("AGENTS.md");
     let text = fs::read_to_string(&instructions).unwrap();
     assert!(!text.contains(MEMORY_PROTOCOL_BEGIN));
 }
 
-/// An event this client already holds in a shape that is not a list is handled,
-/// not crashed over.
-///
-/// `serde_json`'s `entry(..).or_insert_with(..)` hands back whatever the key
-/// already held, so the write pass reached `as_array_mut()` on whatever was
-/// there and panicked with a message claiming it had created the array itself.
-/// The flat renderer beside it has always made two passes — normalise a `null`,
-/// refuse anything else by name — and that is the pass that was dropped on the
-/// way down two keys.
-///
-/// `null` is the shape a client leaves behind when it drops the last hook out
-/// of an event, so it is the one most likely to be on a real machine, and the
-/// one that must not be an error.
 #[test]
 fn zcode_handles_an_event_that_is_not_a_list_rather_than_panicking() {
     let temp = TempDir::new().unwrap();
@@ -1647,11 +1446,6 @@ fn zcode_handles_an_event_that_is_not_a_list_rather_than_panicking() {
     }
 }
 
-/// An event Leteo never writes may hold anything, and setup goes through.
-///
-/// The pair to the test above: the validation is over the registrations about
-/// to be written, not over the whole block, so somebody else's `PostToolUse`
-/// in a shape Leteo would refuse for itself is not Leteo's to refuse.
 #[test]
 fn zcode_leaves_a_foreign_event_in_whatever_shape_it_found_it() {
     let temp = TempDir::new().unwrap();
@@ -1675,13 +1469,6 @@ fn zcode_leaves_a_foreign_event_in_whatever_shape_it_found_it() {
     assert!(written["hooks"]["events"]["SessionStart"].is_array());
 }
 
-/// `doctor` sees hooks that are installed and cannot fire.
-///
-/// The sibling of the Codex "installed but never trusted" check, which was
-/// there and this was not. Setup turns the runner on, so the case that reaches
-/// a real machine is somebody turning it back off afterwards: every Leteo hook
-/// stops, and a check that reads the file for the command alone calls that
-/// healthy.
 #[test]
 fn doctor_sees_zcode_hooks_that_a_switched_off_runner_will_never_run() {
     let temp = TempDir::new().unwrap();
@@ -1706,8 +1493,6 @@ fn doctor_sees_zcode_hooks_that_a_switched_off_runner_will_never_run() {
     assert!(healthy.configured.is_some(), "{healthy:?}");
     assert!(healthy.issue.is_none(), "{healthy:?}");
 
-    // Somebody switches the runner off after the fact. The registrations are
-    // still in the file and none of them will ever fire again.
     let config = temp.path().join(".zcode").join("cli").join("config.json");
     let mut written = read_json(&config);
     written["hooks"]["enabled"] = Value::Bool(false);
@@ -1720,13 +1505,6 @@ fn doctor_sees_zcode_hooks_that_a_switched_off_runner_will_never_run() {
     assert!(issue.contains("none of them run"), "{issue}");
 }
 
-/// A switched-off hook runner costs ZCode its hooks, not its memory.
-///
-/// `setup --hooks` refuses there, and the refusal lands before the server is
-/// written, which is the right answer to a command somebody typed and the wrong
-/// one to the wizard: a ticked ZCode came out of the loop with nothing at all,
-/// over the hooks half of an answer that was never about it. Asked here the way
-/// the wizard asks it — the same predicate, in front of the same decision.
 #[test]
 fn a_switched_off_runner_still_lets_zcode_be_configured() {
     let temp = TempDir::new().unwrap();
@@ -1738,12 +1516,9 @@ fn a_switched_off_runner_still_lets_zcode_be_configured() {
         hook_runner_switched_off("zcode", &setup_options),
         "the wizard has to be able to see the switch before it asks"
     );
-    // And it is a question about this agent alone: nobody else has such a
-    // switch, and answering yes for them would cost them their hooks.
     assert!(!hook_runner_switched_off("claude-code", &setup_options));
     assert!(!hook_runner_switched_off("codex", &setup_options));
 
-    // What the wizard does with that answer: drop the hooks, keep the rest.
     let result = setup(
         "zcode",
         &SetupOptions {
@@ -1757,17 +1532,10 @@ fn a_switched_off_runner_still_lets_zcode_be_configured() {
 
     let written = read_json(&config);
     assert_eq!(written["mcp"]["servers"]["leteo"]["type"], "stdio");
-    // The switch is left as the person set it, and nothing was written under it.
     assert_eq!(written["hooks"]["enabled"], false, "{written}");
     assert!(written["hooks"].get("events").is_none(), "{written}");
 }
 
-/// The `--tools` argument is somebody's free text, so it is quoted like the path.
-///
-/// An apostrophe closed the single-quoted scalar early and wrote a row the
-/// harness cannot parse — and this is the machine-global layer, so an
-/// unparseable row there costs every profile its session, not just Leteo's
-/// server.
 #[test]
 fn the_deepseek_patch_quotes_a_tools_argument_that_carries_an_apostrophe() {
     let temp = TempDir::new().unwrap();
@@ -1791,11 +1559,6 @@ fn the_deepseek_patch_quotes_a_tools_argument_that_carries_an_apostrophe() {
     );
 }
 
-/// A malformed servers key says which file it is in, and which key.
-///
-/// Both were lost when the walk became a key *path*: "mcp.servers must contain
-/// a JSON object" names neither which of fourteen configuration files to open,
-/// nor — for a nested path — which of the two keys holds something else.
 #[test]
 fn a_servers_key_that_is_not_an_object_names_the_file_and_the_key() {
     let temp = TempDir::new().unwrap();
@@ -1811,8 +1574,6 @@ fn a_servers_key_that_is_not_an_object_names_the_file_and_the_key() {
         "the file it is in: {error}"
     );
 
-    // And on the nested path it is the outer key that is named, not the whole
-    // walk: `mcp` is what holds something else, `mcp.servers` was never reached.
     let temp = TempDir::new().unwrap();
     let nested = temp.path().join(".zcode").join("cli").join("config.json");
     write_fixture(&nested, r#"{"mcp": 42}"#);
@@ -1824,19 +1585,6 @@ fn a_servers_key_that_is_not_an_object_names_the_file_and_the_key() {
     assert!(error.contains("config.json"), "{error}");
 }
 
-/// The shape the harness itself ships is `[]`, and a row may not be appended
-/// to it.
-///
-/// Taken from a real `~/.dsh/profiles/<name>/cordis.patch.yml`, which arrives
-/// holding its own header and an empty flow array. `[]` is an array in flow
-/// notation and Leteo writes block notation, so appending produced `[]`
-/// followed by `- insert:` — two nodes in one document, which is not YAML.
-/// A parser stops at the first row with "expected `<document start>`", and
-/// because this is the layer every profile composes, what that broke was the
-/// harness rather than the install.
-///
-/// The `[]` is the same array said the other way, so it goes when the first
-/// row arrives, and comes back when the last one leaves.
 #[test]
 fn the_deepseek_patch_replaces_an_empty_flow_array_instead_of_appending_to_it() {
     const SHIPPED: &str = "# Your patch layer for this dsh profile, applied after every bundle layer:\n\
@@ -1852,7 +1600,6 @@ fn the_deepseek_patch_replaces_an_empty_flow_array_instead_of_appending_to_it() 
     setup("deepseek-harness", &setup_options).unwrap();
     let installed = fs::read_to_string(&patch).unwrap();
 
-    // One node, and it is the row. The header the harness wrote stays.
     assert!(installed.contains("# Your patch layer"), "{installed}");
     assert!(installed.contains("- insert:"), "{installed}");
     let entries: Vec<&str> = installed
@@ -1869,17 +1616,10 @@ fn the_deepseek_patch_replaces_an_empty_flow_array_instead_of_appending_to_it() 
         "the document's node must be the block array: {installed}"
     );
 
-    // Taking the row out again puts the file back the way the harness ships it,
-    // rather than leaving comments alone — which would be `null`, not an array.
     uninstall("deepseek-harness", &setup_options).unwrap();
     assert_eq!(fs::read_to_string(&patch).unwrap(), SHIPPED);
 }
 
-/// An array Leteo cannot append to by line is refused, not corrupted.
-///
-/// A flow array with entries in it, and a mapping, each need the YAML parser
-/// this crate deliberately does not carry. Writing a row into either leaves a
-/// document nothing can read, and this file is the one every profile composes.
 #[test]
 fn the_deepseek_patch_refuses_a_shape_it_cannot_append_to() {
     for (shape, content, expected) in [
@@ -1911,13 +1651,6 @@ fn the_deepseek_patch_refuses_a_shape_it_cannot_append_to() {
     }
 }
 
-/// A patch file Leteo cannot decode is refused, and left exactly as it was.
-///
-/// `remove_dsh_server` read the bytes with `unwrap_or_default`, so one Latin-1
-/// accent turned the whole document into the empty string and `uninstall`
-/// wrote a zero-byte file back — reported as an ordinary update, over the
-/// machine-global layer every profile of the harness composes. The install side
-/// of the same file has always refused; this is the sibling that had not.
 #[test]
 fn deepseek_harness_refuses_a_patch_file_it_cannot_decode() {
     let temp = TempDir::new().unwrap();
@@ -1939,7 +1672,6 @@ fn deepseek_harness_refuses_a_patch_file_it_cannot_decode() {
     );
 }
 
-/// A plugin bundle, in the cache the given agent reads it from.
 fn install_bundle(home: &Path, agent_dir: &str) {
     let hooks = home
         .join(agent_dir)
@@ -1957,13 +1689,9 @@ fn install_bundle(home: &Path, agent_dir: &str) {
 
 #[test]
 fn doctor_can_see_hooks_that_are_installed_and_never_fire() {
-    // The README has always sent people to `leteo doctor` when a hook goes
-    // quiet, and doctor could only answer for SQLite — it reported a perfectly
-    // healthy store to somebody whose hooks had never run once.
     let temp = TempDir::new().unwrap();
     let options = options(&temp);
 
-    // Nothing installed anywhere: three agents take hooks, and none has any.
     let health = hook_health(&options);
     assert_eq!(
         health.iter().map(|agent| agent.agent).collect::<Vec<_>>(),
@@ -1977,8 +1705,6 @@ fn doctor_can_see_hooks_that_are_installed_and_never_fire() {
         "{health:?}"
     );
 
-    // Hooks written into Codex's config, and Codex never asked to trust them.
-    // They are installed, they are correct, and not one of them runs.
     setup(
         "codex",
         &SetupOptions {
@@ -1999,24 +1725,18 @@ fn doctor_can_see_hooks_that_are_installed_and_never_fire() {
     let issue = untrusted.issue.expect("untrusted hooks are an issue");
     assert!(issue.contains("trust"), "{issue}");
 
-    // Trust granted, and there is nothing left to say.
     let config = temp.path().join(".codex").join("config.toml");
     let trusted = fs::read_to_string(&config).unwrap()
         + "\n[hooks.state.\"whatever\"]\ntrusted_hash = \"sha256:abc\"\n";
     fs::write(&config, trusted).unwrap();
     assert!(codex(&hook_health(&options)).issue.is_none());
 
-    // And then the plugin bundle arrives on top of the hooks setup wrote.
-    // Setup refuses to add the second copy; nothing stops this order, and
-    // every event now fires twice.
     install_bundle(temp.path(), ".codex");
     let doubled = codex(&hook_health(&options));
     assert!(doubled.configured.is_some() && doubled.bundled.is_some());
     let issue = doubled.issue.expect("two registrations are an issue");
     assert!(issue.contains("twice"), "{issue}");
 
-    // A bundle on its own is the ordinary supported install, not a fault —
-    // and the trust question is not asked of an agent that never asks it.
     install_bundle(temp.path(), ".claude");
     let claude = hook_health(&options)
         .into_iter()
@@ -2026,17 +1746,6 @@ fn doctor_can_see_hooks_that_are_installed_and_never_fire() {
     assert!(claude.issue.is_none(), "{claude:?}");
 }
 
-/// Somebody's own document comes back with the line endings it had.
-///
-/// Both editors of an instruction file fold `\r\n` to `\n` so their matching
-/// has one shape to look for, and both used to write the folded text back. On
-/// Windows that turns installing or removing one block into a rewrite of every
-/// line of a file the person wrote — a diff where the change is buried in noise
-/// nobody asked for, and on a repository with `core.autocrlf` unset, a commit
-/// that touches the whole file.
-///
-/// The refusal in `remove_memory_protocol` to report an untouched file as
-/// changed was the same concern, caught for one case.
 #[test]
 fn an_instruction_file_keeps_the_line_endings_it_arrived_with() {
     let theirs = "# My notes\r\n\r\nSomething I wrote.\r\n";
@@ -2056,17 +1765,14 @@ fn an_instruction_file_keeps_the_line_endings_it_arrived_with() {
         "no line may be left bare when the file was CRLF"
     );
 
-    // And out again, back to exactly what they started with.
     let removed = remove_memory_protocol(&installed);
     assert_eq!(removed, theirs);
 
-    // A file that was LF stays LF — the conversion runs one way only.
     let unix = "# My notes\n\nSomething I wrote.\n";
     let installed = upsert_memory_protocol(unix);
     assert!(!installed.contains('\r'), "an LF file must not gain CRLF");
     assert_eq!(remove_memory_protocol(&installed), unix);
 
-    // A file with no block is handed back untouched rather than reformatted.
     assert_eq!(remove_memory_protocol(theirs), theirs);
 }
 
@@ -2082,8 +1788,6 @@ fn an_instruction_file_keeps_the_line_endings_it_arrived_with() {
 /// Measured after: 4 lines, which is the change itself.
 #[test]
 fn adding_a_server_leaves_the_rest_of_the_configuration_where_it_was() {
-    // Deliberately not alphabetical, and `$schema` first the way editors
-    // expect — sorting would move it below everything.
     let theirs = r#"{
   "$schema": "https://example.com/schema.json",
   "numStartups": 41,
@@ -2132,11 +1836,6 @@ fn adding_a_server_leaves_the_rest_of_the_configuration_where_it_was() {
     );
 }
 
-/// The same for Codex, whose server, hooks and config share one TOML file.
-///
-/// Five places fold `\r\n` to `\n` to do their matching. Two were paired with
-/// the ending going back; three were not, and all three write the file a Codex
-/// user keeps their own settings and API keys in.
 #[test]
 fn the_codex_config_keeps_the_line_endings_it_arrived_with() {
     let theirs =
@@ -2163,7 +1862,6 @@ fn the_codex_config_keeps_the_line_endings_it_arrived_with() {
         );
     }
 
-    // And out again. Uninstalling reads the same file and writes it back.
     let installed =
         render_codex_config(Some(theirs.as_bytes()), "/usr/bin/leteo", "agent").unwrap();
     let removed = remove_codex_server(installed.as_bytes()).unwrap();
@@ -2173,7 +1871,6 @@ fn the_codex_config_keeps_the_line_endings_it_arrived_with() {
     );
     assert_eq!(removed, theirs.trim_end().to_owned() + "\r\n");
 
-    // An LF file stays LF: the conversion runs one way only.
     let unix = theirs.replace("\r\n", "\n");
     let installed = render_codex_config(Some(unix.as_bytes()), "/usr/bin/leteo", "agent").unwrap();
     assert!(!installed.contains('\r'), "an LF file must not gain CRLF");
@@ -2189,12 +1886,7 @@ fn detected_indent_reads_four_spaces() {
 
 #[test]
 fn a_config_comes_back_indented_the_way_it_arrived() {
-    // Adding one server to an eighty-line four-space config rewrote a hundred
-    // and sixty-seven lines of it, because `to_string_pretty` always uses two.
     let existing = "{\n    \"mcpServers\": {\n        \"mine\": {\n            \"command\": \"x\"\n        }\n    }\n}\n";
-    // And the same file as Windows keeps it, which is where this was found: a
-    // config written on Windows has CRLF, and every check here has to hold for
-    // it too or the fix only works on the machine it was written on.
     let windows = existing.replace('\n', "\r\n");
     for existing in [existing, windows.as_str()] {
         let rendered = render_json_config(
@@ -2214,9 +1906,6 @@ fn a_config_comes_back_indented_the_way_it_arrived() {
             !body.contains("\n  \"mcpServers\""),
             "reindented to two:\n{rendered}"
         );
-        // The endings it arrived with, for the same reason the instruction
-        // files keep theirs: a config that comes back LF has every one of its
-        // lines changed, and the one Leteo added is lost in the noise.
         assert_eq!(
             rendered.contains("\r\n"),
             existing.contains("\r\n"),
@@ -2225,18 +1914,8 @@ fn a_config_comes_back_indented_the_way_it_arrived() {
     }
 }
 
-/// Taking Leteo's hooks out of a Codex config leaves everybody else's alone.
-///
-/// The file is shared: Codex keeps every tool's hooks in one `config.toml`, and
-/// this runs on install as well as on uninstall. Leteo has already rewritten
-/// somebody else's document twice — a plugin block that took 240 lines of a
-/// config with it, and an installer that deleted the directory it was installed
-/// into — so the rule is worth a fixture that fights back.
 #[test]
 fn removing_leteo_hooks_keeps_every_other_tool_in_the_file() {
-    // The shape the renderer writes: the command is one string, the executable
-    // quoted inside it. A fixture that spells it as a TOML array asserts
-    // nothing, because that is not what is being looked for.
     let file = concat!(
         "[[hooks.SessionStart]]\n",
         "\n[[hooks.SessionStart.hooks]]\n",
@@ -2284,19 +1963,6 @@ fn removing_leteo_hooks_keeps_every_other_tool_in_the_file() {
     );
 }
 
-/// Every hook the installer writes names a subcommand this binary accepts.
-///
-/// The five event names are spelled in three places: `HOOK_EVENTS` here, the
-/// plugin bundles, and `HookEventArgument`, which is what `leteo hook <event>`
-/// will actually parse. A test already holds the first two together. Nothing
-/// held either of them to the third.
-///
-/// What that costs if it ever drifts is quiet. Renaming a variant changes what
-/// clap accepts; the installer goes on writing the old word into everybody's
-/// settings; and every hook fails with "unrecognized subcommand" — which
-/// nobody sees, because a hook that fails is a hook that says nothing, by
-/// design, so that a broken Leteo never blocks a prompt. Memory would simply
-/// stop being recorded.
 #[test]
 fn every_hook_the_installer_writes_is_a_subcommand_the_binary_parses() {
     use clap::ValueEnum;
@@ -2316,8 +1982,6 @@ fn every_hook_the_installer_writes_is_a_subcommand_the_binary_parses() {
         );
     }
 
-    // And the other direction, because an event this binary can run that the
-    // installer never registers is a feature nobody's agent ever reaches.
     for name in &accepted {
         assert!(
             HOOK_EVENTS
@@ -2328,13 +1992,6 @@ fn every_hook_the_installer_writes_is_a_subcommand_the_binary_parses() {
     }
 }
 
-/// The store gives up waiting before the agent gives up on the hook.
-///
-/// Two numbers written in two files: how long the installer tells an agent to
-/// wait, here, and how long the store waits for another writer, on
-/// `HookEvent`. They have to agree, and the second has to be the smaller —
-/// otherwise a hook that meets a busy store is killed mid-wait, which tells
-/// nobody anything, instead of answering with a warning.
 #[test]
 fn a_hook_stops_waiting_before_the_agent_stops_waiting_for_it() {
     use crate::hooks::HookEvent;
@@ -2365,21 +2022,6 @@ fn a_hook_stops_waiting_before_the_agent_stops_waiting_for_it() {
     }
 }
 
-/// Uninstalling leaves nothing of Leteo's behind, on every agent.
-///
-/// `leteo uninstall` says it removes Leteo from this machine entirely, and on
-/// three of the fourteen it did not. Ten agents keep their instructions in a file
-/// that was already theirs — `CLAUDE.md`, `AGENTS.md` — and uninstalling takes
-/// Leteo's block out and leaves the rest, which is right. The other three get a
-/// file Leteo invented and named after itself: `leteo-memory-protocol.md` for
-/// Cursor, `leteo.md` for Kiro, `leteo.instructions.md` for VS Code Copilot.
-/// Taking the block out of one of those left an empty file with Leteo's name on
-/// it — and for Copilot, not even empty: the `applyTo` front matter stayed,
-/// which is a registered instruction file that applies to every source file and
-/// says nothing.
-///
-/// Driven over the whole registry rather than the three, because the next agent
-/// with a file of its own will be added by somebody who has not read this.
 #[test]
 fn uninstalling_leaves_no_file_of_leteos_behind() {
     for adapter in super::supported_agents() {
@@ -2388,9 +2030,6 @@ fn uninstalling_leaves_no_file_of_leteos_behind() {
         setup(
             adapter.slug,
             &SetupOptions {
-                // Only what the agent takes, in both cases: asking one for
-                // something it has no file for is refused, and refusing is the
-                // right answer.
                 install_instructions: adapter.instruction_path.is_some(),
                 install_hooks: adapter.hooks_path.is_some(),
                 ..setup_options.clone()
@@ -2417,14 +2056,6 @@ fn uninstalling_leaves_no_file_of_leteos_behind() {
     }
 }
 
-/// And it takes nothing that was not Leteo's, which is the other half.
-///
-/// Separate from the guard above because it is a different sentence, and
-/// because the two disagree about one file on purpose: an instruction file
-/// Leteo named after itself, which somebody has since written their own line
-/// into, stays. "Delete the file when it is ours" is one edit away from
-/// deleting a document that was only partly ours, and a mutation showed that
-/// edit passing.
 #[test]
 fn uninstalling_keeps_every_line_that_was_not_leteos() {
     const THEIRS: &str = "A line somebody wrote themselves and asked nobody about.";
@@ -2467,16 +2098,6 @@ fn uninstalling_keeps_every_line_that_was_not_leteos() {
             theirs.display()
         );
 
-        // And the emptier case, which is the one the ownership flag exists for.
-        // A `CLAUDE.md` that was there and empty before Leteo arrived is still
-        // somebody's file: stripping the block leaves nothing, and "nothing
-        // left" must not be read as "Leteo made this". Only an agent whose
-        // instruction file Leteo invented gets that reading.
-        // Whether the file is Leteo's is stated on the adapter and is also
-        // visible in the name the adapter's own path function picks. Two facts
-        // written separately, so they can be held against each other — reading
-        // the flag to decide what to check would let a wrong flag skip its own
-        // guard, which is what a mutation showed happening.
         let invented = theirs
             .file_name()
             .map(|name| name.to_string_lossy().to_lowercase().contains("leteo"))
@@ -2515,7 +2136,6 @@ fn uninstalling_keeps_every_line_that_was_not_leteos() {
     }
 }
 
-/// A file that is Leteo's, by its name or by what is still written in it.
 fn files_naming_leteo(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_owned()];
@@ -2534,7 +2154,6 @@ fn files_naming_leteo(root: &Path) -> Vec<String> {
                 .map(|name| name.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
             let body = std::fs::read_to_string(&path).unwrap_or_default();
-            // The executable is the fixture's own, not something setup wrote.
             if path.starts_with(root.join("bin")) {
                 continue;
             }
@@ -2552,18 +2171,6 @@ fn files_naming_leteo(root: &Path) -> Vec<String> {
     found
 }
 
-/// A binary npm is holding is not one to write into a configuration.
-///
-/// The npm wrapper leaves the real binary inside the package it downloaded it
-/// for, and `setup` writes the path of whatever binary is running. Together
-/// that puts `~/.npm/_npx/<hash>/node_modules/@asanabrial/leteo/vendor/…` into
-/// an agent's configuration, which `npm cache clean` deletes and the next
-/// version replaces. What follows is silent: the MCP server stops starting and
-/// every hook fails without saying so, because that is what hooks do.
-///
-/// Measured before the guard existed, in a container: `setup claude-code
-/// --hooks` through the wrapper wrote
-/// `"command": "/home/u/npm/vendor/v0.1.1-x86_64-unknown-linux-gnu-leteo"`.
 #[test]
 fn setup_refuses_a_binary_the_package_manager_is_holding() {
     let temp = TempDir::new().unwrap();
@@ -2590,15 +2197,10 @@ fn setup_refuses_a_binary_the_package_manager_is_holding() {
         "the refusal names what is wrong and what to do instead: {error}"
     );
 
-    // And nothing was written on the way to refusing, because a setup that
-    // half-configures an agent and then errors is worse than one that does not
-    // start: the file it left behind is the one nobody knows to look at.
     assert!(
         !temp.path().join(".claude.json").exists(),
         "the refusal came before any write"
     );
 
-    // The ordinary path is untouched — this must not refuse a binary somebody
-    // installed, which is every other run.
     setup("claude-code", &options(&temp)).expect("an installed binary still configures");
 }

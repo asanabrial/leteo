@@ -704,7 +704,6 @@ fn a_question_in_a_language_the_store_does_not_hold_is_answered_with_nothing() {
             .collect::<Vec<_>>()
     );
 
-    // And the rescue the widening exists for still works.
     let rescued = store
         .search(
             "retry budget per host and not per request kubernetes",
@@ -1435,8 +1434,6 @@ fn a_blank_narrowing_narrows_nothing() {
 fn the_fetch_keeps_the_ranking_and_brings_the_whole_row() {
     let (_temp, mut store) = store();
     store.create_session("s1", "leteo", "C:/repo").unwrap();
-    // Cuatro memorias sobre lo mismo, la mejor la última: el título repite la
-    // palabra buscada y el título pesa 5.0 en `BM25_WEIGHTS`.
     for (index, (title, content)) in [
         ("Una nota lateral", "menciona zarandaja una vez de pasada"),
         ("Otra nota lateral", "menciona zarandaja una vez"),
@@ -1466,7 +1463,6 @@ fn the_fetch_keeps_the_ranking_and_brings_the_whole_row() {
 
     let found = store.search("zarandaja", SearchOptions::default()).unwrap();
     assert_eq!(found.len(), 4, "{found:?}");
-    // Lo que decide el orden es el rango, y los ids van al revés.
     assert!(
         found[0].observation.id > found[3].observation.id,
         "el mejor casamiento es el id más alto, así que un orden por id se vería aquí: {:?}",

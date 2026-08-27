@@ -487,8 +487,6 @@ impl CloudStore {
         Ok(())
     }
 
-    /// Removes a project grant. Used by operators to withdraw access without
-    /// deleting the principal.
     pub async fn revoke_project_grant(
         &self,
         principal_id: i64,
@@ -509,8 +507,6 @@ impl CloudStore {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Resolves a principal by its display name so operators do not have to
-    /// look identifiers up by hand.
     pub async fn find_principal_by_name(
         &self,
         display_name: &str,
@@ -871,9 +867,6 @@ fn usize_from_i32(value: i32) -> usize {
     usize::try_from(value).unwrap_or_default()
 }
 
-/// Advisory-lock key that serializes schema migrations. The value is arbitrary
-/// but must stay stable: changing it lets an old and a new binary migrate
-/// concurrently.
 const MIGRATION_LOCK_KEY: i64 = 0x4C_45_54_45_4F_01;
 
 const MIGRATIONS: &[&str] = &[

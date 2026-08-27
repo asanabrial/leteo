@@ -1,5 +1,3 @@
-//! Deterministic JSON codec and crash-safe file storage for sync manifests and chunks.
-
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -19,8 +17,6 @@ use crate::{
 pub use crate::memory::model::SyncMutation;
 
 pub const MANIFEST_VERSION: u32 = 1;
-/// Largest uncompressed chunk accepted from disk, well above any real export
-/// and far below what a decompression bomb would try to allocate.
 pub const MAX_UNCOMPRESSED_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The vocabulary a mutation travels under.
@@ -120,7 +116,6 @@ pub fn decode_chunk(data: &[u8]) -> Result<ChunkData> {
     serde_json::from_slice(data).map_err(|error| codec_error("decode chunk data", error))
 }
 
-/// Validates a content-addressed chunk ID before it is used in a path.
 pub fn validate_chunk_id(id: &str) -> Result<()> {
     if id.len() == 8
         && id
@@ -146,8 +141,6 @@ pub fn created_by() -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-/// Returns the first eight lowercase hexadecimal digits of the payload's SHA-256 digest.
-/// The payload must be the uncompressed, canonical JSON returned by this module.
 pub fn chunk_id(payload: &[u8]) -> String {
     let digest = Sha256::digest(payload);
     hex::encode(&digest[..4])

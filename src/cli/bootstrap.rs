@@ -1,6 +1,5 @@
 use super::*;
 
-/// A background replication loop tied to a long-running command.
 #[derive(Default)]
 pub(super) struct BackgroundAutosync {
     shutdown: Option<tokio::sync::watch::Sender<bool>>,
@@ -161,7 +160,6 @@ pub(super) fn engram_offer(cli: &Cli) -> Option<serde_json::Value> {
     }))
 }
 
-/// The directory holding the database, its hook state, and the cloud config.
 pub(super) fn data_directory(cli: &Cli) -> Result<PathBuf> {
     store_config(cli)?
         .database_path

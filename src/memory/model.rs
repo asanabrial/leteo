@@ -208,7 +208,6 @@ pub struct AddObservation {
     pub project: Option<String>,
     pub scope: String,
     pub topic_key: Option<String>,
-    /// `sync_id` of the prompt this memory answers, when one is known.
     pub prompt_sync_id: Option<String>,
 }
 
@@ -332,7 +331,6 @@ pub struct PendingPair {
 }
 
 impl PendingPair {
-    /// Whether both memories are still there to be compared.
     pub fn judgeable(&self) -> bool {
         self.source.is_some() && self.target.is_some()
     }
@@ -383,7 +381,6 @@ pub struct ScanResult {
     pub project: String,
     pub dry_run: bool,
     pub inspected: i64,
-    /// Pairs the finder proposed, before anything was ruled out.
     pub candidates_found: i64,
     /// Pairs skipped because the store already holds a relation between them,
     /// judged or not.
@@ -417,7 +414,6 @@ pub struct PruneResult {
     pub prompts_deleted: i64,
 }
 
-/// What a cascading session delete took with it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteSessionResult {
     pub session: String,
@@ -506,7 +502,6 @@ pub struct JudgeBySemanticParams {
     /// because a number a language model produces only to satisfy a required
     /// field is noise in a column every reader treats as a probability.
     pub confidence: Option<f64>,
-    /// Why, in a sentence, when there is one to give.
     pub reasoning: Option<String>,
     pub model: Option<String>,
 }
@@ -555,7 +550,6 @@ pub struct MemoryRef {
 /// saying so is worse than handing over nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caveat {
-    /// How it reads from the named memory's side.
     pub verb: CaveatVerb,
     /// The memory on the other end, by the number a person can look up.
     pub other_id: i64,

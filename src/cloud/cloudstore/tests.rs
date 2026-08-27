@@ -43,8 +43,6 @@ async fn postgres_migrations_are_idempotent() {
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
 async fn concurrent_migrations_do_not_race_on_the_catalog() {
-    // Several servers starting at once is the normal case behind a load
-    // balancer, and it used to fail with a duplicate-key error on pg_type.
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let migrations = (0..6).map(|_| {
         let database_url = database_url.clone();
@@ -63,8 +61,6 @@ async fn concurrent_migrations_do_not_race_on_the_catalog() {
     }
 }
 
-/// A migrated store plus a unique suffix, so tests can share one database
-/// without colliding on project or principal names.
 async fn test_store() -> (CloudStore, String) {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let store = CloudStore::connect(&database_url, 4).await.unwrap();
@@ -103,7 +99,6 @@ async fn a_wildcard_grant_covers_every_project_and_a_named_one_does_not() {
             .unwrap(),
         "a named grant must not reach a project it does not name"
     );
-    // The wildcard is stored as a grant row, so the same lookup covers it.
     assert!(
         store
             .principal_has_project_grant(broad, &format!("anything-{stamp}"))
@@ -111,7 +106,6 @@ async fn a_wildcard_grant_covers_every_project_and_a_named_one_does_not() {
             .unwrap()
     );
 
-    // Granting twice is idempotent rather than a duplicate-key error.
     store
         .grant_project(narrow, &format!("only-{stamp}"))
         .await
@@ -121,7 +115,6 @@ async fn a_wildcard_grant_covers_every_project_and_a_named_one_does_not() {
         vec![format!("only-{stamp}")]
     );
 
-    // Revoking withdraws access without deleting the principal.
     assert!(
         store
             .revoke_project_grant(narrow, &format!("only-{stamp}"))
@@ -167,11 +160,9 @@ async fn mutation_scoping_fails_closed_on_an_empty_allowlist() {
             .unwrap();
     }
 
-    // A principal with no grants at all sees nothing, rather than everything.
     let (none, _, _) = store.list_mutations_since(0, 100, Some(&[])).await.unwrap();
     assert!(none.is_empty(), "an empty allowlist must return no rows");
 
-    // A scoped allowlist returns only what it names.
     let (scoped, _, _) = store
         .list_mutations_since(0, 100, Some(std::slice::from_ref(&project)))
         .await
@@ -182,7 +173,6 @@ async fn mutation_scoping_fails_closed_on_an_empty_allowlist() {
         "a scoped pull leaked another project"
     );
 
-    // Only the wildcard case passes `None`, and it does see both.
     let (all, _, _) = store.list_mutations_since(0, 1_000, None).await.unwrap();
     let projects = all
         .iter()
@@ -217,7 +207,6 @@ async fn a_replayed_chunk_is_accepted_but_a_forged_one_is_not() {
             .unwrap(),
         id
     );
-    // A retry after a dropped connection must not fail: same bytes, same id.
     assert_eq!(
         store
             .write_chunk(&project, &id, "test", None, &payload)
@@ -226,8 +215,6 @@ async fn a_replayed_chunk_is_accepted_but_a_forged_one_is_not() {
         id
     );
 
-    // A chunk id that does not match its bytes is refused outright, so the
-    // content address cannot be used to smuggle a different payload.
     let mismatch = store
         .write_chunk(&project, "deadbeef", "test", None, &payload)
         .await
@@ -237,8 +224,6 @@ async fn a_replayed_chunk_is_accepted_but_a_forged_one_is_not() {
         "unexpected error: {mismatch}"
     );
 
-    // The session the chunk carried is now known, which is what the push
-    // path checks references against.
     assert!(
         store
             .known_session_ids(&project)
@@ -256,8 +241,6 @@ async fn pausing_a_project_is_recorded_and_reversible() {
     let (store, stamp) = test_store().await;
     let project = format!("paused-{stamp}");
 
-    // Unknown projects are enabled by default, or a new client could never
-    // make its first push.
     assert!(store.is_project_sync_enabled(&project).await.unwrap());
 
     store
@@ -272,7 +255,6 @@ async fn pausing_a_project_is_recorded_and_reversible() {
         .unwrap();
     assert!(store.is_project_sync_enabled(&project).await.unwrap());
 
-    // A rejected push writes an audit row; it must not fail the request path.
     store
         .record_audit(AuditEntry {
             contributor: "operator",
@@ -290,8 +272,6 @@ async fn pausing_a_project_is_recorded_and_reversible() {
 #[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
 async fn an_empty_project_name_is_refused_everywhere_it_is_accepted() {
     let (store, stamp) = test_store().await;
-    // Every entry point normalizes through `require_project`, so a blank
-    // name cannot become a row that later reads would have to guess about.
     assert!(store.read_manifest("   ").await.is_err());
     assert!(store.known_session_ids("").await.is_err());
     assert!(store.is_project_sync_enabled("  ").await.is_err());
@@ -343,8 +323,6 @@ async fn a_principal_is_found_by_name_and_its_token_resolves_once_stored() {
         .expect("the stored token resolves by its hash");
     assert_eq!(found.principal_id, id);
     assert_eq!(found.token_id, token_id);
-    // An unknown hash resolves to nothing rather than erroring, so callers
-    // cannot distinguish "wrong token" from "broken database".
     assert!(
         store
             .find_managed_token("0".repeat(64).as_str())
@@ -511,7 +489,6 @@ async fn dashboard_session_rechecks_role_and_token_revocation() {
 fn every_query_over_a_tenants_rows_narrows_to_that_tenant() {
     const SOURCE: &str = include_str!("mod.rs");
 
-    /// Tables whose rows belong to one project rather than to the service.
     const TENANT_TABLES: &[&str] = &[
         "cloud_chunks",
         "cloud_mutations",
@@ -520,10 +497,6 @@ fn every_query_over_a_tenants_rows_narrows_to_that_tenant() {
         "cloud_project_grants",
     ];
 
-    /// Reads that are global on purpose, each with the reason written down.
-    ///
-    /// A list, and a short one. Adding to it is how a global query gets
-    /// approved, and it should read as a decision rather than an oversight.
     const GLOBAL: &[(&str, &str)] = &[
         (
             "FROM cloud_mutations WHERE seq > $1 ORDER BY seq LIMIT $2",
@@ -544,9 +517,6 @@ fn every_query_over_a_tenants_rows_narrows_to_that_tenant() {
         ),
     ];
 
-    // Every statement in the file, split on the SQL keywords that open one.
-    // Crude on purpose: a query this misses is a query nobody checked, so the
-    // failure mode of the parsing is a false alarm rather than a silent pass.
     let mut unnarrowed = Vec::new();
     for (index, _) in SOURCE.match_indices("FROM ") {
         let tail = &SOURCE[index..];
@@ -558,8 +528,6 @@ fn every_query_over_a_tenants_rows_narrows_to_that_tenant() {
         else {
             continue;
         };
-        // The whole quoted string this sits in, so a `WHERE` on the next line
-        // still counts.
         let open = SOURCE[..index].rfind('"').map_or(0, |at| at + 1);
         let close = SOURCE[index..]
             .find('"')

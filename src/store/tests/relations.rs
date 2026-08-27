@@ -1404,16 +1404,13 @@ fn a_verdict_needs_both_of_the_memories_it_is_about() {
         })
     };
 
-    // While both are there, the verdict is recorded.
     let judged = verdict(&mut store, &kept.sync_id, &doomed.sync_id).unwrap();
     assert!(!judged.is_empty());
 
-    // Hard deletion takes the memory away and marks what was said about it.
     store.delete_observation(doomed.id, true).unwrap();
     let relation = store.get_relation(&judged).unwrap();
     assert_eq!(relation.judgment_status, "orphaned", "{relation:?}");
 
-    // Now the same verdict is refused rather than recorded about nothing.
     let refused = verdict(&mut store, &kept.sync_id, &doomed.sync_id).unwrap_err();
     let message = refused.to_string();
     assert!(
@@ -1421,7 +1418,6 @@ fn a_verdict_needs_both_of_the_memories_it_is_about() {
         "the refusal has to name which end is missing: {message}"
     );
 
-    // And judging the orphaned relation does not bring it back as a live one.
     let refused = store
         .judge_relation(crate::memory::model::JudgeRelationParams {
             judgment_id: judged.clone(),
@@ -1494,7 +1490,6 @@ fn a_candidate_has_to_beat_the_ordinary_match_for_its_own_query() {
             &format!("Un cuerpo que no dice nada de índices ni de disparadores {index}."),
         );
     }
-    // And the one that does say the same thing as what is about to be saved.
     let gemela = añadir(
         "El índice de texto completo se quedó sin disparadores tras la migración",
         "Las escrituras dejaron de llegar al índice y las búsquedas contestaban con lo de ayer.",
@@ -1684,7 +1679,6 @@ fn moving_a_memory_out_of_a_project_retires_only_the_pending_proposals() {
         "and nothing is left counted that nobody could act on"
     );
 
-    // The verdict is untouched, and the warning it carries is still delivered.
     assert_eq!(
         store
             .get_relation(&veredicto.sync_id)

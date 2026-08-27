@@ -1,5 +1,3 @@
-//! Codex.
-
 use std::path::{Path, PathBuf};
 
 use super::{AgentAdapter, ConfigFormat, SetupEnvironment};

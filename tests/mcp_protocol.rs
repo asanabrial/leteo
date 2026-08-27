@@ -13,8 +13,9 @@ use std::process::{Command, Stdio};
 use serde_json::json;
 
 /// The initialize/tools/list exchange the issue reproduced by hand, against
-/// `--tools=agent`, with the store in a temporary directory.
-fn list_tools_at(protocol_version: &str) -> serde_json::Value {
+/// `--tools=agent`, with the store in a temporary directory. Both results
+/// come back: what the server answered about itself, and the tool list.
+fn exchange_at(protocol_version: &str) -> (serde_json::Value, serde_json::Value) {
     let temp = tempfile::tempdir().expect("create temporary store directory");
     let mut child = Command::new(env!("CARGO_BIN_EXE_leteo"))
         .arg("--database")
@@ -48,24 +49,42 @@ fn list_tools_at(protocol_version: &str) -> serde_json::Value {
 
     let output = child.wait_with_output().expect("read MCP server output");
     let stdout = String::from_utf8(output.stdout).expect("MCP stdout is UTF-8");
-    let listings: Vec<serde_json::Value> = stdout
+    let messages: Vec<serde_json::Value> = stdout
         .lines()
         .map(|line| serde_json::from_str(line).expect("each MCP line is JSON"))
         .collect();
-    let listing = listings
-        .iter()
-        .find(|message| message.get("id") == Some(&json!(2)))
-        .expect("tools/list response arrived")
-        .get("result")
-        .expect("tools/list carries a result")
-        .clone();
+    let result = |id: i64| {
+        messages
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .expect("response arrived")
+            .get("result")
+            .expect("response carries a result")
+            .clone()
+    };
     temp.close().expect("temporary store removed");
-    listing
+    (result(1), result(2))
+}
+
+fn list_tools_at(protocol_version: &str) -> serde_json::Value {
+    exchange_at(protocol_version).1
+}
+
+/// A session knows what revision it is on only if the server echoed it back:
+/// the cache fields below are keyed on the negotiated version, so the echo is
+/// what ties each assertion to its cause.
+fn assert_echo(requested: &str, initialize: &serde_json::Value) {
+    assert_eq!(
+        initialize.get("protocolVersion").and_then(|v| v.as_str()),
+        Some(requested),
+        "initialize did not echo the requested protocol revision"
+    );
 }
 
 #[test]
 fn a_2026_07_28_session_gets_both_cache_fields_on_the_tool_list() {
-    let listing = list_tools_at("2026-07-28");
+    let (initialize, listing) = exchange_at("2026-07-28");
+    assert_echo("2026-07-28", &initialize);
 
     let keys = listing
         .as_object()
@@ -96,9 +115,12 @@ fn a_2026_07_28_session_gets_both_cache_fields_on_the_tool_list() {
 #[test]
 fn older_revisions_still_get_a_tool_list_without_the_cache_fields() {
     // The fields did not exist before 2026-07-28, so they are absent there
-    // rather than published for every legacy client to tolerate.
-    for revision in ["2025-06-18", "2025-03-26", "2024-11-05"] {
-        let listing = list_tools_at(revision);
+    // rather than published for every legacy client to tolerate. Every
+    // revision rmcp knows below it is exercised, 2025-11-25 included — that
+    // one is also the fallback for a version the server has never heard of.
+    for revision in ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] {
+        let (initialize, listing) = exchange_at(revision);
+        assert_echo(revision, &initialize);
         let keys = listing
             .as_object()
             .expect("tools/list result is an object")
@@ -139,10 +161,7 @@ fn the_cache_fields_are_the_only_change_the_tool_list_gains() {
 }
 
 #[test]
-fn every_tool_answers_to_the_name_the_list_publishes() {
-    // A name the list promises but the router cannot resolve is a tool an
-    // agent selects and the server refuses. The list is the whole contract,
-    // so both halves of it are checked against each other here.
+fn the_list_publishes_no_name_twice() {
     let listing = list_tools_at("2025-06-18");
     let tools = listing
         .get("tools")
@@ -162,4 +181,30 @@ fn every_tool_answers_to_the_name_the_list_publishes() {
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(unique.len(), names.len(), "no name is published twice");
+}
+
+#[test]
+fn an_unknown_revision_falls_back_to_the_ceiling_and_gets_no_cache_fields() {
+    // 2025-11-25 is the server's real ceiling: a client asking for a version
+    // nobody knows is answered there, and that revision names neither cache
+    // field — the same shape the known legacy revisions get.
+    let (initialize, listing) = exchange_at("9999-99-99");
+    assert_echo("2025-11-25", &initialize);
+    let keys = listing
+        .as_object()
+        .expect("tools/list result is an object")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        !keys.contains(&"ttlMs".to_owned()) && !keys.contains(&"cacheScope".to_owned()),
+        "a fallback session answered {keys:?}; its revision names neither cache field"
+    );
+    assert_eq!(
+        listing
+            .get("tools")
+            .and_then(|tools| tools.as_array())
+            .map(Vec::len),
+        Some(19)
+    );
 }

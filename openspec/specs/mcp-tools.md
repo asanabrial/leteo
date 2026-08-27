@@ -496,16 +496,19 @@ useful part out of a context window has failed even if every field is right.
     `before_total` and `after_total` already say how much lies beyond it.
 
 14. **A revision the server accepts is a revision it answers.** `initialize`
-    is answered at rmcp's ceiling, `2026-07-28`, and from that revision on
-    SEP-2549 makes `ttlMs` and `cacheScope` required on the one cacheable
+    is answered with the revision the client asked for when rmcp knows it,
+    and with `2025-11-25` — rmcp's real ceiling — when it does not; a client
+    that asks for `2026-07-28` is answered `2026-07-28`. From that revision
+    on, SEP-2549 makes `ttlMs` and `cacheScope` required on the one cacheable
     result Leteo publishes, `tools/list`. A session that negotiated it gets
     `ttlMs: 300000` and `cacheScope: "public"` — the list depends on the
     `--tools` flag the process started with, never on who is asking, and five
     minutes bounds how long a client would keep serving a list from a process
-    that has since restarted with a different flag. On the three revisions
-    below `2026-07-28` the fields are absent rather than set-and-stripped:
-    they did not exist there, and publishing them would bet every legacy
-    client on tolerating a property its schema never named.
+    that has since restarted with a different flag. On every revision below
+    `2026-07-28` — `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` —
+    the fields are absent rather than set-and-stripped: they did not exist
+    there, and publishing them would bet every legacy client on tolerating a
+    property its schema never named.
 
     The fields are set by hand because the `#[tool_handler]` macro left no
     seam: its expansion filled both with `None`, which never serialises, so a
@@ -513,9 +516,10 @@ useful part out of a context window has failed even if every field is right.
     and a failed connection — ZCode 0.16.5, measured, retries in a loop. rmcp
     strips `resultType` for older peers but fills nothing for newer ones, so
     the value is the server's to state. Guarded over the wire against the
-    built binary at `2026-07-28` and at each older revision, with the list
-    itself held byte-identical between the two, and the guard confirmed by
-    removing each setter and watching it fail.
+    built binary at `2026-07-28`, at every revision rmcp knows below it, and
+    at the fallback an unknown version receives, with the list itself held
+    byte-identical between a new-revision session and a legacy one, and the
+    guard confirmed by removing each setter and watching it fail.
 
 ## Invariants
 

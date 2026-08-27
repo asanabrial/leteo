@@ -495,6 +495,28 @@ useful part out of a context window has failed even if every field is right.
     store's maximum for a context read, the schema publishes that maximum, and
     `before_total` and `after_total` already say how much lies beyond it.
 
+14. **A revision the server accepts is a revision it answers.** `initialize`
+    is answered at rmcp's ceiling, `2026-07-28`, and from that revision on
+    SEP-2549 makes `ttlMs` and `cacheScope` required on the one cacheable
+    result Leteo publishes, `tools/list`. A session that negotiated it gets
+    `ttlMs: 300000` and `cacheScope: "public"` — the list depends on the
+    `--tools` flag the process started with, never on who is asking, and five
+    minutes bounds how long a client would keep serving a list from a process
+    that has since restarted with a different flag. On the three revisions
+    below `2026-07-28` the fields are absent rather than set-and-stripped:
+    they did not exist there, and publishing them would bet every legacy
+    client on tolerating a property its schema never named.
+
+    The fields are set by hand because the `#[tool_handler]` macro left no
+    seam: its expansion filled both with `None`, which never serialises, so a
+    client that negotiated the revision rmcp itself accepted got zero tools
+    and a failed connection — ZCode 0.16.5, measured, retries in a loop. rmcp
+    strips `resultType` for older peers but fills nothing for newer ones, so
+    the value is the server's to state. Guarded over the wire against the
+    built binary at `2026-07-28` and at each older revision, with the list
+    itself held byte-identical between the two, and the guard confirmed by
+    removing each setter and watching it fail.
+
 ## Invariants
 
 - Titles printed into anything an agent reads are folded to a single line and
@@ -507,10 +529,12 @@ useful part out of a context window has failed even if every field is right.
 
 ## Where it lives
 
+- `src/mcp/mod.rs` — the server envelope: negotiation, the tool list and its cache fields
 - `src/mcp/tools.rs` — the tool router and every handler
 - `src/mcp/output.rs` — the typed replies, the previews, the hints
 - `src/mcp/params.rs` — parameter parsing and the project gate
 - `src/mcp/tests.rs`
+- `tests/mcp_protocol.rs` — the wire surface, driven through the built binary
 
 ## Related
 

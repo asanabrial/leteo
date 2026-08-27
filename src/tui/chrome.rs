@@ -446,7 +446,6 @@ fn render_home(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-/// How wide a block of rendered lines is.
 fn entry_width(lines: &[Line<'static>]) -> u16 {
     lines
         .iter()
@@ -490,7 +489,6 @@ fn menu_entries(app: &App) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// A drawing's rows, coloured top to bottom.
 pub(super) fn banded(art: &'static [&'static str]) -> Vec<Line<'static>> {
     art.iter()
         .enumerate()

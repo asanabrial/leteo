@@ -328,7 +328,6 @@ fn an_export_stamps_the_format_version_not_the_build_version() {
     let exported: ExportData = serde_json::from_str(&store.export_json(None).unwrap()).unwrap();
     assert_eq!(exported.version, EXPORT_FORMAT_VERSION);
 
-    // A format this build cannot read is refused by name.
     let (_other_temp, mut other) = super::tests::store();
     let error = other
         .import_json(r#"{"version":"9.9.9","exported_at":"now","sessions":[]}"#)

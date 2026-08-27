@@ -1,7 +1,5 @@
 use super::*;
 
-/// Rewrites project-owned data and mutation payloads, then emits compact deterministic JSON.
-/// Object keys are sorted by `serde_json`; array order is intentionally retained.
 pub fn canonicalize_for_project(payload: &[u8], project: &str) -> Result<Vec<u8>> {
     let mut document: Value =
         serde_json::from_slice(payload).map_err(|error| codec_error("decode chunk data", error))?;

@@ -20,8 +20,6 @@ fn probe_in(directory: &Path) -> SetupOptions {
 
 #[test]
 fn a_dry_run_removes_nothing_at_all() {
-    // The flag exists so somebody can see what they are about to lose. If it
-    // takes any of it, it is worse than not having the flag.
     let temp = TempDir::new().unwrap();
     let data = temp.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -45,10 +43,6 @@ fn a_dry_run_removes_nothing_at_all() {
 
 #[test]
 fn every_agent_is_visited_rather_than_only_the_configured_ones() {
-    // `is_configured` answers about the MCP entry alone. An agent can still be
-    // carrying a protocol block in its instruction file or a hook from an older
-    // install, and those are precisely the leftovers an uninstall is for — so
-    // the pass must not be filtered by what looks configured now.
     let temp = TempDir::new().unwrap();
     let data = temp.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -92,10 +86,6 @@ fn the_data_directory_goes_and_the_count_is_taken_before_it_does() {
 
     let removed = uninstall_everything(&probe_in(temp.path()), &data);
 
-    // The number has to be the one that was destroyed, which means it can only
-    // be read before the directory goes. Reported afterwards it would be
-    // unreadable, and "unknown memories removed" is not a thing to tell
-    // somebody about their own notes.
     assert_eq!(removed.memories, Some(3));
     assert!(removed.data_dir_removed);
     assert!(!data.exists(), "the store has to be gone");
@@ -103,9 +93,6 @@ fn the_data_directory_goes_and_the_count_is_taken_before_it_does() {
 
 #[test]
 fn a_store_that_cannot_be_counted_does_not_stop_the_uninstall() {
-    // The likeliest store to be uninstalled is a broken one. Refusing to
-    // proceed because the count failed would trap somebody in exactly the
-    // situation they are trying to get out of.
     let temp = TempDir::new().unwrap();
     let data = temp.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -119,14 +106,12 @@ fn a_store_that_cannot_be_counted_does_not_stop_the_uninstall() {
 
 #[test]
 fn an_absent_data_directory_is_not_a_failure() {
-    // Uninstalling twice, or uninstalling after deleting the store by hand.
     let temp = TempDir::new().unwrap();
     let removed = uninstall_everything(&probe_in(temp.path()), &temp.path().join("gone"));
     assert_eq!(removed.memories, None);
     assert!(removed.remaining.iter().all(|line| !line.contains("gone")));
 }
 
-/// Windows cannot delete the program that is running, and says so.
 #[cfg(windows)]
 #[test]
 fn windows_reports_the_binary_instead_of_pretending_it_removed_it() {
@@ -152,20 +137,14 @@ fn windows_reports_the_binary_instead_of_pretending_it_removed_it() {
 
 #[test]
 fn a_file_nobody_here_created_is_not_taken_with_the_rest() {
-    // The complaint that produced this: other tools, uninstalled, took the
-    // user's own files with them. `LETEO_DATA_DIR` points wherever somebody
-    // told it to, so `remove_dir_all` on that path is a program deleting a
-    // directory it does not own.
     let temp = TempDir::new().unwrap();
     let data = temp.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
-    // Leteo's own.
     std::fs::write(data.join("leteo.db"), b"store").unwrap();
     std::fs::write(data.join("leteo.db-wal"), b"wal").unwrap();
     std::fs::write(data.join("settings.json"), b"{}").unwrap();
     std::fs::create_dir_all(data.join("hooks")).unwrap();
     std::fs::write(data.join("hooks").join("s1.nudge"), b"stamp").unwrap();
-    // Somebody else's, filed beside it.
     std::fs::write(data.join("my-notes.md"), b"mine").unwrap();
     std::fs::create_dir_all(data.join("scratch")).unwrap();
     std::fs::write(data.join("scratch").join("thing.txt"), b"also mine").unwrap();
@@ -206,8 +185,6 @@ fn a_file_nobody_here_created_is_not_taken_with_the_rest() {
 
 #[test]
 fn a_data_directory_of_only_leteos_own_files_goes_entirely() {
-    // The other half: keeping an empty directory behind would be its own kind
-    // of leftover.
     let temp = TempDir::new().unwrap();
     let data = temp.path().join("data");
     std::fs::create_dir_all(&data).unwrap();

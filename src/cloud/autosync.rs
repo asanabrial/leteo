@@ -174,11 +174,6 @@ impl<'a> Autosync<'a> {
             Err(error) => {
                 let failures = state.consecutive_failures.saturating_add(1);
                 let standing = standing_refusal(&error);
-                // Climbing the ladder from one second is right for a network
-                // blip and wrong for a token the server has revoked: the next
-                // attempt fails identically, and so does the one after it. A
-                // refusal waits the longest this is allowed to wait, from the
-                // first one.
                 let backoff = match standing {
                     Some(_) => self.config.max_backoff,
                     None => {
@@ -191,9 +186,6 @@ impl<'a> Autosync<'a> {
                     })?;
                 self.store
                     .mark_sync_failure(&self.config.target_key, &error.to_string(), until)?;
-                // "backoff" says Leteo is waiting, which for a refusal is true
-                // and useless — somebody reading it waits with it. These name
-                // what has to change instead.
                 self.status.phase = match standing {
                     Some(status) if status.is_auth_failure() => "unauthorized",
                     Some(_) => "refused",
@@ -244,20 +236,12 @@ impl<'a> Autosync<'a> {
                     }
                 }
                 result = self.run_cycle() => {
-                    // A failed cycle records itself in the sync state, but
-                    // nothing reads that while the process is running, and the
-                    // errors raised before that point — a locked database, a
-                    // lease that cannot be taken — are not recorded at all.
-                    // Without this line a cloud that has rejected every cycle
-                    // for hours looks exactly like one with nothing to do.
                     if let Err(error) = result {
                         tracing::warn!(%error, "autosync cycle failed");
                     }
                 }
             }
         }
-        // Shutdown is not the moment to fail: the lease expires by itself, and
-        // reporting an error here would only mask the reason we are stopping.
         if let Err(error) = self
             .store
             .release_sync_lease(&self.config.target_key, &self.config.lease_owner)
@@ -384,10 +368,6 @@ impl<'a> Autosync<'a> {
     }
 }
 
-/// Waits for the next shutdown notification and reports whether it means stop.
-///
-/// A dropped sender counts as a stop: the owner that asked for replication is
-/// gone, so there is nobody left to replicate for.
 async fn shutdown_requested(shutdown: &mut tokio::sync::watch::Receiver<bool>) -> bool {
     match shutdown.changed().await {
         Ok(()) => *shutdown.borrow(),
@@ -395,13 +375,6 @@ async fn shutdown_requested(shutdown: &mut tokio::sync::watch::Receiver<bool>) -
     }
 }
 
-/// Decides whether another page may be requested.
-///
-/// A page whose mutations were all at or behind the cursor leaves the cursor
-/// where it was, so asking again returns the same page. Without this the client
-/// would spin against a buggy or hostile server forever, saturating the network
-/// and never making progress. The existing `has_more` check catches the empty
-/// version of the same protocol violation.
 fn continue_pulling(
     has_more: bool,
     cursor_before: i64,
@@ -447,17 +420,6 @@ fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
     crate::timestamp::parse(value).map(|timestamp| timestamp.and_utc())
 }
 
-/// A failure the next attempt cannot talk its way out of.
-///
-/// The server said no to *this caller* rather than failing to answer: the token
-/// is unknown or revoked (401), or the project is not one this token may write
-/// to, or is paused (403, 409). None of that changes because Leteo asks again a
-/// second later.
-///
-/// [`HttpStatusError::is_auth_failure`] and [`HttpStatusError::is_policy_failure`]
-/// were written and tested for this and then never called, so every failure
-/// climbed the same ladder and a revoked token was retried forever at the same
-/// rate as a dropped packet.
 fn standing_refusal(error: &AutosyncError) -> Option<&HttpStatusError> {
     let AutosyncError::Remote(RemoteError::Status(status)) = error else {
         return None;
@@ -491,14 +453,10 @@ mod tests {
 
     #[test]
     fn pulling_stops_instead_of_spinning_when_the_cursor_cannot_advance() {
-        // The normal case: a full page that moved the cursor forward.
         assert!(continue_pulling(true, 10, 42).unwrap());
-        // The last page.
         assert!(!continue_pulling(false, 10, 42).unwrap());
         assert!(!continue_pulling(false, 10, 10).unwrap());
 
-        // A page whose rows were all at or behind the cursor would be served
-        // again forever, so it is refused as a protocol violation.
         let error = continue_pulling(true, 10, 10).unwrap_err();
         assert!(
             matches!(error, AutosyncError::Protocol(ref message) if message.contains("advancing")),
@@ -507,26 +465,18 @@ mod tests {
         assert!(continue_pulling(true, 10, 9).is_err());
     }
 
-    /// Accepts connections and never answers them, like a cloud that has gone
-    /// away without closing the socket.
     async fn silent_server() -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let mut held = Vec::new();
             while let Ok((socket, _)) = listener.accept().await {
-                // Holding the socket keeps the client waiting on its timeout
-                // rather than seeing a connection reset.
                 held.push(socket);
             }
         });
         address
     }
 
-    /// A cloud that accepts every push and never has anything to hand back.
-    ///
-    /// It echoes one accepted sequence per submitted entry, which is what the
-    /// client checks before it acknowledges the local rows.
     async fn accepting_server() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
         use axum::{Json, Router, routing::get, routing::post};
 
@@ -558,15 +508,9 @@ mod tests {
 
     #[tokio::test]
     async fn pushing_drains_every_page_and_then_stops() {
-        // The push loop keeps asking for another page while a full one comes
-        // back, so it only terminates if acknowledging a batch really removes
-        // those rows from the pending set. Three full pages plus a partial one
-        // exercises both the "keep going" and the "stop" edges.
         let temp = tempfile::TempDir::new().unwrap();
         let mut store =
             Store::open(crate::store::StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
-        // The backlog this pages through only exists for a project that
-        // replicates: nothing is journalled for one nobody enrolled.
         store.enroll_project("proj-a").unwrap();
         store.create_session("s", "proj-a", "/tmp/proj-a").unwrap();
         for index in 0..25 {
@@ -597,7 +541,6 @@ mod tests {
         };
         let mut autosync = Autosync::new(&mut store, remote, config).unwrap();
 
-        // A spin would hang here rather than fail, so the whole push is bounded.
         tokio::time::timeout(Duration::from_secs(10), autosync.push_pending())
             .await
             .expect("push_pending terminated")
@@ -627,18 +570,12 @@ mod tests {
         };
         let mut autosync = Autosync::new(&mut store, remote, config).unwrap();
 
-        // `Autosync` borrows the store, so the loop stays on this task and the
-        // signal comes from a spawned one.
         let (sender, receiver) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
-            // Long enough for the first cycle to reach the request that will
-            // never be answered.
             tokio::time::sleep(Duration::from_millis(150)).await;
             let _ = sender.send(true);
         });
 
-        // The client's own timeout is 30 seconds, so anything near that means
-        // the cycle was waited out instead of cancelled.
         let stopped = tokio::time::timeout(Duration::from_secs(5), autosync.run(receiver)).await;
         assert!(
             stopped.is_ok(),
@@ -647,7 +584,6 @@ mod tests {
         stopped.unwrap().unwrap();
     }
 
-    /// A server that hands back one page of mutations, in the order given.
     async fn paging_server(sequences: Vec<i64>) -> std::net::SocketAddr {
         use axum::{Json, Router, routing::get};
 
@@ -714,11 +650,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_page_that_arrives_out_of_order_is_refused_rather_than_half_applied() {
-        // The cursor advances to whatever the loop last applied, and it is
-        // persisted. Applying sequence 10 before sequence 6 moves the cursor
-        // past 6; 6 is then skipped as already-seen, and the next pull asks
-        // for everything after 10. Nothing ever asks for 6 again, and the
-        // memory it carried is gone with the sync reporting success.
         let (ordered, cursor) = pull_page(vec![1, 2, 3]).await;
         assert!(ordered.is_ok(), "{ordered:?}");
         assert_eq!(cursor, 3, "an ordered page is applied to its end");
@@ -733,8 +664,6 @@ mod tests {
             error.to_string().contains("ordered"),
             "the error has to say what the server did wrong: {error}"
         );
-        // What was applied before the violation stays applied. Refusing is
-        // about not advancing past 6, not about undoing 1 and 10.
         assert_eq!(cursor, 10);
     }
 
@@ -771,10 +700,6 @@ mod refusal_tests {
 
     #[test]
     fn a_refusal_waits_the_longest_wait_from_the_very_first_one() {
-        // The ladder exists so a dropped packet is retried quickly. A revoked
-        // token is not a dropped packet: attempt two fails exactly like
-        // attempt one, and climbing from a second means hundreds of identical
-        // rejected requests before the rate settles down.
         let base = Duration::from_secs(1);
         let max = Duration::from_secs(300);
 

@@ -109,7 +109,6 @@ fn asking_the_same_thing_again_later_is_asking_again() {
             project: Some("leteo".to_owned()),
         })
         .unwrap();
-    // Pushed back out of the echo window without waiting for a real clock.
     store
         .connection
         .execute(
@@ -402,7 +401,6 @@ fn a_question_asked_with_and_without_its_slash_command_is_listed_once() {
         "four ways of asking one thing, plus one other: {:?}",
         listed.iter().map(|p| &p.content).collect::<Vec<_>>()
     );
-    // The most recent wording is the one kept, unchanged.
     assert_eq!(listed[0].content, "otra pregunta distinta");
     assert_eq!(listed[1].content, "$task-board busca fallos en el core");
 
@@ -435,14 +433,12 @@ fn a_question_asked_in_another_sitting_is_not_what_a_memory_answers() {
         })
         .unwrap();
 
-    // Just now: the question this memory answers.
     assert_eq!(
         store.prompt_behind_a_save("manual-save-leteo", "leteo", false),
         Some(asked.sync_id.clone()),
         "a sessionless save takes the project's last question"
     );
 
-    // Older than the window by a minute, which is the only difference.
     store
         .connection
         .execute(

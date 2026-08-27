@@ -1,15 +1,3 @@
-//! The HTTP surface: sync for peers, a dashboard for a person.
-//!
-//! Nine routes and no middleware between them. Each handler authenticates
-//! itself, which is a shape where one forgetful handler is an open door — so
-//! what guards a request lives together in [`guard`] where an omission shows,
-//! rather than beside the route it protects.
-//!
-//! What stays here is the router and the handlers: what happens, in order.
-//! [`payload`] holds everything a push must survive before a byte reaches the
-//! store, [`browser`] the parts that exist because a browser is on the other
-//! end, and [`error`] the single shape every failure comes back as.
-
 use std::{collections::BTreeSet, sync::Arc};
 
 use axum::{
@@ -168,22 +156,6 @@ async fn pull_chunk(
 ) -> Result<Response, ApiError> {
     let principal = authenticate(&state, &headers).await?;
     let project = authorize_project(&state, &principal, query.project.as_deref()).await?;
-    // The shape, not merely the presence.
-    //
-    // This came off a URL path and the only check was "not empty", so anything
-    // else went straight to a query. Nothing was exploitable — the lookup binds
-    // a parameter and reads a PostgreSQL column, not a path — but the function
-    // that says what a chunk id *is* already existed and this was the one place
-    // that took one from a stranger without asking it.
-    //
-    // The cheap half is real too: a malformed id is refused here rather than
-    // after a database round trip.
-    //
-    // Not guarded by a mutation case. This handler only runs against a real
-    // PostgreSQL, so a case removing this check survives every local sweep —
-    // and a guard that always survives teaches you to skim past survivors,
-    // which costs more than it protects. `validate_chunk_id` has its own test;
-    // this line is one call, reviewed where it sits.
     if crate::sync::validate_chunk_id(chunk_id.trim()).is_err() {
         return Err(ApiError::bad_request(
             "chunk_id must be eight lowercase hexadecimal characters",

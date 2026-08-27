@@ -3,8 +3,6 @@ use serde_json::json;
 
 use super::*;
 
-/// A mutation the way a client actually sends one: the key and the identifier
-/// inside the payload are the same value, because both are built from it.
 fn mutation(entity: &str, operation: &str, payload: Value) -> MutationEntry {
     let field = if entity == crate::sync::ENTITY_SESSION {
         "id"
@@ -72,8 +70,6 @@ fn unsupported_entities_and_relation_deletes_are_rejected() {
     );
 }
 
-/// Drives the assembled router the way a client does, so wiring defects are
-/// caught and not just the helpers in isolation.
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
 async fn a_tenant_can_never_reach_another_tenants_project() {
@@ -94,7 +90,6 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
     let server = CloudServer::from_config(config.clone()).await.unwrap();
     server.state.store.migrate().await.unwrap();
 
-    // Two principals, each granted exactly one project.
     let hasher = crate::cloud::ManagedTokenHasher::new(&config.token_pepper).unwrap();
     let mint = async |name: &str, project: &str| {
         let id = server
@@ -149,7 +144,6 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
         }
     };
 
-    // Each tenant may write its own project.
     assert_eq!(
         push(token_a.clone(), project_a.clone(), format!("a-{stamp}")).await,
         StatusCode::OK
@@ -158,7 +152,6 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
         push(token_b.clone(), project_b.clone(), format!("b-{stamp}")).await,
         StatusCode::OK
     );
-    // And no other, including by claiming the wildcard grant.
     assert_eq!(
         push(token_a.clone(), project_b.clone(), format!("x-{stamp}")).await,
         StatusCode::FORBIDDEN
@@ -168,8 +161,6 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
         StatusCode::FORBIDDEN
     );
 
-    // A pull is scoped to the grant even though B's rows have higher
-    // sequence numbers and would otherwise be the freshest page.
     let request = Request::builder()
         .uri("/sync/mutations/pull?since_seq=0&limit=100")
         .header(header::AUTHORIZATION, format!("Bearer {token_a}"))
@@ -187,9 +178,6 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
         .iter()
         .map(|mutation| mutation["project"].as_str().unwrap().to_owned())
         .collect::<BTreeSet<_>>();
-    // Asserting only the absence of B would also pass on an empty page, so
-    // the presence of A is what proves the filter ran rather than the query
-    // simply returning nothing.
     assert!(
         projects.contains(&project_a),
         "the pull returned none of the tenant's own rows: {projects:?}"
@@ -200,8 +188,6 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
         "a pull leaked another tenant's projects: {projects:?}"
     );
 
-    // Reading a manifest obeys the same boundary, and an unauthenticated
-    // or forged caller gets nothing at all.
     let get = |token: Option<String>, project: &str| {
         let router = server.router();
         let mut request = Request::builder().uri(format!("/sync/pull?project={project}"));
@@ -243,7 +229,6 @@ fn the_session_cookie_is_secure_unless_the_request_is_local() {
         headers
     };
 
-    // A proxy that forgets X-Forwarded-Proto must not downgrade the cookie.
     assert!(requires_secure_cookie(&headers(&[(
         "host",
         "memory.example.com"
@@ -258,7 +243,6 @@ fn the_session_cookie_is_secure_unless_the_request_is_local() {
         ("x-forwarded-proto", "https"),
     ])));
 
-    // Local development over plain HTTP still stores its cookie.
     for host in [
         "localhost",
         "localhost:8080",
@@ -272,7 +256,6 @@ fn the_session_cookie_is_secure_unless_the_request_is_local() {
             "{host} is local"
         );
     }
-    // A host that merely looks local is not.
     assert!(requires_secure_cookie(&headers(&[(
         "host",
         "localhost.evil.example"
@@ -299,12 +282,6 @@ async fn database_errors_are_logged_but_redacted_from_responses() {
 
 #[test]
 fn a_mutation_filed_under_one_key_may_not_be_about_another() {
-    // The server orders and deduplicates by `entity_key`; every peer applies
-    // by the identifier in the payload. One where they disagree is stored and
-    // served as being about one memory and applied to another — the same
-    // change arriving twice, or landing on a memory the server believes
-    // untouched. Nothing checked it, and 9527 mutations in a real store all
-    // agree, so nothing legitimate is turned away.
     let mut crossed = mutation(
         crate::sync::ENTITY_OBSERVATION,
         crate::sync::OP_UPSERT,
@@ -319,8 +296,6 @@ fn a_mutation_filed_under_one_key_may_not_be_about_another() {
 
 #[test]
 fn a_session_is_keyed_on_its_id_and_everything_else_on_its_sync_id() {
-    // Sessions are the one entity whose payload names itself `id`. Reading the
-    // wrong field would reject every session mutation ever sent.
     assert!(
         validate_mutation_entries(&[mutation(
             crate::sync::ENTITY_SESSION,
@@ -358,18 +333,10 @@ fn a_payload_that_never_names_itself_is_refused() {
 /// forgetful handler is an open door". It was right and nothing was watching —
 /// each of the six sync routes does authenticate today, and a seventh added
 /// tomorrow would not have to.
-///
-/// Read out of the source rather than from a list kept beside it, because a
-/// list is the thing that goes stale. A new `.route(...)` whose handler
-/// neither authenticates nor appears below fails here, and the fix is to do
-/// one or the other on purpose.
 #[test]
 fn every_route_authenticates_or_says_why_it_does_not() {
     const SOURCE: &str = include_str!("mod.rs");
 
-    /// Open by design, each for a reason that has to survive being written
-    /// down: a health probe has no credentials, and a login page is how you
-    /// come by them.
     const PUBLIC: &[(&str, &str)] = &[
         (
             "health",
@@ -382,7 +349,6 @@ fn every_route_authenticates_or_says_why_it_does_not() {
         ),
     ];
 
-    // `.route("/path", get(handler))`, `.post(handler)` and chains of both.
     let mut routed: Vec<(String, String)> = Vec::new();
     for line in SOURCE.lines() {
         let Some(rest) = line.trim().strip_prefix(".route(") else {
@@ -411,7 +377,6 @@ fn every_route_authenticates_or_says_why_it_does_not() {
         "the route table did not parse; this guard would pass on nothing: {routed:?}"
     );
 
-    // A handler's body, from its signature to the closing brace in column one.
     let body_of = |name: &str| -> String {
         let start = SOURCE
             .find(&format!("\nasync fn {name}("))
@@ -428,8 +393,6 @@ fn every_route_authenticates_or_says_why_it_does_not() {
             continue;
         }
         let body = body_of(handler);
-        // Either a bearer token, or the signed dashboard session. Both end in
-        // a `Principal`; what matters is that neither is skipped.
         let guarded = body.contains("authenticate(") || body.contains("parse_dashboard_session(");
         if !guarded {
             unguarded.push(format!("{path} -> {handler}"));

@@ -1,5 +1,3 @@
-//! Pi.
-
 use std::path::PathBuf;
 
 use super::{AgentAdapter, ConfigFormat, McpFormat, SetupEnvironment};

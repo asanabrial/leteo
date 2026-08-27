@@ -189,7 +189,6 @@ fn every_declared_code_is_one_the_doctor_actually_reports() {
         "a code the doctor reports must be one --check accepts, and the other way round"
     );
 
-    // And each of them selects itself, rather than a report with nothing in it.
     for code in DoctorCheck::CODES {
         let (narrowed, _) = store.doctor_scoped(Some(code), None).unwrap();
         assert_eq!(
@@ -288,7 +287,6 @@ fn an_index_that_could_not_be_checked_does_not_read_as_one_that_failed() {
             "and not the one that did not: {detail}"
         );
     }
-    // One sentence, not two that disagree.
     for detail in integrity {
         assert!(report.issues.contains(detail), "{report:?}");
     }
@@ -322,7 +320,6 @@ fn no_sentence_doctor_prints_carries_the_code_indentation_with_it() {
         .add_observation(observation("s1", "A memory", "with a body"))
         .unwrap();
 
-    // Every break the report can name, at once.
     store
         .connection()
         .execute_batch(
@@ -420,7 +417,6 @@ fn a_hash_that_stopped_describing_its_memory_is_found_and_put_back() {
         store.get_observation(broken.id).unwrap().content,
         broken.content
     );
-    // Repairing a store with nothing wrong changes nothing.
     assert_eq!(store.recompute_stale_hashes().unwrap(), 0);
 }
 
@@ -499,7 +495,6 @@ fn a_full_text_trigger_that_went_missing_is_named_and_put_back() {
         "the rebuild is what recovers the edits made while the trigger was gone"
     );
 
-    // And a store with nothing wrong is left alone.
     assert!(store.restore_full_text_triggers().unwrap().is_empty());
 }
 
@@ -937,7 +932,6 @@ fn a_setting_that_is_read_past_is_named() {
             .expect("the doctor reports it")
     };
 
-    // Nothing to read past: no file at all, and a file where every answer lands.
     assert!(verdict(&store).ok, "no file is not a broken file");
     std::fs::write(
         &settings,
@@ -946,7 +940,6 @@ fn a_setting_that_is_read_past_is_named() {
     .unwrap();
     assert!(verdict(&store).ok, "and neither is one that reads");
 
-    // A value outside the closed set its field accepts.
     std::fs::write(
         &settings,
         r#"{"language":"español","context_size":"slimm"}"#,
@@ -964,7 +957,6 @@ fn a_setting_that_is_read_past_is_named() {
         "and not the answer beside it, which still counts: {detail}"
     );
 
-    // A key that is not a setting, which is the same typo one letter earlier.
     std::fs::write(&settings, r#"{"contextsize":"slim"}"#).unwrap();
     let said = verdict(&store);
     assert!(!said.ok, "a key nobody reads is being read past");
@@ -976,7 +968,6 @@ fn a_setting_that_is_read_past_is_named() {
         said.detail
     );
 
-    // Several at once, because the first one found must not end the report.
     std::fs::write(
         &settings,
         r#"{"voice":"loud","interface":"klingon","language":"español"}"#,
@@ -1175,7 +1166,6 @@ fn the_project_list_is_newest_first_and_leaves_out_the_ones_with_nothing_left() 
     // than assumed.
     write(&mut store, "zebra", "Tied", "2025-06-01 00:00:00");
     write(&mut store, "aardvark", "Tied too", "2025-06-01 00:00:00");
-    // And one whose only memory is gone.
     let doomed = write(&mut store, "emptied", "Deleted", "2029-01-01 00:00:00");
     store.delete_observation(doomed, false).unwrap();
     // One that is still here, whose newest memory was deleted: it belongs where

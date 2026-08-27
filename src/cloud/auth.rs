@@ -497,17 +497,8 @@ mod tests {
             );
         }
 
-        // A real one comes back in the form the grant is looked up by and the
-        // row is written under, which is the other half of why this normalises
-        // rather than only checking.
         assert_eq!(required_project("  My--Project  ").unwrap(), "my-project");
 
-        // Written down because it surprised this test into failing: separator
-        // runs collapse, they do not vanish. `"--"` is `"-"`, which is a
-        // strange project name and a real one. The rule here is "names
-        // nothing", not "names something sensible" — anything stricter is a
-        // policy decision, and inventing one inside an auth check is the wrong
-        // place for it.
         assert_eq!(required_project("--").unwrap(), "-");
         assert_eq!(required_project("__").unwrap(), "_");
     }
@@ -537,13 +528,6 @@ mod tests {
 
     #[test]
     fn the_token_verifier_is_the_exact_value_a_deployment_already_stores() {
-        // A round trip through `hash` and `verify` cannot catch what matters
-        // here: both sides move together, so it passes even if the output
-        // changed. Verifiers live in the cloud database, so a change means every
-        // deployed token stops authenticating — and the only thing that would
-        // say so is a value computed somewhere else.
-        //
-        // This one comes from Python's hmac and hashlib over the same inputs.
         let hasher = ManagedTokenHasher::new("managed-token-pepper-at-least-32-bytes").unwrap();
         assert_eq!(
             hasher.hash("ltc_live_01234567_secret").unwrap(),
@@ -611,8 +595,6 @@ mod tests {
             )
         };
 
-        // Rewriting the claims without re-signing them: the attack the
-        // signature exists to stop.
         let elevated = URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&DashboardClaims {
                 principal: Principal {
@@ -627,7 +609,6 @@ mod tests {
         );
         assert!(rejected(format!("{elevated}.{signature}")));
 
-        // A signature minted with a different secret.
         let other = AuthService::new(
             "another-dashboard-secret-of-at-least-32-bytes",
             None,
@@ -641,7 +622,6 @@ mod tests {
             .unwrap();
         assert!(rejected(foreign));
 
-        // Structural abuse of the payload.signature envelope.
         assert!(rejected(payload.to_owned()));
         assert!(rejected(format!(".{signature}")));
         assert!(rejected(format!("{payload}.")));
@@ -649,8 +629,6 @@ mod tests {
         assert!(rejected(format!("{payload}.not-base64!!")));
         assert!(rejected(String::new()));
 
-        // A session that claims to come from the future is not trusted either,
-        // so a skewed or lying issuer cannot extend its own lifetime.
         let ahead = service
             .mint_dashboard_session_at(&legacy_principal(true), issued + ChronoDuration::hours(2))
             .unwrap();
@@ -680,8 +658,6 @@ mod tests {
 
     #[test]
     fn malformed_bearer_values_are_rejected_before_any_lookup() {
-        // Whitespace inside a bearer value means the header was split wrong or
-        // carries two values; an empty one must never reach the token lookup.
         for token in ["", "   ", "two tokens", "tab\tseparated", "line\nbreak"] {
             assert!(
                 matches!(validate_bearer_shape(token), Err(AuthError::InvalidBearer)),

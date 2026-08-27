@@ -174,8 +174,6 @@ fn a_mutation_missing_what_makes_it_a_memory_is_refused_at_the_wire() {
         "a prompt with no session cannot be placed in a conversation"
     );
 
-    // And a complete one goes through, so this refuses what is broken rather
-    // than everything.
     assert!(
         normalize_mutation_payload(
             "observation",
@@ -193,25 +191,20 @@ fn a_mutation_missing_what_makes_it_a_memory_is_refused_at_the_wire() {
 
 #[test]
 fn a_chunk_id_is_eight_lowercase_hexadecimal_characters_and_nothing_else() {
-    // The cloud takes one of these off a URL path, so this is the shape a
-    // stranger's input has to match before anything is done with it.
-    //
-    // It had no test of its own for a while: the one it did have went with the
-    // file layer it was written for, and the function outlived it.
     assert!(validate_chunk_id("2cf24dba").is_ok());
     assert!(validate_chunk_id("00000000").is_ok());
     assert!(validate_chunk_id("ffffffff").is_ok());
 
     for refused in [
-        "",          // nothing
-        "2cf24db",   // one short
-        "2cf24dba1", // one long
-        "2CF24DBA",  // upper case is a different string to a lookup
-        "2cf24dbg",  // g is not hexadecimal
-        "../../etc", // the shape that mattered when these named files
-        "2cf2/dba",  // and a separator hiding in a valid-length id
-        " 2cf24dba", // untrimmed
-        "2cf24db\n", // a newline, which a careless client sends
+        "",
+        "2cf24db",
+        "2cf24dba1",
+        "2CF24DBA",
+        "2cf24dbg",
+        "../../etc",
+        "2cf2/dba",
+        " 2cf24dba",
+        "2cf24db\n",
     ] {
         assert!(
             validate_chunk_id(refused).is_err(),

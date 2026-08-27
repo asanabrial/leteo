@@ -101,7 +101,6 @@ pub fn review_after(kind: &str, from: chrono::NaiveDateTime) -> Option<chrono::N
     )
 }
 
-/// How long a memory of this kind stays trustworthy before it wants rereading.
 pub fn review_months(kind: &str) -> Option<u32> {
     REVIEW_WINDOWS
         .iter()
@@ -130,12 +129,10 @@ pub const RELATION_VERBS: &[&str] = &[
     RELATION_NOT_CONFLICT,
 ];
 
-/// Whether `relation` is a claim one memory may make about another.
 pub fn is_relation_verb(relation: &str) -> bool {
     RELATION_VERBS.contains(&relation)
 }
 
-/// Whether a confidence score is one we can store and compare.
 pub fn is_confidence(confidence: f64) -> bool {
     (0.0..=1.0).contains(&confidence)
 }

@@ -448,7 +448,6 @@ fn nothing_is_journalled_until_a_project_is_enrolled_and_then_it_catches_up() {
     assert!(!store.enroll_project("leteo").unwrap());
     assert_eq!(journalled(&store), after);
 
-    // And from here on it journals as it always did.
     store
         .add_observation(observation("s1", "After enrolling", "body"))
         .unwrap();
@@ -647,7 +646,6 @@ fn a_destructive_operation_refuses_a_project_that_names_nothing() {
         );
     }
 
-    // And the unfiled memory is still there.
     assert_eq!(
         store
             .connection
@@ -808,7 +806,6 @@ fn a_relation_whose_other_half_left_the_project_is_not_queued_with_it() {
             })
             .unwrap();
     }
-    // And then one of the four memories moves out.
     store.enroll_project("proyecto-b").unwrap();
     store
         .update_observation(
@@ -1045,7 +1042,6 @@ fn a_merge_says_how_many_topic_keys_it_left_shared() {
         input.topic_key = Some("architecture/una-clave".to_owned());
         store.add_observation(input).unwrap();
     }
-    // Apart, each project keeps its own memory under the key.
     let merged = store
         .merge_projects(&["leteo cloud".to_owned()], "leteo")
         .unwrap();
@@ -1055,7 +1051,6 @@ fn a_merge_says_how_many_topic_keys_it_left_shared() {
         "the merge put two memories under one key and has to say so"
     );
 
-    // Both are still there; neither was thrown away.
     let held: i64 = store
         .connection()
         .query_row(
@@ -1066,7 +1061,6 @@ fn a_merge_says_how_many_topic_keys_it_left_shared() {
         .unwrap();
     assert_eq!(held, 2);
 
-    // And an ordinary merge, with nothing shared, says nothing.
     store.create_session("s3", "tercero", "C:/repo").unwrap();
     let mut input = observation("s3", "Sin clave compartida", "otro cuerpo");
     input.project = Some("tercero".to_owned());
@@ -1160,12 +1154,10 @@ fn a_merge_that_invents_the_canonical_project_says_it_did() {
             .unwrap();
     }
 
-    // Into a project that was already there: there is nothing to announce.
     let ordinario = store.merge_projects(&["uno".to_owned()], "dos").unwrap();
     assert_eq!(ordinario.sources_merged, vec!["uno".to_owned()]);
     assert!(!ordinario.canonical_created, "{ordinario:?}");
 
-    // Hacia uno que no existía: eso sí.
     let renombrado = store
         .merge_projects(&["dos".to_owned()], "proyecto-con-erratta")
         .unwrap();

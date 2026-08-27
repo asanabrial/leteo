@@ -1,5 +1,3 @@
-//! VS Code Copilot.
-
 use std::path::{Path, PathBuf};
 
 use super::{AgentAdapter, ConfigFormat, McpFormat, SetupEnvironment};
@@ -35,8 +33,6 @@ fn instructions(_environment: &SetupEnvironment, config: &Path) -> PathBuf {
         .join("leteo.instructions.md")
 }
 
-/// VS Code's per-user settings directory, which is somewhere different on all
-/// three platforms.
 fn user_dir(environment: &SetupEnvironment) -> PathBuf {
     match environment.platform {
         Platform::Windows => environment.roaming_root().join("Code").join("User"),

@@ -716,7 +716,6 @@ impl App {
         true
     }
 
-    /// Whether the page on screen shows a list long enough to scroll through.
     fn scrolls(&self) -> bool {
         matches!(self.page, Page::Dashboard | Page::Session)
     }
@@ -735,7 +734,6 @@ impl App {
         self.list = self.list.next();
     }
 
-    /// Steps in and out of the filter panel.
     fn toggle_filters(&mut self) {
         self.focus = if self.focus == Focus::Filters {
             Focus::List

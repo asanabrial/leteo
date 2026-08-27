@@ -277,8 +277,6 @@ fn detection_from_children(cwd: &Path, children: &[PathBuf], timed_out: bool) ->
                 ),
             }
         }
-        // One repository and a scan that reached the end of the directory: the
-        // only one there is, so it is the answer.
         ([child], false) => {
             let project = normalize_project_name(&path_basename(child));
             let mut result = successful_detection(&project, SOURCE_GIT_CHILD, child);
@@ -948,7 +946,6 @@ mod tests {
         assert_eq!(git_root_by_walking(&nested), Some(expected.clone()));
         assert_eq!(detect_git_root(&nested), Some(expected));
 
-        // And the remote, read out of the config file instead of asked for.
         let from_git = run_git(&root, &["remote", "get-url", "origin"]).expect("git names origin");
         assert!(
             matches!(read_origin_url(&root), OriginUrl::Named(url) if url == from_git.trim()),
@@ -960,7 +957,6 @@ mod tests {
             "the whole detection, not just its parts"
         );
 
-        // A directory that is no repository at all still says so.
         let elsewhere = TempDir::new().unwrap();
         assert!(!elsewhere.path().join(".git").exists());
     }
@@ -1431,7 +1427,6 @@ mod detected_names {
             let repo = temp.path().join(nombre);
             std::fs::create_dir_all(repo.join(".git")).unwrap();
         }
-        // Y ruido entre medias, que no es repositorio y no debe contarse.
         for nombre in ["ccc-sin-git", "ddd-sin-git", "mmm-sin-git"] {
             std::fs::create_dir_all(temp.path().join(nombre)).unwrap();
         }

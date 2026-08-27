@@ -206,7 +206,6 @@ fn the_index_stems_so_a_plural_finds_its_singular_and_writes_stay_in_sync() {
     assert_eq!(found("sesiones"), 1);
     assert_eq!(found("borrada"), 1);
 
-    // A word that shares no stem still matches nothing.
     assert_eq!(found("kubernetes"), 0);
 }
 
@@ -242,7 +241,6 @@ fn acknowledged_journal_rows_are_pruned_once_they_age_out() {
     assert_eq!(remaining, sequences.len() as i64);
     assert_eq!(store.pending_sync_mutation_count("cloud").unwrap(), 0);
 
-    // Age them past the retention window and acknowledge again.
     store
         .connection
         .execute(
@@ -597,7 +595,6 @@ fn a_peer_cannot_send_a_memory_that_belongs_to_nobody() {
         );
     }
 
-    // The key alone is enough, and a complete payload lands too.
     assert!(
         store
             .apply_pulled_sync_mutation(
@@ -1095,7 +1092,6 @@ fn a_replicated_write_and_a_typed_one_leave_the_same_row() {
     let ugly_project = "  Leteo--Cloud  ";
     let ugly_content = "¿por qué? <private>ghp_secreto</private> y algo más después";
 
-    // Typed.
     store
         .create_session("typed", ugly_project, "C:/repo")
         .unwrap();
@@ -1661,7 +1657,6 @@ fn a_memory_that_leaves_a_replicated_project_is_deleted_at_the_peer() {
         cola(&store)
     );
 
-    // Editarla estando fuera no encola nada: ese proyecto no se replica.
     let antes = cola(&store).len();
     store
         .update_observation(
@@ -1674,8 +1669,6 @@ fn a_memory_that_leaves_a_replicated_project_is_deleted_at_the_peer() {
         .unwrap();
     assert_eq!(cola(&store).len(), antes, "fuera no se replica nada");
 
-    // Y entre dos proyectos inscritos no hay borrado: la fila lleva su
-    // proyecto y el peer la sigue.
     store
         .connection()
         .execute(
@@ -2193,7 +2186,6 @@ fn what_a_peer_sent_is_applied_by_entity() {
     )
     .unwrap();
 
-    // And a relation between memories this store now holds.
     let ends: Vec<String> = tx
         .prepare("SELECT sync_id FROM observations")
         .unwrap()

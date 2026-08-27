@@ -1,5 +1,3 @@
-//! Claude Code.
-
 use std::path::{Path, PathBuf};
 
 use super::{AgentAdapter, ConfigFormat, McpFormat, SetupEnvironment};
@@ -30,8 +28,6 @@ fn hooks(environment: &SetupEnvironment) -> PathBuf {
     environment.claude_config_dir().join("settings.json")
 }
 
-/// Its plugins cache under the config directory the way its settings do,
-/// which is why `CLAUDE_CONFIG_DIR` moves both.
 fn plugin_cache(environment: &SetupEnvironment) -> PathBuf {
     environment.claude_config_dir()
 }

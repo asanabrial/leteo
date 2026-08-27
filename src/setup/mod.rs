@@ -20,21 +20,6 @@ pub const MEMORY_PROTOCOL_BEGIN: &str =
     "<!-- BEGIN LETEO MEMORY PROTOCOL - managed by leteo setup -->";
 pub const MEMORY_PROTOCOL_END: &str = "<!-- END LETEO MEMORY PROTOCOL -->";
 
-/// The few rules that cannot be left to chance, injected on every session.
-///
-/// [`MEMORY_PROTOCOL`] is the whole thing and lives in the plugin's skill,
-/// where the body is paid for when it is needed rather than in every session.
-/// This is what the hook says instead — and it is deliberately short.
-///
-/// It carries only what fails silently if the agent never reads further: that
-/// memory exists at all, that saving is proactive, and that saving is not the
-/// same as answering. Everything else — how to word a memory, how projects
-/// resolve, what to do about conflicts — is reference, and reference belongs
-/// where it can be looked up.
-///
-/// Both halves used to be injected here *and* shipped as the skill, which cost
-/// the tokens twice and left two copies free to drift apart. They had already
-/// drifted: the rule below about saving not being replying existed in neither.
 pub const MEMORY_DIRECTIVE: &str = r#"## Leteo memory — active
 
 You have persistent memory through Leteo's MCP tools. Three rules:
@@ -136,11 +121,6 @@ pub enum McpFormat {
 }
 
 impl McpFormat {
-    /// The keys walked from the document root to the map of servers.
-    ///
-    /// A list rather than a single key so the ZCode nesting is just data. Every
-    /// walker over a config document goes through this, which is what keeps a
-    /// format from being written under one path and read back from another.
     fn key_path(self) -> &'static [&'static str] {
         match self {
             Self::McpServers | Self::Pi => &["mcpServers"],
@@ -155,8 +135,6 @@ impl McpFormat {
 pub enum ConfigFormat {
     Json(McpFormat),
     CodexToml,
-    /// DeepSeek Harness's `cordis.patch.yml`, a YAML patch layer with no
-    /// parser dependency in this crate, so edited by line like the TOML one.
     DshPatch,
 }
 
@@ -171,34 +149,20 @@ pub fn supported_agents() -> &'static [AgentAdapter] {
 pub struct SetupOptions {
     pub dry_run: bool,
     pub install_instructions: bool,
-    /// Install the lifecycle hooks that call `leteo hook <event>`.
     pub install_hooks: bool,
-    /// Which tool profile the configured server should expose.
-    ///
-    /// `None` means the default, which is the agent profile: the tools worth
-    /// having in context while coding. The plugin bundles ask for the same, so
-    /// the two ways of installing Leteo behave alike.
     pub tools: Option<String>,
     pub platform: Option<Platform>,
     pub home_dir: Option<PathBuf>,
     pub config_home: Option<PathBuf>,
     pub app_data: Option<PathBuf>,
     pub executable: Option<PathBuf>,
-    /// Explicit DeepSeek Harness home, for callers who know it and for tests.
-    ///
-    /// When absent, `$DSH_HOME` is honored, then `~/.dsh`. An explicit value
-    /// outranks the variable the way a `home_dir` here outranks the process's
-    /// home — otherwise a test could not point at a scratch directory without
-    /// fighting an environment that legitimately sets it.
     pub dsh_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPaths {
     pub mcp_config: PathBuf,
-    /// Instruction file, when the agent reads one.
     pub instructions: Option<PathBuf>,
-    /// Settings file holding lifecycle hooks, when the agent supports them.
     pub hooks: Option<PathBuf>,
 }
 
@@ -216,7 +180,6 @@ pub enum Change {
     Create,
     Update,
     Unchanged,
-    /// The file is gone, because it was Leteo's own and nothing else was in it.
     Removed,
 }
 
@@ -225,10 +188,6 @@ pub struct SetupAction {
     pub kind: ActionKind,
     pub path: PathBuf,
     pub change: Change,
-    /// The agent that this file was left in place for. One instruction file can
-    /// be read by two products — the Gemini CLI and Antigravity both load
-    /// `~/.gemini/GEMINI.md` — and taking Leteo out of one of them would
-    /// otherwise take it out of the other without saying so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kept_for: Option<&'static str>,
 }
@@ -256,19 +215,11 @@ struct SetupEnvironment {
     config_home: Option<PathBuf>,
     app_data: Option<PathBuf>,
     executable: PathBuf,
-    /// `CLAUDE_CONFIG_DIR`, read once, when it says anything.
     claude_config: Option<PathBuf>,
-    /// `DSH_HOME`, read once, when it says anything.
     dsh_home: Option<PathBuf>,
 }
 
 impl SetupEnvironment {
-    /// Where Claude Code keeps its settings, its hooks and its plugin cache.
-    ///
-    /// `~/.claude` unless `CLAUDE_CONFIG_DIR` moves it, which it does for
-    /// anybody keeping that directory outside their profile. Writing to the
-    /// default anyway is the failure the Codex adapter already carries a note
-    /// about: setup reports success and the agent reads a different file.
     fn claude_config_dir(&self) -> PathBuf {
         self.claude_config
             .clone()
@@ -282,16 +233,6 @@ pub fn resolve_agent_paths(agent: &str, options: &SetupOptions) -> Result<AgentP
     Ok(resolve_paths(adapter, &environment))
 }
 
-/// Whether this agent's configuration already registers Leteo.
-///
-/// For telling somebody what is already done. The setup screen used to offer
-/// twelve agents with twelve empty boxes however many of them were already
-/// configured, so the one question it could not answer was the one people
-/// actually arrive with: where did I install this?
-///
-/// Read-only, and quiet about failure — an unreadable or absent config is an
-/// agent that is not configured, which is exactly what the caller wants to
-/// know. This is drawn beside a list of choices, not a diagnostic.
 pub fn is_configured(agent: &str, options: &SetupOptions) -> bool {
     let Ok(adapter) = find_adapter(agent) else {
         return false;
@@ -317,8 +258,6 @@ pub fn is_configured(agent: &str, options: &SetupOptions) -> bool {
     }
 }
 
-/// The map of servers a config document holds, following the format's key
-/// path and creating nothing along the way.
 fn servers_at(config: &Value, format: McpFormat) -> Option<&Map<String, Value>> {
     let mut node = config;
     for key in format.key_path() {
@@ -327,16 +266,6 @@ fn servers_at(config: &Value, format: McpFormat) -> Option<&Map<String, Value>> 
     node.as_object()
 }
 
-/// Removes Leteo from an agent's configuration, leaving everything else alone.
-///
-/// The reverse of [`setup`], and surgical for the same reason: these files hold
-/// other people's servers, other tools' hooks and somebody's own notes. Taking
-/// Leteo out must not cost them any of that, so nothing is deleted wholesale —
-/// the MCP entry, the lifecycle hooks and the protocol block are each lifted
-/// out by name and the rest of the file is written back as it was.
-///
-/// Files that never mentioned Leteo are reported unchanged rather than touched,
-/// and a file that does not exist is not created just to say Leteo is not in it.
 pub fn uninstall(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
     let adapter = find_adapter(agent)?;
     let environment = SetupEnvironment::resolve(options)?;
@@ -434,17 +363,6 @@ pub fn uninstall(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
     })
 }
 
-/// Drops the `leteo` server from a JSON config, keeping every other one.
-/// Serializes JSON the way the file that held it was already written.
-///
-/// `serde_json::to_string_pretty` always indents by two spaces. A config
-/// somebody keeps at four therefore comes back with every line rewritten:
-/// adding one server to an eighty-line file changed a hundred and sixty-seven
-/// lines of it, which is a diff nobody can review and a file nobody recognises.
-///
-/// The same complaint as the key order and the line endings before it, and the
-/// same answer: hand the file back in the shape it arrived in. What Leteo
-/// changed should be the only thing that looks changed.
 pub(super) fn to_json_like(existing: &str, value: &serde_json::Value) -> Result<String> {
     let indent = detected_indent(existing);
     let mut output = Vec::new();
@@ -453,23 +371,12 @@ pub(super) fn to_json_like(existing: &str, value: &serde_json::Value) -> Result<
         serde_json::ser::PrettyFormatter::with_indent(indent.as_bytes()),
     );
     serde::Serialize::serialize(value, &mut serializer).context("serialize JSON configuration")?;
-    // And the endings it arrived with. The instruction files and the Codex
-    // config were paired for this months ago; the JSON configs were not, so a
-    // Windows `.claude.json` came back with every line changed and the one
-    // Leteo added invisible among them.
     Ok(with_line_endings_of(
         existing,
         format!("{}\n", String::from_utf8(output)?),
     ))
 }
 
-/// The indentation a JSON document already uses, or two spaces for one that
-/// gives no clue.
-///
-/// Read off the first line that is indented at all, which in a pretty-printed
-/// document is the first key of the top-level object. A file written on one
-/// line has no indentation to preserve, and a tab-indented one says so with a
-/// tab.
 fn detected_indent(existing: &str) -> String {
     existing
         .lines()
@@ -499,7 +406,6 @@ fn remove_json_server(existing: &[u8], format: McpFormat) -> Result<String> {
     to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &config)
 }
 
-/// Walks to the last key of a format's server path, creating nothing.
 fn walk_to_servers_mut(
     config: &mut Value,
     format: McpFormat,
@@ -513,10 +419,6 @@ fn walk_to_servers_mut(
     node.get_mut(last).and_then(Value::as_object_mut)
 }
 
-/// Walks to the last key of a format's server path, creating any key that is
-/// missing or null along the way — the writing counterpart of
-/// [`walk_to_servers_mut`]. A key that holds something other than an object is
-/// refused with the path named, because continuing would overwrite it.
 fn open_servers_mut<'a>(
     object: &'a mut serde_json::Map<String, Value>,
     format: McpFormat,
@@ -539,11 +441,6 @@ fn open_servers_mut<'a>(
                 }
                 node = inner;
             }
-            // The key that actually failed, and the file it is in. Both were
-            // lost when this replaced a single `top_level_key`: "mcp.servers
-            // must contain a JSON object" names neither which of fourteen
-            // configuration files to open, nor — for a nested path — which of
-            // the two keys is the one holding something else.
             None => anyhow::bail!(
                 "{} in {} must contain a JSON object",
                 keys[..=index].join("."),
@@ -554,7 +451,6 @@ fn open_servers_mut<'a>(
     unreachable!("a non-empty key path always returns inside the loop")
 }
 
-/// Drops `[mcp_servers.leteo]` from the Codex config, keeping every other one.
 fn remove_codex_server(existing: &[u8]) -> Result<String> {
     let text = std::str::from_utf8(existing).context("Codex config is not valid UTF-8")?;
     let normalized = text.replace("\r\n", "\n");
@@ -572,25 +468,15 @@ fn remove_codex_server(existing: &[u8]) -> Result<String> {
         kept.push(lines[index]);
         index += 1;
     }
-    // The hooks live in this same file, so taking Leteo out means taking both.
-    // Left behind, they would go on invoking a binary that is no longer set up.
     let kept = render::without_leteo_codex_hooks(&kept);
     let body = kept.join("\n");
     Ok(with_line_endings_of(text, format!("{}\n", body.trim_end())))
 }
 
-/// Lifts the protocol block out of an instruction file.
-///
-/// The file is left in place even when the block was all it held. It may be one
-/// the agent creates for itself, and an agent that finds its instruction file
-/// missing behaves differently from one that finds it empty.
 pub fn remove_memory_protocol(existing: &str) -> String {
     let text = existing.replace("\r\n", "\n");
     let stripped = strip_memory_protocol_blocks(&text);
     if stripped == text {
-        // Nothing was removed: either the file holds no block, or one opens and
-        // never closes and its extent cannot be known. Returning a reformatted
-        // copy of an untouched file would report it as changed when it is not.
         return existing.to_owned();
     }
     let trimmed = stripped.trim();
@@ -602,21 +488,6 @@ pub fn remove_memory_protocol(existing: &str) -> String {
     with_line_endings_of(existing, desired)
 }
 
-/// Puts back the line endings the file arrived with.
-///
-/// Both of the functions that edit an instruction file normalise to `\n` so
-/// their matching has one shape to look for. Written back that way, a file a
-/// Windows editor produced comes out with every line changed — one block edited
-/// and the rest of somebody's own document rewritten underneath it, which is
-/// noise in a diff and a change nobody asked for.
-///
-/// [`remove_memory_protocol`] already refuses to report an untouched file as
-/// changed for exactly this reason. That covered one case; this covers the
-/// rest.
-///
-/// Any `\r\n` at all counts as a CRLF file. One holding both is inconsistent
-/// already, and settling it on the ending it mostly has beats inventing a third
-/// answer.
 fn with_line_endings_of(source: &str, text: String) -> String {
     if source.contains("\r\n") {
         text.replace('\n', "\r\n")
@@ -625,7 +496,6 @@ fn with_line_endings_of(source: &str, text: String) -> String {
     }
 }
 
-/// Drops Leteo's lifecycle hooks, keeping every other tool's.
 fn remove_hooks(existing: &[u8]) -> Result<String> {
     let mut settings: Value =
         serde_json::from_slice(existing).context("hook settings are not valid JSON")?;
@@ -635,8 +505,6 @@ fn remove_hooks(existing: &[u8]) -> Result<String> {
                 entries.retain(|entry| !is_leteo_hook_entry(entry));
             }
         }
-        // An event left with no hooks at all is a key that says nothing. It was
-        // not there before Leteo arrived, so it does not stay after it leaves.
         hooks.retain(|_, entries| entries.as_array().is_none_or(|list| !list.is_empty()));
         let empty = hooks.is_empty();
         if empty && let Some(settings) = settings.as_object_mut() {
@@ -646,19 +514,10 @@ fn remove_hooks(existing: &[u8]) -> Result<String> {
     to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &settings)
 }
 
-/// Whether ZCode's config explicitly switches the configuration-hook runner
-/// off. A missing switch means on — it is the client's own default.
 fn zcode_hook_runner_disabled(config: &Value) -> bool {
     config.get("hooks").and_then(|hooks| hooks.get("enabled")) == Some(&Value::Bool(false))
 }
 
-/// Drops Leteo's lifecycle hooks out of ZCode's config, where they sit one
-/// level deeper than everywhere else: `hooks.events.<Event>`.
-///
-/// The same judgement as [`remove_hooks`] one layer down. An event left with
-/// no hooks at all is a key that says nothing, so it goes; whatever else the
-/// block carries — `enabled` above all — stays, because switching the hook
-/// runner off for somebody whose other hooks may need it is not Leteo's call.
 fn remove_nested_leteo_hooks(config: &mut Value) {
     let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
@@ -666,9 +525,6 @@ fn remove_nested_leteo_hooks(config: &mut Value) {
     let Some(events) = hooks.get_mut("events").and_then(Value::as_object_mut) else {
         return;
     };
-    // The shape under an event is the same wrapper every agent uses — matcher,
-    // then the list of commands — so entries are recognised by their command,
-    // not by their nesting.
     for entries in events.values_mut() {
         if let Some(entries) = entries.as_array_mut() {
             entries.retain(|entry| !is_leteo_hook_entry(entry));
@@ -769,10 +625,6 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
                 adapter.display_name
             )
         })?;
-        // A bundle already registers these, and the agent runs both files. Two
-        // registrations means every event fires twice: the session opening
-        // reported twice, every prompt stored twice, every subagent captured
-        // twice. It looks like a repeated message and it is duplicated data.
         if let Some(bundle) = installed_plugin_hooks(&environment, adapter) {
             anyhow::bail!(
                 "the Leteo plugin already registers these hooks at {}, and installing them \
@@ -791,9 +643,6 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
         } else {
             read_optional(hooks_path)?
         };
-        // ZCode keeps its hooks in the same file as the server, as Codex does,
-        // but in JSON — so the file just written is parsed again rather than
-        // edited by line, and everything in it that is not a hook survives.
         let desired_hooks = if adapter.config_format == ConfigFormat::Json(McpFormat::Zcode) {
             render::render_zcode_hooks(
                 hooks_path,
@@ -814,9 +663,6 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
                     adapter.hook_registrations,
                     &environment.executable,
                 )?,
-                // Reached only when an agent claims hooks it has no file for;
-                // DeepSeek Harness declares `hooks_path: None`, so the error
-                // above already refused it.
                 ConfigFormat::DshPatch => unreachable!("DeepSeek Harness takes no hooks"),
             }
         };
@@ -874,12 +720,6 @@ fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
     Ok(())
 }
 
-/// One lifecycle registration: which agent event runs which Leteo hook, on
-/// what matcher, with how long to live.
-///
-/// A named row rather than a tuple because agents subscribe to rows — see
-/// [`AgentAdapter::hook_registrations`] — and a fifth field can be added
-/// without rewriting every subscriber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookRegistration {
     pub event: &'static str,
@@ -933,7 +773,6 @@ pub const SESSION_END: HookRegistration = HookRegistration {
     timeout_seconds: 3,
 };
 
-/// Every registration Leteo knows how to write.
 const HOOK_EVENTS: &[HookRegistration] = &[
     SESSION_START,
     POST_COMPACTION,
@@ -999,7 +838,6 @@ fn names_the_leteo_binary(before: &str) -> bool {
     name.eq_ignore_ascii_case("leteo")
 }
 
-/// Recognizes entries Leteo previously wrote, whatever path the binary had.
 fn is_leteo_hook_entry(entry: &Value) -> bool {
     entry
         .get("hooks")
@@ -1054,10 +892,6 @@ impl SetupEnvironment {
                 None,
                 env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
             ),
-            // The harness home, resolved once like `CLAUDE_CONFIG_DIR`. An explicit
-            // option outranks the variable, which a test pointing at a scratch
-            // directory cannot fight; otherwise `$DSH_HOME` is honored. A
-            // relative or empty value says nothing, as it does in the harness.
             dsh_home: resolve_optional_root(
                 options.dsh_home.clone(),
                 env::var_os("DSH_HOME").map(PathBuf::from),
@@ -1077,8 +911,6 @@ impl SetupEnvironment {
             .unwrap_or_else(|| self.home.join("AppData").join("Roaming"))
     }
 
-    /// Pi lets its agent directory be relocated, and honoring that is the
-    /// difference between configuring the running Pi and configuring nothing.
     fn pi_agent_dir(&self) -> PathBuf {
         env::var_os("PI_CODING_AGENT_DIR")
             .map(PathBuf::from)
@@ -1086,8 +918,6 @@ impl SetupEnvironment {
             .unwrap_or_else(|| self.home.join(".pi").join("agent"))
     }
 
-    /// DeepSeek Harness's home, `$DSH_HOME` when it is set and `~/.dsh` when
-    /// not — the same resolve-once contract as [`Self::claude_config_dir`].
     fn dsh_home_dir(&self) -> PathBuf {
         self.dsh_home
             .clone()
@@ -1167,8 +997,6 @@ fn mcp_entry(format: McpFormat, executable: &Path, tools: &str) -> Result<Value>
             "args": ["mcp", profile],
             "lifecycle": "eager"
         }),
-        // ZCode's canonical entry shape is what its own source converts every
-        // other dialect into: a stdio server with a command and arguments.
         McpFormat::Zcode => json!({
             "type": "stdio",
             "command": command,
@@ -1177,7 +1005,6 @@ fn mcp_entry(format: McpFormat, executable: &Path, tools: &str) -> Result<Value>
     })
 }
 
-/// The tool profile a setup writes when the caller does not name one.
 pub const DEFAULT_TOOLS: &str = "agent";
 
 fn render_codex_config(existing: Option<&[u8]>, executable: &str, tools: &str) -> Result<String> {
@@ -1262,14 +1089,11 @@ pub fn upsert_memory_protocol(existing: &str) -> String {
     let desired = format!(
         "{}{block}{}",
         &text[..start],
-        // Any further blocks are duplicates of the one just written, including
-        // the pair a file damaged by the old behaviour is carrying now.
         strip_memory_protocol_blocks(&text[end..])
     );
     with_line_endings_of(existing, desired)
 }
 
-/// Drops every complete protocol block from `text` and keeps everything else.
 fn strip_memory_protocol_blocks(text: &str) -> String {
     let mut rest = text;
     let mut kept = String::new();
@@ -1283,10 +1107,6 @@ fn strip_memory_protocol_blocks(text: &str) -> String {
     kept
 }
 
-/// The instruction file Leteo wants this agent to have.
-///
-/// A file being created starts from whatever that agent says a new one starts
-/// with — which for all but one of them is nothing at all.
 fn render_instructions(adapter: &AgentAdapter, existing: &str, is_new: bool) -> String {
     let existing = if is_new {
         adapter.new_instruction_file
@@ -1387,13 +1207,6 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// Another agent that reads the same instruction file and still has Leteo
-/// configured, if there is one.
-///
-/// "Still" is read from the other agent's own MCP config rather than assumed,
-/// so uninstalling the second of two shared readers does take the block away:
-/// by then nothing names Leteo any more, and a block left behind would be
-/// instructions for tools that are gone.
 fn still_configured_sharer(
     adapter: &AgentAdapter,
     instructions: &Path,
@@ -1417,11 +1230,6 @@ fn still_configured_sharer(
     Ok(None)
 }
 
-/// Whether a config file still has Leteo's server in it.
-///
-/// A file that will not parse counts as naming it: the alternative is deciding
-/// somebody else's broken config means Leteo is gone and taking a block away on
-/// the strength of that.
 fn names_leteo(config: &[u8], format: ConfigFormat) -> bool {
     let Ok(text) = std::str::from_utf8(config) else {
         return true;
@@ -1438,10 +1246,6 @@ fn names_leteo(config: &[u8], format: ConfigFormat) -> bool {
     }
 }
 
-/// Takes a file away, the way `apply_content` puts one there.
-///
-/// Beside it rather than inline, so a rehearsal skips the same way: a `--dry-run`
-/// that deleted would be the one rehearsal that costs something.
 fn remove_file(path: &Path, kind: ActionKind, dry_run: bool) -> Result<SetupAction> {
     if !dry_run {
         match fs::remove_file(path) {
@@ -1490,43 +1294,18 @@ fn apply_content(
 #[cfg(test)]
 mod tests;
 
-/// What one agent's lifecycle hooks look like from outside the agent.
 #[derive(Debug, Clone, Serialize)]
 pub struct HookHealth {
     pub agent: &'static str,
     pub display_name: &'static str,
-    /// Where `leteo setup --hooks` put them, if it has.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configured: Option<PathBuf>,
-    /// Where an installed plugin bundle keeps its own, if one is installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundled: Option<PathBuf>,
-    /// Why these hooks will not do what the person installing them expected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue: Option<String>,
 }
 
-/// Whether Leteo's hooks are installed for each agent, and whether they will
-/// actually fire.
-///
-/// The README has always said to run `leteo doctor` when a hook goes quiet, and
-/// until now doctor could only answer questions about SQLite — it would report
-/// a perfectly healthy store to somebody whose hooks had never run once. These
-/// are the two ways that happens, and neither says anything on its own:
-///
-/// **Registered twice.** A plugin bundle and `leteo setup --hooks` write to
-/// different files and the agent reads both, so every event fires twice. Setup
-/// refuses to add the second copy, but nothing stops the plugin being installed
-/// afterwards, and a real store collected twenty-three pairs of identical
-/// prompts that way.
-///
-/// **Never trusted.** Codex will not run a hook it has not been shown, and the
-/// screen that asks offers "Continue without trusting (hooks won't run)". Take
-/// that once and Leteo looks installed — the MCP tools still work — while
-/// nothing automatic ever fires again.
-///
-/// Read-only and quiet about failure, like [`is_configured`]: an agent whose
-/// files cannot be read is one with nothing to report, not an error to raise.
 pub fn hook_health(options: &SetupOptions) -> Vec<HookHealth> {
     let Ok(environment) = SetupEnvironment::resolve(options) else {
         return Vec::new();
@@ -1557,11 +1336,6 @@ pub fn hook_health(options: &SetupOptions) -> Vec<HookHealth> {
                     adapter.display_name
                 ))
             } else {
-                // The same shape as the Codex arm above, and the sibling it was
-                // missing: hooks that are installed and cannot fire. Setup turns
-                // this switch on, so the case that matters is somebody turning
-                // it back off afterwards — every Leteo hook stops, and a check
-                // that reads the file for the command alone calls that healthy.
                 hook_runner_switch_is_off(&environment, adapter)
                     .filter(|_| configured.is_some() || bundled.is_some())
                     .map(|switch| {
@@ -1584,41 +1358,15 @@ pub fn hook_health(options: &SetupOptions) -> Vec<HookHealth> {
         .collect()
 }
 
-/// Whether a hook settings file registers hooks that run the Leteo binary.
-///
-/// By the command rather than by the shape of the file, so the one reader
-/// answers for both formats: a JSON settings file and a Codex `config.toml`
-/// look nothing alike, but a Leteo hook is `… hook session-start` in either.
 fn file_registers_leteo_hooks(path: &Path) -> bool {
     fs::read_to_string(path).is_ok_and(|text| runs_a_leteo_hook(&text))
 }
 
-/// Whether Codex has been told to trust any hook at all.
-///
-/// Trust is recorded per hook as `hooks.state."<key>".trusted_hash`, and the
-/// key names the source the hook came from in a form this cannot reconstruct.
-/// So the question asked is the weaker one that cannot be answered wrongly:
-/// *no* trusted hash anywhere means the review screen has never been accepted,
-/// and nothing Leteo installed is running. A store with some trust granted is
-/// left alone rather than guessed at.
 fn codex_trusts_any_hook(environment: &SetupEnvironment) -> bool {
     fs::read_to_string(environment.home.join(".codex").join("config.toml"))
         .is_ok_and(|text| text.contains("trusted_hash"))
 }
 
-/// Whether a plugin bundle already registers Leteo's lifecycle hooks.
-///
-/// For asking before installing rather than failing during. `setup` refuses
-/// `--hooks` when a bundle is present, which is right for a command somebody
-/// typed but wrong for the wizard: it would turn every run into a reported
-/// failure for anyone who installed the plugin, over hooks they already have.
-///
-/// Asked per agent, because the caches are per agent — see
-/// [`installed_plugin_hooks`].
-///
-/// Quiet about failure, like [`is_configured`] beside it: an agent that cannot
-/// be found, or an environment that cannot be resolved, is one where no bundle
-/// was found.
 pub fn plugin_registers_hooks(agent: &str, options: &SetupOptions) -> bool {
     let Ok(adapter) = find_adapter(agent) else {
         return false;
@@ -1629,17 +1377,6 @@ pub fn plugin_registers_hooks(agent: &str, options: &SetupOptions) -> bool {
         .is_some()
 }
 
-/// Whether this agent's own configuration switches its hook runner off, and the
-/// file that says so.
-///
-/// One reader for the two questions that need the answer — the wizard, which
-/// must not ask for hooks that would be refused, and `doctor`, which must not
-/// call hooks healthy when nothing will run them. Written twice, one of them
-/// would learn about a second client with such a switch and the other would
-/// not.
-///
-/// Only ZCode has one today, and only an explicit `false` counts: a missing
-/// switch means on, which is that client's own default.
 fn hook_runner_switch_is_off(
     environment: &SetupEnvironment,
     adapter: &AgentAdapter,
@@ -1653,19 +1390,6 @@ fn hook_runner_switch_is_off(
     zcode_hook_runner_disabled(&config).then_some(path)
 }
 
-/// Whether asking this agent for hooks would be refused because its own
-/// configuration has the runner switched off.
-///
-/// The companion to [`plugin_registers_hooks`], and there for exactly the same
-/// reason. `setup --hooks` refuses rather than write registrations into a block
-/// the client will never read, which is the right answer to a command somebody
-/// typed and the wrong one to the wizard: the refusal comes before the server
-/// is written, so a ticked ZCode ended up with no memory at all over a hooks
-/// preference that was never about it. The wizard drops the hooks half and
-/// installs the rest, which is what it already does for a bundle.
-///
-/// Quiet about failure, like [`is_configured`] beside it: a file that cannot be
-/// read or parsed is not one that says no.
 pub fn hook_runner_switched_off(agent: &str, options: &SetupOptions) -> bool {
     let Ok(adapter) = find_adapter(agent) else {
         return false;
@@ -1676,24 +1400,6 @@ pub fn hook_runner_switched_off(agent: &str, options: &SetupOptions) -> bool {
         .is_some()
 }
 
-/// A plugin bundle already registering Leteo's lifecycle hooks, if one is here.
-///
-/// The bundle and `leteo setup --hooks` write to two different files, and the
-/// agent reads both. Neither knew about the other, so somebody who installed
-/// the plugin and then ran setup got every hook twice — and nothing said so
-/// except a duplicated line on screen. A real store collected twenty-three
-/// pairs of identical prompts that way.
-///
-/// Only the shape is checked, not the version: any bundle under the cache whose
-/// hooks manifest invokes `leteo hook` is one that will fire.
-///
-/// Asked per agent, because each keeps its own cache, named by the agent's own
-/// [`AgentAdapter::plugin_cache_root`]: Claude Code under its config directory,
-/// Codex under `~/.codex`, ZCode under `.zcode/cli`. Guessed from anything
-/// else, a Claude Code bundle would block a *different* product from getting
-/// hooks it does not have — a refusal that reads exactly like the real
-/// duplicate it is meant to catch. Agents without a field carry no plugin
-/// bundle worth refusing today, and answer none.
 fn installed_plugin_hooks(
     environment: &SetupEnvironment,
     adapter: &AgentAdapter,
@@ -1702,8 +1408,6 @@ fn installed_plugin_hooks(
         .join("plugins")
         .join("cache");
     let mut directories = vec![cache];
-    // marketplace / plugin / version / hooks / hooks.json — walked rather than
-    // spelled out, because the version is whatever was installed.
     for _ in 0..3 {
         let mut next = Vec::new();
         for directory in directories {

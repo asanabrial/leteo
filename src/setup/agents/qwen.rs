@@ -1,5 +1,3 @@
-//! Qwen.
-
 use std::path::{Path, PathBuf};
 
 use super::{AgentAdapter, ConfigFormat, McpFormat, SetupEnvironment};

@@ -352,7 +352,6 @@ fn stuck_line(stuck: i64) -> String {
     )
 }
 
-/// The block when the only pairs left are ones nothing can settle.
 fn stuck_only(stuck: i64) -> String {
     format!(
         "## Waiting on a verdict — nothing here for you to settle\n\n{}",

@@ -1,27 +1,3 @@
-//! One module per coding agent Leteo can configure.
-//!
-//! # Why a module each
-//!
-//! Everything Leteo knew about one agent used to be spread over six places in
-//! two files: an entry in the registry table, a `ConfigPath` variant, an
-//! `InstructionPath` variant, two `match` arms in the renderer, and the
-//! `supports_hooks` predicate. Nothing tied them together, so each could be
-//! written without the others and the compiler only caught two of the six — the
-//! `match` arms. Adding Antigravity meant finding all six by memory.
-//!
-//! Now an agent is one file that says where its configuration lives, where its
-//! instructions go, and whether it takes hooks. Adding one is writing that file
-//! and naming it in [`REGISTRY`]; forgetting a piece is a missing field, which
-//! does not compile.
-//!
-//! # What stays out
-//!
-//! Rendering. `ConfigFormat::CodexToml` and the JSONC tolerance OpenCode needs
-//! are properties of a *file format*, not of an agent — two agents could share
-//! either. They stay with the renderer, where the dispatch is already on the
-//! format, rather than being pulled in here so that every agent's file would
-//! look busier.
-
 use std::path::{Path, PathBuf};
 
 use super::{ConfigFormat, HOOK_EVENTS, HookRegistration, McpFormat, SetupEnvironment};
@@ -41,10 +17,6 @@ mod vscode_copilot;
 mod windsurf;
 mod zcode;
 
-/// The five lifecycle registrations every agent takes unless it names fewer.
-///
-/// Pointed at rather than restated so an added deadline or matcher lands on
-/// every subscriber without anybody remembering them twice.
 pub(super) const ALL_HOOK_REGISTRATIONS: &[HookRegistration] = HOOK_EVENTS;
 
 pub(super) use super::ZCODE_HOOK_REGISTRATIONS;
@@ -63,80 +35,21 @@ pub struct AgentAdapter {
     pub slug: &'static str,
     pub display_name: &'static str,
     pub config_format: ConfigFormat,
-    /// Where this agent keeps its list of MCP servers.
     pub(super) config_path: fn(&SetupEnvironment) -> PathBuf,
-    /// Where its instruction file goes.
-    ///
-    /// Handed the MCP configuration path that was just resolved, because most
-    /// agents keep the two side by side and deriving one from the other is
-    /// shorter and harder to get wrong than spelling the directory out twice.
-    ///
-    /// `None` for an agent that reads no instruction file at all.
     pub(super) instruction_path: Option<fn(&SetupEnvironment, &Path) -> PathBuf>,
-    /// What a brand-new instruction file starts with, before Leteo's protocol
-    /// block is appended to it.
-    ///
-    /// Empty for all but one agent, and stated by every agent anyway: a default
-    /// would let the next one inherit silence, and the one time this matters it
-    /// fails invisibly — VS Code Copilot applies an instruction file only if it
-    /// carries `applyTo` front matter, so a file written without one is created
-    /// successfully and then ignored.
     pub(super) new_instruction_file: &'static str,
-    /// Whether that file is one Leteo invented rather than one the agent had.
-    ///
-    /// Ten agents keep their instructions somewhere that was already theirs —
-    /// `CLAUDE.md`, `AGENTS.md` — and uninstalling takes Leteo's block out and
-    /// leaves the document alone. Three get a file named after Leteo, and there
-    /// taking the block out leaves an empty file with Leteo's name on it, which
-    /// `uninstall` promises not to do. For VS Code Copilot it left the `applyTo`
-    /// front matter as well: an instruction file that still applies to every
-    /// source file and says nothing.
-    ///
-    /// Stated per agent rather than guessed from the file name, for the reason
-    /// `new_instruction_file` is: a default would let the next one inherit the
-    /// wrong answer silently.
     pub(super) owns_instruction_file: bool,
-    /// Where its lifecycle hooks are registered.
-    ///
-    /// `None` is the common case. Only an agent with a stable, documented hook
-    /// settings file gets one; the rest stay out rather than risk writing
-    /// entries the agent would reject.
     pub(super) hooks_path: Option<fn(&SetupEnvironment) -> PathBuf>,
-    /// Which lifecycle registrations this agent can actually fire.
-    ///
-    /// Rows of [`super::HOOK_EVENTS`] pointed at, not restated — one list of
-    /// event, matcher and deadline, so an edit to a hook lands on every agent
-    /// that runs it. Most agents take all of them; ZCode names three because
-    /// its client has no `SubagentStop` and no `SessionEnd`, and its file says
-    /// why.
-    ///
-    /// A field rather than a default so adding an agent forces the question:
-    /// "can this client fire all five?" answered in the same file as everything
-    /// else about it.
     pub(super) hook_registrations: &'static [HookRegistration],
-    /// Where its client caches installed plugin bundles, if it can install
-    /// any.
-    ///
-    /// The refusal in [`crate::setup::setup`] that keeps hooks from firing
-    /// twice needs this per agent. Guessed from anything coarser, one product's
-    /// installed bundle would block another product from getting hooks at all,
-    /// over a cache the second never reads. `None` means no bundle route worth
-    /// refusing today; those agents answer none.
     pub(super) plugin_cache_root: Option<fn(&SetupEnvironment) -> PathBuf>,
 }
 
 impl AgentAdapter {
-    /// Whether Leteo can install lifecycle hooks for this agent.
-    ///
-    /// Callers that offer hooks as a choice need to know this up front: asking
-    /// for them on an agent that has none is an error, so the question should
-    /// not be put in the first place.
     pub fn supports_hooks(&self) -> bool {
         self.hooks_path.is_some()
     }
 }
 
-/// The agents Leteo can configure, in the order they are offered.
 pub const REGISTRY: &[AgentAdapter] = &[
     opencode::ADAPTER,
     claude_code::ADAPTER,
@@ -201,16 +114,6 @@ mod tests {
         assert_eq!(seen.len(), REGISTRY.len());
     }
 
-    /// The three-way split the prose quotes, taken from the registry.
-    ///
-    /// `uninstall` behaves differently in each of the three, so the counts are
-    /// worth stating — and they were stated by hand in four places, which is how
-    /// they went wrong. Pi was added with no instruction file at all and nobody
-    /// went back: the doc comment above, `cli.md` §5 and the uninstall guard all
-    /// said nine agents kept a file that was already theirs, and eight did.
-    ///
-    /// A fourteenth agent fails this rather than quietly making four sentences
-    /// false, and the numbers to fix are here.
     #[test]
     fn the_registry_splits_three_ways_and_the_counts_are_taken_from_it() {
         let mut theirs = Vec::new();
@@ -239,10 +142,6 @@ mod tests {
         assert_eq!(none, ["pi"], "read no instruction file at all");
         assert_eq!(theirs.len() + ours.len() + none.len(), REGISTRY.len());
 
-        // And the other count the prose leans on: hooks. Three agents run them,
-        // and only two are reached by `setup --hooks` — OpenCode's come from the
-        // plugin under `plugin/opencode/`, which maps its lifecycle events onto
-        // `leteo hook <event>` without any settings file to write.
         let with_hooks: Vec<_> = REGISTRY
             .iter()
             .filter(|adapter| adapter.supports_hooks())
@@ -301,9 +200,6 @@ mod tests {
                 }
             }
 
-            // An instruction file may be shared, but only where both products
-            // genuinely read it. A new pair turning up here is a question to
-            // answer in their sources, not a line to add.
             for (path, mut agents) in shared_instructions {
                 agents.dedup();
                 if agents.len() > 1 {
@@ -327,10 +223,6 @@ mod tests {
 
     #[test]
     fn every_agent_answers_every_question_on_every_platform() {
-        // The point of one module per agent: a half-written one cannot compile.
-        // What the compiler cannot check is that the paths are usable, so that
-        // is checked here rather than found by a person whose setup wrote a
-        // file to a relative path from wherever they happened to be standing.
         for platform in [Platform::Windows, Platform::MacOs, Platform::Unix] {
             let environment = environment(platform);
             for adapter in REGISTRY {
@@ -361,9 +253,6 @@ mod tests {
 
     #[test]
     fn only_a_new_instruction_file_gets_a_preamble() {
-        // The one agent that needs one needs it *only* when creating the file.
-        // Prepending it to an existing file would put front matter in the
-        // middle of somebody's notes.
         let copilot = REGISTRY
             .iter()
             .find(|adapter| adapter.slug == "vscode-copilot")

@@ -158,7 +158,6 @@ fn a_silenced_leteo_does_not_stamp_the_reminder_clock() {
         "a silent run must leave no clock behind"
     );
 
-    // Turned back up, the reminder that was due arrives.
     settings::save(
         temp.path(),
         &Settings {
@@ -234,7 +233,6 @@ fn a_prompt_surfaces_a_relevant_memory_and_stays_quiet_otherwise() {
         quiet.additional_context
     );
 
-    // And the prompt is saved either way, which is what this hook is for.
     assert!(hit.prompt_saved && quiet.prompt_saved);
 }
 
@@ -577,7 +575,6 @@ fn a_renamed_project_folds_the_directory_name_into_the_detected_project() {
     );
 }
 
-/// A memory in the hook's project, ready to be saved.
 fn memory(title: &str, content: &str) -> crate::memory::model::AddObservation {
     crate::memory::model::AddObservation {
         session_id: "agent-session".to_owned(),
@@ -1083,7 +1080,6 @@ fn the_hook_speaks_in_the_voices_language_rather_than_the_screens() {
             .system_message
     };
 
-    // Following, so it says it in Leteo's language.
     let spanish = greeting(None).expect("a store with something in it is greeted");
     assert_eq!(
         spanish,
@@ -1092,7 +1088,6 @@ fn the_hook_speaks_in_the_voices_language_rather_than_the_screens() {
         "the voice must follow the screens until it is given a language"
     );
 
-    // Pinned, so it does not.
     let english = greeting(Some(crate::settings::Interface::English))
         .expect("still greeted, in the other language");
     assert_eq!(
@@ -2024,7 +2019,6 @@ fn a_session_opening_says_which_memories_have_come_round() {
     );
 }
 
-/// Runs the session-start hook and returns whatever it says out loud.
 fn start_session(store: &mut Store, directory: &Path) -> String {
     run(store, HookEvent::SessionStart, &input(directory))
         .unwrap()
@@ -2276,7 +2270,6 @@ fn a_subagent_that_files_a_list_is_cut_off_and_says_how_much_was_left() {
         "the agent is told what was left, and it still has the text: {said}"
     );
     assert!(said.contains("mem_save"), "and what to do about it: {said}");
-    // The store holds exactly what was announced.
     assert_eq!(
         store.count_observations(Some("repo")).unwrap() as usize,
         crate::memory::normalize::MAX_LEARNINGS

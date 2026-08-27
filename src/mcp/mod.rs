@@ -19,7 +19,7 @@ use std::{
 
 use rmcp::{
     Json, ServerHandler, ServiceExt, handler::server::wrapper::Parameters, model::CallToolResult,
-    schemars, tool, tool_handler, tool_router,
+    schemars, tool, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -619,7 +619,18 @@ impl LeteoMcpServer {
     }
 }
 
-#[tool_handler(router = self.router)]
+/// How long a client may treat this process's `tools/list` as fresh, in
+/// milliseconds (SEP-2549).
+///
+/// The list is fixed for the process's lifetime — the `--tools` profile is a
+/// startup flag — so within one process any TTL is honest. What a long TTL
+/// cannot survive is the process ending: a restart with a different flag
+/// serves a different list, and a client still holding the old one would
+/// answer tools from a server that no longer has them. Five minutes bounds
+/// how far that mistake can travel while still keeping the list out of every
+/// turn a re-listing client spends.
+const TOOLS_LIST_TTL_MS: u64 = 5 * 60 * 1000;
+
 impl ServerHandler for LeteoMcpServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         rmcp::model::ServerInfo::new(
@@ -632,6 +643,60 @@ impl ServerHandler for LeteoMcpServer {
                 .with_title("Leteo"),
         )
         .with_instructions(SERVER_INSTRUCTIONS)
+    }
+
+    /// The tool list, with the cacheability a `2026-07-28` session requires.
+    ///
+    /// This replaces `#[tool_handler(router = self.router)]`, whose expansion
+    /// filled `ttl_ms` and `cache_scope` with `None` and never serialised
+    /// them: a client that negotiated `2026-07-28` (SEP-2549) rejects the
+    /// result as missing two required fields and ends the connection with no
+    /// tools at all. rmcp strips `resultType` for older peers but fills
+    /// nothing for newer ones — compatibility was built backwards only — so
+    /// the value is the server's to state.
+    ///
+    /// The fields are absent for older revisions rather than set-and-stripped:
+    /// they did not exist there, and publishing them would rely on every
+    /// legacy client tolerating a property its schema never named. The
+    /// comparison is lexical for the same reason rmcp's own dispatch is — ISO
+    /// dates compare the same either way.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let mut result = rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools: self.router.list_all(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: None,
+            cache_scope: None,
+        };
+        if context.protocol_version().is_some_and(|version| {
+            version.as_str() >= rmcp::model::ProtocolVersion::V_2026_07_28.as_str()
+        }) {
+            // `public`, not `private`: the list depends on the `--tools` flag
+            // the process started with, never on who is asking, and a local
+            // stdio server has one caller. There is no authorization context
+            // to leak across.
+            result.ttl_ms = Some(TOOLS_LIST_TTL_MS);
+            result.cache_scope = Some(rmcp::model::CacheScope::Public);
+        }
+        Ok(result)
+    }
+
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.router.call(tcc).await
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.router.get(name).cloned()
     }
 }
 

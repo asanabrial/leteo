@@ -73,7 +73,7 @@ restore from the `original` it holds — before believing any test result.
 
 ### SURVIVED is not the same as unguarded
 
-Eleven tests carry `#[ignore = "requires TEST_DATABASE_URL …"]`, including the
+Some tests carry `#[ignore = "requires TEST_DATABASE_URL …"]`, including the
 one that proves a tenant cannot reach another tenant's project. They do not run
 locally; CI runs them against a real PostgreSQL service.
 

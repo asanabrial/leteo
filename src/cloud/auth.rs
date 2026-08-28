@@ -453,9 +453,9 @@ fn normalize_environment(environment: &str) -> String {
 ///
 /// Split out of `authorize_project` because it is the half that needs no
 /// database. Inside that method it sat behind a `&CloudStore`, so the only
-/// tests that could reach it were among the eleven carrying
+/// tests that could reach it were the ones carrying
 /// `#[ignore = "requires TEST_DATABASE_URL"]` — and none of those reaches
-/// this check. One of the eleven does assert the refusal, at the store's own
+/// this check. One of them does assert the refusal, at the store's own
 /// entry points rather than here; what none of them can do is reach the auth
 /// layer without a database. A mutation deleting the check survived the
 /// entire suite.
@@ -479,7 +479,7 @@ mod tests {
     ///
     /// This check used to sit behind a `&CloudStore`, which put it out of
     /// reach of every test that runs without PostgreSQL — and none of the
-    /// eleven that need one reaches it here. Deleting it survived the whole
+    /// ones that need one reaches it here. Deleting it survived the whole
     /// suite.
     ///
     /// The cases that matter are the ones that are not empty as strings:

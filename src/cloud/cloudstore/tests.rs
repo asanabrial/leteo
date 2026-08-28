@@ -469,9 +469,9 @@ async fn dashboard_session_rechecks_role_and_token_revocation() {
 /// Every query against a tenant's rows narrows to that tenant.
 ///
 /// The behavioural proof of this lives behind `#[ignore]` and a PostgreSQL
-/// service. Eleven such tests exist across the crate, ten of them in this file,
-/// and none runs on a developer's machine; `cargo test -- --ignored` is what
-/// runs them and what names them. What they cover is not summarised here, and
+/// service. Such tests live across the crate, most of them in this file, and
+/// none runs on a developer's machine; `cargo test -- --ignored` is what runs
+/// them and what names them. What they cover is not summarised here, and
 /// no one of them is singled out as the proof of this property: every summary
 /// this comment has carried turned out narrower than the set it described.
 ///

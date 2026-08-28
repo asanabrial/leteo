@@ -13,8 +13,12 @@ use std::path::Path;
 /// Guards that compare a computed count against a sentence spelling it out
 /// need this, and the table lived separately in two of them with different
 /// ranges. Neither covered the small numbers, so the first caller to hand one
-/// over got a panic naming no file and no fix — a second copy of a list, in
-/// the pair of tests whose subject is second copies of lists.
+/// over got a panic naming no file and no fix.
+///
+/// `dead_code` is allowed because each file under `tests/` is its own binary
+/// with its own copy of this module: only `documented_commands.rs` calls this
+/// now, which makes it unused in every other one.
+#[allow(dead_code)]
 pub fn spelled(count: usize) -> &'static str {
     match count {
         1 => "one",

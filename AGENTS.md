@@ -88,10 +88,17 @@ the drift. What stays is narrow: measurements, failure histories, ordering and
 locking invariants, workarounds for compiler/SQLite/OS quirks, and attribution.
 
 One exception, and it is not a comment: the `///` docs on the `schemars` types
-in `src/mcp/` are the `description` fields of the JSON Schema agents read, and
-the docs `tests/repository_guards.rs` quotes are its assertions' text. Both are
-published data; deleting either breaks the suite or the tool surface, which is
-how you know you were looking at the wrong category.
+in `src/mcp/` are the `description` fields of the JSON Schema agents read. They
+are published data; deleting one breaks the tool surface, which is how you know
+you were looking at the wrong category.
+
+**No test reads a comment** — not its wording, and not a count or a list it
+states either. Two guards in `tests/repository_guards.rs` used to, over the
+sentences saying how many tests need a database and over the coverage note in
+`ci.yml`, and both were deleted along with the counts they held. A comment that
+needs a guard to stay true is making a claim it should not make: drop the claim
+rather than check it. Those sentences now name no number, and `cargo test -- --ignored`
+is the list.
 
 Commit subjects are a sentence about what changed, not a label:
 `Notice a hash that has stopped describing its memory, and put it back`. The

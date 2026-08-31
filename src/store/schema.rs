@@ -32,7 +32,7 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 
 /// Every schema change after the baseline, in the order they must be applied.
 ///
-/// Empty, and that is the state a first release starts from. Five numbered
+/// One entry, numbered 18, and it was empty until that one. Five numbered
 /// migrations were folded into the baseline before anything shipped: nothing in
 /// the wild had run them, so there was no history to preserve — only a history
 /// to invent. A database converges on the baseline by inspection rather than by
@@ -48,8 +48,13 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0001_baseline_tables.sql     <- version 1, the shape everything converges to
 ///   0001_baseline_normalize.sql  <- and the data rules that go with it
 ///   0001_baseline_after_the_tables.sql  <- everything else, folded back in
-///   0002_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0018_review_clocks_in_calendar_months.sql  <- the first one after it
+///   0019_something.sql                  <- add here, and bump SCHEMA_VERSION
 /// ```
+///
+/// The next number is 19 rather than 2 because 2 through 17 are spent history
+/// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
+/// band and says why.
 ///
 /// Eleven of them accumulated before the first release: ten collapsed into one
 /// numbered 16, then one more numbered 17. They are the baseline now and the
@@ -60,8 +65,18 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///
 /// What that costs is stated so nobody rediscovers it: a store stamped above
 /// `SCHEMA_VERSION` is refused at `open`, by design, because from here on that
-/// means a newer build wrote it.
-pub(super) const MIGRATIONS: &[(i32, Migration)] = &[];
+/// means a newer build wrote it — and one stamped inside the pre-release band
+/// is refused too, for the different reason `LAST_PRE_RELEASE_VERSION` records.
+pub(super) const MIGRATIONS: &[(i32, Migration)] = &[(
+    18,
+    Migration::Rust(
+        REVIEW_CLOCKS_IN_CALENDAR_MONTHS,
+        review_clocks_in_calendar_months,
+    ),
+)];
+
+pub(super) const REVIEW_CLOCKS_IN_CALENDAR_MONTHS: &str =
+    include_str!("../../migrations/0018_review_clocks_in_calendar_months.sql");
 
 /// How a migration is carried out.
 ///
@@ -73,20 +88,20 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[];
 /// while the Rust skipped the blank and found the answer. One rule, one
 /// implementation, and the file keeps the prose explaining why.
 ///
-/// Unconstructed while [`MIGRATIONS`] is empty, and kept rather than deleted
-/// with it. This is the contract the next migration is written against, and
-/// rebuilding it would mean rediscovering the parts that are not obvious: the
-/// single transaction around the whole run, the stamp *after* the step rather
-/// than before, and the reason there is a `Rust` variant at all.
-// `expect` rather than `allow`: the first migration added after the release
-// makes this constructed again, and an `allow` would sit there silently
-// permitting a lint that no longer fires. This one fails the build instead,
-// which is the reminder to delete it.
-#[expect(
-    dead_code,
-    reason = "the machinery the first post-release migration uses"
-)]
+/// Constructed again as of migration 18, which is the `Rust` variant's second
+/// use and the reason the variant was kept while nothing used it. The parts
+/// that are not obvious, and that a rebuild would have had to rediscover: one
+/// transaction around the whole run, the stamp *after* the step rather than
+/// before, and a `Rust` arm for a rule the code already owns.
 pub(super) enum Migration {
+    // The half that is not carried yet. Migration 18 happens to be a `Rust`
+    // one, so this arm is unconstructed for the same reason the whole enum
+    // was until it existed — and it is `expect` rather than `allow` for the
+    // same reason too: the first migration that is plain SQL makes this
+    // constructed again and fails the build here, which is the reminder to
+    // delete the attribute. An `allow` would sit there permitting a lint that
+    // no longer fires.
+    #[expect(dead_code, reason = "the arm the first SQL migration uses")]
     Sql(&'static str),
     /// The documentation, and the step that does the work.
     Rust(&'static str, fn(&Connection) -> Result<(), rusqlite::Error>),
@@ -98,14 +113,40 @@ pub(super) enum Migration {
 /// a higher number was written by a newer Leteo and is refused, because an
 /// older binary cannot know what changed and would write rows the new shape
 /// does not expect.
-/// Numbering starts at seven because the six below it are history: baseline,
-/// canonical types, stemmed index, lowercase projects, normalised projects,
-/// summary headlines. All six were folded into the baseline, so a database
-/// carrying any of those numbers holds the same schema as one carrying `1` —
-/// which is why the first real migration was numbered above all of them instead
+/// Numbering skips 2 through 17 because they are spent: canonical types,
+/// stemmed index, lowercase projects, normalised projects, summary headlines,
+/// and the eleven that followed them. (1 is the baseline, and is the one number
+/// in that stretch that is not skipped.) All six were folded into the baseline, and a database
+/// that ran *all* of them holds the same schema as one carrying `1` — which is
+/// the claim that made re-stamping look safe, and which is true of a stamp of
+/// 17 and not of a stamp of 8. That is why those numbers are refused rather
+/// than migrated; see `LAST_PRE_RELEASE_VERSION`. It is also why the first real
+/// migration is numbered above all of them instead
 /// of re-stamping them down and colliding with the numbers a released build
 /// hands out.
-pub(super) const SCHEMA_VERSION: i32 = 1;
+///
+/// Migration 18 is that first one, so this is now 18. The paragraph above was
+/// written before it existed and turned out to be an instruction rather than a
+/// description — and it undercounts what has to be cleared. Six numbers are
+/// history in the sense it means, but *seventeen* have been stamped on a real
+/// file: eleven more migrations, `0007` through `0017`, accumulated before
+/// anything shipped and were folded into the same baseline. Numbering this 7
+/// would have collided with one of them, and a development store already
+/// stamped 7 would have read as current and skipped the repair in silence. 18
+/// is above every number any file has carried.
+///
+/// What raising it past them does *not* do is make them migratable: see
+/// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
+/// ambiguous and stay refused.
+pub(crate) const SCHEMA_VERSION: i32 = 18;
+
+/// The highest number stamped by the numbering that predates any release.
+///
+/// Written out rather than derived as `SCHEMA_VERSION - 1`, which is the same
+/// number today and would be wrong the moment a nineteenth migration exists:
+/// the band that has to be refused is fixed history, and `SCHEMA_VERSION` is
+/// not. Nothing below 2 belongs to it — 0 is unstamped and 1 is the baseline.
+pub(super) const LAST_PRE_RELEASE_VERSION: i32 = 17;
 
 /// Applies the pragmas and the schema, waiting out another process that is
 /// doing the same thing.
@@ -205,9 +246,17 @@ fn prepare_once(connection: &Connection) -> Result<(), StoreError> {
     // And that the database is ours. Engram stamps `user_version = 1` as well,
     // so with the numbering restarted at 1 this fast path matched another
     // program's file exactly and opened it as Leteo's own: `migrate` tells the
-    // two apart by shape and never got the chance. That is the ambiguity
-    // numbering the first migration above 1 used to retire, and it came back
-    // with the renumbering — found by the guard that exists for it.
+    // two apart by shape and never got the chance.
+    //
+    // Migration 18 moved `SCHEMA_VERSION` to 18 and that particular collision
+    // is gone, since Engram's file is stamped 1 and no longer reaches here. The
+    // shape test stays, and the reason is now the general one rather than the
+    // Engram one: this path skips every check in `migrate`, so whatever it
+    // accepts is opened unexamined, and a stamp is a number anybody can write.
+    // It also stopped being covered when the collision went — the fixture that
+    // killed the mutation for it was Engram's own stamp of 1 — which is why
+    // `the_fast_path_refuses_a_file_stamped_current_that_is_not_leteos` now
+    // stamps a fixture at whatever this build understands.
     //
     // One lookup in `sqlite_master`, which is what the shape test costs.
     if schema_version(connection)? == SCHEMA_VERSION && table_exists(connection, "prompts")? {
@@ -275,30 +324,62 @@ fn table_exists(connection: &Connection, name: &str) -> Result<bool, rusqlite::E
 
 /// Brings a database to [`SCHEMA_VERSION`], or explains why it cannot.
 ///
-/// Three cases, and the first is the one no migration library models:
+/// Four cases, and the second is the one no migration library models:
 ///
 /// - **Stamped above what this build knows.** Refused. A newer Leteo wrote it,
 ///   and this binary would corrupt it by writing the older shape.
 /// - **Unstamped.** Adopted: converged to the baseline by inspection, then
 ///   stamped 1. Covers a brand new file, a Leteo database from before
 ///   versioning, and an Engram one.
-/// - **Stamped.** Every migration numbered above it is applied in order.
+/// - **Stamped inside the pre-release band, 2..=17.** Refused, and for a
+///   different reason from the first: what those numbers did lives in the
+///   folded baseline, which runs for an unstamped database and no other. See
+///   [`LAST_PRE_RELEASE_VERSION`].
+/// - **Stamped 1 or above.** Every migration numbered above it is applied in
+///   order.
 pub(super) fn migrate(connection: &Connection) -> Result<(), StoreError> {
     let mut version = schema_version(connection)?;
-    // Stores from before the first release carry the old numbering, and they
-    // are simply below this build rather than a special case: 2..=6 were the
-    // five migrations folded into the baseline, a database that ran them is
-    // structurally identical to a baseline one — verified by comparing a fully
-    // migrated store against a fresh one: same 22 tables, same columns, same
-    // indexes — and every one of those numbers is under `SCHEMA_VERSION`, so
-    // the loop below brings them forward like any other old database.
+    // Stores from before the first release carry the old numbering, and what
+    // that buys them is that they are no longer *ambiguous*: every one of those
+    // numbers is under `SCHEMA_VERSION` since migration 18, so a `6` can no
+    // longer read as "written by something newer", and they used to be
+    // re-stamped down to `1` only to avoid exactly that.
     //
-    // They used to be re-stamped down to `1`, which was necessary only while
-    // `SCHEMA_VERSION` was `1` and a `6` would otherwise read as "written by
-    // something newer". Numbering the first real migration above them retires
-    // that.
+    // It does not make them migratable, and this comment said it did until the
+    // refusal below was written. The verification it rested on — a fully
+    // migrated store compared against a fresh one, same 22 tables, same
+    // columns, same indexes — was carried out on a store that had run the whole
+    // pre-release chain, which is what a stamp of 17 means and not what a stamp
+    // of 6 means. The folded file is reachable from the unstamped branch alone.
     if version > SCHEMA_VERSION {
         return Err(StoreError::SchemaTooNew {
+            found: version,
+            supported: SCHEMA_VERSION,
+        });
+    }
+
+    // Raising `SCHEMA_VERSION` to 18 stopped these numbers being ambiguous —
+    // below 18 a stamp can only be old — and that is not the same as making
+    // them safe. What 0007 through 0017 did lives in `BASELINE_AFTER_TABLES_SQL`
+    // and runs only for a database stamped 0, so falling through here would
+    // bring such a store forward without the migrations ABOVE its own number —
+    // a store stamped 8 ran 0002 through 0008 and holds what those did; what it
+    // has never seen is 0009 through 0017 — then stamp it current and hand it
+    // to a fast path that never looks again.
+    //
+    // How bad that is depends on where in the band it stopped, and the worst
+    // case is the low end: `observations_exact` and its triggers are created by
+    // the block marked `was 0008_exact_index.sql`, so a store stamped 2 lacks
+    // the table while `doctor --repair` would install `obs_exact_*` triggers
+    // over it regardless. A store stamped 8 has that table and is missing the
+    // nine blocks above it instead.
+    //
+    // The comment above said these would be brought forward like any other old
+    // database, and it is corrected there rather than contradicted here: it was
+    // written against a numbering in which every one of them had run, which is
+    // what a stamp of 17 means and not what a stamp of 8 means.
+    if (2..=LAST_PRE_RELEASE_VERSION).contains(&version) {
+        return Err(StoreError::SchemaFromPreRelease {
             found: version,
             supported: SCHEMA_VERSION,
         });
@@ -422,14 +503,175 @@ fn summary_headlines(connection: &Connection) -> Result<(), rusqlite::Error> {
         changed += 1;
     }
 
-    // `title` is a column of the full-text index and these updates go around
-    // the triggers that keep it current, exactly as in 0004 and 0005. Without
-    // the rebuild the new titles would be unsearchable, which is the problem
-    // this migration exists to fix. Skipped when nothing moved, because a
+    // `title` is a column of both full-text indexes, and the rebuild is belt
+    // and braces rather than the only thing keeping them current: `obs_fts_update`
+    // is a bare `AFTER UPDATE ON observations` with no `UPDATE OF` list, so it
+    // fires on these writes too. An earlier version of this comment said the
+    // updates went around the triggers, which was true of 0004 and 0005 — they
+    // ran before the triggers existed — and stopped being true when this step
+    // moved after `adopt_to_baseline`. Skipped when nothing moved, because a
     // rebuild on every open of an already-migrated store is not free.
     if changed > 0 {
         connection
             .execute_batch("INSERT INTO observations_fts(observations_fts) VALUES('rebuild');")?;
+    }
+    Ok(())
+}
+
+/// Migration 18: the review clocks the baseline counted SQLite's way.
+///
+/// `0001_baseline_after_the_tables.sql` fills an empty clock with
+/// `datetime(created_at, '+6 months')`, and `rules::review_after` computes the
+/// same window with `chrono::checked_add_months`. They disagree when the day of
+/// the month does not exist in the target month — chrono clamps to the last
+/// day, SQLite forms 2027-02-31 and rolls it forward to 2027-03-03. Measured
+/// across 2026-2029: 27 such days for the six-month window, 19 for three, 1 for
+/// twelve.
+///
+/// A row is repaired only when what it holds is exactly what the baseline's SQL
+/// would have produced from its own `created_at`, and is not what the rule
+/// says. That condition is the whole safety of this step rather than caution
+/// about it: `mark_reviewed` writes `review_after` from `Utc::now()`, so a
+/// memory somebody has confirmed deliberately carries a clock that is *not*
+/// `created_at` plus the window, and recomputing every row would silently undo
+/// every review the store has recorded.
+fn review_clocks_in_calendar_months(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let rows = {
+        let mut statement = connection.prepare(
+            "SELECT CAST(id AS INTEGER), CAST(type AS TEXT),
+                    CAST(created_at AS TEXT), CAST(review_after AS TEXT)
+               FROM observations
+              WHERE review_after IS NOT NULL",
+        )?;
+        // `CAST`, `Option` and raw bytes together, and it takes all three to
+        // stop one row making a store unopenable. An adopted table keeps its own
+        // column definitions when `migrate_legacy_observations_table` finds `id`
+        // already a primary key and skips the rebuild, and `CREATE TABLE IF NOT
+        // EXISTS` will not reshape it — so on a database this migration will
+        // meet, these columns may be nullable and may hold any type at all.
+        //
+        // `Option` answers NULL. `CAST` answers INTEGER and REAL. Neither
+        // answers a blob that is not valid UTF-8: `CAST` reinterprets bytes
+        // without validating them, and reading the result as `String` then fails
+        // in `ValueRef::as_str`. Any of those failures aborts the step, rolls the
+        // transaction back, and repeats on every subsequent open, because the
+        // stamp is written after the step — so the bytes are taken raw and
+        // decoded lossily, and a row that decodes to something the predicate
+        // rejects keeps a clock three days late. That is the failure worth
+        // having.
+        statement
+            .query_map([], |row| {
+                // `get_ref` rather than `get`, because what has to be survived
+                // is a TEXT value whose bytes are not valid UTF-8, and
+                // `get::<String>` rejects exactly that in `ValueRef::as_str`.
+                // The `CAST` above turns every other storage class into TEXT —
+                // a blob is reinterpreted rather than validated, which is where
+                // such bytes come from — so the `Blob` arm is belt and braces
+                // for a value reaching here uncast. `Vec<u8>` was tried first
+                // and refuses text, which an adoption test caught.
+                let text = |column: usize| -> rusqlite::Result<Option<String>> {
+                    use rusqlite::types::ValueRef;
+                    Ok(match row.get_ref(column)? {
+                        ValueRef::Text(raw) | ValueRef::Blob(raw) => {
+                            Some(String::from_utf8_lossy(raw).into_owned())
+                        }
+                        _ => None,
+                    })
+                };
+                Ok((row.get::<_, i64>(0)?, text(1)?, text(2)?, text(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    // The windows the baseline actually wrote, frozen here as the literals it
+    // used, and used for BOTH halves of this step — recognising the clock it
+    // wrote and computing the one that replaces it.
+    //
+    // Not `rules::review_months` and not `rules::review_after`, and this is the
+    // one place in the crate where reading them would be wrong. Everywhere else
+    // those are the single copy of the rule that AGENTS.md rule 3 asks for. Here
+    // the migration is frozen history: it is released, it is append-only, and it
+    // must give every database the same answer whenever it happens to run. Read
+    // the live table and it stops matching what the baseline wrote on the day
+    // the windows change — repairing nothing and stamping the rest of the world
+    // 18 with the rolled-forward clocks still in it — and, worse, a store that
+    // ran it before that day and one that ran it after would hold different
+    // clocks for the same memory. That is the population split the append-only
+    // rule exists to prevent, produced by the migration meant to close one.
+    const AS_THE_BASELINE_COUNTED: &[(&str, u32)] =
+        &[("decision", 6), ("policy", 12), ("preference", 3)];
+
+    // The baseline's own arithmetic, asked of the same engine that wrote the
+    // value. Reimplementing SQLite's month rollover in Rust to recognise its
+    // output would be a third opinion about months, which is the defect.
+    let mut rolled_forward = connection.prepare("SELECT datetime(?1, '+' || ?2 || ' months')")?;
+    let mut update =
+        connection.prepare("UPDATE observations SET review_after = ?1 WHERE id = ?2")?;
+
+    let mut repaired = 0_usize;
+    let mut skipped = 0_usize;
+    for (id, kind, created_at, stored) in rows {
+        let (Some(kind), Some(created_at), Some(stored)) = (kind, created_at, stored) else {
+            skipped += 1;
+            continue;
+        };
+        // Decoding replaced something, so this row is not the bytes the baseline
+        // wrote and cannot be compared against them. It would fall out of a
+        // predicate below anyway; counted here so the report can tell a row that
+        // could not be read from one that needed nothing.
+        if [&kind, &created_at, &stored]
+            .iter()
+            .any(|value| value.contains(char::REPLACEMENT_CHARACTER))
+        {
+            skipped += 1;
+            continue;
+        }
+        let Some(&(_, months)) = AS_THE_BASELINE_COUNTED
+            .iter()
+            .find(|(known, _)| *known == kind)
+        else {
+            continue;
+        };
+        let Some(from) = crate::timestamp::parse(&created_at) else {
+            skipped += 1;
+            continue;
+        };
+        // Clamping, which is what `rules::review_after` does and what the rule
+        // means; spelled out here rather than called for the reason the frozen
+        // table above gives.
+        let Some(by_the_rule) = from
+            .checked_add_months(chrono::Months::new(months))
+            .map(crate::timestamp::format)
+        else {
+            skipped += 1;
+            continue;
+        };
+        if stored == by_the_rule {
+            continue;
+        }
+        // `Option`, because SQLite returns NULL for a timestamp its own parser
+        // will not read. `timestamp::parse` trims leading whitespace and
+        // SQLite's does not, so the two do not accept exactly the same set, and
+        // a row in the gap would otherwise be an `InvalidColumnType` that makes
+        // the store unopenable.
+        let by_the_baseline: Option<String> =
+            rolled_forward.query_row(rusqlite::params![created_at, months], |row| row.get(0))?;
+        if by_the_baseline.as_deref() != Some(stored.as_str()) {
+            continue;
+        }
+        update.execute(rusqlite::params![by_the_rule, id])?;
+        repaired += 1;
+    }
+    // A row this could not read is not a row that needed nothing, and the
+    // difference is invisible from the outside otherwise. Not an error: a
+    // timestamp one parser takes and the other does not costs a clock three
+    // days, and refusing to open the store over it would cost everything.
+    if skipped > 0 {
+        tracing::debug!(
+            repaired,
+            skipped,
+            "some review clocks could not be read well enough to check"
+        );
     }
     Ok(())
 }

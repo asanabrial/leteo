@@ -149,6 +149,26 @@ All notable changes to Leteo are documented in this file.
   The published tag names are unchanged, and nothing about the local product
   changes — it ships as a plain binary and uses no image.
 
+- **Two implementations of "six calendar months" disagreed at a month's end, and
+  the schema version moves to 18.** `rules::review_after` clamps a day the target
+  month does not have onto that month's last day; the baseline migration's
+  `datetime(created_at, '+6 months')` rolled it forward instead, so a decision
+  written on 31 August was due 3 March rather than 28 February. Measured over
+  2026-2029, the two disagree on 27 days for the six-month window, 19 for three
+  months and 1 for twelve. Migration 18 — the first after the baseline, and
+  written in Rust because expressing the repair in SQL would mean answering in
+  the dialect that caused it — puts the affected clocks back, touching only a row
+  whose clock is exactly what the baseline's arithmetic would have produced, so a
+  clock somebody set by reviewing is left alone.
+
+  `SCHEMA_VERSION` goes from 1 to 18 because every number from 2 to 17 has been
+  stamped on a real file by the pre-release numbering. Those stamps are still
+  refused, now with a message of their own: what they did lives in the folded
+  baseline, which runs only for an unstamped database, so bringing one forward
+  would give it this migration and none of the pre-release migrations above its
+  own number — a store stamped 8 holds what 0002 through 0008 did and has never
+  seen 0009 through 0017.
+
 ## [0.1.2] - 2026-08-12
 
 The npm wrapper published in 0.1.1 could not download on Linux. This is that,

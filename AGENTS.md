@@ -58,6 +58,10 @@ it skips `tests/`, which is where the surface-level guards live.
    names, trigger names — each is one list that the behaviour and its tests both
    read. A hand-written second copy is how `policy` kept a review window that
    nothing could ever fire.
+   One exception, licensed and written down rather than left to look like the
+   defect: a *released* migration may freeze a copy of what it needs, because it
+   must give every database the same answer whenever it happens to run.
+   `openspec/specs/memory-model.md` records the only one there is.
 4. **A limit that is published is the limit that is applied.**
 5. **Say what could not be done.** An empty answer, a busy store, a check that
    could not run — each says which it is. Reporting the nearest named state
@@ -108,7 +112,9 @@ body says what was wrong, what it cost, and how it was measured.
 
 Append-only. A released migration is never edited — databases that already ran
 it will not run it again. Add a new file, bump `SCHEMA_VERSION`, and rebuild the
-full-text indexes if the migration rewrote `observations`. See
+full-text indexes if the migration rewrote a column one of them carries — a
+migration that touches only a column no full-text index carries, as 18 does with
+`review_after`, does not need to. See
 [`openspec/specs/store-and-schema.md`](openspec/specs/store-and-schema.md).
 
 ## Attribution

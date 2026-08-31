@@ -1,0 +1,76 @@
+-- Review clocks the baseline counted SQLite's way, put back to the rule's way.
+--
+-- Carried out in Rust. There is no SQL in this file and that is the point: the
+-- rule this repairs is "add N calendar months", and SQLite's `datetime(x, '+N
+-- months')` is a *different* rule wearing the same words. Writing the repair in
+-- SQL would mean expressing the answer in the dialect that produced the defect.
+-- `Migration::Rust` exists for exactly this, and `0006` is the precedent — a
+-- title derived twice, once in SQL and once in `normalize::headline`, which
+-- disagreed on 21 rows.
+--
+-- What was wrong. `0001_baseline_after_the_tables.sql` fills empty review
+-- clocks with `datetime(created_at, '+6 months')`, and `rules::review_after`
+-- computes the same window with `chrono::checked_add_months`. The two disagree
+-- whenever the day of the month does not exist in the target month: chrono
+-- CLAMPS to the last day, SQLite NORMALISES FORWARD. A decision written on
+-- 2026-08-31 is due 2027-02-28 by the rule and 2027-03-03 by the baseline,
+-- because SQLite forms 2027-02-31 and rolls it over.
+--
+-- How often. Comparing the two implementations over every day from 2026-01-01
+-- to 2029-12-31: 27 disagreeing days for the six-month window, 19 for three
+-- months, 1 for twelve — 6.75, 4.75 and 0.25 days a year. Small, and it was
+-- never going to be found by looking, which is why it survived the
+-- consolidation that was supposed to remove it. The comment above that backfill
+-- says the two implementations "read the same way"; the numbers were made one
+-- list, and the arithmetic was not.
+--
+-- What it cost, plainly: the clock is up to three days late on affected rows,
+-- which harms nobody. The loud cost was the suite. The guard comparing the
+-- migration against the rule fails on those same days, on every platform at
+-- once, and `main` requires all four of its legs — so roughly seven days a year
+-- nothing in this repository could be merged, by anybody, for a reason that
+-- looks exactly like a flake and is not one.
+--
+-- Which rows are touched, and why not simply all of them. A row is repaired
+-- only when its stored clock is EXACTLY what the baseline's SQL would have
+-- produced from its own `created_at` and is not what the rule says. Anything
+-- else is left alone, and that condition is load-bearing rather than
+-- cautious: `mark_reviewed` sets `review_after` from `Utc::now()`, so a memory
+-- somebody has actually confirmed carries a clock that is deliberately not
+-- `created_at` plus the window. Recomputing every row from `created_at` would
+-- silently undo every review this store has ever recorded.
+--
+-- The full-text index needs no rebuild, and the reason is stronger than the
+-- trigger. `observations_fts` indexes title, content, tool_name, type, project
+-- and topic_key; `review_after` is none of them. Nothing this migration writes
+-- can make the index disagree with the row, whether or not `obs_fts_update`
+-- fires — and it does fire, having no `UPDATE OF` list, so the row is re-synced
+-- with identical text on the way past. That is why there is no `rebuild` here
+-- where `summary_headlines` has one: that migration rewrites `title`, which is
+-- an indexed column, and this one does not.
+--
+-- Numbered 18, and the number is the load-bearing part. Everything from 2 to 17
+-- has been stamped on a real file: 2 through 6 were the pre-release migrations
+-- folded into the baseline, and 7 through 17 were eleven more that accumulated
+-- before anything shipped and were folded into the same one. A database
+-- carrying any of those numbers is structurally a baseline database.
+--
+-- So 2 is wrong, because a store stamped 6 would read as newer than the build
+-- and be refused at `open`. And 7 is wrong for the opposite and quieter reason:
+-- a development store already stamped 7 would read as CURRENT, skip this
+-- migration, and keep the clocks it was written to repair — a silent miss
+-- rather than a loud refusal. 18 is above every number any file has carried.
+--
+-- What that changes about 2..=17 is why they are refused, not whether. While
+-- `SCHEMA_VERSION` was 1 they were above the build and ambiguous: a higher
+-- number could equally have meant a newer Leteo, and guessing would be worse
+-- than either. Below 18 they can only be old — and they are still refused, now
+-- for the better reason. Everything those numbers did is in the folded baseline
+-- file, which runs for an unstamped database and no other, so migrating one
+-- forward would give it this migration and none of the pre-release migrations
+-- ABOVE its own number — a store stamped 8 ran 0002 through 0008 and holds what
+-- those did; what it has never seen is 0009 through 0017, and that is the gap
+-- nothing here can fill. It would be stamped current all the same, and the fast
+-- path never looks again. `migrate`'s own comment said such stores would be brought
+-- forward like any other; that comment was written against a numbering in which
+-- all of them had run, and the line refusing them now says so.

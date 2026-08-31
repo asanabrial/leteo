@@ -29,10 +29,21 @@ changes.
    six calendar months, a `policy` after twelve, a `preference` after three.
    Every other type is as true in a year as it is today and carries no review
    date. Calendar months, not multiples of thirty days — that is what the rule
-   says in words. Counted from the memory's own date, not from when a store
-   heard about it: the clock is set in one place, and every path through it
-   agrees, so a memory replicated five months late is due one month from now on
-   both machines rather than six months from now on one of them.
+   says in words. A calendar month that lands on a day the target month does not
+   have is **clamped to that month's last day**, never rolled into the next one:
+   a decision written on 31 August is due on the last day of February — the
+   28th, or the 29th in a leap year — rather than rolling into March, which is
+   where SQLite's `datetime(x, '+6 months')` puts it (the 3rd, or the 2nd when
+   February has 29 days). That
+   is `chrono::checked_add_months`, and it is stated here because the other
+   plausible answer is what SQLite's `datetime(x, '+6 months')` does, which is
+   how the baseline migration and this rule came to disagree on about seven days
+   a year until migration 18 repaired it.
+
+   Counted from the memory's own date, not from when a store heard about it: the
+   clock is set in one place, and every path through it agrees, so a memory
+   replicated five months late is due one month from now on both machines rather
+   than six months from now on one of them.
 
    "One place" was written here while there were two. `reschedule_review` read
    the row's `created_at`, and the INSERT in `add_observation` read
@@ -179,6 +190,14 @@ changes.
   `rules::RELATION_VERBS`. A test walks those lists rather than a copy of
   them: a hand-written third copy is what once let `policy` keep a window
   nothing could ever fire.
+- **A released migration is the one thing allowed to freeze a copy of those
+  numbers**, and it is written down here because an unexplained second copy is
+  indistinguishable from the defect above. Migration 18 carries its own
+  `[("decision", 6), ("policy", 12), ("preference", 3)]`. It is append-only and
+  must give every database the same answer whenever it happens to run; reading
+  the live list would make one migration produce two results either side of a
+  window change, which is the split append-only exists to prevent. A migration
+  freezes what it needs; nothing else may.
 - A title is one line, and no longer than a body. Both doors fold and bound it
   through `normalize::title`: saving folded and did not bound, updating did
   neither, so 200 KB went in and came back out of `mem_get_observation` from the

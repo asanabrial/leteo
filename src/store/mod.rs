@@ -478,11 +478,31 @@ pub enum StoreError {
         "this database is at schema version {found}, but this build of Leteo understands {supported}; upgrade Leteo to open it"
     )]
     SchemaTooNew { found: i32, supported: i32 },
+    /// A stamp from the numbering that existed before anything was released.
+    ///
+    /// Refused rather than migrated, and it is worth saying why the refusal
+    /// survived migration 18 raising `SCHEMA_VERSION` past it. Those numbers
+    /// stopped being *ambiguous* — below 18 a stamp can only be old — but they
+    /// never became *safe*. The content of 0007 through 0017 lives in
+    /// `BASELINE_AFTER_TABLES_SQL`, which runs only for a database stamped 0,
+    /// so a store stamped 8 would be brought forward without ever receiving the
+    /// migrations above its own number — it ran 0002 through 0008 and has never
+    /// seen 0009 through 0017 — then stamped current and skipped by the fast
+    /// path for ever. The one store in the world in that position
+    /// was re-stamped by hand; a loud refusal is the right answer and a silent
+    /// mis-stamp is not.
+    #[error(
+        "this database is at schema version {found}, from Leteo's pre-release numbering, and this build understands {supported}; those versions were folded into the baseline and cannot be migrated forward. Export what you need and import it into a fresh store — re-stamping this one to {supported} by hand would make it look current while it is still missing everything the migrations above {found} did"
+    )]
+    SchemaFromPreRelease { found: i32, supported: i32 },
     /// The file is Engram's, and Leteo has a command for that.
     ///
-    /// Engram stamps `user_version = 1`, which is also what Leteo stamps a
-    /// database it has converged to its own baseline — so the version cannot
-    /// tell the two apart and the shape has to. Without this, pointing any
+    /// Engram stamps `user_version = 1`, which is what Leteo stamped a database
+    /// it had converged to its own baseline until migration 18 moved
+    /// `SCHEMA_VERSION` to 18 — so the version could not tell the two apart and
+    /// the shape had to. It still has to: a converged Leteo store passes
+    /// through the baseline stamp on its way forward, and a number is a thing
+    /// anybody can write into a file. Without this, pointing any
     /// command at an Engram database ran migrations written for Leteo's baseline
     /// against Engram's tables and came back with `no such table: prompts`: an
     /// internal name, a SQLite error code, and no mention of the one command
@@ -917,8 +937,8 @@ mod schema;
 mod wire;
 
 use rows::*;
-pub(crate) use schema::SUMMARY_HEADLINE_CHARS;
 use schema::*;
+pub(crate) use schema::{SCHEMA_VERSION, SUMMARY_HEADLINE_CHARS};
 use wire::*;
 pub(crate) mod search;
 pub(crate) use search::DEFAULT_SEARCH_LIMIT;

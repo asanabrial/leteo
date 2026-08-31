@@ -819,20 +819,30 @@ fn session_summaries_are_retitled_by_what_each_session_was_for() {
 
 /// A store from the pre-release numbering is refused, and says both numbers.
 ///
-/// Eleven migrations accumulated before anything shipped, and the numbering
-/// started again at 1 when they were folded into the baseline. A database
-/// carried through development is stamped somewhere in 2..=17 and this build
-/// understands 1, so it is refused — deliberately, because from here on a
-/// number above `SCHEMA_VERSION` means a newer build wrote the file, and
-/// guessing which of the two it is would be worse than either.
+/// Eleven migrations accumulated before anything shipped, on top of the six
+/// before them, so a database carried through development is stamped somewhere
+/// in 2..=17. All of them were folded into the baseline, and the folded file
+/// runs for a database stamped 0 and for no other — so bringing such a store
+/// forward would give it migration 18 and none of the tables, indexes and data
+/// folds the migrations above its own number would have made — a store stamped
+/// 8 holds what 0002 through 0008 did and has never seen 0009 through 0017 —
+/// then stamp it current and hand it to a fast path that never looks again.
+///
+/// Migration 18 raised `SCHEMA_VERSION` above every one of those numbers, which
+/// changed what the refusal is *for* without removing it. It used to guard an
+/// ambiguity — at `SCHEMA_VERSION = 1` a stamp of 6 could equally have meant a
+/// newer Leteo — and that ambiguity is gone. What is left is the reason the
+/// refusal was right anyway, and it is the stronger one: those stores cannot be
+/// completed by this code, and saying so is better than stamping them and
+/// forgetting.
 ///
 /// The one store in the world in that position is re-stamped by hand. Code that
 /// recognised the old numbering would outlive the reason for it, and this is a
-/// test rather than that code: what it holds is that the refusal names what was
-/// found and what is understood, so whoever meets it knows which it is.
+/// test rather than that code: what it holds is that both refusals name what
+/// was found and what is understood, so whoever meets one knows which it is.
 #[test]
 fn a_store_from_the_pre_release_numbering_is_refused_and_says_both_numbers() {
-    for stamped in [2, 6, 15, 16, 17, SCHEMA_VERSION + 1] {
+    for stamped in [2, 6, 15, 16, LAST_PRE_RELEASE_VERSION, SCHEMA_VERSION + 1] {
         let temp = tempfile::tempdir().unwrap();
         let config = StoreConfig::new(temp.path().join("old.db"));
         {
@@ -844,13 +854,62 @@ fn a_store_from_the_pre_release_numbering_is_refused_and_says_both_numbers() {
         }
         let said = match Store::open(config) {
             Err(error) => error.to_string(),
-            Ok(_) => panic!("a store stamped {stamped} is above what this build knows"),
+            Ok(_) => panic!("a store stamped {stamped} is not one this build can complete"),
         };
         assert!(
             said.contains(&stamped.to_string()) && said.contains(&SCHEMA_VERSION.to_string()),
             "the refusal names what it found and what it understands: {said}"
         );
     }
+}
+
+/// A baseline store is carried up to the version this build ships.
+///
+/// The companion to the refusal above, and the half it cannot hold: that a
+/// stamp of 1 is *accepted* and ends at `SCHEMA_VERSION`. Asserting the number
+/// alone would prove nothing, because `migrate` ends by stamping
+/// `SCHEMA_VERSION` on any store it accepts whether or not a single migration
+/// ran — so this asserts the stamp and something only migration 18 does, and
+/// the second half is what makes the first mean anything.
+#[test]
+fn a_baseline_store_is_carried_to_this_builds_version_by_running_the_migrations() {
+    let temp = TempDir::new().unwrap();
+    let config = StoreConfig::new(temp.path().join("baseline.db"));
+    {
+        let mut store = Store::open(config.clone()).unwrap();
+        store.create_session("s1", "Leteo", "C:/repo").unwrap();
+        let mut input = observation("s1", "Counted the SQLite way", "body");
+        input.kind = "decision".to_owned();
+        store.add_observation(input).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "UPDATE observations SET created_at = '2026-08-31 12:00:00';
+                 UPDATE observations SET review_after = datetime(created_at, '+6 months');
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(config).unwrap();
+    let stamped: i32 = store
+        .connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stamped, SCHEMA_VERSION, "a baseline store comes forward");
+
+    let clock: String = store
+        .connection
+        .query_row(
+            "SELECT review_after FROM observations WHERE title = 'Counted the SQLite way'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        clock, "2027-02-28 12:00:00",
+        "the stamp moved because the migrations ran, not because the end of `migrate` writes it"
+    );
 }
 
 /// Several agents upgrading one database at once end with all of it, once.
@@ -1267,5 +1326,226 @@ fn the_session_list_is_grouped_through_a_covering_index() {
     assert!(
         plan.contains("COVERING INDEX idx_obs_session_activity"),
         "the group reads the table instead of the index: {plan}"
+    );
+}
+
+/// Migration 18 repairs a clock the baseline counted SQLite's way, and leaves a
+/// reviewed one alone.
+///
+/// The two arithmetics disagree only when the day of the month does not exist
+/// in the target month, so the fixture is dated 2026-08-31 rather than left to
+/// `now()`: six months on is 2027-02-31, which chrono clamps to 2027-02-28 and
+/// SQLite rolls forward to 2027-03-03. A test that used today's date would pass
+/// on 358 days of the year while watching nothing, which is how the defect this
+/// migration repairs survived a consolidation that was supposed to remove it.
+///
+/// The second row is the one that makes the repair safe to ship. `mark_reviewed`
+/// writes `review_after` from `Utc::now()`, so a memory somebody has confirmed
+/// deliberately carries a clock that is *not* its own `created_at` plus the
+/// window. Recomputing every row would undo every review a store has recorded,
+/// and nothing else here would notice.
+#[test]
+fn the_review_clock_repair_fixes_what_sqlite_counted_and_spares_what_was_reviewed() {
+    let temp = TempDir::new().unwrap();
+    let config = StoreConfig::new(temp.path().join("clocks.db"));
+
+    let reviewed_at = "2030-01-15 09:00:00";
+    {
+        let mut store = Store::open(config.clone()).unwrap();
+        store.create_session("s1", "Leteo", "C:/repo").unwrap();
+        for title in ["Counted the SQLite way", "Confirmed by somebody"] {
+            let mut input = observation("s1", title, "body");
+            input.kind = "decision".to_owned();
+            store.add_observation(input).unwrap();
+        }
+        store
+            .connection
+            .execute_batch(&format!(
+                "UPDATE observations SET created_at = '2026-08-31 12:00:00';
+                 UPDATE observations SET review_after = datetime(created_at, '+6 months')
+                  WHERE title = 'Counted the SQLite way';
+                 UPDATE observations SET review_after = '{reviewed_at}'
+                  WHERE title = 'Confirmed by somebody';
+                 PRAGMA user_version = 1;"
+            ))
+            .unwrap();
+    }
+
+    let store = Store::open(config).unwrap();
+    let clock = |title: &str| -> String {
+        store
+            .connection
+            .query_row(
+                "SELECT review_after FROM observations WHERE title = ?1",
+                params![title],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+
+    let by_the_rule = crate::memory::rules::review_after(
+        "decision",
+        crate::timestamp::parse("2026-08-31 12:00:00").unwrap(),
+    )
+    .map(crate::timestamp::format)
+    .expect("a decision has a window");
+    assert_eq!(
+        by_the_rule, "2027-02-28 12:00:00",
+        "the fixture only means anything on a day the two disagree"
+    );
+    assert_eq!(
+        clock("Counted the SQLite way"),
+        by_the_rule,
+        "a clock the baseline rolled forward is put back to the rule's answer"
+    );
+    assert_eq!(
+        clock("Confirmed by somebody"),
+        reviewed_at,
+        "a clock somebody set by reviewing is not recomputed from created_at"
+    );
+}
+
+/// Adoption writes the rolled-forward clock and migration 18 takes it back,
+/// inside the one transaction.
+///
+/// The companion above stamps 1 and so exercises the migration loop. This one
+/// stamps 0, which is the path that actually had the defect: the baseline
+/// backfill in `0001_baseline_after_the_tables.sql` fills the empty clock with
+/// SQLite's arithmetic, and migration 18 has to undo it before the transaction
+/// commits, or a freshly adopted database is wrong from its first open.
+///
+/// Dated 2026-08-31 for the same reason as its sibling, and stated again
+/// because it is the whole point: `a_review_clock_a_revision_left_behind_is_wound_for_the_type_it_became`
+/// covers this path from `Utc::now()`, so on roughly 358 days a year it would
+/// pass with the repair deleted from the adoption path entirely. A guard that
+/// only bites on seven days a year is how the defect got in.
+#[test]
+fn an_adopted_store_gets_the_rules_clock_and_not_the_one_the_backfill_wrote() {
+    let temp = TempDir::new().unwrap();
+    let config = StoreConfig::new(temp.path().join("adopted.db"));
+    {
+        let mut store = Store::open(config.clone()).unwrap();
+        store.create_session("s1", "Leteo", "C:/repo").unwrap();
+        let mut input = observation("s1", "Written on a day the two disagree", "body");
+        input.kind = "decision".to_owned();
+        store.add_observation(input).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "UPDATE observations SET created_at = '2026-08-31 12:00:00',
+                                         review_after = NULL;
+                 PRAGMA user_version = 0;",
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(config).unwrap();
+    let clock: String = store
+        .connection
+        .query_row(
+            "SELECT review_after FROM observations
+              WHERE title = 'Written on a day the two disagree'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        clock, "2027-02-28 12:00:00",
+        "adoption fills the clock with SQLite's answer; the migration owes us the rule's"
+    );
+}
+
+/// Adding calendar months happens in two Rust places and four SQL ones, and no
+/// more.
+///
+/// This is the guard #82 asked for, and it has to count both spellings because
+/// the defect was a disagreement *between* them: the review windows were
+/// consolidated into `rules::REVIEW_WINDOWS` and the arithmetic that consumes
+/// them was not, so `rules::review_after` and the baseline's
+/// `datetime(created_at, '+6 months')` drifted for about seven days a year with
+/// nothing watching. A guard that counted only `checked_add_months` would have
+/// counted one at the moment the bug existed and would have been satisfied.
+///
+/// Two in Rust: `rules::review_after`, which owns the rule, and migration 18,
+/// which freezes it because a released migration must give every database the
+/// same answer whenever it runs. Four in SQL: the baseline's three literals,
+/// which are released history and can never change, and migration 18's
+/// recomputation of them, which is how it recognises what the baseline wrote.
+/// A fifth of either kind is the drift coming back.
+#[test]
+fn adding_calendar_months_happens_only_where_this_test_names() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut chrono_sites = Vec::new();
+    let mut sql_sites = Vec::new();
+    let mut pending = vec![root.join("src")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("the crate's own source") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name == "tests") {
+                    continue;
+                }
+                pending.push(path);
+                continue;
+            }
+            // Test sources are not the review-clock path, and this file names
+            // both strings it looks for, so counting itself is the first thing
+            // it would find. Modules are files here as often as directories.
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if path.extension().is_none_or(|kind| kind != "rs") || name.ends_with("tests.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("a readable source file");
+            for line in source.lines().map(str::trim) {
+                if line.starts_with("//") {
+                    continue;
+                }
+                if line.contains("checked_add_months") {
+                    chrono_sites.push(format!("{}: {line}", path.display()));
+                }
+                if line.contains(" months'") {
+                    sql_sites.push(format!("{}: {line}", path.display()));
+                }
+            }
+        }
+    }
+
+    for entry in std::fs::read_dir(root.join("migrations")).expect("the migrations") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.extension().is_none_or(|kind| kind != "sql") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a readable migration");
+        for line in source.lines().map(str::trim) {
+            if line.starts_with("--") {
+                continue;
+            }
+            if line.contains(" months'") {
+                sql_sites.push(format!("{}: {line}", path.display()));
+            }
+        }
+    }
+
+    assert_eq!(
+        chrono_sites.len(),
+        2,
+        "calendar months are added in {} Rust places. One is `rules::review_after`, which owns \
+         the rule; the other is migration 18, which freezes it because a released migration \
+         cannot read a list the crate may change: {chrono_sites:#?}",
+        chrono_sites.len()
+    );
+    assert_eq!(
+        sql_sites.len(),
+        4,
+        "calendar months are added in {} SQL places. Three are the baseline's frozen literals \
+         and one is migration 18 recomputing them to recognise what the baseline wrote. A fifth \
+         is a second opinion about how long six months is, which is the defect #82 repaired: \
+         {sql_sites:#?}",
+        sql_sites.len()
     );
 }

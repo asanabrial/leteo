@@ -62,7 +62,7 @@ env:
 # a merge — and it is the same unit for all three rows.
 #
 # So the only flake this WORKFLOW has recorded is in a job that has been
-# blocking merges all along, and the two being added have a clean attempt-level
+# blocking merges all along, and the two added by #48 have a clean attempt-level
 # record. Scope that deliberately: `release.yml` and `publish-registries.yml`
 # were not counted, and three of their runs have failed.
 #
@@ -75,6 +75,13 @@ env:
 # younger job is the looser bound, which is the direction worth remembering. It
 # establishes the absence of a reproducible flake, which is the failure mode
 # that would make requiring these a mistake, and not more.
+#
+# `container-image-arm64` is required from #58 with no attempt history at all,
+# which is a weaker warrant than any row above and is written down rather than
+# glossed: a census cannot bound the failure rate of a job that has never run.
+# It was required anyway, because the alternative is a job that can report an
+# arm64 break without being able to stop one, and stopping it before the tag is
+# the whole reason it exists. Whoever reads this census next can count it.
 #
 # The required contexts are a function of what is in this file, but nothing here
 # updates them: protection is configured out of band, by hand. Adding a job or a
@@ -92,10 +99,10 @@ jobs:
     #
     # Protection therefore lists one context per leg of this matrix plus one
     # for each job that is not a matrix, and the count is part of the trap: #42
-    # set it to three, #45 added `ubuntu-22.04-arm` for four, and #48 brought
-    # `cloud-tests` and `container-images` in for six. Whoever changes the
-    # matrix next changes the required checks with it, whether or not they
-    # touch this line.
+    # set it to three, #45 added `ubuntu-22.04-arm` for four, #48 brought
+    # `cloud-tests` and `container-images` in for six, and #58 added the arm64
+    # container job for seven. Whoever changes the matrix next changes the
+    # required checks with it, whether or not they touch this line.
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -235,6 +242,10 @@ jobs:
   # both images on every pull request instead. Building is not enough on its own
   # either: what the MCP directories check, and what a user actually needs, is
   # that the container starts and answers. So this one is asked for its tools.
+  #
+  # Both images, on one architecture. This runner is x86-64 and neither build
+  # below names a platform, so what it produces of `docker/Dockerfile` is the
+  # amd64 half; `container-image-arm64` builds the other one.
   container-images:
     name: Container Images
     runs-on: ubuntu-latest
@@ -269,3 +280,52 @@ jobs:
           file: docker/Dockerfile
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # The half of the published image that used to be built first at tag time.
+  # Since #14 the release publishes `docker/Dockerfile` for `linux/amd64` and
+  # `linux/arm64`; the job above builds only the first, which left the second
+  # in exactly the position that job's own comment rejects for the image as a
+  # whole. An arm64-only break — a base tag missing that platform, a package
+  # with no arm64 candidate, a compile that exhausts the runner — would have
+  # surfaced during the release, after `publish` had already created the GitHub
+  # release, and `container-manifest` needs every leg, so no image tag would be
+  # written at all.
+  #
+  # `docker/Dockerfile` is architecture-neutral as it stands: no `--platform`,
+  # no target triple, no architecture-specific package, and an unsuffixed
+  # `target/release/leteo` to copy out. So this job is here to keep a latent
+  # problem latent rather than to fix a present one.
+  #
+  # A native runner rather than QEMU, for the reason `release.yml` already gives
+  # beside its own container matrix: this Dockerfile runs a full
+  # `cargo build --release`, and a long CPU-bound compile is the worst case for
+  # user-mode emulation rather than a file copy. Emulating an architecture that
+  # the release builds natively would also be answering one question two ways,
+  # which is the argument that file makes against the shorter shape.
+  #
+  # A cache scope of its own, because buildx's default `gha` scope is shared:
+  # two architectures building the same Dockerfile into it would evict each
+  # other's layers every run, and the arm64 leg would be measuring a cold cache
+  # forever. The amd64 build above is deliberately left on the default scope —
+  # making it match `release.yml`'s `linux/amd64` is #59, which owes a
+  # measurement this job does not.
+  #
+  # Nothing is pushed from here either. The release remains the only thing that
+  # publishes.
+  container-image-arm64:
+    name: Container Image (arm64)
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      # `platforms:` names what this runner would have built anyway. It is
+      # written out so the job states its own contract instead of inheriting it
+      # from the `runs-on` label, which is the half of that pair somebody
+      # editing this file is free to change without noticing the other.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/arm64
+          cache-from: type=gha,scope=linux/arm64
+          cache-to: type=gha,mode=max,scope=linux/arm64

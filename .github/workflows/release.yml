@@ -208,12 +208,13 @@ jobs:
       # on.
       #
       # The tags it produces here are never pushed — the build below pushes by
-      # digest and the merge applies the tags. They are written out anyway, and
-      # kept identical to the merge's, because `metadata-action` derives
-      # `org.opencontainers.image.version` from whichever patterns it is given.
-      # Left to its defaults on a tag push it answers the raw ref name, so the
-      # label read `v0.1.3` while the tag beside it read `0.1.3` — one version
-      # string spelled two ways in one file.
+      # digest and the merge applies the tags. They are written out anyway
+      # because `metadata-action` derives `org.opencontainers.image.version`
+      # from whichever patterns it is given, and left to its defaults on a tag
+      # push it answers the raw ref name. That would have labelled the image
+      # with the leading `v` the tag beside it does not carry: one version
+      # string spelled two ways in one file. Would have, not did — it was
+      # caught before any tag shipped with it.
       #
       # This list is the one the merge is held to — the version label comes
       # from its first entry, so the order of it is load-bearing — by
@@ -295,9 +296,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # The tags actually published. Kept identical to the per-architecture
-      # step's, which derives the version label from them; the guard named
-      # above fails if they diverge.
+      # The tags actually published. The guard compares this list against the
+      # one in the `container` job's metadata-action step, and which of the two
+      # is the reference is stated at that step and not here, because it used to
+      # be said in both places and in both directions.
       - id: meta
         uses: docker/metadata-action@v5
         with:

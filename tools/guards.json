@@ -926,6 +926,14 @@
     "new": ".count_review_due(None)"
   },
   {
+    "name": "release: a tag pattern sorts ahead of the one the guard reads",
+    "file": ".github/workflows/release.yml",
+    "edits": [
+      { "old": "            type=semver,pattern={{major}}.{{minor}}\n      # Pushed by digest rather than by tag, because two jobs writing the same\n", "new": "            type=semver,pattern={{major}}.{{minor}},priority=1000\n      # Pushed by digest rather than by tag, because two jobs writing the same\n" },
+      { "old": "            type=semver,pattern={{major}}.{{minor}}\n      # No guard on the digests being there. `needs: container` is satisfied\n", "new": "            type=semver,pattern={{major}}.{{minor}},priority=1000\n      # No guard on the digests being there. `needs: container` is satisfied\n" }
+    ]
+  },
+  {
     "name": "schema: the fast path opens another program's database",
     "file": "src/store/schema.rs",
     "old": "if schema_version(connection)? == SCHEMA_VERSION && table_exists(connection, \"prompts\")? {",

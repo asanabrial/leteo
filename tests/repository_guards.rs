@@ -792,6 +792,12 @@ fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
 /// Which left a hand-written second copy, and AGENTS.md rule 3 says how those
 /// end. This is a guard over that duplication rather than a removal of it.
 ///
+/// It holds that there are at least two such steps, that every pattern is a
+/// plain `type=semver` one, that the first pattern written is the first the
+/// action resolves, and that the lists match. That third one was assumed in
+/// prose for a while before it was held; the loop that holds it says why beside
+/// itself.
+///
 /// Not established: GitHub Actions has no include — it does not honour YAML
 /// anchors — and the documented way to share a value is a workflow-level `env`
 /// referenced from a step's `with:`. That was not tried. Whether a reference
@@ -841,11 +847,62 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
         blocks.len()
     );
 
+    // The premise the leader check below rests on, held rather than asserted in
+    // prose. `metadata-action` sorts the parsed tags by their `priority`
+    // attribute and takes the first of that order; this guard reads the first
+    // pattern WRITTEN. Those are the same tag only while every pattern carries
+    // one priority, which is true of the default and stops being true the
+    // moment a list says otherwise — silently, because both lists would still
+    // match each other and `{{version}}` would still be written first while the
+    // action labelled the image from whichever pattern won the sort. That
+    // mutation passed this guard until #62.
+    //
+    // Refused rather than resolved. Ordering the patterns here would mean
+    // reimplementing the action's sort, which is a second opinion about
+    // somebody else's behaviour and the thing AGENTS.md rule 3 is about; and
+    // the case worth catching is somebody reaching for the attribute at all,
+    // not the order they end up with.
+    for (line, patterns) in &blocks {
+        for pattern in patterns {
+            // Lower-cased with spaces removed. Recalled rather than measured,
+            // and marked as such because the note on `tag_patterns_after` above
+            // says the same about this action: `metadata-action` appears to
+            // lower-case and trim each attribute key before reading it, so
+            // `Priority=` and `priority =` reach it as the same input and did
+            // not reach a literal `contains` as one. If that recollection is
+            // wrong the guard merely refuses more than it must, which fails at
+            // test time rather than in a release.
+            //
+            // More than the attribute #62 names, because more than one thing
+            // separates the pattern written first from the one resolved first:
+            // a `priority` reorders the list, an `enable=false` removes a tag
+            // from it, and a different `type=` carries a different default
+            // priority. That last is why the type is asserted here rather than
+            // left to the comment below, which used to claim it and hold
+            // nothing.
+            let normalised: String = pattern
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .flat_map(char::to_lowercase)
+                .collect();
+            assert!(
+                normalised.starts_with("type=semver")
+                    && !normalised.contains("priority=")
+                    && !normalised.contains("enable="),
+                "the metadata-action at release.yml:{line} gives {pattern:?} a pattern \
+                 this guard cannot see past. It reads the first pattern written; the \
+                 action takes the first that is `type=semver`, survives `enable` and \
+                 sorts by `priority`. Resolve that here before allowing any of them"
+            );
+        }
+    }
+
     let (first_line, first) = &blocks[0];
     // The first entry, not merely some entry. `metadata-action` sorts the
-    // parsed tags by priority — these are all `type=semver` at the same
-    // default — and the sort is stable, so input order survives it; the
-    // `version` output, which becomes `org.opencontainers.image.version`, is
+    // parsed tags by priority — the loop above is what keeps them all plain
+    // `type=semver`, which is one default, and refuses a pattern naming a
+    // priority of its own — and the sort is stable, so input order survives it.
+    // The `version` output, which becomes `org.opencontainers.image.version`, is
     // taken from the first tag of that list. A list containing the right
     // pattern is not the same as a list led by it: `{{version}}` sitting
     // behind `{{major}}.{{minor}}` labels the image `0.1` while publishing
@@ -856,8 +913,24 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
              falls back to the action's own defaults and labels the image with the raw ref name"
         );
     };
+    // `pattern={{version}}` and not merely `{{version}}`, because a substring
+    // test also accepts `pattern=v{{version}}`. That is not the #14 mismatch —
+    // the equality assert below keeps both lists the same, so a `v` would reach
+    // the label and the tag alike. What it breaks is this workflow's own
+    // verification: the merge computes `version="${GITHUB_REF_NAME#v}"` and
+    // inspects `ghcr.io/<repo>:${version}`, so a `v`-prefixed pattern publishes
+    // a tag that step then cannot find. Beyond what #62 asked for, and taken
+    // because it is the other half of the assertion #62 hardened.
+    // Normalised the same way the loop above normalises, for the reason it
+    // gives: a spelling the action reads identically should not fail here on
+    // whitespace or case, with a message about the leading pattern.
+    let leads_normalised: String = leads
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
     assert!(
-        leads.contains("type=semver") && leads.contains("{{version}}"),
+        leads_normalised.contains("pattern={{version}}"),
         "the metadata-action at release.yml:{first_line} leads with {leads:?}. \
          `org.opencontainers.image.version` is taken from the first pattern that resolves, so \
          unless that is the full semver the label disagrees with the tag published beside it"

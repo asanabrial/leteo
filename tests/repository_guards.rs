@@ -1018,3 +1018,160 @@ fn between<'a>(haystack: &'a str, open: &str, close: &str) -> Option<&'a str> {
     let rest = &haystack[haystack.find(open)? + open.len()..];
     Some(&rest[..rest.find(close)?])
 }
+
+/// Every platform the release caches is a scope CI writes for the same Dockerfile.
+///
+/// The release derives its buildx cache scope from its own matrix —
+/// `scope=${{ matrix.platform }}` — and `ci.yml` writes those strings out by
+/// hand. That is a second copy, and #59 is what a second copy costs: #14 gave
+/// the release matrix its per-platform scope and left `ci.yml` on buildx's
+/// default, so the two stopped meeting and every release recompiled the amd64
+/// image from cold, with nothing failing and no symptom but a slow build.
+///
+/// The pairing is what makes this a guard rather than a spell-check. A scope is
+/// shared only if the same Dockerfile writes it, so `ci.yml` naming
+/// `linux/amd64` on the MCP image would leave the release importing a scope no
+/// build of its own image fills — this issue's defect with the string present.
+/// Both sides therefore read `cache-to` scopes together with the `file:` of the
+/// step writing them, and the release's Dockerfile is read from the step whose
+/// scope is the matrix rather than named here.
+///
+/// Read from the workflows rather than from a list written here, for the reason
+/// `the_npm_wrapper_ships_this_version_for_the_targets_this_repository_builds`
+/// gives about the same matrix: the release stays the one place a platform is
+/// added. Adding a third one now fails here until `ci.yml` writes its scope too.
+#[test]
+fn every_release_cache_scope_is_one_ci_writes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".github")
+        .join("workflows");
+    let release = std::fs::read_to_string(root.join("release.yml")).expect("read release.yml");
+    let ci = std::fs::read_to_string(root.join("ci.yml")).expect("read ci.yml");
+
+    // Read from the `cache-to` that uses the expression rather than from
+    // anywhere in the file: a `contains` over the whole text would also be
+    // satisfied by a comment mentioning it after the value beneath had changed,
+    // which is a test reading a comment by the back door.
+    let matrix_scope = cache_scopes_by_file(&release)
+        .into_iter()
+        .find(|(_, scope)| *scope == "${{ matrix.platform }}");
+    let Some((release_dockerfile, _)) = matrix_scope else {
+        panic!(
+            "no `cache-to` in release.yml derives its scope from `matrix.platform`, so the platforms read below are no longer the scopes it uses and this guard is watching nothing"
+        );
+    };
+
+    assert!(
+        !release_dockerfile.is_empty(),
+        "release.yml's matrix-scoped `cache-to` has no `file:` in its own step, so this guard has \
+         no Dockerfile to match `ci.yml` against and an unattributed scope on either side would \
+         compare equal to one on the other"
+    );
+
+    // `- ` is stripped because a matrix entry may name the platform first, and
+    // that spelling is invisible to a bare `platform: ` match — the shape this
+    // guard is least able to afford missing, since a platform it cannot see is
+    // one it cannot demand a scope for.
+    let platforms: Vec<&str> = release
+        .lines()
+        .map(|line| cut_trailing_comment(line.trim()))
+        .map(|line| strip_list_marker(line).unwrap_or(line))
+        .filter_map(|line| line.strip_prefix("platform: "))
+        .map(str::trim)
+        .collect();
+    assert!(
+        !platforms.is_empty(),
+        "no `platform:` entries in release.yml, so this guard is no longer reading its matrix"
+    );
+
+    // Only what `ci.yml` writes counts, and only from a build of the same
+    // Dockerfile. A `cache-from` alone would read a scope nobody fills, which
+    // is the shape of the defect rather than the fix.
+    let written: Vec<&str> = cache_scopes_by_file(&ci)
+        .into_iter()
+        .filter(|(file, _)| *file == release_dockerfile)
+        .map(|(_, scope)| scope)
+        .collect();
+
+    for platform in &platforms {
+        assert!(
+            written.contains(platform),
+            "release.yml builds `{release_dockerfile}` for `{platform}` and caches it under that scope, but no `cache-to` in ci.yml writes that scope from a build of the same file, so a release starts from cold however warm a `main` run left it — and it is `main` that pays, since a tag build cannot read a pull request's cache. ci.yml writes {written:?} for `{release_dockerfile}`"
+        );
+    }
+}
+
+/// The `cache-to` scopes a workflow writes, each paired with the `file:` of the
+/// step writing it.
+///
+/// `file:` precedes `cache-to:` inside a step's `with:` block, so the nearest
+/// one above is that step's own — but only within the step, which is why the
+/// name is dropped at every `- ` list item. Carried across that boundary it
+/// would credit one step's scope to the Dockerfile of whichever step last
+/// named one, and a step may legitimately omit `file:`: the action defaults it
+/// to `{context}/Dockerfile`. That is the string-on-the-wrong-build case this
+/// guard exists for, so the attribution has to fail rather than guess. An
+/// empty name matches no Dockerfile the release builds, so it fails loudly.
+///
+/// A trailing comment is cut before anything is read, so that `scope=` inside
+/// one is not mistaken for the value beside it. Without that, `cache-to:
+/// type=gha,mode=max # scope=linux/amd64` would count as writing a scope the
+/// build does not write — which is this guard's own defect, and would make a
+/// liar of the sentence above about comments. The cut looks for any whitespace
+/// before the `#`, not a space: YAML ends a scalar at either, so matching only
+/// the space leaves the same hole open behind a tab.
+///
+/// The scope is read up to the next option rather than to end of line, because
+/// `scope=` is last only by convention and `type=gha,scope=x,mode=max` means
+/// the same thing.
+fn cache_scopes_by_file(workflow: &str) -> Vec<(&str, &str)> {
+    let mut file = "";
+    let mut pairs = Vec::new();
+    for line in workflow.lines().map(str::trim) {
+        let line = cut_trailing_comment(line);
+        if strip_list_marker(line).is_some() {
+            file = "";
+        }
+        if let Some(name) = line.strip_prefix("file: ") {
+            file = name;
+        } else if let Some(rest) = line
+            .starts_with("cache-to:")
+            .then(|| line.split("scope=").nth(1))
+            .flatten()
+        {
+            pairs.push((file, rest.split(',').next().unwrap_or(rest)));
+        }
+    }
+    pairs
+}
+
+/// A scalar ends at a `#` preceded by whitespace — a tab as readily as a space
+/// — so the search is for either. Matching only the space is how the first
+/// version of this let `cache-to: type=gha,mode=max<tab># scope=linux/amd64`
+/// count as writing a scope, which is the defect the cut exists to prevent.
+fn cut_trailing_comment(line: &str) -> &str {
+    match line
+        .char_indices()
+        .find(|(i, c)| *c == '#' && (*i == 0 || line[..*i].ends_with(char::is_whitespace)))
+    {
+        Some((at, _)) => line[..at].trim_end(),
+        None => line,
+    }
+}
+
+/// What follows a YAML list marker, if this line carries one.
+///
+/// `-` then any amount of whitespace, or `-` alone on its line: all three are
+/// one list item, and matching only `"- "` missed two of them. That mattered in
+/// both directions — an entry the platform scrape could not see is a platform
+/// it cannot demand a scope for, and a step boundary the parser does not notice
+/// is a Dockerfile name carried into a step that never named one.
+///
+/// Flow style, `- {platform: linux/riscv64}`, is still missed. Reading that
+/// needs a YAML parser rather than a prefix, and neither workflow here writes
+/// one; the doc above says what this guard covers rather than claiming the key
+/// is unmissable.
+fn strip_list_marker(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('-')?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim_start())
+}

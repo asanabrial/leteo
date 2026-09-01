@@ -382,17 +382,37 @@ jobs:
   registries:
     needs: publish
     runs-on: ubuntu-latest
+    # `actions: write` and nothing else, because a job-level block replaces the
+    # token's permissions rather than adding to them — everything unnamed here
+    # is `none`, including the `contents` the workflow grants above. Which is
+    # why there is no `actions/checkout`: `gh` is given `--repo` and reads no
+    # working tree, so the one step that would have needed `contents` is the one
+    # step this job does not need. An earlier draft checked out anyway and would
+    # have failed on a token with no `contents`, at the last job of a release,
+    # on a tag — the exact place this whole job exists to stop failing.
     permissions:
       actions: write
     steps:
-      - uses: actions/checkout@v6
       - name: Ask the registries workflow to publish this tag
         env:
           GH_TOKEN: ${{ github.token }}
+          # Through the environment rather than `${{ }}` inside the script:
+          # an expression is substituted before the shell parses the line, so a
+          # tag name carrying a quote would be read as code by a job holding a
+          # token that can start workflows. The three other places this file
+          # reads the tag already do it this way.
+          REF: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          # `--ref` names the branch whose copy of the workflow runs, and the
+          # `ref` input names the tag it checks out. They are different things
+          # and only the second was being passed: without this, which definition
+          # publishes a tag was decided by whatever `gh` defaults to.
           gh workflow run publish-registries.yml \
-            --repo "${{ github.repository }}" \
-            -f ref="${{ github.ref_name }}"
-          echo "Dispatched publish-registries.yml for ${{ github.ref_name }}."
+            --repo "$REPO" \
+            --ref "$DEFAULT_BRANCH" \
+            -f ref="$REF"
+          echo "Dispatched publish-registries.yml for $REF."
           echo "Its result is not this run's: see the Publish to registries workflow."

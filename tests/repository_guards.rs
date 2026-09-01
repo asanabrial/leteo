@@ -719,21 +719,29 @@ fn every_manifest_publishes_the_version_this_crate_is() {
     }
 }
 
-/// The npm wrapper names the same MCP server `server.json` does.
+/// Both published packages name the same MCP server `server.json` does.
 ///
-/// The MCP registry will not accept a submission whose npm package does not
-/// echo the server's own name back at it: it reads `mcpName` out of the
-/// *published* tarball and refuses when it is absent or different. That is what
-/// makes this worth a guard rather than a comment — the failure lands after the
-/// tag exists, and it cannot be repaired for that version, because npm does not
-/// let a published version be replaced. The only fix is another release.
+/// The MCP registry will not accept a submission whose packages do not echo the
+/// server's own name back at it, and it looks in a different place for each: the
+/// `mcpName` field of the *published* npm tarball, and the literal line
+/// `mcp-name: <name>` in the crate's rendered readme. Both are refused when
+/// absent or different. That is what makes this worth a guard rather than a
+/// comment — the failure lands after the tag exists, and it cannot be repaired
+/// for that version, because neither registry lets a published version be
+/// replaced. The only fix is another release.
 ///
 /// Which is how v0.2.0 reached crates.io, npm, GHCR and the GitHub release
 /// while the MCP registry got nothing: `server.json` had named the server since
 /// the beginning and `npm/package.json` had never carried the field at all.
-/// Nothing compared them, in any language.
+///
+/// The readme half was already correct and is held here anyway, because it is
+/// the same claim in a third file and the first version of this guard checked
+/// two of the three. It is also the more fragile of the two: `README.md:269` is
+/// a line of prose in the middle of a paragraph, written out in the open rather
+/// than in an HTML comment because crates.io strips those when it renders, so
+/// there is nothing about its appearance that warns an editor off reflowing it.
 #[test]
-fn the_npm_wrapper_names_the_server_that_server_json_names() {
+fn the_published_packages_name_the_server_that_server_json_names() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let field = |relative: &str, key: &str| -> String {
@@ -750,15 +758,30 @@ fn the_npm_wrapper_names_the_server_that_server_json_names() {
 
     // `server.json`'s first `"name"` is the server's own. The names below it
     // belong to arguments and environment variables, which is why this reads
-    // the first and the file keeps the server's name at the top.
+    // the first and the file keeps the server's name at the top. A reordering
+    // that put one of those first fails this loudly rather than passing wrongly,
+    // because none of them can equal the server's name.
     let declared = field("server.json", "name");
-    let published = field("npm/package.json", "mcpName");
 
+    let published = field("npm/package.json", "mcpName");
     assert_eq!(
         published, declared,
         "npm/package.json says mcpName {published} and server.json names the \
          server {declared}; the MCP registry reads the published tarball and \
          would refuse the submission after the tag exists"
+    );
+
+    // The readme is matched as the substring the registry itself looks for,
+    // not as a whole line: it sits inside a sentence, and asserting the shape
+    // of that sentence would fail on a rewording that kept the marker intact.
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
+    let marker = format!("mcp-name: {declared}");
+    assert!(
+        readme.contains(&marker),
+        "README.md carries no `{marker}`, and it is what the MCP registry reads \
+         to believe this repository owns the crate — Cargo.toml ships this file \
+         as the crate readme, so the submission would be refused after the tag \
+         exists"
     );
 }
 

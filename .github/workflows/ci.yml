@@ -258,8 +258,8 @@ jobs:
           file: docker/Dockerfile.mcp
           load: true
           tags: leteo-mcp:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=mcp
+          cache-to: type=gha,mode=max,scope=mcp
       # An MCP handshake, then the question every client asks first. `timeout`
       # rather than trust: a server that never answers would otherwise hold the
       # job until the runner's own limit killed it, six hours later.
@@ -274,12 +274,45 @@ jobs:
           cat handshake.json
           grep -q '"serverInfo"' handshake.json
           grep -q '"mem_search"' handshake.json
+      # This build's cache scope is the one `release.yml`'s amd64 leg reads, so
+      # a release can start from what a `main` run already built rather than
+      # from cold. Can, not will: `docker/Dockerfile` has no dependency-only
+      # layer — the sources are copied in, then one `cargo build` — so it is
+      # reused only when the tagged tree matches one a `main` run already built.
+      # A tag on a commit CI has run is the ordinary case; anything else falls
+      # back to the base image and apt layers, which is minutes rather than the
+      # whole saving. #14 gave the release matrix `scope=${{ matrix.platform }}` because
+      # two architectures sharing one scope evict each other, and this job was
+      # left on buildx's default — so from then until #59 the amd64 halves never
+      # met and every release recompiled `cargo build --release` from nothing on
+      # that leg. The arm64 leg stopped paying it at #58, which gave the job
+      # below `scope=linux/arm64`.
+      #
+      # And the MCP image above gets a scope of its own, so that this build's
+      # scope holds one Dockerfile's layers and nothing else. Calling that the
+      # #14 eviction one level down would be more than is known: these two
+      # Dockerfiles have identical build stages today, which is the case where
+      # sharing a scope shares rather than evicts. It is unmeasured either way,
+      # and the reason to separate them is that a scope nobody named is one
+      # nobody can reason about — the state this whole issue came out of.
+      #
+      # It is not free, and this is the bound that runs the other way: three
+      # `mode=max` scopes where there was one, two of them holding that same
+      # compile stage, against a per-repository cache budget with LRU eviction.
+      # The entry that would be evicted is the one this job exists to keep warm.
+      # Also unmeasured; the split is kept for legibility, not against a number.
+      #
+      # What this buys is bounded by whose cache it is. GitHub scopes a cache
+      # entry to the ref that wrote it, and a tag build reads the default
+      # branch's, not a pull request's — so it is the `push: branches: [main]`
+      # run of this workflow that pays for the release, and a pull request pays
+      # only for its own later runs.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=linux/amd64
+          cache-to: type=gha,mode=max,scope=linux/amd64
 
   # The half of the published image that used to be built first at tag time.
   # Since #14 the release publishes `docker/Dockerfile` for `linux/amd64` and
@@ -303,12 +336,11 @@ jobs:
   # the release builds natively would also be answering one question two ways,
   # which is the argument that file makes against the shorter shape.
   #
-  # A cache scope of its own, because buildx's default `gha` scope is shared:
-  # two architectures building the same Dockerfile into it would evict each
-  # other's layers every run, and the arm64 leg would be measuring a cold cache
-  # forever. The amd64 build above is deliberately left on the default scope —
-  # making it match `release.yml`'s `linux/amd64` is #59, which owes a
-  # measurement this job does not.
+  # This job's cache scope is the one `release.yml`'s arm64 leg reads, which is
+  # what #58 gave it and #59 then gave the amd64 build beside it. Whether
+  # sharing buildx's default was costing anything is the question the amd64
+  # comment above declines to answer, and this sentence does not answer it
+  # either.
   #
   # Nothing is pushed from here either. The release remains the only thing that
   # publishes.

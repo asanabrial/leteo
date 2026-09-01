@@ -226,7 +226,10 @@ jobs:
       # follow a child config to find `.source` — a package pushed by personal
       # access token with the label in the child configs stayed unlinked, and
       # so did a single-manifest control carrying the label in its own config,
-      # through a quarter hour of watching. What keeps this package page
+      # through a quarter hour of watching. Both negatives were taken on
+      # private packages, which is what a token-pushed package defaults to;
+      # this package is public, so the negative half is bounded by visibility
+      # as well as by the watch window. What keeps this package page
       # linked to the repository is how the push authenticates: the same
       # index, pushed by the Actions GITHUB_TOKEN of a scratch repository,
       # showed `repository` set within a minute. Every push this workflow

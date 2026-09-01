@@ -221,11 +221,21 @@ jobs:
       # `tests/repository_guards.rs`, which fails if the two stop matching —
       # this comment used to be the only thing keeping them the same.
       #
-      # Not established: these labels sit in each architecture's image config,
-      # and the index the tag resolves to after the merge carries no annotations
-      # of its own. GHCR is documented to link a package to its repository by
-      # `.source`; whether it follows a child config to find one has not been
-      # measured here, and saying so is cheaper than assuming either way.
+      # Measured against throwaway packages (issue #60), not assumed: the tag
+      # resolves to an index with no annotations of its own, and GHCR does not
+      # follow a child config to find `.source` — a package pushed by personal
+      # access token with the label in the child configs stayed unlinked, and
+      # so did a single-manifest control carrying the label in its own config,
+      # through a quarter hour of watching. Both negatives were taken on
+      # private packages, which is what a token-pushed package defaults to;
+      # this package is public, so the negative half is bounded by visibility
+      # as well as by the watch window. What keeps this package page
+      # linked to the repository is how the push authenticates: the same
+      # index, pushed by the Actions GITHUB_TOKEN of a scratch repository,
+      # showed `repository` set within a minute. Every push this workflow
+      # makes is that kind, so the link survives the multi-architecture
+      # shape regardless of these labels; what the labels buy is provenance
+      # for whoever pulls, not the link.
       - id: meta
         uses: docker/metadata-action@v5
         with:

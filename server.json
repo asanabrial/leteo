@@ -7,12 +7,12 @@
     "url": "https://github.com/asanabrial/leteo",
     "source": "github"
   },
-  "version": "0.1.2",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "cargo",
       "identifier": "leteo",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       },
@@ -41,7 +41,7 @@
     {
       "registryType": "npm",
       "identifier": "@asanabrial/leteo",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       },

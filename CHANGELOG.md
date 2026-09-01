@@ -2,7 +2,7 @@
 
 All notable changes to Leteo are documented in this file.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-01
 
 ### Added
 
@@ -26,8 +26,6 @@ All notable changes to Leteo are documented in this file.
   fires at the end of every reply. Config-file hooks start switched off in
   that client, so setup turns the runner on — or refuses when somebody has
   deliberately turned it off.
-
-### Added
 
 - **A plugin bundle for ZCode, in the marketplace this repository already
   serves.** `plugin/zcode` carries the MCP entry, the memory skill, and the
@@ -62,7 +60,43 @@ All notable changes to Leteo are documented in this file.
   added beside it, and the skills were compared as a pair, which stops being one
   rule the moment a third arrives.
 
+### Changed
+
+- **The install scripts moved to `scripts/`.** The one-liners are now
+  `raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh` and
+  `.../scripts/install.ps1`. The old paths 404: they pointed at `main`, so
+  moving the files broke them the moment this landed, and there is no redirect
+  a raw URL can leave behind. Every copy this project controls was updated in
+  the same commit; a copy somebody else made was not, which is the whole cost
+  and the reason to do it at four days old rather than at four months.
+
+  Release archives already downloaded are unaffected — they carry the binary
+  and the uninstaller inside them and fetch nothing.
+
 ### Fixed
+
+- **A ZCode client got no tools at all, because `tools/list` answered without
+  the two fields the revision it had just negotiated requires.** Leteo
+  negotiates protocol revision `2026-07-28` when a client asks for it, and then
+  answered `tools/list` without `ttlMs` and `cacheScope`, which SEP-2549 makes
+  that revision require. The `#[tool_handler]` macro filled both with `None`
+  and rmcp never serialises a `None`, so a client speaking the revision rmcp
+  itself had offered received a result it was obliged to reject — rmcp strips
+  `resultType` for peers on older revisions but fills nothing for newer ones,
+  so the compatibility was built backwards only. ZCode 0.16.5 ended every
+  connection as failed and retried in a loop: zero tools, no explanation, and
+  the lifecycle hooks still working, so nothing looked broken from outside.
+
+  `list_tools`, `call_tool` and `get_tool` are now written out with the bodies
+  the macro generated plus the two setters — `ttlMs` of five minutes, which
+  bounds how long a client would serve a list from a process that has since
+  restarted, and `cacheScope` of `public`, because the list depends on the
+  `--tools` flag and never on who is asking. Both are set only for a session
+  that negotiated `2026-07-28`; at `2025-11-25`, `2025-06-18`, `2025-03-26` and
+  `2024-11-05` they stay absent rather than published for older clients to
+  tolerate or choke on. `2025-11-25` is the answer an unrecognised revision
+  gets, so a client that asks for nothing in particular is one of those four.
+  The tool list itself is byte-identical to before.
 
 - **Setting up DeepSeek Harness broke the harness on the shape the harness
   itself ships.** Its patch layer is a top-level YAML array, and a profile's
@@ -122,21 +156,6 @@ All notable changes to Leteo are documented in this file.
   failed from the message; with fourteen configuration files, "mcp.servers must
   contain a JSON object" named neither the document to open nor which of the two
   keys held something else. Both are back.
-
-### Changed
-
-- **The install scripts moved to `scripts/`.** The one-liners are now
-  `raw.githubusercontent.com/asanabrial/leteo/main/scripts/install.sh` and
-  `.../scripts/install.ps1`. The old paths 404: they pointed at `main`, so
-  moving the files broke them the moment this landed, and there is no redirect
-  a raw URL can leave behind. Every copy this project controls was updated in
-  the same commit; a copy somebody else made was not, which is the whole cost
-  and the reason to do it at four days old rather than at four months.
-
-  Release archives already downloaded are unaffected — they carry the binary
-  and the uninstaller inside them and fetch nothing.
-
-### Fixed
 
 - **`ghcr.io/asanabrial/leteo` publishes `linux/arm64` as well as
   `linux/amd64`.** It shipped amd64 alone, because the build step passed no

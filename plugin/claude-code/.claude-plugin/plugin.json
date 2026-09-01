@@ -1,7 +1,7 @@
 {
   "name": "leteo",
   "description": "Persistent memory for AI coding agents. Survives across sessions and compactions.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "author": {
     "name": "Alexis Sanabria Lopez"
   },

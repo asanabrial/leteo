@@ -60,6 +60,20 @@ All notable changes to Leteo are documented in this file.
   added beside it, and the skills were compared as a pair, which stops being one
   rule the moment a third arrives.
 
+- **A Homebrew tap and a Scoop bucket, for people who keep their tools in one
+  place.** `brew tap asanabrial/leteo && brew install leteo` covers macOS and
+  Linux on both architectures, and `scoop bucket add leteo
+  https://github.com/asanabrial/scoop-leteo` covers Windows. Both went up after
+  `0.1.2` shipped and nothing in this repository mentioned either, which is the
+  same shape the plugin marketplace had: a route that works and appears in no
+  file anybody reads.
+
+  One paragraph had to be narrowed rather than added to. It said the binary
+  lands in `~/.local/bin` or `%LOCALAPPDATA%\leteo\bin`, which is true of the
+  install scripts and not of a package manager — Homebrew and Scoop put it
+  where they put everything else, and a reader who installed that way would
+  have gone looking in a directory with nothing in it.
+
 ### Changed
 
 - **The install scripts moved to `scripts/`.** The one-liners are now
@@ -72,6 +86,25 @@ All notable changes to Leteo are documented in this file.
 
   Release archives already downloaded are unaffected — they carry the binary
   and the uninstaller inside them and fetch nothing.
+
+- **The four Docker files moved to `docker/`.** `Dockerfile`, `Dockerfile.mcp`,
+  `docker-compose.yml` and `.env.example` sat at the repository root in `0.1.2`
+  and are one directory between them now, which is three fewer rows GitHub
+  lists before it reaches the README. A checkout of `0.1.2` that ran
+  `docker compose up` or `docker build -f Dockerfile .` from the root has to
+  name the directory: `docker compose -f docker/docker-compose.yml up`, or
+  `-f docker/Dockerfile`.
+
+  This is the same move the install scripts made, and it is written down for
+  the same reason — except that nothing 404s here, because these files are read
+  from a clone rather than fetched from a URL. `.dockerignore` now excludes
+  `docker` rather than the two files by name; the build still finds a
+  Dockerfile it has been told to ignore, measured with `-f docker/Dockerfile.mcp`
+  getting past every `COPY` and into compiling Leteo, and CI builds both images
+  on every pull request.
+
+  The published image tags are unchanged, and a person who installs the binary
+  rather than running the cloud service is unaffected.
 
 ### Fixed
 
@@ -87,16 +120,44 @@ All notable changes to Leteo are documented in this file.
   connection as failed and retried in a loop: zero tools, no explanation, and
   the lifecycle hooks still working, so nothing looked broken from outside.
 
-  `list_tools`, `call_tool` and `get_tool` are now written out with the bodies
-  the macro generated plus the two setters — `ttlMs` of five minutes, which
-  bounds how long a client would serve a list from a process that has since
-  restarted, and `cacheScope` of `public`, because the list depends on the
-  `--tools` flag and never on who is asking. Both are set only for a session
-  that negotiated `2026-07-28`; at `2025-11-25`, `2025-06-18`, `2025-03-26` and
-  `2024-11-05` they stay absent rather than published for older clients to
-  tolerate or choke on. `2025-11-25` is the answer an unrecognised revision
-  gets, so a client that asks for nothing in particular is one of those four.
-  The tool list itself is byte-identical to before.
+  The macro leaves no seam for the result it builds, so `list_tools`,
+  `call_tool` and `get_tool` are written out with the bodies it generated, and
+  `list_tools` is the one that gains the two setters — `ttlMs` of five minutes,
+  which bounds how long a client would serve a list from a process that has
+  since restarted, and `cacheScope` of `public`, because the list depends on the
+  `--tools` flag and never on who is asking. It sets them for a session that
+  negotiated `2026-07-28` **or newer**: the gate is a comparison rather than an
+  equality, so a revision rmcp has not shipped yet keeps them. At `2025-11-25`,
+  `2025-06-18`, `2025-03-26` and `2024-11-05` they stay absent rather than
+  published for older clients to tolerate or choke on, and `2025-11-25` is the
+  answer an unrecognised revision gets, so a client that asks for nothing in
+  particular is one of those four. The tool list itself is byte-identical to
+  before.
+
+- **Two sections of the opening block printed a title no limit applied to.**
+  `hooks.md` §5 promises every line of that block is cut at a bound somebody
+  measured, and it names the title bound first. Of the four places `recall.rs`
+  prints a title, the two that also print a *content* preview — `### Pinned` and
+  `### Recent Observations` — passed it through `one_line`, which folds
+  whitespace and cuts nothing. The only ceiling left on them was
+  `max_observation_length`: fifty thousand bytes, the cap a memory's *body*
+  gets, in the section that is the bulk of the block, against five session lines
+  cut at 320 and ten prompt lines cut at 200. One title could have outweighed
+  every bounded line in the block put together. Both now cut at `TITLE_CHARS`,
+  the 140 that was already there and already imported, rather than a second
+  constant for the same idea.
+
+  Nothing had fallen in yet, and the entry says so rather than implying a
+  rescue: measured over a copy of a real store, the two sections rendered 89
+  title lines across 27 projects and the longest was 132 characters, so the same
+  81 blocks come out byte-identical, 300,328 B either way. It is not a vacuous
+  bound either — 93 of that store's 4,756 live titles are already past 140 and
+  would be cut today had they landed in either window. It reaches every surface
+  that renders the block: the session-start and compaction hooks, `leteo
+  context`, and the `mem_context` tool.
+
+  Three genuinely unbounded sites remain in `src/hooks/context.rs`. They are a
+  separate issue and are not fixed here.
 
 - **Setting up DeepSeek Harness broke the harness on the shape the harness
   itself ships.** Its patch layer is a top-level YAML array, and a profile's

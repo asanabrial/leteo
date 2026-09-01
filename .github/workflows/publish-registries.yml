@@ -64,9 +64,9 @@ jobs:
           # may hold a quote, a `$` or a backtick — git forbids spaces and
           # `~^:?*[` and little else — and an expression is substituted before
           # bash parses the line, so a tag could run as code in the job that
-          # holds the crates.io token. The three `ref:` uses elsewhere in this
-          # file are action inputs and never reach a shell; this was the one
-          # that did.
+          # holds the crates.io token. The `ref:` keys elsewhere in this file
+          # are action inputs and never reach a shell; this was the one that
+          # did.
           REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail

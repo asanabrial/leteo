@@ -8,6 +8,15 @@ Everything 0.2.0 was is already in it. This is the release that reaches the
 registries a tag was never able to reach, and there is no reason to install it
 over 0.2.0 unless you want it from the MCP registry.
 
+One thing to hold while reading the three entries below, because they describe
+one incident from three angles and the route between them is easy to miss.
+Tagging 0.2.0 published the binaries, the container images and the GitHub
+release, and reached **no registry at all**. crates.io and npm did get 0.2.0
+afterwards, from the same workflow dispatched by hand — which is what
+`workflow_dispatch` was put there for, and what produced the timings and the
+error messages quoted below. The MCP registry never got it, for the third
+reason, which no dispatch could work around.
+
 ### Fixed
 
 - **A tag could not publish to any registry, and no tag had ever tried.** All

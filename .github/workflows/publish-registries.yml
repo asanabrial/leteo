@@ -1,14 +1,21 @@
 name: Publish to registries
 
-# The three registries a tag should reach, callable two ways.
+# The three registries a tag should reach. One entry point, and it is dispatch.
 #
-# `workflow_call` is how a release reaches them: `release.yml` invokes this
-# after the GitHub release exists, so nothing points at assets that are not
-# there yet — the npm wrapper resolves `v<version>` against those very assets,
-# and a package published first is a package that 404s for the length of a
-# build.
+# `release.yml` dispatches this after the GitHub release exists, so nothing
+# points at assets that are not there yet — the npm wrapper resolves
+# `v<version>` against those very assets, and a package published first is a
+# package that 404s for the length of a build.
 #
-# `workflow_dispatch` is how a release that already happened reaches them.
+# It used to be a `workflow_call`, and that is why v0.2.0 reached no registry
+# at all: OIDC names the *calling* workflow, so this file arrived at crates.io
+# claiming to be `release.yml` and was refused by name. The trigger is gone
+# rather than left beside the dispatch, because a `uses:` added back here would
+# fail the same way and take another release to notice. Without it, GitHub
+# rejects the `uses:` when the workflow is parsed. See the `registries` job in
+# `release.yml` for the trade this makes.
+#
+# `workflow_dispatch` is also how a release that already happened reaches them.
 # v0.1.2 shipped before these jobs existed, and a tag cannot be pushed twice:
 # without a way to ask, the only routes left were publishing by hand — which is
 # the thing being replaced — or cutting a version whose only content is that
@@ -24,12 +31,6 @@ name: Publish to registries
 # one-time password from an authenticator app, and no workflow has one.
 
 on:
-  workflow_call:
-    inputs:
-      ref:
-        description: The tag to publish from.
-        type: string
-        required: true
   workflow_dispatch:
     inputs:
       ref:
@@ -101,6 +102,15 @@ jobs:
           npm publish --access public
 
   mcp-registry:
+    # Last, because it is the only job that reads the other two's work. The
+    # registry validates every package `server.json` offers before it accepts
+    # the submission, so it asks crates.io and npm whether they hold this
+    # version — and all three jobs used to start together. On v0.2.0 it asked
+    # crates.io at 21:13:10 for a crate crates.io recorded at 21:14:44 and
+    # failed by ninety-four seconds, naming a precondition that was true before
+    # anyone could have looked. Both, not just crates.io: the error numbers the
+    # packages, and package 1 is the npm one.
+    needs: [crates-io, npm]
     runs-on: ubuntu-latest
     permissions:
       id-token: write

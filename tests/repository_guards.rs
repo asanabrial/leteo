@@ -719,6 +719,49 @@ fn every_manifest_publishes_the_version_this_crate_is() {
     }
 }
 
+/// The npm wrapper names the same MCP server `server.json` does.
+///
+/// The MCP registry will not accept a submission whose npm package does not
+/// echo the server's own name back at it: it reads `mcpName` out of the
+/// *published* tarball and refuses when it is absent or different. That is what
+/// makes this worth a guard rather than a comment — the failure lands after the
+/// tag exists, and it cannot be repaired for that version, because npm does not
+/// let a published version be replaced. The only fix is another release.
+///
+/// Which is how v0.2.0 reached crates.io, npm, GHCR and the GitHub release
+/// while the MCP registry got nothing: `server.json` had named the server since
+/// the beginning and `npm/package.json` had never carried the field at all.
+/// Nothing compared them, in any language.
+#[test]
+fn the_npm_wrapper_names_the_server_that_server_json_names() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let field = |relative: &str, key: &str| -> String {
+        let path = root.join(relative);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let needle = format!("\"{key}\":");
+        text.lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix(&needle))
+            .map(|rest| rest.trim().trim_matches(&[' ', '"', ','][..]).to_owned())
+            .unwrap_or_else(|| panic!("{relative} carries no {key}"))
+    };
+
+    // `server.json`'s first `"name"` is the server's own. The names below it
+    // belong to arguments and environment variables, which is why this reads
+    // the first and the file keeps the server's name at the top.
+    let declared = field("server.json", "name");
+    let published = field("npm/package.json", "mcpName");
+
+    assert_eq!(
+        published, declared,
+        "npm/package.json says mcpName {published} and server.json names the \
+         server {declared}; the MCP registry reads the published tarball and \
+         would refuse the submission after the tag exists"
+    );
+}
+
 /// The `tags:` block belonging to the `metadata-action` step beginning at `from`.
 ///
 /// Read as text rather than through a YAML parser because every other guard in

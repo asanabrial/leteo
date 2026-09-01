@@ -2,6 +2,53 @@
 
 All notable changes to Leteo are documented in this file.
 
+## [0.2.1] - 2026-09-02
+
+Everything 0.2.0 was is already in it. This is the release that reaches the
+registries a tag was never able to reach, and there is no reason to install it
+over 0.2.0 unless you want it from the MCP registry.
+
+### Fixed
+
+- **A tag could not publish to any registry, and no tag had ever tried.** All
+  three registries authenticate by OIDC and each trusts a workflow *by
+  filename*. `release.yml` reached them through `uses:
+  ./.github/workflows/publish-registries.yml`, and in a reusable-workflow call
+  the token names the **caller** — so the job presented itself as `release.yml`
+  and crates.io refused it: *"The Trusted Publishing config for repository
+  `asanabrial/leteo` does not match the workflow filename `release.yml` in the
+  JWT. Expected workflow filenames: `publish-registries.yml`."* npm said the
+  same thing as a `404` on the `PUT`, which is its phrasing for unauthorised.
+
+  Nothing had noticed because nothing had run: 0.1.2 shipped before those jobs
+  existed, so **0.2.0 was the first tag to use this path and it failed the
+  first time**, at the end of a ten-minute release with five binaries and two
+  container images already built. `release.yml` now dispatches that workflow
+  instead of calling it, so the token carries the filename the registries
+  trust, and the `workflow_call` trigger is gone rather than left beside it —
+  a `uses:` added back would fail identically and take another release to find
+  out. What this costs is that the registry results live in a second run: a tag
+  that published and a tag whose registries failed look the same in the release
+  run.
+
+- **The MCP registry submission raced the crates.io publish it depends on.**
+  All three jobs started together, and the registry validates every package
+  `server.json` offers before accepting a submission. It asked crates.io for
+  0.2.0 at 21:13:10; crates.io recorded the crate at 21:14:44. It failed by
+  ninety-four seconds, naming a precondition that became true before anybody
+  could have checked — the worst kind of red, because re-running it passes and
+  teaches nothing. It now waits for both crates.io and npm.
+
+- **The npm package did not name the MCP server, so the registry refused it.**
+  The registry reads `mcpName` out of the *published* tarball and rejects a
+  submission without it. `server.json` has named the server
+  `io.github.asanabrial/leteo` since the beginning; `npm/package.json` had
+  never carried the field, and nothing in any language compared the two. That
+  is why 0.2.0 reached crates.io, npm, GHCR and the GitHub release while the
+  MCP registry got nothing — and why it needed this release rather than a
+  repair: npm does not let a published version be replaced, so the field could
+  only ship in the next one. A guard now holds the two names together.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

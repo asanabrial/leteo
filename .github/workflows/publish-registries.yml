@@ -60,10 +60,17 @@ jobs:
       - name: Publish unless crates.io already has it
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          # Through the environment, not `${{ }}` inside the script. A ref name
+          # may hold a quote, a `$` or a backtick — git forbids spaces and
+          # `~^:?*[` and little else — and an expression is substituted before
+          # bash parses the line, so a tag could run as code in the job that
+          # holds the crates.io token. The three `ref:` uses elsewhere in this
+          # file are action inputs and never reach a shell; this was the one
+          # that did.
+          REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
-          version="${{ inputs.ref }}"
-          version="${version#v}"
+          version="${REF#v}"
           if curl -fsS -H 'user-agent: leteo-release' \
                "https://crates.io/api/v1/crates/leteo/$version" >/dev/null 2>&1; then
             echo "crates.io already has leteo $version"

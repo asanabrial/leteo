@@ -723,7 +723,7 @@ fn every_manifest_publishes_the_version_this_crate_is() {
 ///
 /// The MCP registry will not accept a submission whose packages do not echo the
 /// server's own name back at it, and it looks in a different place for each: the
-/// `mcpName` field of the *published* npm tarball, and the literal line
+/// `mcpName` field of the *published* npm tarball, and the marker
 /// `mcp-name: <name>` in the crate's rendered readme. Both are refused when
 /// absent or different. That is what makes this worth a guard rather than a
 /// comment — the failure lands after the tag exists, and it cannot be repaired
@@ -736,10 +736,10 @@ fn every_manifest_publishes_the_version_this_crate_is() {
 ///
 /// The readme half was already correct and is held here anyway, because it is
 /// the same claim in a third file and the first version of this guard checked
-/// two of the three. It is also the more fragile of the two: `README.md:269` is
-/// a line of prose in the middle of a paragraph, written out in the open rather
-/// than in an HTML comment because crates.io strips those when it renders, so
-/// there is nothing about its appearance that warns an editor off reflowing it.
+/// two of the three. It is also the more fragile of the two: it sits mid-
+/// paragraph in ordinary prose, written out in the open rather than in an HTML
+/// comment because crates.io strips those when it renders, so there is nothing
+/// about its appearance that warns an editor off reflowing it.
 #[test]
 fn the_published_packages_name_the_server_that_server_json_names() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

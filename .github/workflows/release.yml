@@ -399,8 +399,8 @@ jobs:
           # Through the environment rather than `${{ }}` inside the script:
           # an expression is substituted before the shell parses the line, so a
           # tag name carrying a quote would be read as code by a job holding a
-          # token that can start workflows. The three other places this file
-          # reads the tag already do it this way.
+          # token that can start workflows. Every other place this file reads
+          # the tag already does it this way.
           REF: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}

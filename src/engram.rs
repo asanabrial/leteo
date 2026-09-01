@@ -860,4 +860,55 @@ mod tests {
             "with the memories in it"
         );
     }
+
+    /// The fast path checks the shape, not just the stamp.
+    ///
+    /// `prepare_once` skips `migrate` entirely when the stamp already equals
+    /// `SCHEMA_VERSION`, so whatever that path accepts is opened without any of
+    /// the checks in `migrate` — including the one that tells Engram's file
+    /// apart. It therefore checks the shape itself, and this is the test that
+    /// holds it.
+    ///
+    /// Stamped `SCHEMA_VERSION` rather than 1, and that is the whole point of
+    /// having it beside the test below. While `SCHEMA_VERSION` was 1 the two
+    /// were the same fixture: Engram stamps 1, so Engram's own file reached the
+    /// fast path and covered the shape check by accident. Migration 18 moved
+    /// the version to 18 and that coincidence ended — the check went uncovered
+    /// without a single test changing, and the registered mutation that deletes
+    /// it stopped being killed by anything. A fixture stamped at whatever this
+    /// build understands cannot drift that way again.
+    #[test]
+    fn the_fast_path_refuses_a_file_stamped_current_that_is_not_leteos() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let theirs = temp.path().join("engram.db");
+        engram_database(&theirs, 3);
+        Connection::open(&theirs)
+            .unwrap()
+            .execute_batch(&format!(
+                "PRAGMA user_version = {}",
+                crate::store::SCHEMA_VERSION
+            ))
+            .unwrap();
+
+        let said = match crate::store::Store::open(crate::store::StoreConfig::new(theirs.clone())) {
+            Ok(_) => panic!(
+                "a file with no `prompts` table is not a Leteo store, whatever it is stamped"
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            said.contains("Engram database") && said.contains("import --from-engram"),
+            "the refusal has to name what the file is and what to do with it: {said}"
+        );
+
+        let still_theirs: bool = Connection::open(&theirs)
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_prompts')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(still_theirs, "refusing must not have rewritten their file");
+    }
 }

@@ -860,6 +860,7 @@ fn store_error(error: StoreError) -> CallToolResult {
         StoreError::RelativeDatabasePath(_) => "invalid_database_path",
         StoreError::PromptNotFound(_) => "prompt_not_found",
         StoreError::SchemaTooNew { .. } => "schema_too_new",
+        StoreError::SchemaFromPreRelease { .. } => "schema_from_pre_release",
         StoreError::EngramDatabase => "engram_database",
         StoreError::InvalidParameter(_) => error_code::INVALID_PARAMS,
         StoreError::Database(_) | StoreError::Io(_) | StoreError::Json(_) => "store_error",

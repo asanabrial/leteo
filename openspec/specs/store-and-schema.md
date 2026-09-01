@@ -23,7 +23,7 @@ there from any provenance, and how it says when something has gone wrong.
    with it, and Leteo stamps a database it has just converged. Pointed at a real
    Engram backup, every command used to answer `no such table: prompts`.
 
-3. **One migration, numbered 1, and it is the baseline.** The schema is
+3. **The baseline is migration 1; the first one after it is 18.** The schema is
    `include_str!`-ed at build time so the binary needs no files beside it. A
    *released* migration is never edited: a database that already ran it will not
    run it again, so editing one silently splits new databases from old.
@@ -39,12 +39,29 @@ there from any provenance, and how it says when something has gone wrong.
    compared object by object — seventy-six each, none missing on either side, no
    difference in any definition.
 
-   What it costs is stated rather than discovered later. A store carried through
-   development is stamped somewhere in 2..=17 and is refused, because from here
-   on a number above `SCHEMA_VERSION` means a newer build wrote the file and
-   guessing which of the two it is would be worse than either. The one store in
-   the world in that position is re-stamped by hand; code that recognised the
-   old numbering would outlive its reason.
+   What that cost, until migration 18 retired it. A store carried through
+   development is stamped somewhere in 2..=17, and while `SCHEMA_VERSION` was 1
+   every one of those was *above* the build and had to be refused: a number
+   above `SCHEMA_VERSION` can equally mean a newer Leteo wrote the file, and
+   guessing between the two would be worse than either. The one store in the
+   world in that position was re-stamped by hand.
+
+   Migration 18 is numbered above every number any file has ever carried — not
+   above the six the `SCHEMA_VERSION` comment counts, which would have been 7
+   and would have collided with a real pre-release stamp, letting a store
+   already at 7 read as current and skip the migration in silence.
+   `SCHEMA_VERSION` is 18.
+
+   **That removes the ambiguity and not the refusal**, and the two are worth
+   separating because the first invites the mistake of dropping the second.
+   Below 18 a stamp of 2..=17 can only be old, so it no longer *might* mean a
+   newer Leteo. It still cannot be brought forward: what those numbers did lives
+   in the folded baseline file, which runs for an unstamped database and for no
+   other, so migrating one would hand it migration 18 and none of the
+   pre-release migrations above its own number — a store stamped 8 holds what
+   0002 through 0008 did and has never seen 0009 through 0017 — then stamp it
+   current, where the fast path never looks again. `SchemaFromPreRelease` refuses it in its own
+   words, and a store stamped 1 is the one that is carried forward.
 
    And the renumbering brought back an ambiguity that numbering above 1 had
    retired: **Engram stamps `user_version = 1` too**. The fast path that skips
@@ -53,6 +70,13 @@ there from any provenance, and how it says when something has gone wrong.
    apart by shape and never got the chance. The fast path checks the shape as
    well now, which is one lookup in `sqlite_master`. Found by the guard that
    exists for it, on the first run after the renumbering.
+
+   Migration 18 ends that collision, because Engram's stamp of 1 no longer
+   equals `SCHEMA_VERSION`. The shape check stays on the general ground that the
+   fast path skips every check in `migrate`, and its guard was re-pointed at a
+   fixture stamped at whatever the build understands — otherwise it would have
+   gone on passing while testing nothing, which is exactly what it did for the
+   length of one review round.
 
 4. **`doctor` reports, and `doctor --repair` fixes what it can — and every check
    it can fix says so.** A failing check that `--repair` undoes ends its sentence
@@ -238,8 +262,13 @@ there from any provenance, and how it says when something has gone wrong.
 - Every full-text index has its triggers, and `FULL_TEXT_INDEXES` /
   `FULL_TEXT_TRIGGERS` are the single roll calls that `doctor`, the rebuild, and
   the restore all read.
-- A migration that rewrites `observations` rebuilds the indexes; an
-  external-content FTS5 table does not notice a plain `UPDATE`.
+- A migration that rewrites a column a full-text index carries rebuilds those
+  indexes. Not because FTS5 cannot see a plain `UPDATE` — in this schema
+  `obs_fts_update` and `obs_exact_update` are bare `AFTER UPDATE ON observations`
+  with no `UPDATE OF` list, so they fire on any column — but because a migration
+  that writes around the triggers, as several have, leaves them stale. One that
+  touches no full-text column needs neither: migration 18 writes `review_after`,
+  which `idx_obs_review_due` carries and neither full-text index does.
 - A doctor message is one sentence with no source indentation in it. A guard
   test enforces this, after five separate occurrences of a formatted Rust string
   carrying its own leading whitespace into a user-facing line.

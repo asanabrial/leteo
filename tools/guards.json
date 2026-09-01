@@ -932,6 +932,30 @@
     "new": "if schema_version(connection)? == SCHEMA_VERSION {"
   },
   {
+    "name": "rules: a calendar month becomes thirty days again",
+    "file": "src/memory/rules.rs",
+    "old": "        from.checked_add_months(chrono::Months::new(months))\n            .unwrap_or(from),",
+    "new": "        from + chrono::Duration::days(i64::from(months) * 30),"
+  },
+  {
+    "name": "schema: a pre-release stamp is migrated instead of refused",
+    "file": "src/store/schema.rs",
+    "old": "    if (2..=LAST_PRE_RELEASE_VERSION).contains(&version) {\n        return Err(StoreError::SchemaFromPreRelease {\n            found: version,\n            supported: SCHEMA_VERSION,\n        });\n    }\n",
+    "new": ""
+  },
+  {
+    "name": "schema: the review-clock repair recomputes a clock somebody reviewed",
+    "file": "src/store/schema.rs",
+    "old": "        if by_the_baseline.as_deref() != Some(stored.as_str()) {\n            continue;\n        }\n",
+    "new": ""
+  },
+  {
+    "name": "schema: the review-clock repair does nothing",
+    "file": "src/store/schema.rs",
+    "old": "        update.execute(rusqlite::params![by_the_rule, id])?;",
+    "new": "        let _ = (&by_the_rule, id);"
+  },
+  {
     "name": "schema: the pinned index stops being partial",
     "file": "migrations/0001_baseline_after_the_tables.sql",
     "old": " WHERE pinned = 1 AND deleted_at IS NULL;\n",

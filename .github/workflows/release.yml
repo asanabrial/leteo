@@ -356,11 +356,63 @@ jobs:
   # release which already happened can still be asked to publish — see the note
   # at the top of `publish-registries.yml`. After `publish`, so that nothing
   # points at release assets that do not exist yet.
+  #
+  # Dispatched rather than called, and that is the whole of this job. All three
+  # registries authenticate by OIDC, and each one is configured to trust a
+  # workflow *by filename*. In a reusable-workflow call the token names the
+  # caller, so `publish-registries.yml` running under `uses:` presents itself as
+  # `release.yml` and every registry refuses it:
+  #
+  #     The Trusted Publishing config for repository `asanabrial/leteo` does not
+  #     match the workflow filename `release.yml` in the JWT.
+  #     Expected workflow filenames: `publish-registries.yml`
+  #
+  # That is crates.io saying it out loud; npm said the same thing as a 404 on
+  # the PUT, which is its phrasing for unauthorised. Nothing had ever noticed,
+  # because v0.1.2 shipped before these jobs existed and v0.2.0 was the first
+  # tag to use this path — it failed the first time it ran, at the end of a
+  # ten-minute release, with the binaries and both images already built.
+  #
+  # The alternative was to add `release.yml` to the trust config of all three
+  # registries. This is the narrower grant: one filename may publish, and it is
+  # the file that does nothing else. What it costs is that the registry results
+  # are in a second run rather than this one, so a tag that publishes and a tag
+  # whose registries failed look the same here. `gh run list --workflow
+  # publish-registries.yml` is where the answer moved to.
   registries:
     needs: publish
+    runs-on: ubuntu-latest
+    # `actions: write` and nothing else, because a job-level block replaces the
+    # token's permissions rather than adding to them — everything unnamed here
+    # is `none`, including the `contents` the workflow grants above. Which is
+    # why there is no `actions/checkout`: `gh` is given `--repo` and reads no
+    # working tree, so the one step that would have needed `contents` is the one
+    # step this job does not need. An earlier draft checked out anyway and would
+    # have failed on a token with no `contents`, at the last job of a release,
+    # on a tag — the exact place this whole job exists to stop failing.
     permissions:
-      id-token: write
-      contents: read
-    uses: ./.github/workflows/publish-registries.yml
-    with:
-      ref: ${{ github.ref_name }}
+      actions: write
+    steps:
+      - name: Ask the registries workflow to publish this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Through the environment rather than `${{ }}` inside the script:
+          # an expression is substituted before the shell parses the line, so a
+          # tag name carrying a quote would be read as code by a job holding a
+          # token that can start workflows. Every other place this file reads
+          # the tag already does it this way.
+          REF: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # `--ref` names the branch whose copy of the workflow runs, and the
+          # `ref` input names the tag it checks out. They are different things
+          # and only the second was being passed: without this, which definition
+          # publishes a tag was decided by whatever `gh` defaults to.
+          gh workflow run publish-registries.yml \
+            --repo "$REPO" \
+            --ref "$DEFAULT_BRANCH" \
+            -f ref="$REF"
+          echo "Dispatched publish-registries.yml for $REF."
+          echo "Its result is not this run's: see the Publish to registries workflow."

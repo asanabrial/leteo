@@ -10,7 +10,7 @@
     {
       "name": "leteo",
       "description": "Persistent memory with session tracking, compaction recovery, and a save protocol. Gives the agent a memory that survives across sessions.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "Alexis Sanabria Lopez"
       },
@@ -21,7 +21,7 @@
     {
       "name": "leteo-zcode",
       "description": "Persistent memory for ZCode: session tracking, compaction recovery, and a save protocol. Registers the three lifecycle events this client fires.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "Alexis Sanabria Lopez"
       },

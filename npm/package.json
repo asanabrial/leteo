@@ -1,6 +1,7 @@
 {
   "name": "@asanabrial/leteo",
-  "version": "0.2.0",
+  "version": "0.2.1",
+  "mcpName": "io.github.asanabrial/leteo",
   "description": "Local-first persistent memory for AI coding agents — one binary over one SQLite database",
   "bin": {
     "leteo": "bin/leteo.js"

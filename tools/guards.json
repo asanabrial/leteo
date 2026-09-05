@@ -1004,5 +1004,35 @@
     "file": "src/store/wire.rs",
     "old": "        Err(invalid_parameter(\"sync target key is required\"))",
     "new": "        Ok(String::new())"
+  },
+  {
+    "name": "ci: a cache scope exported without mode=max",
+    "file": ".github/workflows/ci.yml",
+    "old": "cache-to: type=gha,mode=max,scope=linux/amd64",
+    "new": "cache-to: type=gha,scope=linux/amd64"
+  },
+  {
+    "name": "ci: a cache scope exported to a backend nothing imports",
+    "file": ".github/workflows/ci.yml",
+    "old": "cache-to: type=gha,mode=max,scope=linux/arm64",
+    "new": "cache-to: type=local,mode=max,scope=linux/arm64"
+  },
+  {
+    "name": "guards: a step boundary is every list item again",
+    "file": "tests/repository_guards.rs",
+    "old": "if strip_list_marker(line).is_some() && indent < file_indent {",
+    "new": "if strip_list_marker(line).is_some() {"
+  },
+  {
+    "name": "guards: no list item is a step boundary any more",
+    "file": "tests/repository_guards.rs",
+    "old": "if strip_list_marker(line).is_some() && indent < file_indent {",
+    "new": "if false {"
+  },
+  {
+    "name": "release: the matrix scope exported without mode=max",
+    "file": ".github/workflows/release.yml",
+    "old": "cache-to: type=gha,mode=max,scope=${{ matrix.platform }}",
+    "new": "cache-to: type=gha,scope=${{ matrix.platform }}"
   }
 ]

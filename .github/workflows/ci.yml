@@ -167,10 +167,10 @@ jobs:
         with:
           # A failing run saves its cache too. Without this a red run leaves
           # nothing behind, so the fix pushed after it recompiles the whole
-          # dependency tree — minutes per platform, on every red run rather
-          # than once. The reason stands on the mechanism. An earlier version
-          # of this note also counted how often it had bitten, and that count
-          # was not one this repository's own history could show.
+          # dependency tree, on every red run rather than once. The reason
+          # stands on the mechanism. An earlier version of this note also
+          # counted how often it had bitten, and that count was not one this
+          # repository's own history could show.
           cache-on-failure: true
       # `--locked`, because the release workflow builds that way. Without it CI
       # can resolve a newer dependency set than the one that ships, and "it
@@ -280,9 +280,10 @@ jobs:
       # layer — the sources are copied in, then one `cargo build` — so it is
       # reused only when the tagged tree matches one a `main` run already built.
       # A tag on a commit CI has run is the ordinary case; anything else falls
-      # back to the base image and apt layers, which is minutes rather than the
-      # whole saving. #14 gave the release matrix `scope=${{ matrix.platform }}` because
-      # two architectures sharing one scope evict each other, and this job was
+      # back to the base image and apt layers, which is part of the saving
+      # rather than the whole of it. How large a part is unmeasured. #14 gave
+      # the release matrix `scope=${{ matrix.platform }}` because two
+      # architectures sharing one scope evict each other, and this job was
       # left on buildx's default — so from then until #59 the amd64 halves never
       # met and every release recompiled `cargo build --release` from nothing on
       # that leg. The arm64 leg stopped paying it at #58, which gave the job
@@ -337,10 +338,13 @@ jobs:
   # which is the argument that file makes against the shorter shape.
   #
   # This job's cache scope is the one `release.yml`'s arm64 leg reads, which is
-  # what #58 gave it and #59 then gave the amd64 build beside it. Whether
-  # sharing buildx's default was costing anything is the question the amd64
-  # comment above declines to answer, and this sentence does not answer it
-  # either.
+  # what #58 gave it and #59 then gave the amd64 build beside it. What sharing
+  # buildx's default cost is answered above for these two: from #14 until #59
+  # the amd64 halves never met and every release recompiled
+  # `cargo build --release` on that leg. What that comment declines is the
+  # narrower question beside it — whether the MCP image and this one, whose
+  # build stages are identical today, would share a scope or evict each other
+  # — and this sentence does not answer that either.
   #
   # Nothing is pushed from here either. The release remains the only thing that
   # publishes.

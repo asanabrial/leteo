@@ -1102,6 +1102,16 @@ fn between<'a>(haystack: &'a str, open: &str, close: &str) -> Option<&'a str> {
 /// step writing them, and the release's Dockerfile is read from the step whose
 /// scope is the matrix rather than named here.
 ///
+/// What it does not do is bind a scope to the architecture that writes it. The
+/// pairing is scope-to-Dockerfile and nothing else: were `ci.yml`'s amd64 job
+/// to write `scope=linux/arm64` and the arm64 job `scope=linux/amd64`, both
+/// strings are still written for `docker/Dockerfile` and this passes, while
+/// each release leg imports the other architecture's layers. Reading that
+/// needs the job a step belongs to — the amd64 build names no `platforms:`, so
+/// only its `runs-on` says which architecture it is — and this parser has no
+/// notion of a job. That is a separate guard; the sentence above is what this
+/// one holds.
+///
 /// Read from the workflows rather than from a list written here, for the reason
 /// `the_npm_wrapper_ships_this_version_for_the_targets_this_repository_builds`
 /// gives about the same matrix: the release stays the one place a platform is
@@ -1120,12 +1130,13 @@ fn every_release_cache_scope_is_one_ci_writes() {
     // which is a test reading a comment by the back door.
     let matrix_scope = cache_scopes_by_file(&release)
         .into_iter()
-        .find(|(_, scope)| *scope == "${{ matrix.platform }}");
-    let Some((release_dockerfile, _)) = matrix_scope else {
+        .find(|export| export.scope == "${{ matrix.platform }}");
+    let Some(release_export) = matrix_scope else {
         panic!(
             "no `cache-to` in release.yml derives its scope from `matrix.platform`, so the platforms read below are no longer the scopes it uses and this guard is watching nothing"
         );
     };
+    let release_dockerfile = release_export.file;
 
     assert!(
         !release_dockerfile.is_empty(),
@@ -1134,10 +1145,10 @@ fn every_release_cache_scope_is_one_ci_writes() {
          compare equal to one on the other"
     );
 
-    // `- ` is stripped because a matrix entry may name the platform first, and
-    // that spelling is invisible to a bare `platform: ` match — the shape this
-    // guard is least able to afford missing, since a platform it cannot see is
-    // one it cannot demand a scope for.
+    // A list marker is stripped because a matrix entry may name the platform
+    // first, and that spelling is invisible to a bare `platform: ` match — the
+    // shape this guard is least able to afford missing, since a platform it
+    // cannot see is one it cannot demand a scope for.
     let platforms: Vec<&str> = release
         .lines()
         .map(|line| cut_trailing_comment(line.trim()))
@@ -1155,8 +1166,8 @@ fn every_release_cache_scope_is_one_ci_writes() {
     // is the shape of the defect rather than the fix.
     let written: Vec<&str> = cache_scopes_by_file(&ci)
         .into_iter()
-        .filter(|(file, _)| *file == release_dockerfile)
-        .map(|(_, scope)| scope)
+        .filter(|export| export.file == release_dockerfile)
+        .map(|export| export.scope)
         .collect();
 
     for platform in &platforms {
@@ -1167,15 +1178,120 @@ fn every_release_cache_scope_is_one_ci_writes() {
     }
 }
 
-/// The `cache-to` scopes a workflow writes, each paired with the `file:` of the
-/// step writing it.
+/// Every `cache-to` naming a scope exports every stage, to the backend the
+/// other workflow reads.
+///
+/// The pairing guard above reads `scope=` and nothing else on the line, so
+/// `cache-to: type=gha,scope=linux/amd64` satisfies it while buildx's default
+/// `mode=min` exports the final stage only — and `docker/Dockerfile` is
+/// multi-stage, so the `cargo build --release` layer the scope exists to keep
+/// warm would not be in what the release imports. That is #59's symptom
+/// restored with every guard green, which is the one thing a guard cannot
+/// afford. `type=` is the same shape one backend out.
+#[test]
+fn every_scoped_cache_export_writes_every_stage_where_the_other_workflow_reads_it() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(".github")
+        .join("workflows");
+    for name in ["ci.yml", "release.yml"] {
+        let workflow = std::fs::read_to_string(root.join(name)).expect("read the workflow");
+        let exports = cache_scopes_by_file(&workflow);
+        assert!(
+            !exports.is_empty(),
+            "no `cache-to` in {name} names a scope, so this guard is watching nothing"
+        );
+        for export in exports {
+            let missing = export.missing();
+            assert!(
+                missing.is_empty(),
+                "`cache-to: {}` in {name} names `scope={}` without {}, so what it exports is not what the other workflow imports: `mode=max` is what puts a multi-stage build's earlier layers in the manifest at all, and `type=gha` is the only backend either workflow reads",
+                export.options,
+                export.scope,
+                missing.join(" and ")
+            );
+        }
+    }
+}
+
+/// A step's `file:` survives a list written inside that step, and does not
+/// survive the next step.
+///
+/// Read from a fixture because neither workflow writes the shape: `ci.yml`
+/// spells `tags:` inline, so a guard over the real files would pass whatever
+/// the parser did with a block-style one. That is how the previous rule
+/// shipped — it dropped the name at every list item, so a `tags:` entry blanked
+/// the Dockerfile and turned the pairing guard red with a message about caches
+/// — and nothing in the tree could have shown it.
+#[test]
+fn a_list_inside_a_step_does_not_take_the_dockerfile_with_it() {
+    let workflow = "\
+jobs:
+  images:
+    steps:
+      - uses: docker/build-push-action@v6
+        with:
+          file: docker/Dockerfile
+          tags:
+            - leteo:ci
+          cache-to: type=gha,mode=max,scope=linux/amd64
+      - uses: docker/build-push-action@v6
+        with:
+          cache-to: type=gha,mode=max,scope=stray
+";
+    let attributed: Vec<(&str, &str)> = cache_scopes_by_file(workflow)
+        .iter()
+        .map(|export| (export.file, export.scope))
+        .collect();
+    assert_eq!(
+        attributed,
+        vec![("docker/Dockerfile", "linux/amd64"), ("", "stray")],
+        "a first pair that lost its name is the `tags:` list read as a step boundary, which fails \
+         the pairing guard for a cache defect that is not there; a second pair that gained one is \
+         a Dockerfile carried across a step boundary, which credits a scope to a build that never \
+         wrote it"
+    );
+}
+
+/// A `cache-to:` a workflow writes: the scope it names, the `file:` of the step
+/// writing it, and the options it carries beside the scope.
+struct CacheTo<'a> {
+    file: &'a str,
+    scope: &'a str,
+    options: &'a str,
+}
+
+impl CacheTo<'_> {
+    /// The options an export naming a scope needs and does not carry.
+    ///
+    /// `mode=max` because `docker/Dockerfile` is multi-stage and buildx's
+    /// default `mode=min` exports the final stage only: the
+    /// `cargo build --release` layer these scopes exist to keep warm would not
+    /// be in the manifest the release imports. `type=gha` because a scope
+    /// exported to any other backend is a string the release's own `type=gha`
+    /// import never reads. Either one missing is #59's symptom back with the
+    /// scope present and the pairing guard green.
+    fn missing(&self) -> Vec<&'static str> {
+        ["type=gha", "mode=max"]
+            .into_iter()
+            .filter(|option| !self.options.split(',').any(|part| part.trim() == *option))
+            .collect()
+    }
+}
+
+/// The `cache-to` exports a workflow writes, each paired with the `file:` of
+/// the step writing it.
 ///
 /// `file:` precedes `cache-to:` inside a step's `with:` block, so the nearest
 /// one above is that step's own — but only within the step, which is why the
-/// name is dropped at every `- ` list item. Carried across that boundary it
-/// would credit one step's scope to the Dockerfile of whichever step last
-/// named one, and a step may legitimately omit `file:`: the action defaults it
-/// to `{context}/Dockerfile`. That is the string-on-the-wrong-build case this
+/// name is dropped at a list item indented less than the `file:` that set it.
+/// A list item nested deeper is inside that same step: a block-style `tags:`
+/// entry is one, and the previous rule — drop the name at every list item —
+/// blanked the Dockerfile there and would have failed the pairing guard above
+/// with a message about caches, which is a failure naming a cause that is not
+/// there. Carried the other way, across a step boundary, the name would credit
+/// one step's scope to the Dockerfile of whichever step last named one, and a
+/// step may legitimately omit `file:`: the action defaults it to
+/// `{context}/Dockerfile`. That is the string-on-the-wrong-build case this
 /// guard exists for, so the attribution has to fail rather than guess. An
 /// empty name matches no Dockerfile the release builds, so it fails loudly.
 ///
@@ -1190,25 +1306,30 @@ fn every_release_cache_scope_is_one_ci_writes() {
 /// The scope is read up to the next option rather than to end of line, because
 /// `scope=` is last only by convention and `type=gha,scope=x,mode=max` means
 /// the same thing.
-fn cache_scopes_by_file(workflow: &str) -> Vec<(&str, &str)> {
+fn cache_scopes_by_file(workflow: &str) -> Vec<CacheTo<'_>> {
     let mut file = "";
-    let mut pairs = Vec::new();
-    for line in workflow.lines().map(str::trim) {
-        let line = cut_trailing_comment(line);
-        if strip_list_marker(line).is_some() {
+    let mut file_indent = 0;
+    let mut exports = Vec::new();
+    for raw in workflow.lines() {
+        let indent = raw.len() - raw.trim_start().len();
+        let line = cut_trailing_comment(raw.trim());
+        if strip_list_marker(line).is_some() && indent < file_indent {
             file = "";
         }
         if let Some(name) = line.strip_prefix("file: ") {
             file = name;
-        } else if let Some(rest) = line
-            .starts_with("cache-to:")
-            .then(|| line.split("scope=").nth(1))
-            .flatten()
+            file_indent = indent;
+        } else if let Some(options) = line.strip_prefix("cache-to:").map(str::trim)
+            && let Some(rest) = options.split("scope=").nth(1)
         {
-            pairs.push((file, rest.split(',').next().unwrap_or(rest)));
+            exports.push(CacheTo {
+                file,
+                scope: rest.split(',').next().unwrap_or(rest),
+                options,
+            });
         }
     }
-    pairs
+    exports
 }
 
 /// A scalar ends at a `#` preceded by whitespace — a tab as readily as a space

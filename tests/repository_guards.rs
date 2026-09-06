@@ -785,14 +785,15 @@ fn the_published_packages_name_the_server_that_server_json_names() {
     );
 }
 
-/// The `tags:` block belonging to the `metadata-action` step beginning at `from`.
+/// The block under `key` belonging to the `metadata-action` step beginning at
+/// `from`.
 ///
 /// Read as text rather than through a YAML parser because every other guard in
 /// this file reads these workflows the same way. An earlier draft of this
 /// sentence also claimed a parser would burden the release build, which is
 /// false: it would be a dev-dependency, and `cargo build --release` compiles
 /// none of those.
-fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
+fn block_after(lines: &[&str], from: usize, key: &str) -> Vec<String> {
     let mut patterns = Vec::new();
     let mut opened_at = None;
     for line in lines.iter().skip(from + 1) {
@@ -827,12 +828,12 @@ fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
         if trimmed.starts_with("- ") {
             break;
         }
-        if let Some(rest) = trimmed.strip_prefix("tags:") {
+        if let Some(rest) = trimmed.strip_prefix(key) {
             let rest = rest.trim();
-            // `tags: |` opens a block scalar; `tags: type=semver,...` is the
-            // whole list on one line. Reading only the block form returned an
-            // empty list and then reported the step as having no patterns,
-            // which is a different thing from having them on one line.
+            // A `|` opens a block scalar; a value on the key's own line is the
+            // whole list at once. Reading only the block form returned an empty
+            // list and then reported the step as having no patterns, which is a
+            // different thing from having them on one line.
             if rest.is_empty() || rest.starts_with('|') || rest.starts_with('>') {
                 opened_at = Some(indent);
             } else {
@@ -842,6 +843,29 @@ fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
         }
     }
     patterns
+}
+
+/// A pattern as `metadata-action` reads it: lower-cased, with whitespace
+/// removed.
+///
+/// Recalled rather than measured, and marked as such because the note on
+/// `block_after` above says the same about this action: `metadata-action`
+/// appears to lower-case and trim each attribute key before reading it, so
+/// `Priority=` and `priority =` reach it as the same input and did not reach a
+/// literal `contains` as one. If that recollection is wrong the guard merely
+/// refuses more than it must, which fails at test time rather than in a
+/// release.
+///
+/// One function rather than a copy in each caller. The loop and the leader
+/// check below both promise to read the pattern the same way, and #62 shipped
+/// that promise as two identical five-line expressions — the shape AGENTS.md
+/// rule 3 names, and the one this guard exists to watch.
+fn normalised_pattern(pattern: &str) -> String {
+    pattern
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Every `metadata-action` step in `release.yml` derives the version alike.
@@ -860,9 +884,17 @@ fn tag_patterns_after(lines: &[&str], from: usize) -> Vec<String> {
 ///
 /// It holds that there are at least two such steps, that every pattern is a
 /// plain `type=semver` one, that the first pattern written is the first the
-/// action resolves, and that the lists match. That third one was assumed in
-/// prose for a while before it was held; the loop that holds it says why beside
-/// itself.
+/// action resolves, and that both the `tags:` lists and the `flavor:` inputs
+/// match. That third one was assumed in prose for a while before it was held;
+/// the loop that holds it says why beside itself.
+///
+/// `flavor:` is compared because a one-sided `prefix=v` moves the version label
+/// without either `tags:` list changing — #14's divergence reached through an
+/// input this guard did not read until #87. What it holds is that the two steps
+/// were given the same one, not what the action does with it: a `flavor:`
+/// written identically in both places moves label and tag together and passes
+/// here, and nothing in this guard sees it: the leader check below reads the
+/// `tags:` block alone. Every other `with:` key is outside this guard.
 ///
 /// Not established: GitHub Actions has no include — it does not honour YAML
 /// anchors — and the documented way to share a value is a workflow-level `env`
@@ -883,7 +915,7 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
             .expect("read release.yml");
 
     let lines: Vec<&str> = workflow.lines().collect();
-    let blocks: Vec<(usize, Vec<String>)> = lines
+    let blocks: Vec<(usize, Vec<String>, Vec<String>)> = lines
         .iter()
         .enumerate()
         .filter(|(_, line)| {
@@ -902,7 +934,13 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
                     .starts_with("docker/metadata-action")
             })
         })
-        .map(|(index, _)| (index + 1, tag_patterns_after(&lines, index)))
+        .map(|(index, _)| {
+            (
+                index + 1,
+                block_after(&lines, index, "tags:"),
+                block_after(&lines, index, "flavor:"),
+            )
+        })
         .collect();
 
     assert!(
@@ -928,17 +966,8 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
     // somebody else's behaviour and the thing AGENTS.md rule 3 is about; and
     // the case worth catching is somebody reaching for the attribute at all,
     // not the order they end up with.
-    for (line, patterns) in &blocks {
+    for (line, patterns, _) in &blocks {
         for pattern in patterns {
-            // Lower-cased with spaces removed. Recalled rather than measured,
-            // and marked as such because the note on `tag_patterns_after` above
-            // says the same about this action: `metadata-action` appears to
-            // lower-case and trim each attribute key before reading it, so
-            // `Priority=` and `priority =` reach it as the same input and did
-            // not reach a literal `contains` as one. If that recollection is
-            // wrong the guard merely refuses more than it must, which fails at
-            // test time rather than in a release.
-            //
             // More than the attribute #62 names, because more than one thing
             // separates the pattern written first from the one resolved first:
             // a `priority` reorders the list, an `enable=false` removes a tag
@@ -946,11 +975,7 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
             // priority. That last is why the type is asserted here rather than
             // left to the comment below, which used to claim it and hold
             // nothing.
-            let normalised: String = pattern
-                .chars()
-                .filter(|character| !character.is_whitespace())
-                .flat_map(char::to_lowercase)
-                .collect();
+            let normalised = normalised_pattern(pattern);
             assert!(
                 normalised.starts_with("type=semver")
                     && !normalised.contains("priority=")
@@ -963,7 +988,7 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
         }
     }
 
-    let (first_line, first) = &blocks[0];
+    let (first_line, first, first_flavor) = &blocks[0];
     // The first entry, not merely some entry. `metadata-action` sorts the
     // parsed tags by priority — the loop above is what keeps them all plain
     // `type=semver`, which is one default, and refuses a pattern naming a
@@ -979,36 +1004,48 @@ fn every_metadata_action_derives_the_version_from_the_same_patterns() {
              falls back to the action's own defaults and labels the image with the raw ref name"
         );
     };
-    // `pattern={{version}}` and not merely `{{version}}`, because a substring
-    // test also accepts `pattern=v{{version}}`. That is not the #14 mismatch —
-    // the equality assert below keeps both lists the same, so a `v` would reach
-    // the label and the tag alike. What it breaks is this workflow's own
-    // verification: the merge computes `version="${GITHUB_REF_NAME#v}"` and
-    // inspects `ghcr.io/<repo>:${version}`, so a `v`-prefixed pattern publishes
-    // a tag that step then cannot find. Beyond what #62 asked for, and taken
-    // because it is the other half of the assertion #62 hardened.
-    // Normalised the same way the loop above normalises, for the reason it
-    // gives: a spelling the action reads identically should not fail here on
-    // whitespace or case, with a message about the leading pattern.
-    let leads_normalised: String = leads
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
-    assert!(
-        leads_normalised.contains("pattern={{version}}"),
+    // Pinned exactly, and to the unprefixed semver. What a `v` breaks is this
+    // workflow's own verification rather than the #14 mismatch: the equality
+    // assert below keeps both lists the same, so a `v` would reach the label
+    // and the tag alike — but the merge computes
+    // `version="${GITHUB_REF_NAME#v}"` and inspects `ghcr.io/<repo>:${version}`,
+    // so a `v`-prefixed pattern publishes a tag that step cannot find. A suffix
+    // does the same from the other end, which the previous check — a substring
+    // test bounding the prefix alone — accepted. Equality also refuses an
+    // attribute order the action would take, and the only order there is to
+    // make — `pattern=` first — the loop above already refuses by requiring
+    // `type=semver` at the front. What equality adds beyond that is refusing a
+    // third attribute beside those two, which is the point rather than a cost:
+    // a `suffix=` on the leader moves the published tag the way `-rc` does.
+    //
+    // Normalised by the same function the loop uses, for the reason that
+    // function gives.
+    let leads_normalised = normalised_pattern(leads);
+    assert_eq!(
+        leads_normalised, "type=semver,pattern={{version}}",
         "the metadata-action at release.yml:{first_line} leads with {leads:?}. \
          `org.opencontainers.image.version` is taken from the first pattern that resolves, so \
-         unless that is the full semver the label disagrees with the tag published beside it"
+         this one decides the label. A leader carrying what the tag does not — a `v`, a \
+         suffix — also breaks the merge's own verification, which computes \
+         `version=\"${{GITHUB_REF_NAME#v}}\"` and inspects `ghcr.io/<repo>:${{version}}`; a \
+         leader that is some other pattern instead labels the image with a version narrower \
+         than the tag published beside it"
     );
 
-    for (line, patterns) in &blocks[1..] {
+    for (line, patterns, flavor) in &blocks[1..] {
         assert_eq!(
             patterns, first,
             "the metadata-action steps at release.yml:{first_line} and release.yml:{line} were \
              given different tag patterns. Both derive `org.opencontainers.image.version` and one \
              of them also publishes the tags, so a difference here is an image whose version label \
              disagrees with its own tag"
+        );
+        assert_eq!(
+            flavor, first_flavor,
+            "the metadata-action steps at release.yml:{first_line} and release.yml:{line} were \
+             given different `flavor:` inputs. `flavor:` rewrites every tag the step derives, so \
+             a one-sided one moves the version label while both `tags:` lists still match — the \
+             divergence this guard exists for, through an input it did not read until #87"
         );
     }
 }

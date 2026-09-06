@@ -1034,5 +1034,39 @@
     "file": ".github/workflows/release.yml",
     "old": "cache-to: type=gha,mode=max,scope=${{ matrix.platform }}",
     "new": "cache-to: type=gha,scope=${{ matrix.platform }}"
+  },
+  {
+    "name": "release: the leading pattern carries the v the merge strips",
+    "file": ".github/workflows/release.yml",
+    "edits": [
+      {
+        "old": "            type=semver,pattern={{version}}\n            type=semver,pattern={{major}}.{{minor}}\n      # Pushed by digest rather than by tag, because two jobs writing the same\n",
+        "new": "            type=semver,pattern=v{{version}}\n            type=semver,pattern={{major}}.{{minor}}\n      # Pushed by digest rather than by tag, because two jobs writing the same\n"
+      },
+      {
+        "old": "            type=semver,pattern={{version}}\n            type=semver,pattern={{major}}.{{minor}}\n      # No guard on the digests being there. `needs: container` is satisfied\n",
+        "new": "            type=semver,pattern=v{{version}}\n            type=semver,pattern={{major}}.{{minor}}\n      # No guard on the digests being there. `needs: container` is satisfied\n"
+      }
+    ]
+  },
+  {
+    "name": "release: the leading pattern carries a suffix the merge does not",
+    "file": ".github/workflows/release.yml",
+    "edits": [
+      {
+        "old": "            type=semver,pattern={{version}}\n            type=semver,pattern={{major}}.{{minor}}\n      # Pushed by digest rather than by tag, because two jobs writing the same\n",
+        "new": "            type=semver,pattern={{version}}-rc\n            type=semver,pattern={{major}}.{{minor}}\n      # Pushed by digest rather than by tag, because two jobs writing the same\n"
+      },
+      {
+        "old": "            type=semver,pattern={{version}}\n            type=semver,pattern={{major}}.{{minor}}\n      # No guard on the digests being there. `needs: container` is satisfied\n",
+        "new": "            type=semver,pattern={{version}}-rc\n            type=semver,pattern={{major}}.{{minor}}\n      # No guard on the digests being there. `needs: container` is satisfied\n"
+      }
+    ]
+  },
+  {
+    "name": "release: one step gets a flavor the other does not",
+    "file": ".github/workflows/release.yml",
+    "old": "            type=semver,pattern={{major}}.{{minor}}\n      # No guard on the digests being there. `needs: container` is satisfied\n",
+    "new": "            type=semver,pattern={{major}}.{{minor}}\n          flavor: prefix=v\n      # No guard on the digests being there. `needs: container` is satisfied\n"
   }
 ]

@@ -458,6 +458,22 @@ useful part out of a context window has failed even if every field is right.
     are guarded — dropping a description that carried meaning is the same defect
     as shipping one that carries none.
 
+    A published description is the **first paragraph** of its `///` block, on
+    one line: `summary_of` cuts at the first blank line and collapses the
+    whitespace. Everything below that blank line is compiled into the binary and
+    dropped before `tools/list`, which is where a failure history belongs and
+    where most of them already are.
+
+    Both halves are guarded, and this is what the second one now asks. A
+    published description carries no crate-implementation word — `serde`,
+    `schemars`, `Option`, `String`, `struct`, `enum`, `impl`, `trait`, `Vec` —
+    matched whole rather than as a substring, because `Option` is inside
+    "Optional" twelve times over on this surface. It carries no `#[` either,
+    matched as a substring because it holds no word to match. A published *field*
+    description weighs no more than 400 bytes, measured against the 340 the
+    longest legitimate one weighs and the 478 that shipped six times a session
+    through a guard checking only that the text was one line with single spaces.
+
 12. **An annotation is a claim about what the tool does, and it is driven.**
     Every tool declares `read_only_hint`, `destructive_hint` and
     `idempotent_hint`, and a client decides whether to ask its user from them.

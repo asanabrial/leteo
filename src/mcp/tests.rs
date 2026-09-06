@@ -2006,6 +2006,49 @@ fn the_context_says_which_of_its_memories_were_overturned() {
     assert!(current.caveats.is_empty());
 }
 
+/// The crate-implementation word a published description carries, if it carries
+/// one.
+///
+/// Whole words, because the substring test is wrong three times over the
+/// surface as it stands: `Option` is inside "Optional" on twelve legitimate
+/// descriptions, `impl` is inside a word in `SaveParams::kind`'s vocabulary
+/// list, and `struct` is inside "instructions" in `mem_session_summary`'s own
+/// tool description. Measured against all 172 published strings, the whole-word
+/// form has no false positive and the substring form has three.
+///
+/// `#[` is the exception and is read as a substring, because it holds no
+/// alphanumeric character and no split can yield it as a word.
+fn maintainer_vocabulary(description: &str) -> Option<&'static str> {
+    const TERMS: [&str; 9] = [
+        "serde", "schemars", "Option", "String", "struct", "enum", "impl", "trait", "Vec",
+    ];
+    if description.contains("#[") {
+        return Some("#[");
+    }
+    description
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .find_map(|word| TERMS.into_iter().find(|term| *term == word))
+}
+
+/// What a published *field* description may weigh.
+///
+/// Measured on this tree rather than chosen: the longest legitimate field
+/// description is 340 bytes, `SaveParams::kind`'s vocabulary of the eight types
+/// and what happens outside them, and the paragraph this guard exists for is
+/// 478. Nothing at all sits between them, so the ceiling had a 138-byte band to
+/// sit in, and it leaves `SaveParams::kind` 60 bytes of that band — six more
+/// types' worth of growth — before it needs revisiting. A field ceiling and not
+/// a tool one: the longest tool description is `mem_save`'s at 401 bytes, and
+/// it earns them.
+const PUBLISHED_FIELD_DESCRIPTION_CEILING: usize = 400;
+
+/// A tool's own description is written for the agent choosing between tools.
+///
+/// These are `#[tool(description = ...)]` literals rather than `///`, and they
+/// are not summarised, so the two formatting checks below can still fire on
+/// them. That is why they are here and not in the field guard, where the same
+/// two could not fire and are gone. The vocabulary check is what asks the
+/// question the guard's name asks.
 #[test]
 fn no_tool_describes_itself_with_the_source_it_was_written_in() {
     let mut offenders = Vec::new();
@@ -2013,7 +2056,9 @@ fn no_tool_describes_itself_with_the_source_it_was_written_in() {
         let Some(description) = tool.description.as_ref() else {
             continue;
         };
-        if description.lines().count() > 1 || description.contains("  ") {
+        if let Some(term) = maintainer_vocabulary(description) {
+            offenders.push(format!("{}: carries `{term}`: {description:?}", tool.name));
+        } else if description.lines().count() > 1 || description.contains("  ") {
             offenders.push(format!("{}: {description:?}", tool.name));
         }
     }
@@ -2024,6 +2069,22 @@ fn no_tool_describes_itself_with_the_source_it_was_written_in() {
     );
 }
 
+/// No published field description is written to a maintainer rather than to the
+/// agent that must fill the field in.
+///
+/// Three formatting checks were the whole guard until #94, and two of them
+/// could not fire from any source: `summary_of` runs over every description in
+/// the schema before this test sees one, and it ends in
+/// `split_whitespace().join(" ")`, so neither a newline nor a double space
+/// survives to be found — an attribute-written description no more than a
+/// `///`. Two checks that cannot fire are the defect this guard was written
+/// about, so they are gone from here; they still hold the tool guard above,
+/// which reads the router raw. The intra-doc link survives `summary_of` and
+/// stays. What was missing is the question the name asks, and the answer is the
+/// vocabulary and the weight: the 478-byte serde/schemars postmortem on
+/// `ProjectEnvelope::project_path` shipped six times a session, through a guard
+/// that was green, because it is one line with single spaces like every
+/// legitimate description beside it.
 #[test]
 fn no_field_describes_itself_to_an_agent_in_rust() {
     let mut offenders = Vec::new();
@@ -2048,10 +2109,18 @@ fn no_field_describes_itself_to_an_agent_in_rust() {
             let mut found = Vec::new();
             collect_descriptions(&schema, &mut found);
             for description in found {
-                if description.lines().count() > 1
-                    || description.contains("  ")
-                    || description.contains("[`")
-                {
+                if let Some(term) = maintainer_vocabulary(&description) {
+                    offenders.push(format!(
+                        "{} {half}: carries `{term}`: {description:?}",
+                        tool.name
+                    ));
+                } else if description.len() > PUBLISHED_FIELD_DESCRIPTION_CEILING {
+                    offenders.push(format!(
+                        "{} {half}: {} bytes, over the {PUBLISHED_FIELD_DESCRIPTION_CEILING} a field description may weigh: {description:?}",
+                        tool.name,
+                        description.len()
+                    ));
+                } else if description.contains("[`") {
                     offenders.push(format!("{} {half}: {description:?}", tool.name));
                 }
             }

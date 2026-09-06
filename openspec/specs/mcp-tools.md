@@ -435,28 +435,188 @@ useful part out of a context window has failed even if every field is right.
    places somebody actually reads.
 
 11. **A description earns its bytes.** `tools/list` is what every agent reads
-    before it can do anything, and it is the largest fixed cost Leteo imposes:
-    62% of it is output schemas, a fifth of those were descriptions, and two
-    thirds of those were the same sentences again — the memory type is embedded
-    in eight tools, so `Absent unless pinned.` shipped eight times.
+    before it can do anything, and it is the largest fixed cost Leteo imposes.
+    Output schemas are 28,069 bytes of it and input schemas 12,780 (59% and
+    27%), and descriptions are 5,050 of the output half, 18% of it. When this
+    requirement was written, two thirds of the output descriptions of the day
+    were the same sentences again — a surface older than either capture here, so
+    no command below reaches it — because the memory type is embedded in eight
+    tools. That embedding has not changed: four descriptions still ship eight
+    times each anywhere on this surface, for the memory's state, its prompt, its
+    relations and what the graph says about it. `Absent unless pinned.`, which
+    this requirement used to name as the repeated one, ships zero times.
 
-    What that leaves, measured across the profile an agent is actually given:
-    48,339 bytes for nineteen tools, of which 13,159 are descriptions, 8,274 the
-    `type` keywords that carry the shape, 2,436 the `$schema` dialect line and
-    1,162 the `$ref`s that keep a repeated type from being written twice inside
-    one document. The dialect line is the only pure ceremony left and it stays:
-    dropping a *standard* keyword to save 610 tokens is the opposite of the two
-    fixes that got here — a non-standard `format` and a missing field, both
-    found by clients that validate strictly.
+    What that leaves, measured across the profile an agent is actually given —
+    a release build driven over stdio with `LETEO_DATA_DIR` in a temporary
+    directory, `tools/list` captured as `tl.json`. Every size here is in
+    bytes, from `utf8bytelength`, and every measured figure has its command:
+
+    ```sh
+    # the capture. The three messages are written out rather than described,
+    # because the grep looks for the id this file gives tools/list and a
+    # reconstruction that numbers them differently leaves tl.json empty.
+    # printf rather than a heredoc: a heredoc terminator has to sit at column
+    # 0, and a column-0 line closes the list item that this requirement is,
+    # taking the fence and everything below it out of the rendered requirement
+    printf '%s\n' \
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"c","version":"0"}}}' \
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+      '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > rpc.txt
+    LETEO_DATA_DIR="$(mktemp -d)" ./target/release/leteo mcp --tools=agent \
+      < rpc.txt | grep '"id":2' > tl.json
+
+    # an empty tl.json answers everything below with a blank or a 0 rather
+    # than an error, so it is checked here instead of trusted
+    jq -e '.result.tools | length == 19' tl.json
+
+    # 19 tools, 47781 bytes of array
+    jq '.result.tools | length' tl.json
+    jq '.result.tools | tojson | utf8bytelength' tl.json
+
+    # the two halves: 28069 output schemas, 12780 input schemas
+    jq '[.result.tools[] | .outputSchema | select(. != null)
+         | tojson | utf8bytelength] | add' tl.json
+    jq '[.result.tools[] | .inputSchema | select(. != null)
+         | tojson | utf8bytelength] | add // 0' tl.json
+
+    # descriptions: 3053 tool blurb, 5631 input fields, 5050 output fields
+    jq '[.result.tools[]
+         | (.description // "" | utf8bytelength)] | add' tl.json
+    jq '[.result.tools[] | [.inputSchema | .. | objects
+         | .description? | strings | utf8bytelength] | add // 0] | add' tl.json
+    jq '[.result.tools[] | [.outputSchema // {} | .. | objects
+         | .description? | strings | utf8bytelength] | add // 0] | add' tl.json
+
+    # the shape keywords, each charged its value, key, quotes and colon:
+    # 9644 type, 2128 $schema, 1094 $ref. A path test rather than has(),
+    # because 16 of this surface's own fields are named `type`
+    for k in type '$schema' '$ref'; do jq --arg k "$k" '[.result.tools[]
+      | paths as $p | select($p[-1] == $k
+          and (($p | length) < 2 or $p[-2] != "properties"))
+      | (getpath($p) | tojson | utf8bytelength)
+        + ($k | utf8bytelength) + 3] | add // 0' tl.json; done
+
+    # what that path test excludes and what it keeps: 16 fields named
+    # `type` weighing 1258, against 544 keywords of which 155 hold an array
+    jq '[.result.tools[] | paths as $p | select($p[-1] == "type"
+         and ($p | length) > 1 and $p[-2] == "properties")
+       | (getpath($p) | tojson | utf8bytelength) + 7]
+       | [length, (add // 0)]' tl.json
+    jq '[.result.tools[] | paths as $p | select($p[-1] == "type"
+         and (($p | length) < 2 or $p[-2] != "properties"))
+       | getpath($p)] | [length, ([.[] | arrays] | length)]' tl.json
+
+    # the 4 descriptions that ship eight times each anywhere on the surface,
+    # printed rather than named, and the 0 of the sentence this text dropped
+    jq -r '[.result.tools[] | .. | objects | .description? | strings]
+       | group_by(.) | map(select(length == 8)) | map(.[0]) | .[]' tl.json
+    jq '[.result.tools[] | .. | objects | .description? | strings
+         | select(test("Absent unless pinned"))] | length' tl.json
+
+    # the 20 bytes by which these descriptions exceed their own character
+    # count, and the ten em dashes that are all of it: [[8212,10]]
+    jq '[.result.tools[] | .. | objects | .description? | strings
+         | (utf8bytelength - length)] | add' tl.json
+    jq -c '[.result.tools[] | .. | objects | .description? | strings]
+       | join("") | explode | map(select(. > 127))
+       | group_by(.) | map([.[0], length])' tl.json
+
+    # 13734 again, over every description wherever it sits in a tool, which
+    # is what makes the three above the whole of it
+    jq '[.result.tools[] | .. | objects | .description? | strings
+         | utf8bytelength] | add' tl.json
+
+    # 35 unique output descriptions; 20 of them name an absence, by hand
+    jq -r '[.result.tools[] | [.outputSchema // {} | .. | objects
+         | .description? | strings]] | flatten | unique | length' tl.json
+    ```
+
+    Every measured figure above has a command under it, because a figure nobody
+    can reproduce stops being a budget. The 20-of-35 classification is the one
+    exception and says so: it is a judgement, re-derivable by anyone applying
+    the same question to the same 35 strings. The tool blurb, the input fields
+    and the output fields sum to 13,734, which is every description on the
+    surface.
+
+    Four traps this block fell into before it was right, each worth the few
+    words that avoid it.
+
+    - `jq -c ... | wc -c` counts the newline jq prints after the array, and
+      two bytes rather than one on a shell that rewrites it — so the figure
+      read 47,783 and was platform-dependent besides.
+      `tojson | utf8bytelength` never leaves jq, and answers 47,781.
+    - `length` counts characters, `utf8bytelength` counts bytes. Across these
+      descriptions the two differ by 20, which is ten em dashes. Every size
+      here is the second.
+    - The keyword loop tested `type` for a string value and charged nothing
+      otherwise, which silently dropped the 155 whose value is an array like
+      `["string","null"]`, publishing 5,919.
+    - Correcting that with `has("type")` then charged 16 things that are not
+      the keyword at all: this surface has fields *named* `type`, and an
+      object of `properties` holding one answers `has("type")` exactly as a
+      schema does. In bytes that loop totals 10,902, of which those 16 fields
+      are 1,258; it published 10,900 because it was still counting
+      characters, which is the trap above wearing the other one's clothes.
+      The keyword weighs 9,644, and only a test on the path can tell a
+      keyword from a field that happens to share its name.
+
+    Against those, §11's five superseded figures. Measured on a capture kept
+    from before #94 — 50,295 of array and 16,248 of descriptions — the array's
+    48,339 was 1,956 below the surface when #95 was filed and is 558 above it
+    now; the descriptions' 13,159 was 3,089 below and is 575 below. Both span
+    the same 2,514 — the array crosses it, the descriptions figure stays under
+    it — and 2,514 is what #94 took off in output descriptions an hour before
+    this was written. The gap narrowed because the surface moved toward the
+    numbers, not because anyone corrected them, and they had been quoted outside
+    this repository by then. The other three have no such account: 8,274 of
+    `type` against 9,644, 2,436 of `$schema` against 2,128 and 1,162 of `$ref`
+    against 1,094, with no change on record that moved any of them. `type` in
+    particular is 9,644 on the older capture too, because #94 removed
+    description text and no keyword. Those three readings of the vanished build
+    (50,295, 16,248 and that 9,644) are the only figures here no command above
+    can answer, and they say so rather than being left to look reproducible.
+
+    **The three-way split is the comparable one.** A server that ships no
+    output schemas can only be held against the tool blurb and the input
+    fields summed, 8,684, so reporting descriptions as a single 13,734 invites
+    a comparison nobody can make. The dialect line is the only pure ceremony
+    left among the keywords and it stays: dropping a *standard* keyword to
+    save tokens is the opposite of the two fixes that got here — a
+    non-standard `format` and a missing field, both found by clients that
+    validate strictly.
 
     An *input* description prevents a wrong call. An *output* description
     describes something the agent is about to see, so it travels only where the
-    value cannot say it: a closed vocabulary that appears nowhere else in the
-    schema (`state`, a caveat's `relation`), a number whose name has twice been
-    misread (`count`), an opaque name (`caveats`). What the field name already
-    says stays in the source as a comment for whoever maintains it. Both halves
-    are guarded — dropping a description that carried meaning is the same defect
-    as shipping one that carries none.
+    value cannot say it — and the case that keeps recurring is an **absence**.
+    A null, an empty list, a field that is simply not there: an absence
+    serialises identically to a negative and means the opposite, so the schema
+    is the only place to say which it is. That is `AGENTS.md`'s *say what
+    could not be done* — an empty answer, a busy store, a check that could
+    not run, each says which it is — carried across from the values to the
+    schema that describes them.
+
+    Counted rather than asserted: of the 35 unique output descriptions shipping
+    today, 20 name an absence. Four of them verbatim, because a description
+    quoted in part is not one of the 35:
+
+    - `` `active`, `needs_review` or `deleted`. Absent when active. ``
+    - `Present only when a project was explicitly requested and matched.`
+    - `Carried when nothing matched, or when only some of the words did.`
+    - `Why nothing came out, when nothing did.`
+
+    The other 15 are not one case. Most are the ones named before this one and
+    still good: a closed vocabulary that appears nowhere else in the schema (a
+    caveat's `relation`), a number whose name has been misread (`count` is the
+    length of the list, not the number that matched), an opaque name
+    (`also_remembered`), a body this surface cut. Several more say what a field
+    is *for* rather than when it is there, which is a case this requirement
+    does not try to close. Absence is the largest single case, not the only
+    one, and calling the other 15 a closed list would put in the requirement
+    exactly the unmeasured claim it exists to refuse.
+
+    What the field name already says stays in the source as a comment for
+    whoever maintains it. Both halves are guarded — dropping a description that
+    carried meaning is the same defect as shipping one that carries none.
 
     A published description is the **first paragraph** of its `///` block, on
     one line: `summary_of` cuts at the first blank line and collapses the
@@ -464,15 +624,16 @@ useful part out of a context window has failed even if every field is right.
     dropped before `tools/list`, which is where a failure history belongs and
     where most of them already are.
 
-    Both halves are guarded, and this is what the second one now asks. A
-    published description carries no crate-implementation word — `serde`,
-    `schemars`, `Option`, `String`, `struct`, `enum`, `impl`, `trait`, `Vec` —
-    matched whole rather than as a substring, because `Option` is inside
-    "Optional" twelve times over on this surface. It carries no `#[` either,
-    matched as a substring because it holds no word to match. A published *field*
-    description weighs no more than 400 bytes, measured against the 340 the
-    longest legitimate one weighs and the 478 that shipped six times a session
-    through a guard checking only that the text was one line with single spaces.
+    Shipping one that carries none is what the second of those guards now asks
+    about. A published description carries no crate-implementation word —
+    `serde`, `schemars`, `Option`, `String`, `struct`, `enum`, `impl`, `trait`,
+    `Vec` — matched whole rather than as a substring, because `Option` is
+    inside "Optional" twelve times over on this surface. It carries no `#[`
+    either, matched as a substring because it holds no word to match. A
+    published *field* description weighs no more than 400 bytes, measured
+    against the 340 the longest legitimate one weighs and the 478 that shipped
+    six times a session through a guard checking only that the text was one
+    line with single spaces.
 
 12. **An annotation is a claim about what the tool does, and it is driven.**
     Every tool declares `read_only_hint`, `destructive_hint` and

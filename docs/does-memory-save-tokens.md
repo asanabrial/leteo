@@ -68,19 +68,19 @@ On B2, the arm without memory went **0 for 3** — and all three declared themse
 A session pays this before anyone asks anything. Byte counts are measured; the token column is bytes divided by four, which is a rule of thumb and not a tokenizer.
 
 ```
-  MCP tool schemas (19 tools, agent profile)   48,339 B   ~12,085 tokens
+  the `tools/list` array (19 tools, agent)      47,781 B   ~11,945 tokens
   MCP server instructions                       2,250 B         562
   session-start directive                         925 B         231
   the memory block itself (50 memories)        10,170 B       2,542
                                                --------   -----------
-                                               61,684 B   ~15,420 tokens
+                                               61,126 B   ~15,280 tokens
 ```
 
-(The column rounds per row, so it sums to 15,420 where 61,684/4 is 15,421.)
+(The column rounds per row, so it sums to 15,280 where 61,126/4 is 15,281.5.)
 
-The schema figure is the one [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) publishes and owns.
+The schema figure is the one [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) publishes and owns, and §11 there now publishes the command that produces it — and the one for the 2,128 below — so both figures this page borrows can be re-derived rather than trusted.
 
-**78% of that is the tool schemas**, and I am not going to pretend they belong to somebody else. [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) already calls that figure what it is — *the largest fixed cost Leteo imposes* — and breaks it down there. Only one thing in it says nothing about my tools: the JSON-Schema dialect declaration, which that spec calls *the only pure ceremony left* and prices at 610 tokens. Even that is one line per schema, so it grows with how many tools I expose — what a server pays regardless is the declaration, not its size. Everything else is mine: the descriptions I wrote, the keywords carrying the shape of my own nineteen tools, and the names and structure under them. So the split is not schemas-versus-memory. It is 12,085 tokens of tool surface against 3,335 of context, and **both of those are mine**.
+**78% of that is the tool list**, and I am not going to pretend it belongs to somebody else. [`openspec/specs/mcp-tools.md`](../openspec/specs/mcp-tools.md) already calls that figure what it is — *the largest fixed cost Leteo imposes* — and breaks it down there. Only one thing in it says nothing about my tools: the JSON-Schema dialect declaration, which that spec calls *the only pure ceremony left among the keywords* and weighs 2,128 bytes, about 532 tokens by the same rule of thumb. Even that is one line per schema, so it grows with how many tools I expose — what a server pays regardless is the declaration, not its size. Everything else is mine: the descriptions I wrote, the keywords carrying the shape of my own nineteen tools, and the names and structure under them. So the split is not schemas-versus-memory. It is 11,945 tokens of tool surface against 3,335 of context, and **both of those are mine**.
 
 That is the part worth taking away. I had spent weeks trimming the block's 2,542 tokens and had never once measured the 12,000 sitting next to it. The spec records what it took to get that number this small, and argues against cutting it further; either way it was never somebody else's number.
 

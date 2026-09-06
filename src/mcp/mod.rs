@@ -399,6 +399,7 @@ pub const SOURCE_ALL_PROJECTS: &str = "all_projects";
 pub struct ProjectEnvelope {
     project: String,
     project_source: String,
+    /// Where the project lives on disk, when the call carries one.
     ///
     /// `Option` rather than a `String` skipped when empty. The two look alike
     /// from Rust and are not the same thing on the wire: serde omits an empty

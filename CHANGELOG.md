@@ -2,6 +2,24 @@
 
 All notable changes to Leteo are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The Windows binary needed a runtime the docs said it did not.** The 0.1.2
+  and 0.2.1 releases linked the MSVC CRT and UCRT dynamically, so `leteo.exe`
+  imported `VCRUNTIME140.dll` and ten `api-ms-win-crt-*.dll` forwarders — a
+  moderator reviewing the winget manifest caught it
+  (microsoft/winget-pkgs#416516) and asked for `Microsoft.VCRedist.2015+.x64`
+  to be declared as a dependency, which is exactly what the README's "nothing
+  else to install first" promise said would not be needed. `.cargo/config.toml`
+  now links the CRT and UCRT into the binary instead
+  (`target-feature=+crt-static`); read back with `dumpbin /IMPORTS`, the
+  binary carries neither `VCRUNTIME140.dll` nor any `api-ms-win-crt-*.dll`
+  afterward. The cost is 209,408 bytes on a 19 MB executable (+1.1%);
+  measured interleaving 30 runs of each binary, neither `leteo --version` nor
+  `leteo hook user-prompt-submit` came out measurably slower.
+
 ## [0.2.1] - 2026-09-02
 
 Everything 0.2.0 was is already in it. This is the release that reaches the

@@ -492,21 +492,21 @@ pub enum StoreError {
     /// was re-stamped by hand; a loud refusal is the right answer and a silent
     /// mis-stamp is not.
     #[error(
-        "this database is at schema version {found}, from Leteo's pre-release numbering, and this build understands {supported}; those versions were folded into the baseline and cannot be migrated forward. Export what you need and import it into a fresh store — re-stamping this one to {supported} by hand would make it look current while it is still missing everything the migrations above {found} did"
+        "this database is at schema version {found}, from Leteo's pre-release numbering, and this build understands {supported}; those versions were folded into the baseline and cannot be migrated forward. Set PRAGMA user_version = 0 and open it with this binary again — adoption rebuilds the baseline — or start a fresh store and save what you still need. Re-stamping to {supported} or to 1 by hand would make it look current while it is still missing everything the migrations above {found} did"
     )]
     SchemaFromPreRelease { found: i32, supported: i32 },
     /// The file is Engram's, and Leteo has a command for that.
     ///
-    /// Engram stamps `user_version = 1`, which is what Leteo stamped a database
-    /// it had converged to its own baseline until migration 18 moved
-    /// `SCHEMA_VERSION` to 18 — so the version could not tell the two apart and
-    /// the shape had to. It still has to: a converged Leteo store passes
-    /// through the baseline stamp on its way forward, and a number is a thing
-    /// anybody can write into a file. Without this, pointing any
-    /// command at an Engram database ran migrations written for Leteo's baseline
-    /// against Engram's tables and came back with `no such table: prompts`: an
-    /// internal name, a SQLite error code, and no mention of the one command
-    /// that exists for exactly this file.
+    /// Engram stamps `user_version = 1`, which is also the intermediate stamp
+    /// Leteo writes right after the baseline before numbered migrations carry
+    /// the file to `SCHEMA_VERSION` — so the version alone cannot tell the two
+    /// apart and the shape has to. A finished Leteo store ends at
+    /// `SCHEMA_VERSION`, not 1; the shape check still has to hold because a
+    /// number is a thing anybody can write into a file. Without this, pointing
+    /// any command at an Engram database ran migrations written for Leteo's
+    /// baseline against Engram's tables and came back with
+    /// `no such table: prompts`: an internal name, a SQLite error code, and no
+    /// mention of the one command that exists for exactly this file.
     #[error(
         "this is an Engram database, not a Leteo one: it has `user_prompts` where Leteo has `prompts`. Take its memories over with `leteo import --from-engram --source <path>`, which copies them into a Leteo store and leaves this file alone"
     )]

@@ -20,8 +20,10 @@ there from any provenance, and how it says when something has gone wrong.
    at `leteo import --from-engram`, which snapshots the source and writes into a
    Leteo store without touching theirs. Told apart by shape and not by version,
    because `user_version = 1` means two things — Engram stamps its own schema
-   with it, and Leteo stamps a database it has just converged. Pointed at a real
-   Engram backup, every command used to answer `no such table: prompts`.
+   with it, and Leteo stamps 1 right after the baseline before numbered
+   migrations carry the file to `SCHEMA_VERSION`. A finished Leteo store ends
+   at `SCHEMA_VERSION`, not 1. Pointed at a real Engram backup, every command
+   used to answer `no such table: prompts`.
 
 3. **The baseline is migration 1; the first one after it is 18.** The schema is
    `include_str!`-ed at build time so the binary needs no files beside it. A

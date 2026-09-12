@@ -58,10 +58,11 @@ it skips `tests/`, which is where the surface-level guards live.
    names, trigger names — each is one list that the behaviour and its tests both
    read. A hand-written second copy is how `policy` kept a review window that
    nothing could ever fire.
-   One exception, licensed and written down rather than left to look like the
-   defect: a *released* migration may freeze a copy of what it needs, because it
-   must give every database the same answer whenever it happens to run.
-   `openspec/specs/memory-model.md` records the only one there is.
+    One exception, licensed and written down rather than left to look like the
+    defect: a *released* migration may freeze a copy of what it needs, because it
+    must give every database the same answer whenever it happens to run.
+    `openspec/specs/memory-model.md` records the two there are — migration 18's
+    frozen table and the baseline's three SQL literals.
 4. **A limit that is published is the limit that is applied.**
 5. **Say what could not be done.** An empty answer, a busy store, a check that
    could not run — each says which it is. Reporting the nearest named state

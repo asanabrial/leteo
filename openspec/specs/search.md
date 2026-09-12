@@ -200,8 +200,13 @@ before any of it.
   Losing one is silent — an edited row leaves both row counts equal — so
   `doctor` calls the roll of triggers by name. See
   [`store-and-schema.md`](store-and-schema.md) §6.
-- An external-content FTS5 table does not notice a plain `UPDATE`. Any migration
-  that rewrites `observations` rebuilds the indexes afterwards.
+- A migration that rewrites a column a full-text index carries rebuilds those
+  indexes. Not because FTS5 cannot see a plain `UPDATE` — in this schema
+  `obs_fts_update` and `obs_exact_update` are bare `AFTER UPDATE ON observations`
+  with no `UPDATE OF` list, so they fire on any column — but because a migration
+  that writes around the triggers leaves them stale. One that touches no
+  full-text column needs neither: see [`store-and-schema.md`](store-and-schema.md)
+  for the same invariant.
 - Ranking transfers between SQLite builds; timing does not, and neither does
   query *construction*. A measurement of search quality made anywhere other than
   through this binary's own query builder is a measurement of something else.

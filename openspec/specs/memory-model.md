@@ -192,12 +192,16 @@ changes.
   nothing could ever fire.
 - **A released migration is the one thing allowed to freeze a copy of those
   numbers**, and it is written down here because an unexplained second copy is
-  indistinguishable from the defect above. Migration 18 carries its own
-  `[("decision", 6), ("policy", 12), ("preference", 3)]`. It is append-only and
-  must give every database the same answer whenever it happens to run; reading
-  the live list would make one migration produce two results either side of a
-  window change, which is the split append-only exists to prevent. A migration
-  freezes what it needs; nothing else may.
+  indistinguishable from the defect above. There are two, both licensed by the
+  same rule: migration 18 carries its own
+  `[("decision", 6), ("policy", 12), ("preference", 3)]`, and the baseline's
+  three SQL literals (`'+6 months'`, `'+12 months'`, `'+3 months'` in
+  `0001_baseline_after_the_tables.sql`) are the windows it actually wrote.
+  Each is append-only and must give every database the same answer whenever it
+  happens to run; reading the live list would make one migration produce two
+  results either side of a window change, which is the split append-only exists
+  to prevent. A migration freezes what it needs; nothing else may. The guard
+  that counts the baseline's three literals is what keeps that number honest.
 - A title is one line, and no longer than a body. Both doors fold and bound it
   through `normalize::title`: saving folded and did not bound, updating did
   neither, so 200 KB went in and came back out of `mem_get_observation` from the

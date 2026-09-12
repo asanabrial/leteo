@@ -13,11 +13,6 @@ pub(super) const BASELINE_TABLES_SQL: &str =
 pub(super) const BASELINE_FINALIZE_SQL: &str =
     include_str!("../../migrations/0001_baseline_finalize.sql");
 
-/// The data half of the baseline, applied to whatever arrives unstamped.
-///
-/// Types folded onto the documented set, project names lowercased and their
-/// repeated separators collapsed, and the full-text index rebuilt once at the
-/// end because an external-content FTS5 table does not notice a plain `UPDATE`.
 /// Everything after the tables, folded back into the baseline.
 ///
 /// Eleven numbered migrations lived here until nothing had been released and
@@ -27,6 +22,14 @@ pub(super) const BASELINE_FINALIZE_SQL: &str =
 pub(super) const BASELINE_AFTER_TABLES_SQL: &str =
     include_str!("../../migrations/0001_baseline_after_the_tables.sql");
 
+/// The data half of the baseline, applied to whatever arrives unstamped.
+///
+/// Types folded onto the documented set, project names lowercased and their
+/// repeated separators collapsed, and the full-text index dropped and recreated
+/// once at the end so an unstemmed arrival gets the porter tokenizer — the
+/// rebuild that follows also covers the UPDATEs above. In this schema the
+/// triggers fire on any column; the rebuild is not because FTS5 cannot see a
+/// plain `UPDATE`.
 pub(super) const BASELINE_NORMALIZE_SQL: &str =
     include_str!("../../migrations/0001_baseline_normalize.sql");
 
@@ -116,14 +119,14 @@ pub(super) enum Migration {
 /// Numbering skips 2 through 17 because they are spent: canonical types,
 /// stemmed index, lowercase projects, normalised projects, summary headlines,
 /// and the eleven that followed them. (1 is the baseline, and is the one number
-/// in that stretch that is not skipped.) All six were folded into the baseline, and a database
-/// that ran *all* of them holds the same schema as one carrying `1` — which is
-/// the claim that made re-stamping look safe, and which is true of a stamp of
-/// 17 and not of a stamp of 8. That is why those numbers are refused rather
-/// than migrated; see `LAST_PRE_RELEASE_VERSION`. It is also why the first real
-/// migration is numbered above all of them instead
-/// of re-stamping them down and colliding with the numbers a released build
-/// hands out.
+/// in that stretch that is not skipped.) Those five names plus the eleven were
+/// folded into the baseline, and a database that ran *all* of them holds the
+/// same schema as one carrying `1` — which is the claim that made re-stamping
+/// look safe, and which is true of a stamp of 17 and not of a stamp of 8. That
+/// is why those numbers are refused rather than migrated; see
+/// `LAST_PRE_RELEASE_VERSION`. It is also why the first real migration is
+/// numbered above all of them instead of re-stamping them down and colliding
+/// with the numbers a released build hands out.
 ///
 /// Migration 18 is that first one, so this is now 18. The paragraph above was
 /// written before it existed and turned out to be an instruction rather than a
@@ -390,10 +393,12 @@ pub(super) fn migrate(connection: &Connection) -> Result<(), StoreError> {
     // The unstamped case is handled below by `adopt_to_baseline`, which this
     // function's own documentation says covers an Engram database — and it
     // does, for one that carries no `user_version`. A real one carries `1`,
-    // which is also what Leteo stamps a database it has converged, so the two
-    // are indistinguishable by version. Skipping adoption, the loop then ran
-    // migrations written for Leteo's baseline against Engram's tables and the
-    // caller got `no such table: prompts`.
+    // which is also what Leteo stamps right after the baseline before the
+    // numbered migrations carry it to `SCHEMA_VERSION`, so the two are
+    // indistinguishable by version while a store sits on that intermediate
+    // stamp. Skipping adoption, the loop then ran migrations written for
+    // Leteo's baseline against Engram's tables and the caller got
+    // `no such table: prompts`.
     //
     // Refused rather than converged, and that is the whole point of saying it
     // here: `leteo import --from-engram` snapshots the source and writes into a
@@ -537,8 +542,16 @@ fn summary_headlines(connection: &Connection) -> Result<(), rusqlite::Error> {
 /// every review the store has recorded.
 fn review_clocks_in_calendar_months(connection: &Connection) -> Result<(), rusqlite::Error> {
     let rows = {
+        // `rowid` addresses the write-back. An adopted table keeps its own
+        // column definitions when `migrate_legacy_observations_table` finds `id`
+        // already a primary key and skips the rebuild, so `id` may be TEXT (or
+        // NULL, or any affinity). Binding a cast integer into `WHERE id = ?`
+        // then fails to match a TEXT primary key holding `'007'` — affinity
+        // turns the bound `7` into `'7'`, nothing updates, and `repaired` still
+        // increments. `rowid` is stable for every ordinary table and needs no
+        // cast.
         let mut statement = connection.prepare(
-            "SELECT CAST(id AS INTEGER), CAST(type AS TEXT),
+            "SELECT rowid, CAST(type AS TEXT),
                     CAST(created_at AS TEXT), CAST(review_after AS TEXT)
                FROM observations
               WHERE review_after IS NOT NULL",
@@ -606,11 +619,11 @@ fn review_clocks_in_calendar_months(connection: &Connection) -> Result<(), rusql
     // output would be a third opinion about months, which is the defect.
     let mut rolled_forward = connection.prepare("SELECT datetime(?1, '+' || ?2 || ' months')")?;
     let mut update =
-        connection.prepare("UPDATE observations SET review_after = ?1 WHERE id = ?2")?;
+        connection.prepare("UPDATE observations SET review_after = ?1 WHERE rowid = ?2")?;
 
     let mut repaired = 0_usize;
     let mut skipped = 0_usize;
-    for (id, kind, created_at, stored) in rows {
+    for (rowid, kind, created_at, stored) in rows {
         let (Some(kind), Some(created_at), Some(stored)) = (kind, created_at, stored) else {
             skipped += 1;
             continue;
@@ -659,7 +672,7 @@ fn review_clocks_in_calendar_months(connection: &Connection) -> Result<(), rusql
         if by_the_baseline.as_deref() != Some(stored.as_str()) {
             continue;
         }
-        update.execute(rusqlite::params![by_the_rule, id])?;
+        update.execute(rusqlite::params![by_the_rule, rowid])?;
         repaired += 1;
     }
     // A row this could not read is not a row that needed nothing, and the

@@ -836,6 +836,11 @@ fn session_summaries_are_retitled_by_what_each_session_was_for() {
 /// completed by this code, and saying so is better than stamping them and
 /// forgetting.
 ///
+/// The recovery the message names has to be reachable with this binary: set
+/// `user_version` to 0 and open again so adoption runs, or start a fresh store.
+/// "Export and import" was not — every export takes a `Store` that `open` has
+/// already refused to build.
+///
 /// The one store in the world in that position is re-stamped by hand. Code that
 /// recognised the old numbering would outlive the reason for it, and this is a
 /// test rather than that code: what it holds is that both refusals name what
@@ -860,6 +865,12 @@ fn a_store_from_the_pre_release_numbering_is_refused_and_says_both_numbers() {
             said.contains(&stamped.to_string()) && said.contains(&SCHEMA_VERSION.to_string()),
             "the refusal names what it found and what it understands: {said}"
         );
+        if stamped <= LAST_PRE_RELEASE_VERSION {
+            assert!(
+                said.contains("user_version = 0") && said.contains("fresh store"),
+                "the pre-release refusal names an action this binary can complete: {said}"
+            );
+        }
     }
 }
 
@@ -1405,6 +1416,122 @@ fn the_review_clock_repair_fixes_what_sqlite_counted_and_spares_what_was_reviewe
     );
 }
 
+/// Migration 18 cannot abort an open, or claim a repair it did not write, on a
+/// TEXT primary key — the shape `migrate_legacy_observations_table` leaves when
+/// `id` is already a primary key of any type.
+///
+/// Before the fix, `CAST(id AS INTEGER)` of a NULL aborted the step with
+/// `InvalidColumnType`, and a zero-padded TEXT id (`'001'`) cast to `1` so the
+/// `UPDATE ... WHERE id = 1` bound an integer that affinity turned into `'1'`,
+/// matched nothing, and still counted as repaired. Addressing the write-back by
+/// `rowid` closes both: NULL is never read as the key, and `'001'` is updated.
+#[test]
+fn migration_18_repairs_through_a_text_primary_key_and_survives_a_null_id() {
+    let temp = TempDir::new().unwrap();
+    let config = StoreConfig::new(temp.path().join("text-pk.db"));
+    {
+        let mut store = Store::open(config.clone()).unwrap();
+        store.create_session("s1", "Leteo", "C:/repo").unwrap();
+        let mut input = observation("s1", "Zero-padded text id", "body");
+        input.kind = "decision".to_owned();
+        store.add_observation(input).unwrap();
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TABLE observations_text_pk (
+                    id TEXT PRIMARY KEY,
+                    sync_id TEXT,
+                    session_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    tool_name TEXT,
+                    project TEXT,
+                    scope TEXT NOT NULL DEFAULT 'project',
+                    topic_key TEXT,
+                    normalized_hash TEXT,
+                    revision_count INTEGER NOT NULL DEFAULT 1,
+                    duplicate_count INTEGER NOT NULL DEFAULT 1,
+                    last_seen_at TEXT,
+                    pinned BOOLEAN NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    review_after TEXT,
+                    prompt_sync_id TEXT,
+                    expires_at TEXT,
+                    embedding BLOB,
+                    embedding_model TEXT,
+                    embedding_created_at TEXT
+                );
+                INSERT INTO observations_text_pk (
+                    id, sync_id, session_id, type, title, content, tool_name, project,
+                    scope, topic_key, normalized_hash, revision_count, duplicate_count,
+                    last_seen_at, pinned, created_at, updated_at, deleted_at,
+                    review_after, prompt_sync_id, expires_at, embedding,
+                    embedding_model, embedding_created_at
+                )
+                SELECT printf('%03d', id), sync_id, session_id, type, title, content,
+                       tool_name, project, scope, topic_key, normalized_hash,
+                       revision_count, duplicate_count, last_seen_at, pinned,
+                       '2026-08-31 12:00:00', updated_at, deleted_at,
+                       datetime('2026-08-31 12:00:00', '+6 months'),
+                       prompt_sync_id, expires_at, embedding, embedding_model,
+                       embedding_created_at
+                  FROM observations;
+                INSERT INTO observations_text_pk (
+                    id, session_id, type, title, content, scope, pinned,
+                    created_at, updated_at, review_after
+                ) VALUES (
+                    NULL, 's1', 'decision', 'Null id row', 'body', 'project', 0,
+                    '2026-08-31 12:00:00', '2026-08-31 12:00:00',
+                    datetime('2026-08-31 12:00:00', '+6 months')
+                );
+                DROP TABLE observations;
+                ALTER TABLE observations_text_pk RENAME TO observations;
+                PRAGMA user_version = 1;
+                "#,
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(config)
+        .expect("a TEXT primary key or a NULL id must not make migration 18 abort the open");
+    let clock = |title: &str| -> String {
+        store
+            .connection
+            .query_row(
+                "SELECT review_after FROM observations WHERE title = ?1",
+                params![title],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        clock("Zero-padded text id"),
+        "2027-02-28 12:00:00",
+        "a TEXT id that casts to a different spelling is still repaired"
+    );
+    assert_eq!(
+        clock("Null id row"),
+        "2027-02-28 12:00:00",
+        "a NULL id is addressed by rowid rather than aborting the step"
+    );
+    let kept: String = store
+        .connection
+        .query_row(
+            "SELECT id FROM observations WHERE title = 'Zero-padded text id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        kept, "001",
+        "the TEXT primary key value itself is unchanged"
+    );
+}
+
 /// Adoption writes the rolled-forward clock and migration 18 takes it back,
 /// inside the one transaction.
 ///
@@ -1455,8 +1582,8 @@ fn an_adopted_store_gets_the_rules_clock_and_not_the_one_the_backfill_wrote() {
     );
 }
 
-/// Adding calendar months happens in two Rust places and four SQL ones, and no
-/// more.
+/// Adding calendar months via `checked_add_months` or the literal ` months'`
+/// happens in two Rust places and four SQL ones, and no more.
 ///
 /// This is the guard #82 asked for, and it has to count both spellings because
 /// the defect was a disagreement *between* them: the review windows were
@@ -1472,6 +1599,12 @@ fn an_adopted_store_gets_the_rules_clock_and_not_the_one_the_backfill_wrote() {
 /// which are released history and can never change, and migration 18's
 /// recomputation of them, which is how it recognises what the baseline wrote.
 /// A fifth of either kind is the drift coming back.
+///
+/// The match is the literal ` months'` (and `checked_add_months`), not every
+/// spelling SQLite would accept. `'+6 month'`, `'+6 MONTHS'`, `'+180 days'`,
+/// and `datetime('now','-6 months')` are outside what this sentence claims —
+/// broadening the match invites false positives on retention queries; the
+/// honest bound is the spellings the known sites use.
 #[test]
 fn adding_calendar_months_happens_only_where_this_test_names() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

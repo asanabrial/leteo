@@ -76,7 +76,7 @@ LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
 #
 # Linking the C runtime in, because the DLL it lived in was never optional.
 #
-# The 0.1.2 and 0.2.1 releases import VCRUNTIME140.dll and ten
+# Every Windows release so far imports VCRUNTIME140.dll and ten
 # api-ms-win-crt-*.dll forwarders: the MSVC CRT and the UCRT, linked
 # dynamically because nothing here asked for anything else. VCRUNTIME140.dll
 # is not part of Windows — it comes with the Visual C++ Redistributable — and
@@ -99,10 +99,11 @@ LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
 # delay-loaded ones, api-ms-win-core-synch-l1-2-0 and bcryptprimitives — all
 # of which Windows ships.
 #
-# Measured on this machine, interleaving 30 runs of each binary against a
-# scratch store:
+# Measured on the same machine as the `/DELAYLOAD` measurement above,
+# interleaving 30 runs of each binary against a scratch store. Deltas are from
+# the printed endpoints (three decimals), not the unrounded medians:
 #
-#   leteo --version                11.62 ms -> 11.48 ms   (-0.13, -1.1%)
+#   leteo --version                11.62 ms -> 11.48 ms   (-0.14, -1.2%)
 #   leteo hook user-prompt-submit  15.09 ms -> 14.96 ms   (-0.13, -0.9%)
 #
 # Neither moved the wrong way, and both moves are inside the run's own noise.
@@ -122,7 +123,8 @@ rustflags = [
 ]
 
 # The same, for Windows on ARM. Not measured there — no machine to measure on —
-# but it is the same loader and the same DLLs.
+# and `+crt-static` was not read back on that target either. Same loader, same
+# DLLs, same flags as x86_64 above.
 [target.aarch64-pc-windows-msvc]
 rustflags = [
   "-C", "target-feature=+crt-static",

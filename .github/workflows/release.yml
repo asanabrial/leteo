@@ -106,6 +106,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
+      # The Windows README promises nothing to install first — not even the
+      # Visual C++ Redistributable — because `.cargo/config.toml` links the CRT
+      # static. That promise only holds while the release job leaves the target
+      # rustflags alone: a RUSTFLAGS env var replaces them wholesale, and nothing
+      # else would notice. This step reads the import table of the binary about
+      # to be archived (not a second build) and fails on any DLL outside the
+      # allow-list in scripts/check-windows-imports.ps1. Delay-loads stay on the
+      # list either way; dropping +crt-static is what goes red.
+      - name: Windows release binary imports only what Windows ships
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: ./scripts/check-windows-imports.ps1 "target/${{ matrix.target }}/release/${{ matrix.executable }}"
       - uses: actions/download-artifact@v7
         with:
           name: third-party-licenses

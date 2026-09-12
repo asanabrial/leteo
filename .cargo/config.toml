@@ -91,13 +91,15 @@ LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
 # binary is not left with SQLite on one CRT and the rest of it on another.
 # `release.yml` builds with `--target` and sets no `RUSTFLAGS` of its own, so
 # this list is what the released binary is linked with — the same route the
-# `/DELAYLOAD`s above take.
-#
-# Read back with `dumpbin /IMPORTS` on the same commit built both ways: the
-# eleven CRT entries are gone and nothing else moved. What remains is
-# kernel32 and ntdll, ws2_32 (eager, for the reason above), the seven
-# delay-loaded ones, api-ms-win-core-synch-l1-2-0 and bcryptprimitives — all
-# of which Windows ships.
+# `/DELAYLOAD`s above take. A `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` env var
+# would replace this list wholesale rather than merge with it; the Windows leg
+# of `release.yml` therefore runs `scripts/check-windows-imports.ps1` on the
+# binary it is about to archive. That script owns the allow-list (kernel32,
+# ntdll, ws2_32, the seven delay-loaded DLLs, api-ms-win-core-synch-l1-2-0,
+# bcryptprimitives) — the set measured here with `dumpbin /IMPORTS` when
+# `+crt-static` landed — so the published "nothing to install first" claim is
+# checked on the artifact that ships, not restated in a second place that can
+# drift.
 #
 # Measured on the same machine as the `/DELAYLOAD` measurement above,
 # interleaving 30 runs of each binary against a scratch store. Deltas are from

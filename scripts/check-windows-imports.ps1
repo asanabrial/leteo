@@ -172,6 +172,16 @@ foreach ($dll in ($seen.Keys | Sort-Object)) {
     Write-Host ("  [{0}] {1}" -f $mark, $dll)
 }
 
+# Fail closed on an empty walk: "no forbidden names" must not mean "no names
+# at all". A PE whose import directories were mis-mapped would otherwise exit 0
+# and green-wash a missing +crt-static. kernel32.dll is the loader baseline on
+# every correct MSVC binary this check is for.
+if ($seen.Count -eq 0 -or -not $seen.ContainsKey('kernel32.dll')) {
+    Write-Host ""
+    Write-Host "error: $path yielded no baseline imports (need at least kernel32.dll); refusing to treat an empty parse as clean"
+    exit 1
+}
+
 if ($forbidden.Count -gt 0) {
     Write-Host ""
     Write-Host "error: $path imports DLLs outside the allow-list in scripts/check-windows-imports.ps1:"

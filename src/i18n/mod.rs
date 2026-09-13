@@ -317,6 +317,7 @@ mod it;
 mod nl;
 mod pl;
 mod pt;
+mod ro;
 mod sv;
 
 /// The words for a language.
@@ -333,6 +334,7 @@ pub fn screens(language: Interface) -> &'static Screens {
         Interface::Basque => &eu::SCREENS,
         Interface::Dutch => &nl::SCREENS,
         Interface::Polish => &pl::SCREENS,
+        Interface::Romanian => &ro::SCREENS,
         Interface::Swedish => &sv::SCREENS,
     }
 }
@@ -947,6 +949,12 @@ mod tests {
                     "timeline_focus_marker",
                 ],
                 Interface::Polish => &["language_auto"],
+                Interface::Romanian => &[
+                    "language_auto",
+                    "cloud_server",
+                    "page_cloud",
+                    "panel_context",
+                ],
                 Interface::Swedish => &[
                     "language_auto",
                     "field_project",

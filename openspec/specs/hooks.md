@@ -117,11 +117,11 @@ deadline, so every promise here is a promise about time as much as content.
    followed rather than ignored. Only English and Spanish were recognised, and
    a miss is not a poorer capture: the subagent finishes, its context is
    discarded, and what it found is gone. The headings are a table keyed by
-   language code, walked against the twelve so a thirteenth cannot be added
+   language code, walked against the thirteen so a fourteenth cannot be added
    without one, and the accents are optional in the match because a heading
    loses them before a heading loses its words. `mem_capture_passive` says the
-   same: a description that named two of the twelve told an agent not to send
-   the other ten, which is the same silence one layer up.
+   same: a description that named two of the thirteen told an agent not to send
+   the other eleven, which is the same silence one layer up.
 
 11. **`post-compaction` clears what was shown.** Compaction is exactly the moment
    the agent forgot; continuing to suppress those memories would suppress them
@@ -387,8 +387,8 @@ deadline, so every promise here is a promise about time as much as content.
 - No hook can panic. Fifteen `unwrap`/`expect` calls exist in production code
   and nine of them are regexes over constant patterns, where a mistype fails the
   build. The one that is built at run time — the learning headings a subagent is
-  captured by — is fed a hostile table by a guard, because the twelve headings
-  there today are letters and spaces and prove nothing about the thirteenth.
+   captured by — is fed a hostile table by a guard, because the thirteen headings
+   there today are letters and spaces and prove nothing about the fourteenth.
 - A hook that cannot do its work still answers, with a warning. Silence is the
   one outcome that teaches nobody anything, and the warning is in words rather
   than in SQLite's: a busy store is the one failure with a next step, so it says

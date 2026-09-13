@@ -31,7 +31,7 @@ adding a second registration.
 | `SessionStart` (`startup`, `clear`) | `leteo hook session-start` | Opens the session and hands back the project's recent work, prompts and most relevant memories |
 | `SessionStart` (`compact`) | `leteo hook post-compaction` | Puts back what the compaction took, and clears what had been marked as already shown |
 | `UserPromptSubmit` | `leteo hook user-prompt-submit` | Keeps the prompt, and names a memory worth having in front of you — never the same one twice in a session |
-| `SubagentStop` | `leteo hook subagent-stop` | Captures a sub-agent's Key Learnings, in any of the twelve languages Leteo speaks |
+| `SubagentStop` | `leteo hook subagent-stop` | Captures a sub-agent's Key Learnings, in any of the thirteen languages Leteo speaks |
 | `SessionEnd` | `leteo hook session-stop` | Closes the session |
 
 Alongside them, [`.mcp.json`](.mcp.json) registers the MCP server with the

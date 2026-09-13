@@ -372,19 +372,20 @@ until `--apply`: without it each one reports exactly what it would do.
 
 Three settings, because they answer three different questions.
 
-**`interface`** is Leteo's own screens: the panels, the menus, the help. Twelve
-languages — English, español, português, français, Deutsch, italiano, català,
-galego, euskara, Nederlands, polski, svenska — deliberately the same twelve
-offered for memories, from the same table. Left unset it follows the machine's
-locale, so a Spanish computer gets a Spanish dashboard without being asked.
+**`interface`** is Leteo's own screens: the panels, the menus, the help. Thirteen
+languages — English, español, português, français, Deutsch, italiano, română,
+català, galego, euskara, Nederlands, polski, svenska — deliberately the same
+thirteen offered for memories, from the same table. Left unset it follows the
+machine's locale, so a Spanish computer gets a Spanish dashboard without being
+asked.
 
 **`voice_language`** is what Sardi speaks, and it is separate because those
 lines are written *into your agent's conversation* rather than onto Leteo's
 screens. Working in English on a Spanish machine is an ordinary thing to do.
-Left unset it follows `interface`. It is the same twelve languages.
+Left unset it follows `interface`. It is the same thirteen languages.
 
 **`language`** is what memories are written in. It is handed to a model rather
-than parsed, so it is free text and not limited to the twelve above: `español`,
+than parsed, so it is free text and not limited to the thirteen above: `español`,
 `Spanish`, `português do Brasil` and `日本語` all work. Left unset, each memory
 is written in the language of the conversation that produced it.
 
@@ -399,8 +400,8 @@ setting being read past.
 
 | Key | Values | Unset means |
 | --- | --- | --- |
-| `interface` | one of the twelve above | follow the machine's locale |
-| `voice_language` | one of the twelve above | follow `interface` |
+| `interface` | one of the thirteen above | follow the machine's locale |
+| `voice_language` | one of the thirteen above | follow `interface` |
 | `language` | free text | the language of each conversation |
 | `voice` | `all`, `reminders`, `quiet` | `all` |
 | `context_size` | `slim`, `full`, `deep` | `full` |

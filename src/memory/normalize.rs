@@ -548,7 +548,7 @@ pub fn suggest_topic_key(kind: &str, title: &str, content: &str) -> String {
 /// found is gone". A header in the eleventh language is not a degraded capture,
 /// it is silence.
 ///
-/// Keyed by the language code so that a thirteenth language cannot be added
+/// Keyed by the language code so that a fourteenth language cannot be added
 /// without somebody deciding what its heading is — the test below walks
 /// `Interface::ALL` against this list. More than one spelling per language,
 /// because a model picks its own wording and these are the ones it picks.
@@ -583,6 +583,10 @@ pub(crate) const LEARNING_HEADINGS: &[(&str, &[&str])] = &[
     (
         "it",
         &["Apprendimenti Chiave", "Apprendimenti", "Lezioni Apprese"],
+    ),
+    (
+        "ro",
+        &["Principalele Învățăminte", "Învățăminte", "Lecții Învățate"],
     ),
     (
         "ca",
@@ -623,8 +627,8 @@ fn learning_heading_pattern() -> String {
 /// panic in a process whose whole promise is that it answers.
 ///
 /// Taking the table as an argument is what lets the guard below feed it
-/// brackets, backslashes and the rest, rather than only the twelve headings
-/// that happen to be there today. A thirteenth language is exactly when this
+/// brackets, backslashes and the rest, rather than only the thirteen headings
+/// that happen to be there today. A fourteenth language is exactly when this
 /// would otherwise be found.
 fn heading_pattern_of(table: &[(&str, &[&str])]) -> String {
     let mut spellings: Vec<String> = table
@@ -1553,9 +1557,9 @@ is per host",
     /// — so a heading with a bracket in it would not be a poor match, it would
     /// be a panic in a process whose whole promise is that it answers.
     ///
-    /// The twelve headings there today are all letters and spaces, so the
+    /// The thirteen headings there today are all letters and spaces, so the
     /// current table proves nothing about the next one. This feeds the builder
-    /// what a thirteenth language might bring.
+    /// what a fourteenth language might bring.
     #[test]
     fn no_heading_can_make_the_learning_regex_fail_to_compile() {
         let hostile: &[(&str, &[&str])] = &[

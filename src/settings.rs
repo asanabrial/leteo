@@ -86,7 +86,7 @@ impl Voice {
 ///
 /// # One table, two questions
 ///
-/// This list and the one memories are written in are the same twelve languages,
+/// This list and the one memories are written in are the same thirteen languages,
 /// and that is enforced here rather than agreed by hand: [`language_choices`]
 /// and [`language_for_locale`] both read [`Interface::ALL`]. They were separate
 /// tables, and a menu that offers to *store* in a language it will not *speak*
@@ -114,6 +114,7 @@ pub enum Interface {
     French,
     German,
     Italian,
+    Romanian,
     Catalan,
     Galician,
     Basque,
@@ -130,13 +131,14 @@ impl Interface {
     /// judgement rather than a rule, and better than alphabetical — a menu
     /// sorted by the English spelling of a language is sorted by a name most of
     /// its readers do not use for it.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::English,
         Self::Spanish,
         Self::Portuguese,
         Self::French,
         Self::German,
         Self::Italian,
+        Self::Romanian,
         Self::Catalan,
         Self::Galician,
         Self::Basque,
@@ -154,6 +156,7 @@ impl Interface {
             Self::French => "fr",
             Self::German => "de",
             Self::Italian => "it",
+            Self::Romanian => "ro",
             Self::Catalan => "ca",
             Self::Galician => "gl",
             Self::Basque => "eu",
@@ -173,6 +176,7 @@ impl Interface {
             Self::French => "français",
             Self::German => "Deutsch",
             Self::Italian => "italiano",
+            Self::Romanian => "română",
             Self::Catalan => "català",
             Self::Galician => "galego",
             Self::Basque => "euskara",
@@ -197,6 +201,7 @@ impl Interface {
             Self::French => &["français", "francais", "french", "fr", "francés", "frances"],
             Self::German => &["deutsch", "german", "de", "alemán", "aleman"],
             Self::Italian => &["italiano", "italian", "it"],
+            Self::Romanian => &["română", "romana", "romanian", "ro", "rumano"],
             Self::Catalan => &["català", "catala", "catalan", "ca", "catalán"],
             Self::Galician => &["galego", "galician", "gl", "gallego"],
             Self::Basque => &["euskara", "basque", "eu", "euskera", "vasco"],
@@ -251,7 +256,7 @@ impl<'de> Deserialize<'de> for Interface {
 /// Derived from [`Interface::ALL`] rather than written out beside it. One table
 /// with three readers now — [`language_for_locale`] looks a machine's locale up
 /// in it, [`language_choices`] offers the names on the setup screen, and the
-/// interface question offers the same twelve — and the reason it is derived is
+/// interface question offers the same thirteen — and the reason it is derived is
 /// that those three used to be two lists: what Leteo could *store* in and what
 /// it could *speak*, free to drift, and they had.
 fn named_languages() -> impl Iterator<Item = (&'static str, &'static str)> {

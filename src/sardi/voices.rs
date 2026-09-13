@@ -140,6 +140,7 @@ pub fn lines(language: Interface) -> &'static Lines {
         Interface::Basque => &BASQUE,
         Interface::Dutch => &DUTCH,
         Interface::Polish => &POLISH,
+        Interface::Romanian => &ROMANIAN,
         Interface::Swedish => &SWEDISH,
     }
 }
@@ -378,6 +379,46 @@ const ITALIAN: Lines = Lines {
     minutes: Counted::same("un minuto", "{count} minuti"),
     hours: Counted::same("un'ora", "{count} ore"),
     days: Counted::same("un giorno", "{count} giorni"),
+};
+
+const ROMANIAN: Lines = Lines {
+    reading: "{name} îți citește notițele...",
+    adopted_none: "{name} n-a găsit nimic care să merite păstrat.",
+    adopted: Counted::same(
+        "{name} a păstrat 1 memorie.",
+        "{name} a păstrat {count} memorii.",
+    ),
+    listening: "{name} va asculta în {agent}.",
+    available: "{name} este disponibil în {agent}.",
+    idle: "{name} n-are nimic de făcut.",
+    watching: "{name} veghează asupra a {memories} memorii în {projects} proiecte",
+    empty: "{name} n-are încă nimic de păzit.",
+    remembers: Counted::same(
+        "{name} își amintește 1 memorie de aici.",
+        "{name} își amintește {count} memorii de aici.",
+    ),
+    due: Counted::same(
+        "{name} are 1 memorie de recitit. Deschide coada cu mem_review.",
+        "{name} are {count} memorii de recitit. Deschide coada cu mem_review.",
+    ),
+    restored: Counted::same(
+        "{name} a ținut firul: 1 memorie recuperată.",
+        "{name} a ținut firul: {count} memorii recuperate.",
+    ),
+    recalls: Counted::same(
+        "{name} are o notiță care s-ar putea potrivi.",
+        "{name} are {count} notițe care s-ar putea potrivi.",
+    ),
+    captured: Counted::same(
+        "{name} a păstrat 1 memorie de la acel subagent.",
+        "{name} a păstrat {count} memorii de la acel subagent.",
+    ),
+    nudge: "{name} n-a primit nimic de păstrat pentru {project} de {span}. Dacă s-a luat o \
+            decizie, s-a reparat un bug sau s-a învățat ceva neevident, apelează acum \
+            mem_save.",
+    minutes: Counted::same("un minut", "{count} minute"),
+    hours: Counted::same("o oră", "{count} ore"),
+    days: Counted::same("o zi", "{count} zile"),
 };
 
 const CATALAN: Lines = Lines {

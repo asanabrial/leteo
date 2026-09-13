@@ -322,7 +322,7 @@ pub(super) struct SessionSummaryParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CapturePassiveParams {
-    /// Text ending in a Key Learnings section, in any of the twelve languages
+    /// Text ending in a Key Learnings section, in any of the thirteen languages
     /// Leteo writes memories in.
     pub(super) content: String,
     /// Session identifier. Defaults to manual-save-{project}.

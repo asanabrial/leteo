@@ -794,7 +794,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_capture_passive",
-        description = "Extract and save the Key Learnings items a subagent ended with, in any of the twelve languages Leteo writes memories in. Each becomes a memory of its own, filed under the tool that produced it.",
+        description = "Extract and save the Key Learnings items a subagent ended with, in any of the thirteen languages Leteo writes memories in. Each becomes a memory of its own, filed under the tool that produced it.",
         annotations(
             title = "Capture Learnings",
             read_only_hint = false,

@@ -118,12 +118,19 @@ pub enum McpFormat {
     /// Leteo silently the moment a native server appeared, so the native key
     /// gets the entry.
     Zcode,
+    /// Command Code reads `mcpServers` in `~/.commandcode/mcp.json`, like the
+    /// plain format — but every stdio entry on a real machine carries
+    /// `transport: "stdio"` and `enabled: true` beside `command` and `args`,
+    /// and the working Leteo entry is shaped exactly that way. Writing the
+    /// plain entry would replace that shape with one missing both keys, so
+    /// this format writes what the client was observed to accept.
+    CommandCode,
 }
 
 impl McpFormat {
     fn key_path(self) -> &'static [&'static str] {
         match self {
-            Self::McpServers | Self::Pi => &["mcpServers"],
+            Self::McpServers | Self::Pi | Self::CommandCode => &["mcpServers"],
             Self::Servers => &["servers"],
             Self::Mcp => &["mcp"],
             Self::Zcode => &["mcp", "servers"],
@@ -999,6 +1006,12 @@ fn mcp_entry(format: McpFormat, executable: &Path, tools: &str) -> Result<Value>
         }),
         McpFormat::Zcode => json!({
             "type": "stdio",
+            "command": command,
+            "args": ["mcp", profile]
+        }),
+        McpFormat::CommandCode => json!({
+            "transport": "stdio",
+            "enabled": true,
             "command": command,
             "args": ["mcp", profile]
         }),

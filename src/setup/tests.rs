@@ -51,6 +51,7 @@ fn registry_contains_the_requested_agents() {
             "kiro",
             "antigravity",
             "pi",
+            "command-code",
         ]
     );
 }
@@ -129,6 +130,108 @@ fn pi_registers_the_agent_profile_and_has_no_instruction_file() {
 
     let second = setup("pi", &setup_options).unwrap();
     assert_eq!(second.changed_files(), 0, "the second run is a no-op");
+}
+
+#[test]
+fn command_code_reads_the_config_and_instructions_from_dot_commandcode() {
+    let temp = TempDir::new().unwrap();
+    let mut setup_options = options(&temp);
+    for platform in [Platform::Windows, Platform::MacOs, Platform::Unix] {
+        setup_options.platform = Some(platform);
+        let paths = resolve_agent_paths("command-code", &setup_options).unwrap();
+        assert_eq!(
+            paths.mcp_config,
+            temp.path().join(".commandcode").join("mcp.json"),
+            "{platform:?}"
+        );
+        assert_eq!(
+            paths.instructions,
+            Some(temp.path().join(".commandcode").join("AGENTS.md")),
+            "{platform:?}"
+        );
+        assert_eq!(
+            paths.hooks, None,
+            "{platform:?}: Command Code takes no hooks"
+        );
+    }
+}
+
+#[test]
+fn command_code_writes_the_entry_shape_it_reads_and_uninstalls_cleanly() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = SetupOptions {
+        install_instructions: true,
+        ..options(&temp)
+    };
+    let paths = resolve_agent_paths("command-code", &setup_options).unwrap();
+    let instructions_path = paths.instructions.clone().unwrap();
+    write_fixture(
+        &paths.mcp_config,
+        r#"{"theme":"dark","mcpServers":{"other":{"transport":"stdio","enabled":true,"command":"other","args":["serve"]}}}"#,
+    );
+    write_fixture(&instructions_path, "# My own notes\n\nKeep these.\n");
+
+    let first = setup("command-code", &setup_options).unwrap();
+    assert_eq!(first.changed_files(), 2);
+
+    let config = read_json(&paths.mcp_config);
+    assert_eq!(config["theme"], "dark");
+    assert_eq!(config["mcpServers"]["other"]["command"], "other");
+    let leteo = &config["mcpServers"]["leteo"];
+    assert_eq!(leteo["transport"], "stdio");
+    assert_eq!(leteo["enabled"], true);
+    assert_eq!(leteo["args"], json!(["mcp", "--tools=agent"]));
+    assert!(
+        leteo["command"]
+            .as_str()
+            .is_some_and(|command| command.ends_with("leteo")),
+        "the server has to point at the binary under test: {leteo}"
+    );
+    let instructions = fs::read_to_string(&instructions_path).unwrap();
+    assert!(instructions.contains("Keep these."));
+    assert!(instructions.contains(MEMORY_PROTOCOL_BEGIN));
+
+    let second = setup("command-code", &setup_options).unwrap();
+    assert_eq!(second.changed_files(), 0, "the second run is a no-op");
+
+    uninstall("command-code", &setup_options).unwrap();
+    let config = read_json(&paths.mcp_config);
+    assert!(
+        config["mcpServers"].get("leteo").is_none(),
+        "leteo has to go: {config}"
+    );
+    assert_eq!(
+        config["mcpServers"]["other"]["command"], "other",
+        "the other server stays: {config}"
+    );
+    assert_eq!(config["theme"], "dark", "and so does the rest: {config}");
+    let instructions = fs::read_to_string(&instructions_path).unwrap();
+    assert!(
+        !instructions.contains(MEMORY_PROTOCOL_BEGIN),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("Keep these."),
+        "somebody's own notes must survive: {instructions}"
+    );
+}
+
+#[test]
+fn command_code_takes_no_hooks() {
+    let temp = TempDir::new().unwrap();
+    let error = setup(
+        "command-code",
+        &SetupOptions {
+            install_hooks: true,
+            ..options(&temp)
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("does not support Leteo lifecycle hooks"),
+        "{error}"
+    );
 }
 
 #[test]

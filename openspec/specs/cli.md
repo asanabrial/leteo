@@ -51,12 +51,12 @@ duties about what an answer explains.
    alone. `--language` alone is a complete command, and so is `--context`.
 
    Uninstalling removes what it wrote and nothing else, and both halves are
-   driven over the whole registry. Ten agents keep their instructions in a file
+   driven over the whole registry. Eleven agents keep their instructions in a file
    that was already theirs, and lose only Leteo's block; three get a file Leteo
    invented and named after itself, and that file goes. Pi has no instruction
-   file at all — ten, three and one is the whole registry, and
+   file at all — eleven, three and one is the whole registry, and
    `the_registry_splits_three_ways_and_the_counts_are_taken_from_it` is what
-   keeps that sentence true when a fifteenth agent arrives. That file goes only
+   keeps that sentence true when a sixteenth agent arrives. That file goes only
    when nothing else is in it — somebody's own paragraph in
    `leteo-memory-protocol.md` keeps it — and a shared instruction file that was
    there and empty before Leteo arrived is not read as Leteo's. Three of the

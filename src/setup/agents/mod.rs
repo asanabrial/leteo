@@ -5,6 +5,7 @@ use super::{ConfigFormat, HOOK_EVENTS, HookRegistration, McpFormat, SetupEnviron
 mod antigravity;
 mod claude_code;
 mod codex;
+mod command_code;
 mod cursor;
 mod deepseek_harness;
 mod gemini_cli;
@@ -65,6 +66,7 @@ pub const REGISTRY: &[AgentAdapter] = &[
     kiro::ADAPTER,
     antigravity::ADAPTER,
     pi::ADAPTER,
+    command_code::ADAPTER,
 ];
 
 #[cfg(test)]
@@ -131,7 +133,7 @@ mod tests {
         }
         assert_eq!(
             theirs.len(),
-            10,
+            11,
             "keep a file that was already theirs: {theirs:?}"
         );
         assert_eq!(

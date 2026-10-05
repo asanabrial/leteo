@@ -154,6 +154,25 @@ which is the faster half of that sentence. To build whatever is on `main`
 instead, including work that has not been released yet, ask for the repository:
 `cargo install --git https://github.com/asanabrial/leteo`.
 
+### The search model
+
+Search by meaning, for a question that shares no word with the memory it wants,
+reads a 13 MB model that lives in a file beside the binary and not inside it. The
+release archives, the Homebrew and Scoop packages and the Docker images carry it.
+An install that arrives without it -- `cargo install`, a build from source, a
+package that left it out -- fetches it once:
+
+```bash
+leteo model install                      # downloads the model of this version, checks it
+leteo model install --from ./model       # from a copy, with no network
+```
+
+`leteo setup` does the same when it finds none. Until a verified model is there,
+search works by words only, as it always did, and `leteo doctor` says which of
+three things is true: found and verified (and where), not installed, or there
+and not the model this build accepts. The model is only ever loaded after every
+file has been checked against hashes the binary was built with.
+
 ### Without installing anything
 
 Most MCP documentation assumes `npx`, so there is a wrapper on npm that fetches
@@ -394,7 +413,7 @@ is written in the language of the conversation that produced it.
 
 ## Settings
 
-Those three and two more are kept in `settings.json`, in the data directory —
+Those three and three more are kept in `settings.json`, in the data directory —
 `~/.leteo/settings.json` unless you moved it. The Setup screen writes the file,
 and it is also meant to be opened by hand: a value it cannot read costs that one
 setting rather than the whole file. Nothing says so at the time, though, because
@@ -408,6 +427,7 @@ setting being read past.
 | `language` | free text | the language of each conversation |
 | `voice` | `all`, `reminders`, `quiet` | `all` |
 | `context_size` | `slim`, `full`, `deep` | `full` |
+| `semantic_search` | `true`, `false` | `true` |
 
 The two languages are written as the language's own name — `español`, not `es` —
 and read back forgivingly, because this is a file people type into: the English
@@ -416,9 +436,14 @@ name, the ISO code and the spelling without the accent all work.
 `voice` is how much of its own work Sardi says out loud — everything, the save
 reminder alone, or nothing. `context_size` is how many memories a session opens
 with: twenty, fifty or eighty, for a small context window or for a store that
-matters more than the budget.
+matters more than the budget. `semantic_search` is whether a search the words
+cannot answer goes on to look by meaning, in all thirteen languages, with a model
+that ships beside the binary and never touches a network when you search; results
+found that way are marked `semantic`. Turn it off if the memory it holds while it
+runs (stated in [`search.md`](openspec/specs/search.md) §15) is too much, or if you
+want only answers that contain your words.
 
-Two of the five are flags as well, because changing them should not mean
+Two of the six are flags as well, because changing them should not mean
 reconfiguring an agent. Either one on its own is a whole command:
 
 ```powershell
@@ -552,14 +577,16 @@ installation needs into each agent's own configuration file, and the choices you
 make in the interface are kept in [`settings.json`](#settings). Neither of them
 sets a variable in your environment.
 
-All but the last are a command-line flag as well, and the flag wins: the
-variable is read only when the command line does not answer the same question.
+Most are a command-line flag as well, and the flag wins: the variable is read
+only when the command line does not answer the same question.
 
 | Variable | Flag | Purpose |
 | --- | --- | --- |
 | `LETEO_DATA_DIR` | `--data-dir` | Local data directory; defaults to `~/.leteo` |
 | `LETEO_DATABASE` | `--database` | Explicit local SQLite path |
 | `LETEO_TOOLS` | `mcp --tools` | `agent`, `admin`, `all`, or single tool names. Every tool when nothing names any |
+| `LETEO_MODEL_DIR` | — | A directory holding the semantic search model, looked in before anywhere else |
+| `LETEO_MODEL_URL` | `model install --url` | Where `leteo model install` and `leteo setup` fetch the model from, instead of the GitHub release of this version |
 | `LETEO_PROJECT` | `mcp --project` | Project the MCP server trusts for the whole process; without it, the working directory decides |
 | `LETEO_AGENT_CLI` | `conflicts scan --semantic` | Agent CLI that judges conflict candidates: `claude` or `opencode` |
 | `LETEO_SYSTEM_LANGUAGE` | — | Language this machine works in, when `LANG` does not say. Read once, to offer it in `leteo setup` |

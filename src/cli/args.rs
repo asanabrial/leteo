@@ -281,6 +281,35 @@ pub enum Command {
         command: CloudCommand,
     },
     CurrentProject,
+    /// The model semantic search reads, which ships beside the binary.
+    Model {
+        #[command(subcommand)]
+        action: ModelCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ModelCommand {
+    /// Put the model where Leteo looks for it, checked against the hashes this
+    /// build was made with.
+    ///
+    /// For an install that arrived without the model: `cargo install`, a build
+    /// from source, a package that left it out. A release archive already has it
+    /// beside the binary. Downloads from the release that matches this binary,
+    /// unless `--from` names a directory to copy from. Nothing is written unless
+    /// every file verifies, and what was installed before is left as it was
+    /// otherwise.
+    Install {
+        /// A directory holding config.json, model.safetensors and
+        /// tokenizer.json.gz: a release archive's `model/`, for a machine with
+        /// no network.
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// Fetch from this directory of release assets instead of the GitHub
+        /// release of this version (also `LETEO_MODEL_URL`).
+        #[arg(long, conflicts_with = "from")]
+        url: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

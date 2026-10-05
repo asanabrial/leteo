@@ -73,7 +73,7 @@ fn typo_budget(chars: usize) -> usize {
 /// The scores themselves cannot be added: bm25 is scaled by the index it came
 /// from, and these are two indexes with different vocabularies. Places compare;
 /// scores do not.
-const FUSION_CONSTANT: f64 = 60.0;
+pub(super) const FUSION_CONSTANT: f64 = 60.0;
 
 /// How many a search returns when the caller does not say.
 ///
@@ -134,16 +134,36 @@ pub const MAX_QUERY_BYTES: usize = 8192;
 /// '')` where `Narrowing` writes `project =` was measured for an afternoon
 /// before anybody noticed the product never issues it.
 pub fn matching_observations_sql(index: &str, weights: &str) -> String {
-    let not_superseded = super::relations::not_superseded();
+    let visible = visible_observations(2, 3, 4);
     format!(
         "SELECT o.id, o.type, bm25({index}, {weights}) AS rank
          FROM {index} fts CROSS JOIN observations o ON o.id = fts.rowid
-         WHERE {index} MATCH ?1 AND o.deleted_at IS NULL
-           AND (?2 IS NULL OR o.type = ?2)
-           AND (?3 IS NULL OR LOWER(o.project) = ?3)
-           AND (?4 IS NULL OR o.scope = ?4)
-           AND {not_superseded}
+         WHERE {index} MATCH ?1 AND {visible}
          ORDER BY rank LIMIT ?5"
+    )
+}
+
+/// Which memories a search may return at all, as a `WHERE` fragment over `o`.
+///
+/// Not deleted, not hidden by a judged verdict, and inside the type, project
+/// and scope the caller narrowed to. Every stage that reads `observations` asks
+/// this one question — the ranked stages, the title scan, and the semantic
+/// stage — so a rule added here reaches all of them, and a stage cannot list a
+/// memory the context beside it has hidden. The semantic stage reads vectors
+/// rather than the full-text index and was the first to be tempted to restate
+/// it.
+///
+/// The three numbers are the positions of the parameters the caller binds, in
+/// the order type, project, scope: the full-text statement binds them as 2, 3
+/// and 4 behind its `MATCH`, the others as 1, 2 and 3.
+pub(super) fn visible_observations(kind: usize, project: usize, scope: usize) -> String {
+    let not_superseded = super::relations::not_superseded();
+    format!(
+        "o.deleted_at IS NULL
+           AND (?{kind} IS NULL OR o.type = ?{kind})
+           AND (?{project} IS NULL OR LOWER(o.project) = ?{project})
+           AND (?{scope} IS NULL OR o.scope = ?{scope})
+           AND {not_superseded}"
     )
 }
 
@@ -199,15 +219,11 @@ pub const RERANK_STABILITY_SMOOTHING: f64 = 4.0;
 /// holds the two prefixes together instead of trusting this sentence.
 #[cfg(any(feature = "measure", test))]
 pub fn matching_observations_reranked_sql(index: &str, weights: &str) -> String {
-    let not_superseded = super::relations::not_superseded();
+    let visible = visible_observations(2, 3, 4);
     format!(
         "SELECT o.id, o.type, bm25({index}, {weights}) AS rank
          FROM {index} fts CROSS JOIN observations o ON o.id = fts.rowid
-         WHERE {index} MATCH ?1 AND o.deleted_at IS NULL
-           AND (?2 IS NULL OR o.type = ?2)
-           AND (?3 IS NULL OR LOWER(o.project) = ?3)
-           AND (?4 IS NULL OR o.scope = ?4)
-           AND {not_superseded}
+         WHERE {index} MATCH ?1 AND {visible}
          ORDER BY rank * (1.0
            + {RERANK_PIN_WEIGHT} * o.pinned
            + {RERANK_RECENCY_WEIGHT} / (1.0 + (julianday('now') - julianday(
@@ -238,10 +254,13 @@ pub fn matching_observations_reranked_sql(index: &str, weights: &str) -> String 
 /// it is a word rather than a body.
 #[derive(Debug, Clone)]
 pub(super) struct Candidate {
-    id: i64,
-    kind: String,
-    rank: f64,
-    partial: bool,
+    pub(super) id: i64,
+    pub(super) kind: String,
+    pub(super) rank: f64,
+    pub(super) partial: bool,
+    /// Whether the semantic stage put this memory in the answer, as opposed to
+    /// the lexical stages having found it.
+    pub(super) semantic: bool,
 }
 
 /// What one search decided: the page, and any terms it had to correct to get
@@ -419,14 +438,10 @@ impl Store {
         // *first*, and that part was silently gone.
         let topic_key = crate::memory::normalize::topic_key(Some(query));
         if let Some(topic_key) = topic_key.filter(|key| key.contains('/')) {
-            let not_superseded = super::relations::not_superseded();
+            let visible = visible_observations(2, 3, 4);
             let mut statement = self.connection.prepare(&format!(
                 "SELECT {OBSERVATION_COLUMNS} FROM observations o
-                 WHERE o.topic_key = ?1 AND o.deleted_at IS NULL
-                   AND (?2 IS NULL OR o.type = ?2)
-                   AND (?3 IS NULL OR o.project = ?3)
-                   AND (?4 IS NULL OR o.scope = ?4)
-                   AND {not_superseded}
+                 WHERE o.topic_key = ?1 AND {visible}
                  ORDER BY o.updated_at DESC LIMIT ?5"
             ))?;
             let rows = statement.query_map(
@@ -444,6 +459,7 @@ impl Store {
                     observation: row?,
                     rank: -1000.0,
                     partial: false,
+                    semantic: false,
                 });
             }
         }
@@ -547,8 +563,32 @@ impl Store {
         // query, not whether this store holds the answer at all. That is why
         // these arrive marked `partial`, the same as the stage above, and why
         // no wording here claims a match.
+        let mut nearest_answered = false;
         if matched.is_empty() && results.is_empty() && !any {
             matched = self.nearest_observations(query, &options, limit)?;
+            nearest_answered = !matched.is_empty();
+        }
+        // And when the words found nothing, or only the weakest of what they
+        // can find, the meaning.
+        //
+        // See `search.md` §15 for what this costs and what it was measured to
+        // buy. The shape, in short: on an empty answer it speaks only above a
+        // cosine floor, because without one it answers every question, including
+        // the ones this store cannot; on a `nearest` answer, which was given
+        // anyway and is the weakest lexical claim there is, it is merged in by
+        // rank with no floor. Every stage above `nearest` is stronger than
+        // anything a cosine can say and is never touched — a memory that
+        // matched every word is not improved by a guess about its meaning.
+        //
+        // Not in `mode: any`, which asked for a disjunction and gets one, the
+        // way every other relaxed stage is switched off there. And not when a
+        // topic key answered: that is an exact lookup.
+        if options.semantic
+            && !any
+            && results.is_empty()
+            && (matched.is_empty() || nearest_answered)
+        {
+            matched = self.with_semantic_stage(query, &options, limit, matched, nearest_answered);
         }
         // The candidates that survive are the only ones whose body is read.
         matched.retain(|row| !results.iter().any(|item| item.observation.id == row.id));
@@ -559,6 +599,40 @@ impl Store {
             results,
             corrections,
         })
+    }
+
+    /// What the semantic stage makes of an answer the lexical stages gave.
+    ///
+    /// A stage that cannot run says so and leaves the answer as it was: a
+    /// model that will not load, a store it cannot read, a tokenizer that
+    /// panicked. The lexical answer stands without it, and refusing a question
+    /// that has one over an optional stage would be the wrong trade — but it is
+    /// logged at `warn`, not at `debug` as the unreadable second index is,
+    /// because unlike that index this has no reason to fail on a healthy build,
+    /// and a test holds that it does not.
+    fn with_semantic_stage(
+        &self,
+        query: &str,
+        options: &SearchOptions,
+        limit: usize,
+        lexical: Vec<Candidate>,
+        nearest_answered: bool,
+    ) -> Vec<Candidate> {
+        let floor = (!nearest_answered).then_some(crate::semantic::FLOOR);
+        match self.semantic_candidates(query, options, limit, floor) {
+            Ok(found) if nearest_answered => super::semantic_stage::fuse(lexical, found, limit),
+            Ok(found) => found,
+            // No usable model is a state `doctor` reports and `leteo model install`
+            // mends, and the stage is simply off; it is not a fault of this search.
+            Err(error) if error.is::<crate::semantic::Unavailable>() => {
+                tracing::debug!(%error, "the semantic stage is off");
+                lexical
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the semantic stage could not run; answering without it");
+                lexical
+            }
+        }
     }
 
     /// The strict query again, with every word the index has never seen read as
@@ -940,14 +1014,10 @@ impl Store {
         for index in 0..terms.len() {
             conditions.push_str(&format!(" AND instr(lower(o.title), ?{}) > 0", index + 4));
         }
-        let not_superseded = super::relations::not_superseded();
+        let visible = visible_observations(1, 2, 3);
         let sql = format!(
             "SELECT o.id, o.type FROM observations o
-              WHERE o.deleted_at IS NULL
-                AND (?1 IS NULL OR o.type = ?1)
-                AND (?2 IS NULL OR LOWER(o.project) = ?2)
-                AND (?3 IS NULL OR o.scope = ?3)
-                AND {not_superseded}{conditions}
+              WHERE {visible}{conditions}
               ORDER BY datetime(o.created_at) DESC, o.id DESC LIMIT ?{}",
             terms.len() + 4
         );
@@ -967,6 +1037,7 @@ impl Store {
                 kind: row.get("type")?,
                 rank: 0.0,
                 partial: true,
+                semantic: false,
             })
         })?;
         let mut matched = rows
@@ -1171,6 +1242,7 @@ impl Store {
                     kind: row.get("type")?,
                     rank: row.get("rank")?,
                     partial,
+                    semantic: false,
                 })
             },
         )?;
@@ -1224,6 +1296,7 @@ impl Store {
                     observation,
                     rank: candidate.rank,
                     partial: candidate.partial,
+                    semantic: candidate.semantic,
                 })
             })
             .collect())
@@ -1483,6 +1556,7 @@ mod hydrate_tests {
                     kind: "discovery".to_owned(),
                     rank: -1.0,
                     partial: false,
+                    semantic: false,
                 })
                 .collect()
         };

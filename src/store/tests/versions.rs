@@ -328,7 +328,6 @@ fn a_store_that_predates_the_version_table_is_given_it() {
         SCHEMA_VERSION,
         "the store is carried forward rather than left where it was"
     );
-    assert_eq!(SCHEMA_VERSION, 19);
     let columns = table_info(&store.connection, "observation_versions").unwrap();
     for expected in [
         "id",

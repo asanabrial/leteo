@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
@@ -6,6 +6,11 @@ use serde_json::{Value, json};
 fn leteo(database: &Path) -> Command {
     let mut command = Command::cargo_bin("leteo").expect("find leteo test binary");
     command.arg("--database").arg(database);
+    // Hermetic about the semantic model: none is found unless a test names one,
+    // and a command that would download it (`setup`) is pointed at a port nothing
+    // listens on, so no test reaches the network.
+    command.env_remove("LETEO_MODEL_DIR");
+    command.env("LETEO_MODEL_URL", "http://127.0.0.1:9");
     command
 }
 
@@ -1352,6 +1357,18 @@ fn doctor_repairs_a_full_text_index_that_has_gone_empty() {
     // directly, so a title word would still find the memory with both indexes
     // wiped — right for that stage, wrong as a probe of the index. `returned`
     // is in the body, where only the index can reach it.
+    //
+    // And the semantic stage switched off, for the same reason one level up: it
+    // reads vectors, not the index, so with it on this memory is found by
+    // meaning and the probe stops measuring the thing it is here to measure.
+    std::fs::write(
+        database
+            .parent()
+            .expect("the store's directory")
+            .join("settings.json"),
+        r#"{"semantic_search": false}"#,
+    )
+    .expect("turn the semantic stage off");
     let empty = run_json(
         leteo(&database)
             .arg("search")
@@ -1800,5 +1817,231 @@ fn the_consolidate_command_merges_and_hides_the_sources() {
             .iter()
             .any(|result| result["title"] == json!("The merged decision")),
         "the replacement is found: {found}"
+    );
+}
+
+/// `leteo search` finds by meaning when the words find nothing, marks what it
+/// found and says so on stderr, and the settings file beside the database is
+/// what turns it off. Driven through the binary because the setting is read by
+/// the command and not by the store.
+#[test]
+fn search_goes_on_to_meaning_unless_the_setting_says_not_to() {
+    let Some(model) = repository_model() else {
+        return;
+    };
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("semantic.db");
+    leteo(&database)
+        .arg("save")
+        .arg("Rotate JWT signing keys every 30 days with kid header")
+        .arg("Signing keys live in KMS and tokens carry a kid header.")
+        .arg("--project")
+        .arg("alpha")
+        .assert()
+        .success();
+
+    let ask = |database: &Path| {
+        let mut command = leteo(database);
+        command
+            .env("LETEO_MODEL_DIR", &model)
+            .arg("search")
+            .arg("rotación de las claves de firma")
+            .arg("--project")
+            .arg("alpha");
+        let output = command.assert().success().get_output().clone();
+        (
+            serde_json::from_slice::<Value>(&output.stdout).expect("CLI stdout is JSON"),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    let (found, said) = ask(&database);
+    assert_eq!(found.as_array().map(Vec::len), Some(1), "{found}");
+    assert_eq!(found[0]["semantic"], json!(true), "{found}");
+    assert!(
+        said.contains("found by meaning"),
+        "the line a person reads says why a result may not contain their words: {said}"
+    );
+
+    std::fs::write(
+        temp.path().join("settings.json"),
+        r#"{"semantic_search": false}"#,
+    )
+    .expect("turn the stage off");
+    let (found, said) = ask(&database);
+    assert_eq!(found.as_array().map(Vec::len), Some(0), "{found}");
+    assert!(!said.contains("by meaning"), "{said}");
+}
+
+/// The model of this checkout, or nothing in a tree that does not carry it (the
+/// packaged crate does not).
+fn repository_model() -> Option<PathBuf> {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/model");
+    if directory.join("model.safetensors").is_file() {
+        Some(directory)
+    } else {
+        eprintln!("skipped: this tree has no assets/model");
+        None
+    }
+}
+
+fn copy_model(into: &Path) {
+    let from = repository_model().expect("a model to copy");
+    std::fs::create_dir_all(into).unwrap();
+    for name in ["config.json", "model.safetensors", "tokenizer.json.gz"] {
+        std::fs::copy(from.join(name), into.join(name)).unwrap();
+    }
+}
+
+fn model_check(database: &Path) -> Value {
+    let report = run_json(
+        leteo(database)
+            .arg("doctor")
+            .arg("--check")
+            .arg("semantic_model"),
+    );
+    report["checks"][0].clone()
+}
+
+/// `doctor` says which of the three conditions holds, and names the way out.
+#[test]
+fn doctor_says_whether_the_model_is_missing_wrong_or_verified() {
+    let Some(_) = repository_model() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("data/leteo.db");
+
+    let missing = model_check(&database);
+    assert_eq!(
+        missing["ok"],
+        json!(true),
+        "an optional thing that is not there is not an unhealthy store"
+    );
+    let said = missing["detail"].as_str().unwrap();
+    assert!(
+        said.contains("not installed") && said.contains("leteo model install"),
+        "{said}"
+    );
+
+    copy_model(&temp.path().join("data/model"));
+    let found = model_check(&database);
+    assert_eq!(found["ok"], json!(true));
+    assert!(
+        found["detail"]
+            .as_str()
+            .unwrap()
+            .contains("installed and verified at"),
+        "{found}"
+    );
+
+    // One byte of the weights flipped: present, and not the model this build accepts.
+    let weights = temp.path().join("data/model/model.safetensors");
+    let mut bytes = std::fs::read(&weights).unwrap();
+    bytes[500] ^= 0x01;
+    std::fs::write(&weights, &bytes).unwrap();
+    let wrong = model_check(&database);
+    assert_eq!(wrong["ok"], json!(false), "{wrong}");
+    let said = wrong["detail"].as_str().unwrap();
+    assert!(
+        said.contains("model.safetensors does not match")
+            && said.contains("leteo model install --from"),
+        "{said}"
+    );
+    let report = run_json(leteo(&database).arg("doctor"));
+    assert_eq!(report["healthy"], json!(false), "a wrong model is an issue");
+
+    // And a missing file in a directory that is otherwise there.
+    bytes[500] ^= 0x01;
+    std::fs::write(&weights, &bytes).unwrap();
+    std::fs::remove_file(temp.path().join("data/model/config.json")).unwrap();
+    let broken = model_check(&database);
+    assert_eq!(broken["ok"], json!(false), "{broken}");
+    assert!(
+        broken["detail"]
+            .as_str()
+            .unwrap()
+            .contains("config.json is missing"),
+        "{broken}"
+    );
+
+    let off = temp.path().join("data/settings.json");
+    std::fs::write(&off, r#"{"semantic_search": false}"#).unwrap();
+    let silent = model_check(&database);
+    assert_eq!(silent["ok"], json!(true));
+    assert!(
+        silent["detail"].as_str().unwrap().contains("turned off"),
+        "{silent}"
+    );
+}
+
+/// `leteo model install --from` installs a copy that verifies and refuses every
+/// other, leaving what was installed as it was.
+#[test]
+fn model_install_from_a_copy_installs_what_verifies_and_refuses_what_does_not() {
+    let Some(_) = repository_model() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("data/leteo.db");
+    let copy = temp.path().join("copy");
+    copy_model(&copy);
+
+    let broken = copy.join("model.safetensors");
+    let good = std::fs::read(&broken).unwrap();
+    let mut flipped = good.clone();
+    flipped[100] ^= 0x01;
+    std::fs::write(&broken, &flipped).unwrap();
+    let refused = leteo(&database)
+        .args(["model", "install", "--from"])
+        .arg(&copy)
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&refused.get_output().stderr)
+            .contains("model.safetensors does not match"),
+    );
+    assert!(
+        !temp.path().join("data/model").exists(),
+        "nothing was installed"
+    );
+
+    std::fs::write(&broken, &good).unwrap();
+    std::fs::remove_file(copy.join("tokenizer.json.gz")).unwrap();
+    leteo(&database)
+        .args(["model", "install", "--from"])
+        .arg(&copy)
+        .assert()
+        .failure();
+    assert!(!temp.path().join("data/model").exists());
+
+    copy_model(&copy);
+    let installed = run_json(
+        leteo(&database)
+            .args(["model", "install", "--from"])
+            .arg(&copy),
+    );
+    assert_eq!(
+        installed["files"].as_array().map(Vec::len),
+        Some(3),
+        "{installed}"
+    );
+    assert!(
+        model_check(&database)["detail"]
+            .as_str()
+            .unwrap()
+            .contains("verified")
+    );
+
+    // A later refusal leaves the installed model alone.
+    std::fs::write(&broken, &flipped).unwrap();
+    leteo(&database)
+        .args(["model", "install", "--from"])
+        .arg(&copy)
+        .assert()
+        .failure();
+    assert_eq!(
+        std::fs::read(temp.path().join("data/model/model.safetensors")).unwrap(),
+        good
     );
 }

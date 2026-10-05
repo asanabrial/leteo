@@ -13,11 +13,15 @@ rust-version = "1.97"
 # What the crate tarball holds: what builds, and what the tests that ship read.
 #
 # An allowlist rather than `exclude = ["npm"]`, so that what is left out is the
-# default and not the thing somebody remembered to name. Measured, the tarball is
-# 0.85 MB without the banner, the recordings, the docs and the tools, which are
-# nothing a build reads. A build input that lives outside `src/` and
-# `migrations/` has to be added here, or `cargo package` verifies a tree that
-# builds without it and `cargo publish` ships one that does not.
+# default and not the thing somebody remembered to name: crates.io limits the
+# tarball to 10 MiB, and the next large asset added to the repository should not
+# be able to break publishing by being there.
+#
+# The embedding model is deliberately not in it. It ships beside the binary and
+# is loaded from a file (`src/semantic/`), so the crate's size does not depend
+# on the model's; `leteo model install` fetches it for an install that arrives
+# without one. The crate is about 1 MB. `assets/model/` stays in the repository
+# as the source a release packs.
 #
 # `npm/` stays out for the reason it was excluded before: it is the wrapper that
 # downloads a *released* binary for people who reach for `npx`, and inside the
@@ -46,7 +50,10 @@ include = [
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE",
+    "/LICENSES/**",
     "/NOTICE",
+    # The hashes the binary pins are held to this file by a test.
+    "/tools/semantic/checksums.json",
 ]
 
 # Where `cargo binstall` finds the release binary, said rather than guessed.
@@ -92,6 +99,19 @@ flate2 = "1.1.5"
 futures-util = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 hex = "0.4.3"
 hmac = "0.13.0"
+# The semantic search stage: a static embedding model, which is a table lookup
+# and an average, so this is the whole of "in-process inference" — no ONNX, no
+# native runtime, no network, no shell-out.
+#
+# `default-features = false` is the point. The defaults pull `hf-hub` and
+# `ureq`, a second HTTP client for downloading from Hugging Face, which is not
+# where the model comes from (`leteo model install` fetches it with the `reqwest`
+# already here), and `onig`, a C regex library for a tokenizer that
+# `fancy-regex` serves in pure Rust. `local-only` is the feature that says so.
+# Measured: the release binary goes from 15,680,176 to 17,189,984 bytes, which is
+# this dependency and its tokenizer; the model is a file beside the binary and
+# adds nothing to it. `openspec/specs/search.md` §15 has the account.
+model2vec-rs = { version = "0.3.0", default-features = false, features = ["fancy-regex", "local-only"] }
 rand = "0.10.2"
 ratatui = "0.30.2"
 regex = "1.12.2"

@@ -160,6 +160,47 @@ pub(super) fn engram_offer(cli: &Cli) -> Option<serde_json::Value> {
     }))
 }
 
+/// Installs the semantic model when no verified one is found, for `leteo setup`.
+///
+/// The same call `leteo model install` makes, for the same reason and with no
+/// notion of how the binary got here: an install that came with the model finds
+/// it and does nothing, and every other one fetches it. Setup never fails over
+/// it -- the stage is optional and search works without it -- but it says what
+/// happened and what to run, on stderr, because stdout is JSON something may be
+/// reading. Not on a dry run, which must change nothing, and not when the
+/// `semantic_search` setting turned the stage off.
+pub(super) async fn ensure_model(cli: &Cli, dry_run: bool) {
+    let Ok(data_dir) = data_directory(cli) else {
+        return;
+    };
+    if !crate::settings::load(&data_dir).semantic_search() {
+        return;
+    }
+    let explicit = std::env::var_os(crate::semantic::MODEL_DIR_ENV).map(PathBuf::from);
+    let status = crate::semantic::status(&data_dir, explicit.as_deref());
+    if matches!(status, crate::semantic::Status::Verified(_)) {
+        return;
+    }
+    if dry_run {
+        eprintln!(
+            "leteo setup: {} (not installing: dry run)",
+            status.explain()
+        );
+        return;
+    }
+    eprintln!("leteo setup: installing the semantic search model (13 MB)...");
+    let base = crate::semantic::install::release_base(None);
+    match crate::semantic::install::from_release(&base, &data_dir).await {
+        Ok(installed) => eprintln!(
+            "leteo setup: installed at {}",
+            installed.directory.display()
+        ),
+        Err(error) => eprintln!(
+            "leteo setup: the semantic model was not installed ({error:#}); search works by words only until it is -- run `leteo model install`, or `leteo model install --from <directory>` without a network"
+        ),
+    }
+}
+
 pub(super) fn data_directory(cli: &Cli) -> Result<PathBuf> {
     store_config(cli)?
         .database_path

@@ -119,6 +119,9 @@ pub async fn run(cli: Cli) -> Result<()> {
                 };
                 crate::settings::save(&data_dir, &settings)?;
             }
+            if !*uninstall {
+                ensure_model(&cli, *dry_run).await;
+            }
             if let Some(agent) = agent.as_deref() {
                 let options = crate::setup::SetupOptions {
                     dry_run: *dry_run,
@@ -186,6 +189,21 @@ pub async fn run(cli: Cli) -> Result<()> {
                 }))?;
             }
             return Ok(());
+        }
+        Command::Model {
+            action: ModelCommand::Install { from, url },
+        } => {
+            let data_dir = data_directory(&cli)?;
+            let installed = match from {
+                Some(source) => {
+                    crate::semantic::install::from_directory(&absolutize(source)?, &data_dir)?
+                }
+                None => {
+                    let base = crate::semantic::install::release_base(url.as_deref());
+                    crate::semantic::install::from_release(&base, &data_dir).await?
+                }
+            };
+            return print_json(&installed);
         }
         Command::Uninstall { yes } => {
             // Without `--yes` this is a dry run rather than a prompt. The
@@ -484,6 +502,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     MatchMode::All => SearchMode::All,
                     MatchMode::Any => SearchMode::Any,
                 },
+                semantic: crate::settings::load_beside(store.database_path()).semantic_search(),
             };
             let cap = store.max_search_results();
             let (found, more, corrections) =
@@ -551,6 +570,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                     "leteo search: {}",
                     crate::mcp::corrected_terms_hint(&corrections)
                 );
+            } else if found.iter().any(|result| result.semantic) {
+                eprintln!("leteo search: {}", crate::mcp::SEMANTIC_MATCH_HINT);
             } else if found.iter().any(|result| result.partial) {
                 eprintln!("leteo search: {}", crate::mcp::PARTIAL_MATCH_HINT);
             } else if more && found.len() >= cap {
@@ -986,6 +1007,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Setup { .. }
         | Command::Cloud { .. }
         | Command::CurrentProject
+        | Command::Model { .. }
         | Command::Uninstall { .. } => {
             unreachable!("stateless command handled before opening the store")
         }

@@ -1841,3 +1841,46 @@ fn a_missing_unstemmed_index_does_not_fail_a_correction() {
         "the widened stage still answers from the stemmed index: {found:?}"
     );
 }
+
+/// The topic-key lookup answers first and is not exempt from what every other
+/// stage hides. It used to carry a copy of the visibility clause, and the copy
+/// had dropped the project's `LOWER`; it reads the shared one now, and a memory a
+/// verdict has superseded is not handed back by its key.
+#[test]
+fn a_topic_key_lookup_does_not_hand_back_a_superseded_memory() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let mut keyed = observation("s1", "Rate limits per API key", "token bucket in Redis");
+    keyed.topic_key = Some("architecture/rate-limit".to_owned());
+    let keyed = store.add_observation(keyed).unwrap().observation;
+    let found = store
+        .search("architecture/rate-limit", SearchOptions::default())
+        .unwrap();
+    assert_eq!(found.first().map(|hit| hit.observation.id), Some(keyed.id));
+
+    let newer = store
+        .add_observation(observation(
+            "s1",
+            "Rate limits revised",
+            "sliding window now",
+        ))
+        .unwrap()
+        .observation;
+    store
+        .judge_by_semantic(crate::memory::model::JudgeBySemanticParams {
+            source_id: newer.sync_id.clone(),
+            target_id: keyed.sync_id.clone(),
+            relation: "supersedes".to_owned(),
+            confidence: Some(0.9),
+            reasoning: Some("replaced".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+    let found = store
+        .search("architecture/rate-limit", SearchOptions::default())
+        .unwrap();
+    assert!(
+        found.iter().all(|hit| hit.observation.id != keyed.id),
+        "a superseded memory is hidden from the exact lookup too: {found:?}"
+    );
+}

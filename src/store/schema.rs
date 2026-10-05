@@ -53,10 +53,11 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0001_baseline_after_the_tables.sql  <- everything else, folded back in
 ///   0018_review_clocks_in_calendar_months.sql  <- the first one after it
 ///   0019_observation_versions.sql      <- the version history table
-///   0020_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0020_observation_vectors.sql       <- the vectors the semantic stage reads
+///   0021_something.sql                  <- add here, and bump SCHEMA_VERSION
 /// ```
 ///
-/// The next number is 19 rather than 2 because 2 through 17 are spent history
+/// The next number is 21 rather than 2 because 2 through 17 are spent history
 /// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
 /// band and says why.
 ///
@@ -80,6 +81,7 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[
         ),
     ),
     (19, Migration::Sql(OBSERVATION_VERSIONS)),
+    (20, Migration::Sql(OBSERVATION_VECTORS)),
 ];
 
 pub(super) const REVIEW_CLOCKS_IN_CALENDAR_MONTHS: &str =
@@ -93,6 +95,13 @@ pub(super) const REVIEW_CLOCKS_IN_CALENDAR_MONTHS: &str =
 /// longer fires.
 pub(super) const OBSERVATION_VERSIONS: &str =
     include_str!("../../migrations/0019_observation_versions.sql");
+
+/// Migration 20: the table the semantic search stage keeps its vectors in.
+///
+/// A table of its own rather than the reserved `embedding*` columns, for reasons
+/// the file gives and `store-and-schema.md` §16 repeats.
+pub(super) const OBSERVATION_VECTORS: &str =
+    include_str!("../../migrations/0020_observation_vectors.sql");
 
 /// How a migration is carried out.
 ///
@@ -146,7 +155,7 @@ pub(super) enum Migration {
 /// What raising it past them does *not* do is make them migratable: see
 /// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
 /// ambiguous and stay refused.
-pub(crate) const SCHEMA_VERSION: i32 = 19;
+pub(crate) const SCHEMA_VERSION: i32 = 20;
 
 /// The highest number stamped by the numbering that predates any release.
 ///

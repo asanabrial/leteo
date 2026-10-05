@@ -399,10 +399,11 @@ impl LeteoMcpServer {
     #[tool(
         name = "mem_search",
         description = "Search persistent observations by full-text query and optional \
-                       filters. Answers about the current project unless you pass a \
-                       project or all_projects. Long bodies come back as a 400-byte \
-                       preview marked `content_truncated`; read one in full with \
-                       mem_get_observation.",
+                       filters. When the words find little or nothing it also matches \
+                       by meaning, in 13 languages, and marks those results `semantic`. \
+                       Answers about the current project unless you pass a project or \
+                       all_projects. Long bodies come back as a 400-byte preview marked \
+                       `content_truncated`; read one in full with mem_get_observation.",
         annotations(
             title = "Search Memory",
             read_only_hint = true,
@@ -440,6 +441,7 @@ impl LeteoMcpServer {
         let scope = params.scope.clone();
         let limit = params.limit;
         let mode = params.match_mode.into();
+        let semantic = crate::settings::load_beside(store.database_path()).semantic_search();
         let (results, more, corrections) = store
             .search_with_more_and_corrections(
                 &params.query,
@@ -449,6 +451,7 @@ impl LeteoMcpServer {
                     scope: params.scope,
                     limit: params.limit,
                     mode,
+                    semantic,
                 },
             )
             .map_err(store_error)?;
@@ -469,6 +472,7 @@ impl LeteoMcpServer {
                         scope: scope.clone(),
                         limit,
                         mode,
+                        semantic,
                     },
                 )
                 .ok()

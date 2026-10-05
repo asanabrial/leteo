@@ -487,6 +487,14 @@ useful part out of a context window has failed even if every field is right.
    `corrected_terms_hint`, and `leteo search` prints the same one on stderr. See
    [`search.md`](search.md) §13.
 
+   And one that found a memory by meaning says that: the result carries
+   `semantic: true`, the page carries `SEMANTIC_MATCH_HINT` — a result so marked
+   may contain none of the words asked for — and `leteo search` prints the same
+   sentence. It sits after the correction sentence and before the relaxed-answer
+   one, because a page the semantic stage touched is weaker than a `partial` one
+   and the one sentence should name the weaker claim. See [`search.md`](search.md)
+   §15.
+
 9. **A number is named after the question it answers.** `mem_timeline` reports
    `before_total` and `after_total` — how much of the session lies on each side
    of the focus — because `before` and `after` are capped by the window asked
@@ -892,6 +900,27 @@ useful part out of a context window has failed even if every field is right.
     so the tool and the command line cannot disagree about what counts as one.
     Restoring is an ordinary `mem_update` with the old text; there is no restore
     tool.
+
+21. **`mem_search` can answer by meaning, and its description says so in a
+    sentence.** When the words find little or nothing the tool goes on to the
+    semantic stage ([`search.md`](search.md) §15) unless the `semantic_search`
+    setting is `false`, and a result the stage added carries `semantic: true`.
+    The field is optional in the declared schema, like `partial`, for the reason
+    §2 gives. What this cost on `tools/list`, counted over the schemas of a
+    release build the way §11 counts them: the `mem_search` blurb went from 263
+    to 382 bytes and the output field descriptions from 10,479 to 10,581, so the
+    array from 66,931 to 67,199 bytes. The blurb is published schema text, which
+    is why it is one sentence and says what the field means only by naming it.
+
+    `mem_search` keeps `read_only_hint: true`, and that stays a true statement
+    about memories: the stage may write rows into `observation_vectors`, a cache
+    derived from them that no tool returns, replicates or counts
+    ([`store-and-schema.md`](store-and-schema.md) §16), and a call repeated
+    returns the same answer. It can also be the first call to a store that does
+    the work — see [`search.md`](search.md) §15 for what that costs — so the
+    write is a reason to turn the setting off for a store that must stay
+    byte-identical under reads, such as one on read-only media, which still
+    answers, from vectors made for the question and not kept.
 
 ## Invariants
 

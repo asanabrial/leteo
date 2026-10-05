@@ -941,6 +941,23 @@ pub(crate) const PARTIAL_MATCH_HINT: &str = "No memory matched every word, so th
     matched some of them — check each one against the question before relying \
     on it. Fewer, more distinctive words usually match exactly.";
 
+/// What to say when the semantic stage had a hand in the answer.
+///
+/// The words found nothing, or only the weakest of what they can find, so the
+/// search went on to look by meaning — and a memory found that way may contain
+/// none of the words asked for. An agent that reads it as a match on those
+/// words will quote a memory for something it never says, so the rows arrive
+/// labelled `semantic` and the page says why once.
+///
+/// The page can be mixed. On a `nearest` answer the rows the words found are
+/// `partial` and the rows the stage added are `semantic`, so the sentence says
+/// which is which and claims about each row only what is true of it: a
+/// sentence saying "these were found by meaning" would be false of the others.
+pub(crate) const SEMANTIC_MATCH_HINT: &str = "No memory matched every word. A result marked \
+    semantic was found by meaning rather than by your words and may contain none \
+    of them; any other matched only some of them. Check each one against the \
+    question before relying on it.";
+
 /// What to say when the search had to correct a term to answer.
 ///
 /// A corrected answer is not a strict one: the words that came back match
@@ -979,8 +996,8 @@ pub(super) struct SearchOutput {
     /// Carried when nothing matched, when only some of the words did, or when a
     /// term was read as another word to answer.
     ///
-    /// The wording is in [`NO_MATCH_HINT`], [`PARTIAL_MATCH_HINT`] and
-    /// [`corrected_terms_hint`]. Below the blank line because everything above
+    /// The wording is in [`NO_MATCH_HINT`], [`PARTIAL_MATCH_HINT`],
+    /// [`SEMANTIC_MATCH_HINT`] and [`corrected_terms_hint`]. Below the blank line because everything above
     /// it is shipped to every client that lists the tools, and an intra-doc
     /// link arrives there as brackets around a name that resolves to nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1015,6 +1032,7 @@ impl SearchOutput {
         corrections: Vec<crate::store::Correction>,
     ) -> Self {
         let widened = value.iter().any(|result| result.partial);
+        let by_meaning = value.iter().any(|result| result.semantic);
         let results: Vec<SearchResultOutput> = value
             .into_iter()
             .map(|result| {
@@ -1045,6 +1063,8 @@ impl SearchOutput {
             // word, just not the ones typed, and "these matched some of them"
             // would describe it wrongly.
             Some(corrected_terms_hint(&corrections))
+        } else if by_meaning {
+            Some(SEMANTIC_MATCH_HINT.to_owned())
         } else if widened {
             Some(PARTIAL_MATCH_HINT.to_owned())
         } else if clamped {
@@ -1072,6 +1092,10 @@ pub(super) struct SearchResultOutput {
     /// of them, so a widened answer can be read row by row.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) partial: bool,
+    /// Present only on a memory found by meaning, not by the words asked for,
+    /// so it may contain none of them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) semantic: bool,
 }
 
 impl From<SearchResult> for SearchResultOutput {
@@ -1080,6 +1104,7 @@ impl From<SearchResult> for SearchResultOutput {
             observation: value.observation.into(),
             rank: value.rank,
             partial: value.partial,
+            semantic: value.semantic,
         }
     }
 }

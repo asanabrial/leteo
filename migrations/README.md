@@ -6,9 +6,9 @@ lives in the database header and costs nothing to read.
 ## Adding a change
 
 1. Write a new file, numbered above the last one:
-   `migrations/0020_add_something.sql`. Above the *last*, which is 19 and not 1
+   `migrations/0021_add_something.sql`. Above the *last*, which is 20 and not 1
    — everything from 2 to 17 is spent history and is refused rather than
-   migrated, so the next free number is 20.
+   migrated, so the next free number is 21.
 2. Register it in `MIGRATIONS` in `src/store/schema.rs`.
 3. Bump `SCHEMA_VERSION` to the same number.
 
@@ -101,6 +101,15 @@ why the number is 18 and not 2 or 7.
 `0019_observation_versions.sql` adds the table a content-changing write keeps
 the replaced title and body in. It is the first `Migration::Sql` arm after the
 variant was written for a step no SQL could express, and the file is pure SQL.
+
+## Version 20 is a table that holds only what can be recomputed
+
+`0020_observation_vectors.sql` adds the vectors the semantic search stage
+compares a question with. It is a derived cache, local to the machine that made
+it: nothing replicates it, exports it or counts it, and losing it costs the time
+to embed again. That is why it is safe to add without a repair path, and why it
+sits in a table and not in the `embedding*` columns the baseline reserved — the
+file says what writing those would cost.
 
 ## What catches a mistake, given there is no ORM
 

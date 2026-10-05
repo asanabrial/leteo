@@ -1,9 +1,10 @@
 # The semantic model
 
 Not part of the binary's code, but the origin of the one binary asset: the
-embedding model under `assets/model/`, which the semantic search stage reads
-through `include_bytes!`. Nothing ships whose origin cannot be traced to a
-command in this directory.
+embedding model under `assets/model/`. A release packs it beside the binary and
+publishes it as release assets; the semantic search stage loads it from a file
+and only after checking every file against the hashes the binary was built with.
+Nothing ships whose origin cannot be traced to a command in this directory.
 
 ## What the model is
 
@@ -60,7 +61,7 @@ differs from them.
 | `build_model.py` | convert, truncate, quantise, prune; prints and checks the SHA-256 of the output |
 | `checksums.json` | what each input and output hashes to, and what they were built from |
 | `requirements.txt` | the versions it was built with |
-| `hardset/` | the hard evaluation set, and the bootstrap evaluator — see its README |
+| `hardset/` | the hard evaluation set, and `check_sets.py`, which verifies it |
 
 The tokenizer is stored as `assets/model/tokenizer.json.gz`, deterministic gzip made by
 [`pack_gz.py`](pack_gz.py) (level 9, no name, zero mtime), because 843 KB of one-line JSON
@@ -69,5 +70,11 @@ is neither reviewable nor small. `checksums.json` records the stored bytes and, 
 another zlib may write other valid bytes for the same vocabulary. To read it:
 `gzip -dc assets/model/tokenizer.json.gz`.
 
-The weights are not a Cargo input: `cargo build` reads `assets/model/` as it
-finds it, and nothing in the build runs Python.
+The weights are not a Cargo input and not in the crate: the binary loads them from a
+file, so the crate's size does not depend on the model's. Changing them is changing
+three things together, and a test holds the first two to each other: this directory's
+`checksums.json`, the hashes and `MODEL_ID` in `src/semantic/mod.rs` that the binary
+pins and stores beside every vector, and the release that packs `assets/model/`. A
+binary that finds files that do not match its pins does not load them. Nothing in the
+build runs Python. The model's licence text is `LICENSES/Apache-2.0.txt`, named in
+`NOTICE`.

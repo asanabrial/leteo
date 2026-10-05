@@ -16,8 +16,10 @@ permission notice is preserved in LICENSE.
 Leteo is an independent product and is not affiliated with or endorsed by the
 Engram project or Gentleman Programming.
 
-The semantic search stage embeds a model in the binary: the files under
-assets/model/. It is derived from
+The semantic search stage reads a model that ships beside the binary, in a
+model/ directory of every release archive and of the Docker images, and is
+fetched by `leteo model install` for an install that arrives without it. The
+files are those under assets/model/ in the source. The model is derived from
 
 sentence-transformers/static-similarity-mrl-multilingual-v1
 https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1
@@ -28,6 +30,10 @@ table is cut to its first 256 dimensions, quantised to 8-bit integers, and the
 tokenizer vocabulary and the table rows are pruned to the pieces used by the
 languages Leteo supports. tools/semantic/ rebuilds those files from the
 original, and tools/semantic/checksums.json records what each one hashes to.
+
+Every release archive and image that carries the model carries this notice and
+the full text of the Apache License, Version 2.0, which is in
+LICENSES/Apache-2.0.txt; the source and the crate hold it too.
 
 Rust dependency notices and source links are generated in
 THIRD_PARTY_LICENSES.html from Cargo.lock. Leteo does not modify the MPL-2.0

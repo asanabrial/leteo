@@ -35,6 +35,12 @@ RUN apt-get update \
 
 COPY --from=build /src/target/release/leteo /usr/local/bin/leteo
 COPY LICENSE NOTICE /usr/share/doc/leteo/
+# The semantic model, where `semantic::locations` looks after the directory beside
+# the executable: `../share/leteo/model/` from /usr/local/bin/leteo. It is a file the
+# binary loads and verifies, not a build input, so the build stage above needs none of
+# it. Apache-2.0, whose text NOTICE points at.
+COPY assets/model /usr/local/share/leteo/model
+COPY LICENSES /usr/share/doc/leteo/LICENSES
 
 USER leteo
 WORKDIR /home/leteo

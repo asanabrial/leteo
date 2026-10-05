@@ -516,6 +516,21 @@ pub struct Settings {
     /// that moves should move for somebody who never chose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_size: Option<ContextSize>,
+    /// Whether a search that found nothing, or only the weakest lexical
+    /// answer, may go on to look by meaning.
+    ///
+    /// `None` is on. It stays distinguishable from having chosen `true` for the
+    /// reason the languages do, and because the default is a claim about the
+    /// product that should move for somebody who never chose it.
+    ///
+    /// A boolean where `voice` is three levels, because there is no middle: the
+    /// stage either runs or it does not, and when it does not the search is the
+    /// lexical one byte for byte. The reason to turn it off is a machine where the
+    /// memory a process holds while the model is loaded (`search.md` §15 states
+    /// it) is too much, or a person who wants only answers that contain their
+    /// words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_search: Option<bool>,
 }
 
 /// The same fields, read as whatever the file happens to hold.
@@ -539,6 +554,7 @@ struct RawSettings {
     interface: serde_json::Value,
     voice_language: serde_json::Value,
     context_size: serde_json::Value,
+    semantic_search: serde_json::Value,
 }
 
 impl Default for RawSettings {
@@ -549,6 +565,7 @@ impl Default for RawSettings {
             interface: serde_json::Value::Null,
             voice_language: serde_json::Value::Null,
             context_size: serde_json::Value::Null,
+            semantic_search: serde_json::Value::Null,
         }
     }
 }
@@ -571,6 +588,7 @@ impl<'de> Deserialize<'de> for Settings {
             interface: serde_json::from_value(raw.interface).unwrap_or_default(),
             voice_language: serde_json::from_value(raw.voice_language).unwrap_or_default(),
             context_size: serde_json::from_value(raw.context_size).unwrap_or_default(),
+            semantic_search: serde_json::from_value(raw.semantic_search).unwrap_or_default(),
         })
     }
 }
@@ -578,6 +596,11 @@ impl<'de> Deserialize<'de> for Settings {
 impl Settings {
     pub fn context_size(&self) -> ContextSize {
         self.context_size.unwrap_or_default()
+    }
+
+    /// Whether the semantic search stage is on: unless somebody turned it off.
+    pub fn semantic_search(&self) -> bool {
+        self.semantic_search.unwrap_or(true)
     }
 
     /// The language to speak, resolved: what was chosen, else what the machine
@@ -678,7 +701,7 @@ pub fn load(data_dir: impl AsRef<Path>) -> Settings {
 /// it is a context that is the wrong length weeks later.
 ///
 /// So the same reading is done once more, out loud, for anything that asks.
-/// A file that is not JSON at all is one entry rather than five.
+/// A file that is not JSON at all is one entry rather than six.
 pub fn ignored(data_dir: impl AsRef<Path>) -> Vec<String> {
     let path = path_in(data_dir);
     let Ok(body) = std::fs::read_to_string(&path) else {
@@ -723,10 +746,16 @@ pub fn ignored(data_dir: impl AsRef<Path>) -> Vec<String> {
             .is_none_or(|value| serde_json::from_value::<ContextSize>(value.clone()).is_ok()),
     );
     check(
+        "semantic_search",
+        fields
+            .get("semantic_search")
+            .is_none_or(serde_json::Value::is_boolean),
+    );
+    check(
         "language",
         fields.get("language").is_none_or(|value| value.is_string()),
     );
-    // And a key that is not one of the five, which is the same typo one letter
+    // And a key that is not one of the six, which is the same typo one letter
     // earlier: `contextsize` without its underscore is read past exactly as
     // quietly as `slimm` was. `save` writes only these names, so anything else
     // in the file was typed by a person.
@@ -756,6 +785,7 @@ fn setting_names() -> Vec<String> {
         interface: Some(Interface::default()),
         voice_language: Some(Interface::default()),
         context_size: Some(ContextSize::default()),
+        semantic_search: Some(true),
     };
     serde_json::to_value(&every)
         .ok()
@@ -796,17 +826,17 @@ mod tests {
     /// be added to [`Settings`], read, written, and never checked here, and the
     /// only sign of it is somebody's answer quietly not applying — which is the
     /// whole thing `ignored` was written to end. So rather than trust that the
-    /// five `check` calls kept up, this drives every name the struct serialises
+    /// six `check` calls kept up, this drives every name the struct serialises
     /// through a value that cannot parse and insists it is named back.
     ///
-    /// The value is an empty list because it is the one shape none of the five
+    /// The value is an empty list because it is the one shape none of the six
     /// can take: a string would be a perfectly good `language`, which is free
     /// text on purpose, and the first version of this test called that silence
     /// a defect.
     #[test]
     fn every_setting_there_is_gets_reported_when_it_cannot_be_read() {
         let names = setting_names();
-        assert_eq!(names.len(), 5, "{names:?}");
+        assert_eq!(names.len(), 6, "{names:?}");
         for name in &names {
             let temp = TempDir::new().unwrap();
             let body = format!("{{{:?}: []}}", name);
@@ -1022,6 +1052,7 @@ mod tests {
                 interface: None,
                 voice_language: None,
                 context_size: None,
+                semantic_search: None,
             },
         )
         .unwrap();

@@ -52,7 +52,7 @@ there from any provenance, and how it says when something has gone wrong.
    above the six the `SCHEMA_VERSION` comment counts, which would have been 7
    and would have collided with a real pre-release stamp, letting a store
    already at 7 read as current and skip the migration in silence.
-   `SCHEMA_VERSION` is 18.
+   `SCHEMA_VERSION` is 20 now: migrations 19 and 20 followed it (§15, §16).
 
    **That removes the ambiguity and not the refusal**, and the two are worth
    separating because the first invites the mistake of dropping the second.
@@ -86,7 +86,15 @@ there from any provenance, and how it says when something has gone wrong.
    `sqlite_integrity`, `foreign_keys`, three full-text `*_integrity` checks,
    three `*_sync` row-count checks, `observation_hash_sync`,
    `observation_type_searchable`, `full_text_triggers`, `topic_key_uniqueness`,
-   `settings_readable`, `journal_mode`, `busy_timeout`.
+   `settings_readable`, `semantic_model`, `journal_mode`, `busy_timeout`.
+   `semantic_model` is the one check about a file and not the database, and says
+   which of three conditions holds: the model found and verified (and where),
+   not installed, or present and not the model this build accepts, each with the
+   command that mends it (`leteo model install`, or `--from <directory>`). A
+   model that is simply not installed is an optional thing absent and does not
+   make the store unhealthy -- it is in the report and not in `issues` -- while
+   one that is there and wrong does, because something replaced or damaged it.
+   Turned off by the `semantic_search` setting, it says so and looks for nothing.
    Every code is listed
    once in `DoctorCheck::CODES`, and tests hold the list to the checks that run.
 
@@ -142,9 +150,11 @@ there from any provenance, and how it says when something has gone wrong.
 
    `observations.embedding`, `embedding_model` and `embedding_created_at` are
    inherited from the upstream schema and argued for in the baseline migration
-   itself: Leteo embeds nothing, retrieval is FTS5 with weighted bm25 and the
-   semantic half is a model judging a pair, so they stay because an adopted
-   database has them.
+   itself, which says Leteo embeds nothing. It no longer holds, and the columns
+   do not change: they are still written by nothing, because the semantic stage
+   keeps its vectors in a table of its own (§16) rather than in them. They stay
+   because an adopted database has them, and because a vector an Engram
+   database brought along was made by a model this build cannot name.
 
    `observations.expires_at` and `memory_relations.superseded_at` /
    `superseded_by_relation_id` are the same kind of thing with nothing said
@@ -181,8 +191,9 @@ there from any provenance, and how it says when something has gone wrong.
    JSON at all is survived rather than refused — hooks read it on every event.
    Both are right and both are silent, so `doctor` does the same reading once
    more out loud: `context_size` set to `slimm` is named with the value that was
-   in it, and so is a key that is not one of the five, which is the same typo
-   one letter earlier. What is applied is unchanged; what is ignored now has
+   in it, and so is a key that is not one of the six, which is the same typo
+   one letter earlier. `semantic_search` is checked for being a boolean, as the
+   other five are for being theirs. What is applied is unchanged; what is ignored now has
    somewhere it is said.
 
 13. **A question a session opening asks every time is read through an index.**
@@ -311,6 +322,36 @@ there from any provenance, and how it says when something has gone wrong.
     itself and what a version is are in
     [`memory-model.md`](memory-model.md) §14.
 
+16. **Vectors are a table of their own, and only what can be recomputed.**
+    Migration 20 adds `observation_vectors`: `observation_id` (the primary key,
+    a foreign key to `observations` with `ON DELETE CASCADE`), `model`,
+    `source_key` and `vector`. It is the semantic stage's cache
+    ([`search.md`](search.md) §15) and a table rather than the reserved
+    `embedding*` columns for three reasons, each read off the code. Writing those
+    columns re-indexes the memory's text in both full-text indexes, because
+    `obs_fts_update` and `obs_exact_update` are bare `AFTER UPDATE` triggers with
+    no column list — 1.6 s to back-fill 5,336 real memories there, against 0.08
+    to 0.21 s here. Narrowing those triggers would change the definition
+    `doctor --repair` restores from. And adoption copies the `embedding*` columns
+    of an Engram database verbatim, so a vector made by some other model could
+    arrive in them; nothing a foreign store carries can arrive in this table.
+
+    `vector` is 256 little-endian f32, unit length. `model` names what made it,
+    and a row from another model is stale. `source_key` is the content hash the
+    row already carries and its title, concatenated, which SQL can compare with
+    the live row without reading its text: a row whose key differs is stale. The
+    key is a function of the row, so the save, a revision, an update, a merge, a
+    replicated write, an import and an adoption are all covered, and none of
+    them has a hook to forget. A memory the model has no token for gets a row
+    with an empty vector, so it is not found stale on every question.
+
+    The cascade is the one rule the database keeps for the three hard-delete
+    paths — a memory, a session, a project — instead of each remembering to. The
+    table is derived and local: it is not replicated, not exported, not counted
+    by `doctor`, and losing it costs the time to make it again. That is what lets
+    migration 20 be a plain `CREATE TABLE` with no repair path, no full-text
+    rebuild, and no column added to an existing table.
+
 ## Invariants
 
 - Every full-text index has its triggers, and `FULL_TEXT_INDEXES` /
@@ -340,6 +381,7 @@ there from any provenance, and how it says when something has gone wrong.
 ## Where it lives
 
 - `src/store/schema.rs` — the baseline, the migration list, the roll calls
+- `src/store/semantic_stage.rs` — the vector table's only writer and reader
 - `src/store/diagnostics.rs` — every check, and the two repairs
 - `migrations/*.sql` — the SQL, owned here and read from here
 - `src/engram.rs` — adoption, and the Engram-to-Leteo translation

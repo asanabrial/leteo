@@ -66,6 +66,7 @@ pub mod paths;
 pub mod project;
 pub mod recall;
 pub mod sardi;
+pub mod semantic;
 pub mod settings;
 pub mod setup;
 pub mod store;

@@ -143,6 +143,7 @@ fn a_silenced_leteo_does_not_stamp_the_reminder_clock() {
             interface: Some(settings::Interface::English),
             voice_language: None,
             context_size: None,
+            semantic_search: None,
         },
     )
     .unwrap();
@@ -1218,6 +1219,7 @@ fn a_silenced_leteo_does_not_mention_the_queue_either() {
             interface: Some(crate::settings::Interface::English),
             voice_language: None,
             context_size: None,
+            semantic_search: None,
         },
     )
     .unwrap();

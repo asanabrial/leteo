@@ -1186,8 +1186,8 @@ mod tools;
 
 use output::*;
 pub(crate) use output::{
-    ELSEWHERE_CAP, MORE_MATCHED_HINT, NO_MATCH_HINT, PARTIAL_MATCH_HINT, UNFILED_KIND_HINT,
-    clamped_hint, corrected_terms_hint, no_match_here_hint,
+    ELSEWHERE_CAP, MORE_MATCHED_HINT, NO_MATCH_HINT, PARTIAL_MATCH_HINT, SEMANTIC_MATCH_HINT,
+    UNFILED_KIND_HINT, clamped_hint, corrected_terms_hint, no_match_here_hint,
 };
 use params::*;
 

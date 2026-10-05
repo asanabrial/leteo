@@ -637,6 +637,7 @@ fn the_voice_question_opens_on_the_answer_already_in_force() {
             interface: Some(settings::Interface::English),
             voice_language: None,
             context_size: None,
+            semantic_search: None,
         },
     )
     .unwrap();
@@ -651,6 +652,25 @@ fn the_voice_question_opens_on_the_answer_already_in_force() {
     let outcome = wizard.apply(&mut report).unwrap();
     assert_eq!(outcome.voice, Voice::Quiet);
     assert_eq!(settings::load(temp.path()).voice, Voice::Quiet);
+}
+
+/// The wizard has no screen for the semantic stage, and saving what it does ask
+/// must not put a choice made by hand back to its default.
+#[test]
+fn walking_the_wizard_keeps_a_semantic_choice_it_has_no_screen_for() {
+    let temp = TempDir::new().unwrap();
+    settings::save(
+        temp.path(),
+        &Settings {
+            semantic_search: Some(false),
+            ..Settings::default()
+        },
+    )
+    .unwrap();
+    let wizard = Wizard::preferences(offer_in(temp.path()));
+    let mut report = Vec::new();
+    wizard.apply(&mut report).unwrap();
+    assert_eq!(settings::load(temp.path()).semantic_search, Some(false));
 }
 
 #[test]
@@ -702,6 +722,7 @@ fn setting_up_an_agent_keeps_the_preferences_it_never_asked_about() {
             interface: Some(settings::Interface::Basque),
             voice_language: None,
             context_size: None,
+            semantic_search: None,
         },
     )
     .unwrap();
@@ -864,6 +885,7 @@ fn running_setup_again_does_not_forget_which_language_to_remember_in() {
             interface: Some(settings::Interface::English),
             voice_language: None,
             context_size: None,
+            semantic_search: None,
         },
     )
     .unwrap();
@@ -906,6 +928,7 @@ fn the_language_question_offers_auto_and_opens_on_the_answer_in_force() {
             interface: Some(settings::Interface::English),
             voice_language: None,
             context_size: None,
+            semantic_search: None,
         },
     )
     .unwrap();

@@ -1,4 +1,5 @@
 {
+  "model_id": "static-similarity-mrl-multilingual-v1/256-int8-pruned@25d1b8a5",
   "source": "sentence-transformers/static-similarity-mrl-multilingual-v1",
   "source_revision": "b68f4122911bcffcd6e1f695f2d99cd6788972d8",
   "dims": 256,

@@ -1,0 +1,23 @@
+{
+  "note": "SHA-256 of every file under data/. check_sets.py refuses to run on anything else. Kept beside data/ and not in it, because data/ is marked -diff and this file is the part of the change a reader can review.",
+  "files": {
+    "absent.json": "a4a52bbf82c7ea081e97978f6760cd5fe1424445eee49e61c0d344c7b31d8559",
+    "mem_de.json": "a22ab64d822ff140ae27783dcfc1542ba3c2f0dc0037e0069314d16c493332f0",
+    "mem_es.json": "eeff6d64b9df2579a8250353099277056149f3ac89438d38c61fea55b1a6106f",
+    "mem_eu.json": "b05f6d2198e3546051ba12c402717ded982dd50645f6926a8d3bb695c7d4d16e",
+    "mem_gl.json": "00dc39847b2b172a007ebfb98def5806c16333119c753e646eaecec6523a09ba",
+    "para_en.json": "37467e7fcbfff78defa9f7802fcc4b9a2e0b7998c240072fba63314b14c0ec6d",
+    "xl_ca.json": "6afbb7f4bdea769848a68b59a9526db76b7ba57bf4479439ebb64d1d3ffcbd71",
+    "xl_de.json": "d37ef79e9d41c12e0c98097425b6519e69ff95ab29ba331cd7fddc70652f8f71",
+    "xl_es.json": "07c1dbcb6e256f185935a3f68aa2ec059c85686f214a71ea111ca021a4cdfa79",
+    "xl_eu.json": "f9d2286d65db26ff050b6f87200da9a86a19a1251609dd6b3f58b14e04e53a2b",
+    "xl_fr.json": "26874e1fc0a9209558cf0d1658ae6e3c965991c3f148ddf9e615bff1ef73dfe6",
+    "xl_gl.json": "1d21bd6c74250cb501f808e1791bf04352dabd9bde09ceac45589ea16537c064",
+    "xl_it.json": "6ffd6c7dfc6330c1edd7e9a57848ffca94b04fa018c4f87ebb1b6f657f7d2f81",
+    "xl_nl.json": "17b2030902a3570f51b2e18c67497f05c180b6c04eb0189e0ab91fe5a558d32e",
+    "xl_pl.json": "a2729e2ca75a9305cd6c54c943d3d16d3e7265adaff6e652f321646f7e339ba6",
+    "xl_pt.json": "bddd35c9e7e54b619a1c0246b72ccb46e0c7b3d4a0c8835031f134c643c36fde",
+    "xl_ro.json": "44c6e73722a4446c482de9e0a60561c986855e28d807435cb2c4d5d04c900e4a",
+    "xl_sv.json": "7d79f81829afce3af581acfea5e0fdf25fb33b0b6df190ae4735bff849892d81"
+  }
+}

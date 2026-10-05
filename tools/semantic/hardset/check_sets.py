@@ -7,9 +7,15 @@ lowercased); function words of the thirteen languages are ignored. Two words are
 shared when equal after folding accents, or when both have five characters or more and
 begin with the same five (so `connection` and `connections` count).
 
-usage: check_sets.py        exits 1 and lists every violation
+Before anything else it checks that the data files are the ones `checksums.json`
+records, byte for byte: the data is 237 KB of generated questions that no reader
+reviews line by line, so what stands in for the review is that it is the set that
+was measured, and that the invariant above holds of it.
+
+usage: check_sets.py        exits 1 and lists every violation, 2 on a changed file
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -63,7 +69,26 @@ def shared(query: str, document: str) -> set[str]:
     }
 
 
+def verify_data() -> bool:
+    """Every file under data/ is exactly the one recorded, and no other is there."""
+    recorded = json.load(open(os.path.join(HERE, "checksums.json")))["files"]
+    folder = os.path.join(HERE, "data")
+    actual = {
+        name: hashlib.sha256(open(os.path.join(folder, name), "rb").read()).hexdigest()
+        for name in sorted(os.listdir(folder))
+    }
+    ok = True
+    for name in sorted(set(recorded) | set(actual)):
+        if recorded.get(name) != actual.get(name):
+            ok = False
+            print(f"data/{name}: recorded {recorded.get(name)}, found {actual.get(name)}")
+    return ok
+
+
 def main() -> int:
+    if not verify_data():
+        print("the hard-set data is not the data checksums.json records")
+        return 2
     targets = {t["key"]: t for t in C.TARGETS}
     english = [(q, targets[q["key"]]) for q in json.load(open(os.path.join(HERE, "data", "para_en.json")))]
     bad = 0

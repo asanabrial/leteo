@@ -24,3 +24,15 @@
 # PowerShell is the exception: Windows PowerShell 5.1 is the reason these
 # scripts exist, and CRLF is what it expects.
 *.ps1 text eol=crlf
+
+# The hard-set questions are generated benchmark data, not code to be read.
+#
+# `tools/semantic/hardset/data/` holds 237 KB of LLM-generated questions and
+# translations. Nobody reviews that line by line, and a diff of it is the
+# largest thing in the branch that carries it. What can be checked is checked by
+# machine: `check_sets.py` verifies the one invariant the English paraphrases
+# rest on (no content word shared with the target), and first verifies that
+# every file is the one `tools/semantic/hardset/checksums.json` records by
+# SHA-256, so a changed byte is not silent. The checksums sit beside the data
+# rather than in it, so they stay in the diff.
+tools/semantic/hardset/data/** -diff linguist-generated=true

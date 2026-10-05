@@ -1,0 +1,402 @@
+[
+ {
+  "key": "pgpool",
+  "q": "åtgärd för slut på databasanslutningar",
+  "en": "database link starvation fix"
+ },
+ {
+  "key": "pgpool",
+  "q": "varför vägrade den relationella backenden nya sockets när trafiken toppade?",
+  "en": "why did the relational backend refuse new sockets once traffic spiked?"
+ },
+ {
+  "key": "jwtrot",
+  "q": "förnyelse av kryptografisk hemlighet för autentiseringsuppgifter",
+  "en": "auth credential cryptographic secret renewal"
+ },
+ {
+  "key": "jwtrot",
+  "q": "hur ofta byter vi hemligheten som används för att signera bearer-uppgifter?",
+  "en": "how often do we swap the secret used to sign bearer credentials?"
+ },
+ {
+  "key": "ratelimit",
+  "q": "strypa anropare per autentiseringsuppgift",
+  "en": "throttling callers by credential"
+ },
+ {
+  "key": "ratelimit",
+  "q": "vilken algoritm begränsar hur ofta varje integrationsklient får anropa oss?",
+  "en": "what algorithm caps how fast each integration client may hit us?"
+ },
+ {
+  "key": "tzbug",
+  "q": "fakturor förskjutna med tjugofyra timmar",
+  "en": "billing statements off by twenty-four hours"
+ },
+ {
+  "key": "tzbug",
+  "q": "varför såg kunder i östra Amerika fakturor daterade igår i stället för idag?",
+  "en": "why did customers in eastern America see bills stamped yesterday instead of today?"
+ },
+ {
+  "key": "migr",
+  "q": "konventioner för skript för schemaändringar",
+  "en": "schema evolution script conventions"
+ },
+ {
+  "key": "migr",
+  "q": "hur ska skript för databasändringar namnges och får gamla ändras?",
+  "en": "how should database evolution scripts be titled and may old ones be altered?"
+ },
+ {
+  "key": "grpcdl",
+  "q": "fjärrproceduranrop som hänger utan slut",
+  "en": "remote procedure invocations hanging with no end"
+ },
+ {
+  "key": "grpcdl",
+  "q": "varför frös köpflödet när lagermikrotjänsten slutade svara?",
+  "en": "why did purchase flow freeze when the stock microservice stopped answering?"
+ },
+ {
+  "key": "otel",
+  "q": "val av instrumentering för distribuerade spans",
+  "en": "distributed span instrumentation choice"
+ },
+ {
+  "key": "otel",
+  "q": "vilken observabilitetsstandard ersatte vårt gamla paket för trace-rapportering?",
+  "en": "which observability standard replaced our old trace reporting package?"
+ },
+ {
+  "key": "cache",
+  "q": "thundering herd vid inaktuellt memo",
+  "en": "thundering herd on stale memo"
+ },
+ {
+  "key": "cache",
+  "q": "vad förhindrar många samtidiga ombyggen när memot för produktlistan blir inaktuellt?",
+  "en": "what stops many simultaneous rebuilds when the merchandise listing memo goes stale?"
+ },
+ {
+  "key": "s3up",
+  "q": "överföringstak för stora objekt i lagring",
+  "en": "big object storage transfer ceiling"
+ },
+ {
+  "key": "s3up",
+  "q": "varför gick det sönder att skicka enorma blobbar till molnbucketen över en viss storlek?",
+  "en": "why did pushing huge blobs to the cloud bucket break past some size?"
+ },
+ {
+  "key": "nplus1",
+  "q": "långsam SQL för lista över tidigare köp",
+  "en": "purchase past listing slow SQL"
+ },
+ {
+  "key": "nplus1",
+  "q": "varför gjorde sidan med tidigare köp en databasrundtur per rad?",
+  "en": "why did the past purchases page issue one database round trip per row?"
+ },
+ {
+  "key": "feature",
+  "q": "var toggle-beslutet fattas",
+  "en": "toggle decision location"
+ },
+ {
+  "key": "feature",
+  "q": "var bestämmer vi vilka villkorade funktioner en användare ser, i webbläsaren eller backenden?",
+  "en": "where do we decide which gated capabilities a user sees, browser or backend?"
+ },
+ {
+  "key": "idemp",
+  "q": "deduplicera upprepade betalningsförsök",
+  "en": "dedupe repeated billing submissions"
+ },
+ {
+  "key": "idemp",
+  "q": "hur förhindrar vi att kunder debiteras två gånger när telefoner skickar igen?",
+  "en": "how do we prevent customers being billed twice when phones resend?"
+ },
+ {
+  "key": "goroutine",
+  "q": "läckta samtidiga uppgifter i realtidssocket",
+  "en": "leaked concurrent tasks realtime socket"
+ },
+ {
+  "key": "goroutine",
+  "q": "varför hopade sig lätta trådar när användare tappade sin live-socketanslutning?",
+  "en": "why did lightweight threads pile up after users dropped their live socket connection?"
+ },
+ {
+  "key": "es_mig",
+  "q": "byta leverantör av sökmotor",
+  "en": "swapping our search engine vendor"
+ },
+ {
+  "key": "es_mig",
+  "q": "varför flyttade vi produktsökningen från det gamla dyra fulltextklustret?",
+  "en": "why did we move merchandise lookup off the old pricey full-text cluster?"
+ },
+ {
+  "key": "es_bug",
+  "q": "schemalagd avstämning körs dubbelt",
+  "en": "scheduled reconciliation running duplicated"
+ },
+ {
+  "key": "es_bug",
+  "q": "varför kördes det nattliga jobbet för matchning av kontoutdrag två gånger per schemaläggning?",
+  "en": "why did the nightly bank statement matching job fire twice per schedule?"
+ },
+ {
+  "key": "es_disc",
+  "q": "trick med villkorad delmängd i b-träd",
+  "en": "conditional subset b-tree trick"
+ },
+ {
+  "key": "es_disc",
+  "q": "hur håller vi uppslag av aktuella köp snabba när de flesta rader är historiska?",
+  "en": "how to keep lookups of current purchases fast when most rows are historical?"
+ },
+ {
+  "key": "logs",
+  "q": "maskinläsbart format för diagnostik",
+  "en": "machine-readable diagnostics format"
+ },
+ {
+  "key": "logs",
+  "q": "hur skickar vi ut serverdiagnostik och korrelerar den per inkommande anrop?",
+  "en": "how do we emit server diagnostics and correlate them per incoming call?"
+ },
+ {
+  "key": "healthz",
+  "q": "container avslutad under schemauppgradering",
+  "en": "container terminated while upgrading schema"
+ },
+ {
+  "key": "healthz",
+  "q": "varför dödade orkestreraren instanser medan ett långt DDL-steg kördes?",
+  "en": "why did the orchestrator kill instances while a lengthy DDL step ran?"
+ },
+ {
+  "key": "decimal",
+  "q": "penningsummor som drar iväg med ören",
+  "en": "monetary sums wandering by pennies"
+ },
+ {
+  "key": "decimal",
+  "q": "varför blev varukorgsbelopp ibland fel med ett öre efter summering?",
+  "en": "why were cart amounts sometimes off by a penny after adding them?"
+ },
+ {
+  "key": "cors",
+  "q": "cross-origin-kontroll blockerade backoffice",
+  "en": "cross-origin check blocked backoffice"
+ },
+ {
+  "key": "cors",
+  "q": "varför fick webbläsarens preflight-anrop till personalkonsolen unauthorized?",
+  "en": "why did browser pre-flight calls to the staff console get unauthorized?"
+ },
+ {
+  "key": "hydr",
+  "q": "markup skiljer sig mellan backend och frontend",
+  "en": "backend vs frontend markup disagreement"
+ },
+ {
+  "key": "hydr",
+  "q": "varför varnade sidan för skillnader i markup när kalendervärden visades?",
+  "en": "why did the page warn about markup differences when showing calendar values?"
+ },
+ {
+  "key": "zustand",
+  "q": "val av bibliotek för datacontainer i frontend",
+  "en": "frontend data container library choice"
+ },
+ {
+  "key": "zustand",
+  "q": "vilken lättviktig datacontainer valde vi framför action-reducer-ramverket?",
+  "en": "which lightweight data container did we pick over the action-reducer framework?"
+ },
+ {
+  "key": "bundle",
+  "q": "tungt kalenderbibliotek blåser upp javascript",
+  "en": "heavy calendar library bloating javascript"
+ },
+ {
+  "key": "bundle",
+  "q": "vad minskade vår levererade skriptstorlek med ungefär en tredjedel förra gången?",
+  "en": "what shrank our shipped script size by roughly a third last time?"
+ },
+ {
+  "key": "a11y",
+  "q": "tillgängliga namn för klickbara ikoner",
+  "en": "accessible names for glyph clickables"
+ },
+ {
+  "key": "a11y",
+  "q": "hur ser vi till att hjälpmedel läser upp klickbara element med bara piktogram på ett meningsfullt sätt?",
+  "en": "how do we make sure assistive tech reads pictogram-only clickables meaningfully?"
+ },
+ {
+  "key": "flutterweb",
+  "q": "nyttolast för Darts plattformsoberoende webbläsarmotor",
+  "en": "dart cross-platform browser engine payload"
+ },
+ {
+  "key": "flutterweb",
+  "q": "varför är första besöket på vår Dart-byggda sajt så tungt att hämta?",
+  "en": "why is the initial visit to our Dart-built site so heavy to fetch?"
+ },
+ {
+  "key": "csp",
+  "q": "javascript-behörighetsheader med engångstokens",
+  "en": "javascript permission header with one-time tokens"
+ },
+ {
+  "key": "csp",
+  "q": "hur tillåter vi inbäddad javascript utan att försvaga webbläsarens skyddsheaders?",
+  "en": "how do we permit embedded javascript without weakening browser protection headers?"
+ },
+ {
+  "key": "infinite",
+  "q": "oändlig omrendering i filterpanelen",
+  "en": "endless rerender in refinement panel"
+ },
+ {
+  "key": "infinite",
+  "q": "varför fortsatte söksidopanelen att uppdatera sig själv utan att sluta?",
+  "en": "why did the lookup sidebar keep updating itself without stopping?"
+ },
+ {
+  "key": "i18n",
+  "q": "verktyg för format på lokaliseringstexter",
+  "en": "localization wording format tooling"
+ },
+ {
+  "key": "i18n",
+  "q": "hur lokaliseras gränssnittstexter och hur hanterar vi pluralformer?",
+  "en": "how are interface texts localized and how do we handle quantity forms?"
+ },
+ {
+  "key": "sw",
+  "q": "offline-proxyskript behöll inaktuell markup",
+  "en": "offline proxy script retained outdated markup"
+ },
+ {
+  "key": "sw",
+  "q": "varför fick besökare saknade skriptfiler direkt efter att vi släppte?",
+  "en": "why did visitors get missing script files right after we released?"
+ },
+ {
+  "key": "e2e",
+  "q": "ramverk för webbläsarautomatiserade tester",
+  "en": "browser automation testing framework"
+ },
+ {
+  "key": "e2e",
+  "q": "vilket verktyg kör våra fullständiga UI-sviter och hur loggar vi in per persona?",
+  "en": "which tool runs our full UI suites and how do we sign in per persona?"
+ },
+ {
+  "key": "img",
+  "q": "layoutförskjutning i produktlistan",
+  "en": "layout shift on merchandise listing"
+ },
+ {
+  "key": "img",
+  "q": "varför fick butikens miniatyrbilder sidan att hoppa under laddning?",
+  "en": "why did the shop thumbnails make the page jump while loading?"
+ },
+ {
+  "key": "es_web",
+  "q": "registreringsformuläret förstörde tecken med accent",
+  "en": "signup form mangled accented characters"
+ },
+ {
+  "key": "es_web",
+  "q": "varför kom namn med diakritiska tecken fram förvanskade från registreringssidan?",
+  "en": "why did names with diacritics arrive garbled from the signup page?"
+ },
+ {
+  "key": "es_dec",
+  "q": "tillvägagångssätt för att implementera nattema",
+  "en": "night theme implementation approach"
+ },
+ {
+  "key": "es_dec",
+  "q": "hur implementerade vi nattutseendet och kom ihåg vad användaren valde?",
+  "en": "how did we implement the night appearance and remember what the user picked?"
+ },
+ {
+  "key": "webvitals",
+  "q": "mätvärde för långsam respons vid tryck",
+  "en": "slow tap responsiveness metric"
+ },
+ {
+  "key": "webvitals",
+  "q": "vad fick tryck att kännas tröga och hur sköts spårningskoden upp?",
+  "en": "what made taps feel laggy and how did tracking code get postponed?"
+ },
+ {
+  "key": "auth_web",
+  "q": "samtidig sessionsförnyelse i flera webbläsarfönster",
+  "en": "concurrent session renewal across browser windows"
+ },
+ {
+  "key": "auth_web",
+  "q": "varför loggades folk ut när flera fönster förnyade inloggningsuppgifter samtidigt?",
+  "en": "why were people kicked out when several windows renewed credentials together?"
+ },
+ {
+  "key": "forms",
+  "q": "kombination av bibliotek för kontroll av inmatade data",
+  "en": "data entry checking library pairing"
+ },
+ {
+  "key": "forms",
+  "q": "vilka bibliotek väljer vi för att hantera fältvärden och deklarera kontroller?",
+  "en": "which libraries do we pick to manage field values and declare checks?"
+ },
+ {
+  "key": "fonts",
+  "q": "typsnittsladdning tom text",
+  "en": "typeface loading blank copy"
+ },
+ {
+  "key": "fonts",
+  "q": "varför förblev texten osynlig i flera sekunder medan anpassade typsnitt laddades ner?",
+  "en": "why did copy stay unseen for seconds while custom typefaces downloaded?"
+ },
+ {
+  "key": "webp",
+  "q": "val av bildformat av nästa generation",
+  "en": "next-gen picture format selection"
+ },
+ {
+  "key": "webp",
+  "q": "vilka komprimerade bildformat levererar vi och hur klarar sig äldre klienter?",
+  "en": "which compressed picture formats do we deliver and how do legacy clients cope?"
+ },
+ {
+  "key": "storybook",
+  "q": "katalog för att visa upp UI-widgets",
+  "en": "UI widget catalog showcase"
+ },
+ {
+  "key": "storybook",
+  "q": "var visar vi upp visuella byggstenar och verifierar deras klickbeteende?",
+  "en": "where do we showcase visual building blocks and verify their clickable behaviours?"
+ },
+ {
+  "key": "memleak",
+  "q": "prenumerationer som hopar sig i kartvyn",
+  "en": "subscriptions piling up on cartography view"
+ },
+ {
+  "key": "memleak",
+  "q": "varför växte RAM varje gång någon återbesökte den geografiska skärmen?",
+  "en": "why did RAM grow each time someone revisited the geographic screen?"
+ }
+]

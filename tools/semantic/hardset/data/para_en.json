@@ -1,0 +1,482 @@
+[
+ {
+  "key": "pgpool",
+  "q": "database link starvation fix"
+ },
+ {
+  "key": "pgpool",
+  "q": "why did the relational backend refuse new sockets once traffic spiked?"
+ },
+ {
+  "key": "pgpool",
+  "q": "too many clients error from the SQL server at high throughput"
+ },
+ {
+  "key": "jwtrot",
+  "q": "auth credential cryptographic secret renewal"
+ },
+ {
+  "key": "jwtrot",
+  "q": "how often do we swap the secret used to sign bearer credentials?"
+ },
+ {
+  "key": "jwtrot",
+  "q": "old session credentials still honored briefly following secret swap"
+ },
+ {
+  "key": "ratelimit",
+  "q": "throttling callers by credential"
+ },
+ {
+  "key": "ratelimit",
+  "q": "what algorithm caps how fast each integration client may hit us?"
+ },
+ {
+  "key": "ratelimit",
+  "q": "need to stop one customer flooding endpoints with calls"
+ },
+ {
+  "key": "tzbug",
+  "q": "billing statements off by twenty-four hours"
+ },
+ {
+  "key": "tzbug",
+  "q": "why did customers in eastern America see bills stamped yesterday instead of today?"
+ },
+ {
+  "key": "tzbug",
+  "q": "receipt calendar stamp wrong for people west of Greenwich"
+ },
+ {
+  "key": "migr",
+  "q": "schema evolution script conventions"
+ },
+ {
+  "key": "migr",
+  "q": "how should database evolution scripts be titled and may old ones be altered?"
+ },
+ {
+  "key": "migr",
+  "q": "rule against rewriting already-released DDL scripts"
+ },
+ {
+  "key": "grpcdl",
+  "q": "remote procedure invocations hanging with no end"
+ },
+ {
+  "key": "grpcdl",
+  "q": "why did purchase flow freeze when the stock microservice stopped answering?"
+ },
+ {
+  "key": "grpcdl",
+  "q": "add cutoff so RPCs to sibling backends cannot hang"
+ },
+ {
+  "key": "otel",
+  "q": "distributed span instrumentation choice"
+ },
+ {
+  "key": "otel",
+  "q": "which observability standard replaced our old trace reporting package?"
+ },
+ {
+  "key": "otel",
+  "q": "outdated span reporting package needs swapping"
+ },
+ {
+  "key": "cache",
+  "q": "thundering herd on stale memo"
+ },
+ {
+  "key": "cache",
+  "q": "what stops many simultaneous rebuilds when the merchandise listing memo goes stale?"
+ },
+ {
+  "key": "cache",
+  "q": "burst of identical rebuilding right after boot"
+ },
+ {
+  "key": "s3up",
+  "q": "big object storage transfer ceiling"
+ },
+ {
+  "key": "s3up",
+  "q": "why did pushing huge blobs to the cloud bucket break past some size?"
+ },
+ {
+  "key": "s3up",
+  "q": "chunked transfer of giant assets into storage bucket"
+ },
+ {
+  "key": "nplus1",
+  "q": "purchase past listing slow SQL"
+ },
+ {
+  "key": "nplus1",
+  "q": "why did the past purchases page issue one database round trip per row?"
+ },
+ {
+  "key": "nplus1",
+  "q": "fetching nested rows inside iteration made response sluggish"
+ },
+ {
+  "key": "feature",
+  "q": "toggle decision location"
+ },
+ {
+  "key": "feature",
+  "q": "where do we decide which gated capabilities a user sees, browser or backend?"
+ },
+ {
+  "key": "feature",
+  "q": "javascript download exposed unlaunched work"
+ },
+ {
+  "key": "idemp",
+  "q": "dedupe repeated billing submissions"
+ },
+ {
+  "key": "idemp",
+  "q": "how do we prevent customers being billed twice when phones resend?"
+ },
+ {
+  "key": "idemp",
+  "q": "double billing caused by resent checkout calls"
+ },
+ {
+  "key": "goroutine",
+  "q": "leaked concurrent tasks realtime socket"
+ },
+ {
+  "key": "goroutine",
+  "q": "why did lightweight threads pile up after users dropped their live socket connection?"
+ },
+ {
+  "key": "goroutine",
+  "q": "lingering green threads stuck writing to dead subscribers"
+ },
+ {
+  "key": "es_mig",
+  "q": "swapping our search engine vendor"
+ },
+ {
+  "key": "es_mig",
+  "q": "why did we move merchandise lookup off the old pricey full-text cluster?"
+ },
+ {
+  "key": "es_mig",
+  "q": "typo-forgiving catalog lookup with cheaper hosting"
+ },
+ {
+  "key": "es_bug",
+  "q": "scheduled reconciliation running duplicated"
+ },
+ {
+  "key": "es_bug",
+  "q": "why did the nightly bank statement matching job fire twice per schedule?"
+ },
+ {
+  "key": "es_bug",
+  "q": "single leader for periodic task across multiple pods"
+ },
+ {
+  "key": "es_disc",
+  "q": "conditional subset b-tree trick"
+ },
+ {
+  "key": "es_disc",
+  "q": "how to keep lookups of current purchases fast when most rows are historical?"
+ },
+ {
+  "key": "es_disc",
+  "q": "shrink b-tree by excluding inactive records"
+ },
+ {
+  "key": "logs",
+  "q": "machine-readable diagnostics format"
+ },
+ {
+  "key": "logs",
+  "q": "how do we emit server diagnostics and correlate them per incoming call?"
+ },
+ {
+  "key": "logs",
+  "q": "writing debug text directly to stdout is banned"
+ },
+ {
+  "key": "healthz",
+  "q": "container terminated while upgrading schema"
+ },
+ {
+  "key": "healthz",
+  "q": "why did the orchestrator kill instances while a lengthy DDL step ran?"
+ },
+ {
+  "key": "healthz",
+  "q": "heartbeat endpoint split between alive and serving traffic"
+ },
+ {
+  "key": "decimal",
+  "q": "monetary sums wandering by pennies"
+ },
+ {
+  "key": "decimal",
+  "q": "why were cart amounts sometimes off by a penny after adding them?"
+ },
+ {
+  "key": "decimal",
+  "q": "binary fraction imprecision with prices"
+ },
+ {
+  "key": "cors",
+  "q": "cross-origin check blocked backoffice"
+ },
+ {
+  "key": "cors",
+  "q": "why did browser pre-flight calls to the staff console get unauthorized?"
+ },
+ {
+  "key": "cors",
+  "q": "handler chain ordering issue rejecting cross-site pre-flight"
+ },
+ {
+  "key": "hydr",
+  "q": "backend vs frontend markup disagreement"
+ },
+ {
+  "key": "hydr",
+  "q": "why did the page warn about markup differences when showing calendar values?"
+ },
+ {
+  "key": "hydr",
+  "q": "entire UI redrawn because timestamps differ between backend and frontend"
+ },
+ {
+  "key": "zustand",
+  "q": "frontend data container library choice"
+ },
+ {
+  "key": "zustand",
+  "q": "which lightweight data container did we pick over the action-reducer framework?"
+ },
+ {
+  "key": "zustand",
+  "q": "too much ceremony with reducers and actions in UI code"
+ },
+ {
+  "key": "bundle",
+  "q": "heavy calendar library bloating javascript"
+ },
+ {
+  "key": "bundle",
+  "q": "what shrank our shipped script size by roughly a third last time?"
+ },
+ {
+  "key": "bundle",
+  "q": "time formatting package with every language pack inflated download"
+ },
+ {
+  "key": "a11y",
+  "q": "accessible names for glyph clickables"
+ },
+ {
+  "key": "a11y",
+  "q": "how do we make sure assistive tech reads pictogram-only clickables meaningfully?"
+ },
+ {
+  "key": "a11y",
+  "q": "voiceover just says generic widget for symbol clickables"
+ },
+ {
+  "key": "flutterweb",
+  "q": "dart cross-platform browser engine payload"
+ },
+ {
+  "key": "flutterweb",
+  "q": "why is the initial visit to our Dart-built site so heavy to fetch?"
+ },
+ {
+  "key": "flutterweb",
+  "q": "slow initial paint due to large webassembly graphics engine"
+ },
+ {
+  "key": "csp",
+  "q": "javascript permission header with one-time tokens"
+ },
+ {
+  "key": "csp",
+  "q": "how do we permit embedded javascript without weakening browser protection headers?"
+ },
+ {
+  "key": "csp",
+  "q": "external tracking blocked by tight protection header"
+ },
+ {
+  "key": "infinite",
+  "q": "endless rerender in refinement panel"
+ },
+ {
+  "key": "infinite",
+  "q": "why did the lookup sidebar keep updating itself without stopping?"
+ },
+ {
+  "key": "infinite",
+  "q": "hook deps change identity on each paint causing cycle"
+ },
+ {
+  "key": "i18n",
+  "q": "localization wording format tooling"
+ },
+ {
+  "key": "i18n",
+  "q": "how are interface texts localized and how do we handle quantity forms?"
+ },
+ {
+  "key": "i18n",
+  "q": "glued-together sentences mangled Slavic quantity wording"
+ },
+ {
+  "key": "sw",
+  "q": "offline proxy script retained outdated markup"
+ },
+ {
+  "key": "sw",
+  "q": "why did visitors get missing script files right after we released?"
+ },
+ {
+  "key": "sw",
+  "q": "PWA stored entry page not refreshing on release"
+ },
+ {
+  "key": "e2e",
+  "q": "browser automation testing framework"
+ },
+ {
+  "key": "e2e",
+  "q": "which tool runs our full UI suites and how do we sign in per persona?"
+ },
+ {
+  "key": "e2e",
+  "q": "unreliable several-window test runs in old runner"
+ },
+ {
+  "key": "img",
+  "q": "layout shift on merchandise listing"
+ },
+ {
+  "key": "img",
+  "q": "why did the shop thumbnails make the page jump while loading?"
+ },
+ {
+  "key": "img",
+  "q": "pictures missing dimension markup hurt visual stability score"
+ },
+ {
+  "key": "es_web",
+  "q": "signup form mangled accented characters"
+ },
+ {
+  "key": "es_web",
+  "q": "why did names with diacritics arrive garbled from the signup page?"
+ },
+ {
+  "key": "es_web",
+  "q": "mojibake in user names due to missing encoding"
+ },
+ {
+  "key": "es_dec",
+  "q": "night theme implementation approach"
+ },
+ {
+  "key": "es_dec",
+  "q": "how did we implement the night appearance and remember what the user picked?"
+ },
+ {
+  "key": "es_dec",
+  "q": "light vs dim palette toggle via custom properties"
+ },
+ {
+  "key": "webvitals",
+  "q": "slow tap responsiveness metric"
+ },
+ {
+  "key": "webvitals",
+  "q": "what made taps feel laggy and how did tracking code get postponed?"
+ },
+ {
+  "key": "webvitals",
+  "q": "telemetry encoding blocking main thread on each tap"
+ },
+ {
+  "key": "auth_web",
+  "q": "concurrent session renewal across browser windows"
+ },
+ {
+  "key": "auth_web",
+  "q": "why were people kicked out when several windows renewed credentials together?"
+ },
+ {
+  "key": "auth_web",
+  "q": "unexpected sign-outs with multiple open windows"
+ },
+ {
+  "key": "forms",
+  "q": "data entry checking library pairing"
+ },
+ {
+  "key": "forms",
+  "q": "which libraries do we pick to manage field values and declare checks?"
+ },
+ {
+  "key": "forms",
+  "q": "uncontrolled fields for big data entry pages"
+ },
+ {
+  "key": "fonts",
+  "q": "typeface loading blank copy"
+ },
+ {
+  "key": "fonts",
+  "q": "why did copy stay unseen for seconds while custom typefaces downloaded?"
+ },
+ {
+  "key": "fonts",
+  "q": "FOIT on poor mobile connections"
+ },
+ {
+  "key": "webp",
+  "q": "next-gen picture format selection"
+ },
+ {
+  "key": "webp",
+  "q": "which compressed picture formats do we deliver and how do legacy clients cope?"
+ },
+ {
+  "key": "webp",
+  "q": "cut picture bytes with modern codecs at the edge"
+ },
+ {
+  "key": "storybook",
+  "q": "UI widget catalog showcase"
+ },
+ {
+  "key": "storybook",
+  "q": "where do we showcase visual building blocks and verify their clickable behaviours?"
+ },
+ {
+  "key": "storybook",
+  "q": "automated checks of widget behaviours in isolated sandbox"
+ },
+ {
+  "key": "memleak",
+  "q": "subscriptions piling up on cartography view"
+ },
+ {
+  "key": "memleak",
+  "q": "why did RAM grow each time someone revisited the geographic screen?"
+ },
+ {
+  "key": "memleak",
+  "q": "callbacks not detached after unmount for viewport movement"
+ }
+]

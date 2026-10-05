@@ -1,0 +1,402 @@
+[
+ {
+  "key": "pgpool",
+  "q": "solución ao esgotamento de conexións da base de datos",
+  "en": "database link starvation fix"
+ },
+ {
+  "key": "pgpool",
+  "q": "por que o backend relacional rexeitaba conexións novas cando se disparou o tráfico?",
+  "en": "why did the relational backend refuse new sockets once traffic spiked?"
+ },
+ {
+  "key": "jwtrot",
+  "q": "renovación do segredo criptográfico das credenciais de autenticación",
+  "en": "auth credential cryptographic secret renewal"
+ },
+ {
+  "key": "jwtrot",
+  "q": "cada canto cambiamos o segredo que usamos para asinar as credenciais bearer?",
+  "en": "how often do we swap the secret used to sign bearer credentials?"
+ },
+ {
+  "key": "ratelimit",
+  "q": "limitación de peticións dos clientes por credencial",
+  "en": "throttling callers by credential"
+ },
+ {
+  "key": "ratelimit",
+  "q": "que algoritmo limita a velocidade á que cada cliente de integración pode facernos peticións?",
+  "en": "what algorithm caps how fast each integration client may hit us?"
+ },
+ {
+  "key": "tzbug",
+  "q": "extractos de facturación desfasados vinte e catro horas",
+  "en": "billing statements off by twenty-four hours"
+ },
+ {
+  "key": "tzbug",
+  "q": "por que os clientes do leste de América vían facturas con data de onte en vez de hoxe?",
+  "en": "why did customers in eastern America see bills stamped yesterday instead of today?"
+ },
+ {
+  "key": "migr",
+  "q": "convencións dos scripts de evolución do esquema",
+  "en": "schema evolution script conventions"
+ },
+ {
+  "key": "migr",
+  "q": "como se deben chamar os scripts de evolución da base de datos e pódense modificar os antigos?",
+  "en": "how should database evolution scripts be titled and may old ones be altered?"
+ },
+ {
+  "key": "grpcdl",
+  "q": "chamadas a procedementos remotos colgadas indefinidamente",
+  "en": "remote procedure invocations hanging with no end"
+ },
+ {
+  "key": "grpcdl",
+  "q": "por que se bloqueaba o fluxo de compra cando o microservizo de stock deixaba de responder?",
+  "en": "why did purchase flow freeze when the stock microservice stopped answering?"
+ },
+ {
+  "key": "otel",
+  "q": "elección da instrumentación de spans distribuídos",
+  "en": "distributed span instrumentation choice"
+ },
+ {
+  "key": "otel",
+  "q": "que estándar de observabilidade substituíu o noso antigo paquete de informes de trazas?",
+  "en": "which observability standard replaced our old trace reporting package?"
+ },
+ {
+  "key": "cache",
+  "q": "thundering herd sobre un valor memorizado caducado",
+  "en": "thundering herd on stale memo"
+ },
+ {
+  "key": "cache",
+  "q": "que evita moitas reconstrucións simultáneas cando caduca o valor memorizado da listaxe de produtos?",
+  "en": "what stops many simultaneous rebuilds when the merchandise listing memo goes stale?"
+ },
+ {
+  "key": "s3up",
+  "q": "límite de transferencia de obxectos grandes no almacenamento de obxectos",
+  "en": "big object storage transfer ceiling"
+ },
+ {
+  "key": "s3up",
+  "q": "por que fallaba a subida de blobs enormes ao bucket na nube a partir de certo tamaño?",
+  "en": "why did pushing huge blobs to the cloud bucket break past some size?"
+ },
+ {
+  "key": "nplus1",
+  "q": "SQL lento na listaxe do historial de compras",
+  "en": "purchase past listing slow SQL"
+ },
+ {
+  "key": "nplus1",
+  "q": "por que a páxina de compras anteriores facía unha consulta á base de datos por cada fila?",
+  "en": "why did the past purchases page issue one database round trip per row?"
+ },
+ {
+  "key": "feature",
+  "q": "onde se deciden os toggles",
+  "en": "toggle decision location"
+ },
+ {
+  "key": "feature",
+  "q": "onde decidimos que funcionalidades restrinxidas ve un usuario, no navegador ou no backend?",
+  "en": "where do we decide which gated capabilities a user sees, browser or backend?"
+ },
+ {
+  "key": "idemp",
+  "q": "deduplicar envíos de cobro repetidos",
+  "en": "dedupe repeated billing submissions"
+ },
+ {
+  "key": "idemp",
+  "q": "como evitamos cobrar dúas veces aos clientes cando os móbiles reenvían a petición?",
+  "en": "how do we prevent customers being billed twice when phones resend?"
+ },
+ {
+  "key": "goroutine",
+  "q": "fuga de tarefas concorrentes no socket en tempo real",
+  "en": "leaked concurrent tasks realtime socket"
+ },
+ {
+  "key": "goroutine",
+  "q": "por que se acumulaban fíos lixeiros cando os usuarios cortaban a súa conexión de socket en directo?",
+  "en": "why did lightweight threads pile up after users dropped their live socket connection?"
+ },
+ {
+  "key": "es_mig",
+  "q": "cambio de provedor do noso motor de busca",
+  "en": "swapping our search engine vendor"
+ },
+ {
+  "key": "es_mig",
+  "q": "por que sacamos a busca de produtos do vello clúster de texto completo tan caro?",
+  "en": "why did we move merchandise lookup off the old pricey full-text cluster?"
+ },
+ {
+  "key": "es_bug",
+  "q": "conciliación programada que se executa duplicada",
+  "en": "scheduled reconciliation running duplicated"
+ },
+ {
+  "key": "es_bug",
+  "q": "por que o proceso nocturno de conciliación de extractos bancarios se executaba dúas veces por programación?",
+  "en": "why did the nightly bank statement matching job fire twice per schedule?"
+ },
+ {
+  "key": "es_disc",
+  "q": "truco de b-tree sobre un subconxunto condicional",
+  "en": "conditional subset b-tree trick"
+ },
+ {
+  "key": "es_disc",
+  "q": "como manter rápidas as consultas de compras actuais cando a maioría das filas son históricas?",
+  "en": "how to keep lookups of current purchases fast when most rows are historical?"
+ },
+ {
+  "key": "logs",
+  "q": "formato de diagnósticos lexible por máquina",
+  "en": "machine-readable diagnostics format"
+ },
+ {
+  "key": "logs",
+  "q": "como emitimos os diagnósticos do servidor e os correlacionamos por cada chamada entrante?",
+  "en": "how do we emit server diagnostics and correlate them per incoming call?"
+ },
+ {
+  "key": "healthz",
+  "q": "contedor finalizado mentres se actualizaba o esquema",
+  "en": "container terminated while upgrading schema"
+ },
+ {
+  "key": "healthz",
+  "q": "por que o orquestrador mataba instancias mentres se executaba un paso de DDL longo?",
+  "en": "why did the orchestrator kill instances while a lengthy DDL step ran?"
+ },
+ {
+  "key": "decimal",
+  "q": "sumas de diñeiro que se desvían uns céntimos",
+  "en": "monetary sums wandering by pennies"
+ },
+ {
+  "key": "decimal",
+  "q": "por que os importes do carriño ás veces non cadraban por un céntimo ao sumalos?",
+  "en": "why were cart amounts sometimes off by a penny after adding them?"
+ },
+ {
+  "key": "cors",
+  "q": "a comprobación de orixe cruzada bloqueaba o backoffice",
+  "en": "cross-origin check blocked backoffice"
+ },
+ {
+  "key": "cors",
+  "q": "por que as chamadas preflight do navegador á consola do persoal daban non autorizado?",
+  "en": "why did browser pre-flight calls to the staff console get unauthorized?"
+ },
+ {
+  "key": "hydr",
+  "q": "discrepancia de marcado entre backend e frontend",
+  "en": "backend vs frontend markup disagreement"
+ },
+ {
+  "key": "hydr",
+  "q": "por que a páxina avisaba de diferenzas de marcado ao amosar valores de calendario?",
+  "en": "why did the page warn about markup differences when showing calendar values?"
+ },
+ {
+  "key": "zustand",
+  "q": "elección da biblioteca de contedor de datos do frontend",
+  "en": "frontend data container library choice"
+ },
+ {
+  "key": "zustand",
+  "q": "que contedor de datos lixeiro escollemos en vez do framework de accións e reducers?",
+  "en": "which lightweight data container did we pick over the action-reducer framework?"
+ },
+ {
+  "key": "bundle",
+  "q": "biblioteca de calendario pesada que incha o javascript",
+  "en": "heavy calendar library bloating javascript"
+ },
+ {
+  "key": "bundle",
+  "q": "que reduciu a última vez aproximadamente un terzo o tamaño do script que publicamos?",
+  "en": "what shrank our shipped script size by roughly a third last time?"
+ },
+ {
+  "key": "a11y",
+  "q": "nomes accesibles para elementos clicables con glifo",
+  "en": "accessible names for glyph clickables"
+ },
+ {
+  "key": "a11y",
+  "q": "como nos aseguramos de que as tecnoloxías de apoio lean con sentido os elementos clicables que só teñen un pictograma?",
+  "en": "how do we make sure assistive tech reads pictogram-only clickables meaningfully?"
+ },
+ {
+  "key": "flutterweb",
+  "q": "carga do motor multiplataforma de dart no navegador",
+  "en": "dart cross-platform browser engine payload"
+ },
+ {
+  "key": "flutterweb",
+  "q": "por que a primeira visita ao noso sitio feito con Dart é tan pesada de descargar?",
+  "en": "why is the initial visit to our Dart-built site so heavy to fetch?"
+ },
+ {
+  "key": "csp",
+  "q": "cabeceira de permisos de javascript con tokens dun só uso",
+  "en": "javascript permission header with one-time tokens"
+ },
+ {
+  "key": "csp",
+  "q": "como permitimos javascript incrustado sen debilitar as cabeceiras de protección do navegador?",
+  "en": "how do we permit embedded javascript without weakening browser protection headers?"
+ },
+ {
+  "key": "infinite",
+  "q": "rerender infinito no panel de refinamento",
+  "en": "endless rerender in refinement panel"
+ },
+ {
+  "key": "infinite",
+  "q": "por que a barra lateral de busca se actualizaba soa sen parar?",
+  "en": "why did the lookup sidebar keep updating itself without stopping?"
+ },
+ {
+  "key": "i18n",
+  "q": "ferramentas de formato dos textos de localización",
+  "en": "localization wording format tooling"
+ },
+ {
+  "key": "i18n",
+  "q": "como se localizan os textos da interface e como xestionamos as formas segundo a cantidade?",
+  "en": "how are interface texts localized and how do we handle quantity forms?"
+ },
+ {
+  "key": "sw",
+  "q": "o script proxy offline conservaba marcado obsoleto",
+  "en": "offline proxy script retained outdated markup"
+ },
+ {
+  "key": "sw",
+  "q": "por que aos visitantes lles faltaban ficheiros de script xusto despois de publicar?",
+  "en": "why did visitors get missing script files right after we released?"
+ },
+ {
+  "key": "e2e",
+  "q": "framework de probas de automatización do navegador",
+  "en": "browser automation testing framework"
+ },
+ {
+  "key": "e2e",
+  "q": "que ferramenta executa as nosas suites completas de UI e como iniciamos sesión con cada perfil?",
+  "en": "which tool runs our full UI suites and how do we sign in per persona?"
+ },
+ {
+  "key": "img",
+  "q": "desprazamento do deseño na listaxe de produtos",
+  "en": "layout shift on merchandise listing"
+ },
+ {
+  "key": "img",
+  "q": "por que as miniaturas da tenda facían saltar a páxina mentres cargaba?",
+  "en": "why did the shop thumbnails make the page jump while loading?"
+ },
+ {
+  "key": "es_web",
+  "q": "o formulario de rexistro estragaba os caracteres acentuados",
+  "en": "signup form mangled accented characters"
+ },
+ {
+  "key": "es_web",
+  "q": "por que os nomes con diacríticos chegaban corruptos desde a páxina de rexistro?",
+  "en": "why did names with diacritics arrive garbled from the signup page?"
+ },
+ {
+  "key": "es_dec",
+  "q": "enfoque de implementación do tema nocturno",
+  "en": "night theme implementation approach"
+ },
+ {
+  "key": "es_dec",
+  "q": "como implementamos a aparencia nocturna e lembramos o que escolleu o usuario?",
+  "en": "how did we implement the night appearance and remember what the user picked?"
+ },
+ {
+  "key": "webvitals",
+  "q": "métrica de resposta lenta aos toques",
+  "en": "slow tap responsiveness metric"
+ },
+ {
+  "key": "webvitals",
+  "q": "que facía que os toques se notasen lentos e como se aprazou o código de seguimento?",
+  "en": "what made taps feel laggy and how did tracking code get postponed?"
+ },
+ {
+  "key": "auth_web",
+  "q": "renovación concorrente da sesión entre xanelas do navegador",
+  "en": "concurrent session renewal across browser windows"
+ },
+ {
+  "key": "auth_web",
+  "q": "por que se botaba fóra á xente cando varias xanelas renovaban as credenciais á vez?",
+  "en": "why were people kicked out when several windows renewed credentials together?"
+ },
+ {
+  "key": "forms",
+  "q": "combinación de bibliotecas para validar a entrada de datos",
+  "en": "data entry checking library pairing"
+ },
+ {
+  "key": "forms",
+  "q": "que bibliotecas escollemos para xestionar os valores dos campos e declarar validacións?",
+  "en": "which libraries do we pick to manage field values and declare checks?"
+ },
+ {
+  "key": "fonts",
+  "q": "texto en branco mentres carga a tipografía",
+  "en": "typeface loading blank copy"
+ },
+ {
+  "key": "fonts",
+  "q": "por que o texto quedaba invisible durante segundos mentres se descargaban as tipografías personalizadas?",
+  "en": "why did copy stay unseen for seconds while custom typefaces downloaded?"
+ },
+ {
+  "key": "webp",
+  "q": "elección de formatos de imaxe de nova xeración",
+  "en": "next-gen picture format selection"
+ },
+ {
+  "key": "webp",
+  "q": "que formatos de imaxe comprimida servimos e como se arranxan os clientes antigos?",
+  "en": "which compressed picture formats do we deliver and how do legacy clients cope?"
+ },
+ {
+  "key": "storybook",
+  "q": "catálogo de exhibición de widgets de UI",
+  "en": "UI widget catalog showcase"
+ },
+ {
+  "key": "storybook",
+  "q": "onde exhibimos as pezas visuais e verificamos o seu comportamento ao facer clic?",
+  "en": "where do we showcase visual building blocks and verify their clickable behaviours?"
+ },
+ {
+  "key": "memleak",
+  "q": "subscricións que se acumulan na vista de cartografía",
+  "en": "subscriptions piling up on cartography view"
+ },
+ {
+  "key": "memleak",
+  "q": "por que medraba a RAM cada vez que alguén volvía á pantalla xeográfica?",
+  "en": "why did RAM grow each time someone revisited the geographic screen?"
+ }
+]

@@ -5,6 +5,11 @@ import json, os, subprocess, tempfile, time
 BENCH = os.environ.get("BENCH_STATE") or os.path.join(tempfile.gettempdir(), "leteo-engram-bench")
 ENGRAM = os.environ.get("ENGRAM_BIN", "engram")
 LETEO = os.environ.get("LETEO_BIN", "leteo")
+# The server is started from a directory under BENCH_STATE, so a relative path
+# to the binary stops resolving the moment it is spawned. A bare name is left
+# alone: that is a lookup on PATH, not a path.
+if os.sep in LETEO:
+    LETEO = os.path.abspath(LETEO)
 os.makedirs(BENCH, exist_ok=True)
 
 def engine_cmd(engine, project):

@@ -10,11 +10,32 @@ readme = "README.md"
 keywords = ["memory", "mcp", "agents", "sqlite", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.97"
-# `npm/` is the wrapper that downloads a *released* binary for people who reach
-# for `npx`. Inside the crate tarball it would be a JavaScript program shipped
-# to somebody who already has the source and a compiler, describing a download
-# they have no reason to make.
-exclude = ["npm"]
+# What the crate tarball holds: what builds, and what the tests that ship read.
+#
+# An allowlist rather than `exclude = ["npm"]`, so that what is left out is the
+# default and not the thing somebody remembered to name. Measured, the tarball is
+# 0.85 MB without the banner, the recordings, the docs and the tools, which are
+# nothing a build reads. A build input that lives outside `src/` and
+# `migrations/` has to be added here, or `cargo package` verifies a tree that
+# builds without it and `cargo publish` ships one that does not.
+#
+# `npm/` stays out for the reason it was excluded before: it is the wrapper that
+# downloads a *released* binary for people who reach for `npx`, and inside the
+# crate tarball it would be a JavaScript program shipped to somebody who already
+# has the source and a compiler.
+include = [
+    "/src/**",
+    "/migrations/**",
+    "/openspec/**",
+    "/plugin/**",
+    "/tests/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/NOTICE",
+]
 
 # Where `cargo binstall` finds the release binary, said rather than guessed.
 #

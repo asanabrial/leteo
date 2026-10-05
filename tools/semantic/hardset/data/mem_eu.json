@@ -1,0 +1,202 @@
+[
+ {
+  "key": "pgpool",
+  "title": "Karga handian konexio-pool-a agortzen zen; konponduta",
+  "content": "Kausa nagusia: HTTP handler bakoitzak pgx pool bat irekitzen zuen, bat partekatu beharrean, eta, ondorioz, Postgres max_connections mugara iristen zen ~400 rps-an. Orain pgxpool.Pool bakarra sortzen da main-en, eta injektatu egiten da. Aurreko eta ondorengo egoera staging klusterrean neurtu genituen, zenbakiak runbook-ean idatzi genituen eta erregresio-test bat gehitu genuen, hurrengo refactorizazioak hori isilean desegin ez dezan. Rollback plana commit bakar hori atzera botatzea da; ez dago datu-migraziorik tartean. Jarraipeneko lanak bereiz kudeatzen dira, eta horietako batek ere ez du release-a blokeatzen."
+ },
+ {
+  "key": "jwtrot",
+  "title": "JWT sinadura-gakoak 30 egunean behin txandakatu, kid goiburuarekin",
+  "content": "Erabakia: sinadura-gakoak KMSn gordetzen dira, tokenek kid goiburu bat daramate, eta egiaztatzaileak uneko gakoa eta aurrekoa onartzen ditu 48h-ko gainjartze-leiho batean."
+ },
+ {
+  "key": "ratelimit",
+  "title": "Erabili token bucket bidezko rate limiting-a API gako bakoitzeko Redisen",
+  "content": "Leiho irristakorrak memoria gehiegi kontsumitzen zuen Redisen; Lua script batekin, token bucket-ak birkarga atomikoa ematen du. 100 eskaerako burst-a eta 10/s etengabe API gako bakoitzeko."
+ },
+ {
+  "key": "tzbug",
+  "title": "UTC-5eko erabiltzaileen fakturek egun bat lehenagoko data zuten",
+  "content": "Kausa nagusia: fakturaren data time.Now().Truncate(24h) erabiliz kalkulatzen zen UTCn, eta gero tokiko orduan formateatzen zen. Kontuaren IANA ordu-eremuan data kalkulatuz konpondu da."
+ },
+ {
+  "key": "migr",
+  "title": "Migrazioak append-only dira eta UTC timestamp batekin izendatzen dira",
+  "content": "Ez editatu inoiz dagoeneko argitaratu den migrazio bat. Fitxategi berri bat aldaketa bakoitzeko, 20240101T120000_description.sql izenarekin, eta CIk aplikatutako migrazioen zerrendaren aurka egiaztatzen du."
+ },
+ {
+  "key": "grpcdl",
+  "title": "gRPC deiak betiko geratzen ziren zain, deadline-rik gabe",
+  "content": "Kausa nagusia: context.Background() pasatzen zitzaien downstream gRPC bezeroei, eta, beraz, inbentario-zerbitzua trabatuta geratzean checkout-eko goroutineak mugarik gabe blokeatzen ziren. Orain irteerako dei bakoitzak context.WithTimeout(ctx, 2s) jasotzen du."
+ },
+ {
+  "key": "otel",
+  "title": "OpenTelemetry hartu tracing-erako, Jaeger bezeroaren ordez",
+  "content": "Jaeger-en bezero-liburutegiak zaharkituta daude. OpenTelemetry SDKa OTLP esportatzailearekin, collector sidecar-era; laginketa %5ekoa prod-en eta %100ekoa staging-en."
+ },
+ {
+  "key": "cache",
+  "title": "Produktu-katalogoaren cachearen stampede-a hotzean abiaraztean",
+  "content": "Katalogoaren cachea iraungitzen zenean, ehunka eskaerak aldi berean kalkulatzen zuten berriro. singleflight.Group-ek aldibereko cache-hutsak karga bakar batean biltzen ditu."
+ },
+ {
+  "key": "s3up",
+  "title": "S3ra fitxategi handiak igotzeak huts egiten zuen 5 GBtik gora",
+  "content": "PutObject-ek 5 GBko muga du. Multipart igoeren kudeatzailera aldatu gara, 64 MBko zatiekin eta zati bakoitzeko berriro saiatze batekin."
+ },
+ {
+  "key": "nplus1",
+  "title": "N+1 kontsulta eskaera-historiaren endpointean",
+  "content": "Eskaera-historiak eskaera bakoitzaren lerroak begizta batean kargatzen zituen: 1 + N kontsulta. ANY($1) erabiltzen duen kontsulta bakar batekin eta Go-n taldekatuz ordezkatu da. p95 900ms-tik 60ms-ra."
+ },
+ {
+  "key": "feature",
+  "title": "Feature flag-ak zerbitzarian ebaluatzen dira Unleash-ekin",
+  "content": "Bezero aldeko flag-ek oraindik argitaratu gabeko funtzionalitateen izenak isurtzen zituzten bundle-an. Unleash sidecar gisa exekutatzen da, flag-ak APIan ebaluatzen dira eta bezeroari boolearrak baino ez zaizkio iristen."
+ },
+ {
+  "key": "idemp",
+  "title": "Ordainketa-endpointek Idempotency-Key goiburua eskatzen dute",
+  "content": "Bezero mugikorren berriro saiatzeek kobru bikoiztuak sortzen zituzten. Ordainketako POSTek Idempotency-Key eskatzen dute orain; erantzunak 24h gordetzen dira, gako horren arabera."
+ },
+ {
+  "key": "goroutine",
+  "title": "Goroutine-ihesa websocket hub-ean",
+  "content": "Deskonektatutako bezero bakoitzak goroutine bat uzten zuen blokeatuta, buffer gabeko kanal batera bidali nahian. ctx.Done()-ren gaineko select batekin eta erregistroa kentzean kanala itxiz konpondu da."
+ },
+ {
+  "key": "es_mig",
+  "title": "Erabakia: produktu-bilaketa Meilisearch-era migratzea",
+  "content": "Elasticsearch garestiegia zen 200 mila produktuko indize baterako. Meilisearch-ek akats tipografikoekiko tolerantzia dakar berez, eta p95 latentzia 15 ms-ra jaitsi zen. Berrindexazio osoak lau minutu behar ditu."
+ },
+ {
+  "key": "es_bug",
+  "title": "Konponduta: banku-kontziliazioko cron-a bi aldiz exekutatzen zen",
+  "content": "Kausa nagusia: worker-aren bi errepliketan planifikatzailea aktibo zegoen. Orain cron-ak Postgres advisory lock bat hartzen du exekutatu aurretik; lortzen ez duen erreplika ezer egin gabe irteten da."
+ },
+ {
+  "key": "es_disc",
+  "title": "Aurkikuntza: indize partzialek artxibatutako eskaerak eskaneatzea saihesten dute",
+  "content": "orders taulako errenkaden %90 artxibatuta daude. WHERE archived = false indize partzial batek indizearen tamaina 3 GBtik 280 MBra murriztu zuen, eta eskaera aktiboen kontsultek index-only scan erabiltzen dute."
+ },
+ {
+  "key": "logs",
+  "title": "Log egituratuak slog-ekin eta eskaera-IDekin",
+  "content": "Log guztiak JSON dira log/slog bidez; middleware batek request_id eta user_id injektatzen ditu. Ez erabili fmt.Printf handler-etan."
+ },
+ {
+  "key": "healthz",
+  "title": "Kubernetesek podak berrabiarazten zituen migrazio motelen bitartean",
+  "content": "Liveness probe-ak /healthz deitzen zuen, eta horrek datu-basea egiaztatzen zuen; migrazio luze batek huts eginarazten zion, eta kubelet-ek poda hiltzen zuen migrazioaren erdian. Orain liveness-ak prozesua soilik egiaztatzen du; readiness-ak mendekotasunak egiaztatzen ditu."
+ },
+ {
+  "key": "decimal",
+  "title": "Biribiltze-erroreak diru-totaletan, float64 erabiltzeagatik",
+  "content": "Totalak float64 gisa batzen ziren, eta zentimo bat desbideratzen ziren. Dirua int64 gisa adierazten da orain leku guztietan, unitate txikitan; formatua ertzean ematen zaio."
+ },
+ {
+  "key": "cors",
+  "title": "CORS preflight-ak huts egiten zuen administrazio-panelean",
+  "content": "OPTIONS eskaerak autentifikazio-middlewaretik pasatzen ziren, eta horrek 401 itzultzen zuen CORS goiburuak idatzi aurretik. Orain CORS middlewarea exekutatzen da lehenengo."
+ },
+ {
+  "key": "hydr",
+  "title": "Hydration mismatch-a SSRn datak errendatzeagatik",
+  "content": "Zerbitzariak datak UTCn errendatzen zituen, eta bezeroak nabigatzailearen eskualde-ezarpenetan; ondorioz, React-ek hydration mismatch abisuak jaurtitzen zituen eta zuhaitz osoa berriro errendatzen zuen. Orain datak bezeroan soilik errendatzen dira, useEffect bidezko babes baten barruan."
+ },
+ {
+  "key": "zustand",
+  "title": "Erabili Zustand Reduxen ordez bezeroaren egoerarako",
+  "content": "Reduxen boilerplate-ak funtzionalitate bakoitza moteltzen zuen. Zustand store-ak domeinu bakoitzeko; zerbitzariaren egoera TanStack Query-n geratzen da. Devtools zustand middlewarearen bidez."
+ },
+ {
+  "key": "bundle",
+  "title": "Moment.js-ek bundle nagusiaren 280 KB hartzen zituen",
+  "content": "Bundle analyzer-ak erakutsi zuen moment chunk nagusian zegoela locale guztiekin. date-fns-ekin ordezkatu da, tree-shaking-a onartzen duten importekin; bundle nagusia %31 txikitu da."
+ },
+ {
+  "key": "a11y",
+  "title": "Ikono-botoi orok aria-label bat behar du",
+  "content": "Pantaila-irakurgailuek ikonoa soilik duten botoiak 'button' gisa iragartzen zituzten. jsx-a11y/control-has-associated-label lint arauak hori betearazten du."
+ },
+ {
+  "key": "flutterweb",
+  "title": "Flutter web-en CanvasKit-ek 2 MB gehitzen dizkio lehen kargari",
+  "content": "CanvasKit errendatzaileak 2 MBko wasm bat deskargatzen du lehen kargan. HTML errendatzailea arinagoa da, baina testua beste modu batera neurtzen du; CanvasKit mantentzen dugu eta wasm-a aurrez kargatzen dugu."
+ },
+ {
+  "key": "csp",
+  "title": "Content Security Policy zorrotza nonce-ekin",
+  "content": "Inline script-ak eskaera bakoitzeko nonce batekin soilik onartzen dira. Hirugarrenen analitika proxy bidezko domeinu batetik kargatzen da, politikak zorrotza izaten jarrai dezan."
+ },
+ {
+  "key": "infinite",
+  "title": "Errendatze-begizta amaigabea bilaketa-iragazkietan",
+  "content": "useEffect-a render bakoitzean berriro sortzen zen objektu literal baten mende zegoen, eta, beraz, egoera eguneratzen zuen render bakoitzean. Iragazkien objektua useMemo-rekin memoizatu da."
+ },
+ {
+  "key": "i18n",
+  "title": "Itzulpenak ICU mezuekin kudeatzen dira Lokalisen",
+  "content": "Kodean finkatutako testuek eta kateen kateatzeak pluralak hausten zituzten gaztelaniaz eta polonieraz. ICU MessageFormat nonahi, CIn Lokalisetik sinkronizatuta."
+ },
+ {
+  "key": "sw",
+  "title": "Service worker-ak app shell zaharkitua zerbitzatzen zuen deploy-aren ondoren",
+  "content": "Service worker-ak index.html cache-first moduan gordetzen zuen cachean, eta, beraz, erabiltzaileek bundle zaharraren hash-ak mantentzen zituzten eta 404ak jasotzen zituzten chunk-etan. Orain index.html network-first da, eta SW-ak skipWaiting deitzen du eguneratzean."
+ },
+ {
+  "key": "e2e",
+  "title": "End-to-end testek Playwright erabiltzen dute, rol bakoitzeko fixture-ekin",
+  "content": "Cypress ezegonkorra zen fitxa bat baino gehiagorekin. Playwright-en fixture-ek admin, editor edo viewer gisa hasten dute saioa worker bakoitzeko behin, eta storage state-a berrerabiltzen dute."
+ },
+ {
+  "key": "img",
+  "title": "Produktu-irudiak zabalera-adierazlerik gabe zerbitzatzen ziren",
+  "content": "Lighthouse-k 0.31ko CLSa markatu zuen produktu-sarean. width eta height atributuak eta next/image-ko sizes gehitzeak CLSa 0.02ra jaitsi zuen."
+ },
+ {
+  "key": "es_web",
+  "title": "Konponduta: erregistro-formularioak azentuak galtzen zituen",
+  "content": "Tildedun izenak (José, Begoña) JosÃ© gisa iristen ziren, proxyak Content-Type-a charset gabe berridazten zuelako. charset=utf-8 behartzen da proxyan eta fetch-ean."
+ },
+ {
+  "key": "es_dec",
+  "title": "Erabakia: modu iluna CSS aldagaiekin eta prefers-color-scheme-rekin",
+  "content": "Estilo-orriak bikoiztea baztertu zen. Koloreak :root-eko tokenak dira, prefers-color-scheme: dark azpian birdefinituak, eta erabiltzailearen aukera gordetzen duen etengailu bat dago."
+ },
+ {
+  "key": "webvitals",
+  "title": "INP erregresioak analitika-dei sinkrono batetik zetozen",
+  "content": "Interaction to Next Paint 450 ms-ra igo zen, klik bakoitzak analitika-serializatzaile sinkrono bat exekutatzen zuelako. requestIdleCallback-ekin atzeratu da; INP 120 ms-ra itzuli da."
+ },
+ {
+  "key": "auth_web",
+  "title": "Refresh token-aren race condition batek erabiltzaileen saioa ixten zuen",
+  "content": "Bi fitxak tokena aldi berean berritzen zuten; bigarrenak dagoeneko txandakatutako refresh token bat erabiltzen zuen, baztertu egiten zen eta erabiltzailearen saioa ixten zen. BroadcastChannel bidezko lock bati esker, fitxa bakar batek berritzen du tokena eta emaitza partekatzen du."
+ },
+ {
+  "key": "forms",
+  "title": "Formularioek react-hook-form erabiltzen dute zod eskemekin",
+  "content": "Balidazio-arauak APIaren motekin partekatutako zod eskema batean daude; react-hook-form-ek kudeatzen du egoera. Ez erabili input kontrolaturik formulario handietan."
+ },
+ {
+  "key": "fonts",
+  "title": "Testu ikusezinaren flash-a norberak ostatatutako letra-tipoekin",
+  "content": "Letra-tipoak font-display gabe deklaratzen ziren, eta, beraz, testua ikusezin geratzen zen 3 s arte sare moteletan. font-display: swap eta bi pisu nagusien aurrekarga."
+ },
+ {
+  "key": "webp",
+  "title": "Irudien CDNtik AVIF zerbitzatu, WebP ordezko gisa",
+  "content": "AVIFek %40 aurrezten du JPEGarekin alderatuta produktu-argazkietan; CDNak Accept goiburuaren arabera negoziatzen du eta WebP-ra jotzen du nabigatzaile zaharretarako."
+ },
+ {
+  "key": "storybook",
+  "title": "Osagaiak Storybooken dokumentatzen dira interakzio-testekin",
+  "content": "Atomo eta molekula bakoitzak bere story-a du; play funtzioek egoera interaktiboak estaltzen dituzte eta CIn exekutatzen dira test runner-arekin."
+ },
+ {
+  "key": "memleak",
+  "title": "Memoria-ihesa mapa-orrian, kentzen ez ziren scroll listener-engatik",
+  "content": "Mapa-osagaiak window-eko scroll listener-ak gehitzen zituen muntatzean, eta ez zituen inoiz kentzen; atzera eta aurrera nabigatzean handler-ak pilatzen ziren. Garbiketa efektuaren return-ean."
+ }
+]

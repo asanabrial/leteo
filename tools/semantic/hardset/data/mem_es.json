@@ -1,0 +1,202 @@
+[
+ {
+  "key": "pgpool",
+  "title": "Corregido el agotamiento del pool de conexiones bajo carga",
+  "content": "Causa raíz: cada handler HTTP abría un pool de pgx en lugar de compartir uno, así que Postgres alcanzaba max_connections a unas 400 rps. Ahora se crea un único pgxpool.Pool en main y se inyecta. Medimos el antes y el después en el clúster de staging, anotamos las cifras en el runbook y añadimos un test de regresión para que la próxima refactorización no pueda deshacerlo sin que nadie se dé cuenta. El plan de rollback consiste en revertir ese único commit; no hay ninguna migración de datos implicada. Las tareas de seguimiento se gestionan por separado y ninguna bloquea el release."
+ },
+ {
+  "key": "jwtrot",
+  "title": "Rotar las claves de firma de JWT cada 30 días con la cabecera kid",
+  "content": "Decisión: las claves de firma se guardan en KMS, los tokens llevan una cabecera kid y el verificador acepta la clave actual y la anterior durante una ventana de solapamiento de 48h."
+ },
+ {
+  "key": "ratelimit",
+  "title": "Usar rate limiting con token bucket por API key en Redis",
+  "content": "La ventana deslizante consumía demasiada memoria en Redis; el token bucket con un script de Lua permite una recarga atómica. Ráfagas de 100 peticiones y 10/s sostenidas por API key."
+ },
+ {
+  "key": "tzbug",
+  "title": "Facturas fechadas un día antes para usuarios en UTC-5",
+  "content": "Causa raíz: la fecha de la factura se calculaba con time.Now().Truncate(24h) en UTC y luego se formateaba en hora local. Se corrigió calculando la fecha en la zona horaria IANA de la cuenta."
+ },
+ {
+  "key": "migr",
+  "title": "Las migraciones son append-only y se nombran con un timestamp en UTC",
+  "content": "Nunca se edita una migración que ya se ha desplegado. Un archivo nuevo por cambio, con el nombre 20240101T120000_description.sql, y la CI lo comprueba contra la lista de migraciones aplicadas."
+ },
+ {
+  "key": "grpcdl",
+  "title": "Las llamadas gRPC se quedaban colgadas para siempre sin deadline",
+  "content": "Causa raíz: se pasaba context.Background() a los clientes gRPC de los servicios downstream, así que un servicio de inventario bloqueado dejaba colgadas indefinidamente las goroutines del checkout. Ahora cada llamada saliente recibe context.WithTimeout(ctx, 2s)."
+ },
+ {
+  "key": "otel",
+  "title": "Adoptar OpenTelemetry para el tracing en lugar del cliente de Jaeger",
+  "content": "Las bibliotecas cliente de Jaeger están obsoletas. SDK de OpenTelemetry con exportador OTLP hacia el sidecar del collector; muestreo del 5% en prod y del 100% en staging."
+ },
+ {
+  "key": "cache",
+  "title": "Estampida en la caché del catálogo de productos en el arranque en frío",
+  "content": "Cuando la caché del catálogo expiraba, cientos de peticiones la recalculaban a la vez. singleflight.Group agrupa los fallos de caché concurrentes en una sola carga."
+ },
+ {
+  "key": "s3up",
+  "title": "Las subidas de archivos grandes a S3 fallaban por encima de 5 GB",
+  "content": "PutObject tiene un límite de 5 GB. Se cambió al gestor de subida multipart con partes de 64 MB y un reintento por parte."
+ },
+ {
+  "key": "nplus1",
+  "title": "Consulta N+1 en el endpoint del historial de pedidos",
+  "content": "El historial de pedidos cargaba las líneas de cada pedido dentro de un bucle: 1 + N consultas. Se sustituyó por una única consulta con ANY($1) y agrupación en Go. p95 de 900ms a 60ms."
+ },
+ {
+  "key": "feature",
+  "title": "Feature flags evaluados en el servidor con Unleash",
+  "content": "Los flags del lado del cliente filtraban en el bundle los nombres de funcionalidades aún no publicadas. Unleash se ejecuta como sidecar, los flags se evalúan en la API y al cliente solo llegan booleanos."
+ },
+ {
+  "key": "idemp",
+  "title": "Los endpoints de pago exigen una cabecera Idempotency-Key",
+  "content": "Los reintentos de los clientes móviles generaban cobros duplicados. Los POST de pago ahora exigen Idempotency-Key; las respuestas se guardan durante 24h indexadas por esa clave."
+ },
+ {
+  "key": "goroutine",
+  "title": "Fuga de goroutines en el hub de websockets",
+  "content": "Cada cliente desconectado dejaba una goroutine bloqueada en un envío a un canal sin búfer. Se corrigió con un select sobre ctx.Done() y cerrando el canal al dar de baja el cliente."
+ },
+ {
+  "key": "es_mig",
+  "title": "Decisión: migrar la búsqueda de productos a Meilisearch",
+  "content": "Elasticsearch costaba demasiado para un índice de 200 mil productos. Meilisearch da tolerancia a errores tipográficos de serie y la latencia p95 bajó a 15 ms. La reindexación completa tarda cuatro minutos."
+ },
+ {
+  "key": "es_bug",
+  "title": "Corregido: el cron de conciliación bancaria se ejecutaba dos veces",
+  "content": "Causa raíz: dos réplicas del worker tenían el planificador activo. Ahora el cron toma un advisory lock de Postgres antes de ejecutar; la réplica que no lo obtiene sale sin hacer nada."
+ },
+ {
+  "key": "es_disc",
+  "title": "Descubrimiento: los índices parciales evitan escanear pedidos archivados",
+  "content": "El 90% de las filas de orders están archivadas. Un índice parcial WHERE archived = false redujo el tamaño del índice de 3 GB a 280 MB y las consultas de pedidos activos usan index-only scan."
+ },
+ {
+  "key": "logs",
+  "title": "Logging estructurado con slog e IDs de petición",
+  "content": "Todos los logs son JSON a través de log/slog; un middleware inyecta request_id y user_id. Nada de fmt.Printf en los handlers."
+ },
+ {
+  "key": "healthz",
+  "title": "Kubernetes reiniciaba los pods durante migraciones lentas",
+  "content": "La liveness probe consultaba /healthz, que comprobaba la base de datos; una migración larga hacía que fallara y el kubelet mataba el pod a mitad de la migración. Ahora la liveness solo comprueba el proceso; la readiness comprueba las dependencias."
+ },
+ {
+  "key": "decimal",
+  "title": "Errores de redondeo en los totales monetarios por usar float64",
+  "content": "Los totales se sumaban como float64 y se desviaban un céntimo. El dinero ahora se representa como int64 en unidades menores en todas partes; el formateo se hace en el borde."
+ },
+ {
+  "key": "cors",
+  "title": "Fallaba el preflight de CORS en el panel de administración",
+  "content": "Las peticiones OPTIONS pasaban por el middleware de autenticación, que devolvía 401 antes de escribir las cabeceras CORS. Ahora el middleware de CORS se ejecuta primero."
+ },
+ {
+  "key": "hydr",
+  "title": "Hydration mismatch por el renderizado de fechas en SSR",
+  "content": "El servidor renderizaba las fechas en UTC y el cliente en la configuración regional del navegador, así que React lanzaba avisos de hydration mismatch y volvía a renderizar todo el árbol. Ahora las fechas se renderizan solo en el cliente, detrás de una guarda con useEffect."
+ },
+ {
+  "key": "zustand",
+  "title": "Usar Zustand en lugar de Redux para el estado del cliente",
+  "content": "El boilerplate de Redux ralentizaba cada funcionalidad. Stores de Zustand por dominio; el estado del servidor se queda en TanStack Query. Devtools mediante el middleware de zustand."
+ },
+ {
+  "key": "bundle",
+  "title": "Moment.js ocupaba 280 KB del bundle principal",
+  "content": "El bundle analyzer mostró moment con todos sus locales en el chunk principal. Se sustituyó por date-fns con imports compatibles con tree-shaking; el bundle principal se redujo un 31%."
+ },
+ {
+  "key": "a11y",
+  "title": "Todo botón con icono necesita un aria-label",
+  "content": "Los lectores de pantalla anunciaban los botones que solo tienen icono como 'button'. La regla de lint jsx-a11y/control-has-associated-label lo hace obligatorio."
+ },
+ {
+  "key": "flutterweb",
+  "title": "CanvasKit en Flutter web añade 2 MB a la primera carga",
+  "content": "El renderizador CanvasKit descarga un wasm de 2 MB en la primera carga. El renderizador HTML es más ligero, pero mide el texto de forma distinta; mantenemos CanvasKit y precargamos el wasm."
+ },
+ {
+  "key": "csp",
+  "title": "Content Security Policy estricta con nonces",
+  "content": "Los scripts inline solo se permiten con un nonce por petición. La analítica de terceros se carga a través de un dominio con proxy para que la política siga siendo estricta."
+ },
+ {
+  "key": "infinite",
+  "title": "Bucle infinito de re-renderizados en los filtros de búsqueda",
+  "content": "El useEffect dependía de un objeto literal que se recreaba en cada render, así que actualizaba el estado en cada render. Se memoizó el objeto de filtros con useMemo."
+ },
+ {
+  "key": "i18n",
+  "title": "Traducciones gestionadas con mensajes ICU en Lokalise",
+  "content": "Los textos fijos en el código y la concatenación de cadenas rompían los plurales en español y en polaco. ICU MessageFormat en todas partes, sincronizado desde Lokalise en la CI."
+ },
+ {
+  "key": "sw",
+  "title": "El service worker servía un app shell obsoleto tras el deploy",
+  "content": "El service worker cacheaba index.html con cache-first, así que los usuarios seguían con los hashes del bundle antiguo y recibían 404 en los chunks. Ahora index.html es network-first y el SW llama a skipWaiting al actualizarse."
+ },
+ {
+  "key": "e2e",
+  "title": "Los tests end-to-end usan Playwright con fixtures por rol",
+  "content": "Cypress era inestable con varias pestañas. Las fixtures de Playwright inician sesión como admin, editor o viewer una vez por worker y reutilizan el storage state."
+ },
+ {
+  "key": "img",
+  "title": "Las imágenes de producto se servían sin indicaciones de ancho",
+  "content": "Lighthouse marcó un CLS de 0.31 en la cuadrícula de productos. Añadir los atributos width y height, junto con sizes en next/image, bajó el CLS a 0.02."
+ },
+ {
+  "key": "es_web",
+  "title": "Corregido: el formulario de registro perdía los acentos",
+  "content": "Los nombres con tildes (José, Begoña) llegaban como JosÃ© porque el proxy reescribía el Content-Type sin charset. Se fuerza charset=utf-8 en el proxy y en el fetch."
+ },
+ {
+  "key": "es_dec",
+  "title": "Decisión: modo oscuro con variables CSS y prefers-color-scheme",
+  "content": "Se descartó duplicar hojas de estilo. Los colores son tokens en :root, redefinidos bajo prefers-color-scheme: dark, con un interruptor que guarda la elección del usuario."
+ },
+ {
+  "key": "webvitals",
+  "title": "Las regresiones de INP venían de una llamada síncrona de analítica",
+  "content": "El Interaction to Next Paint subió a 450 ms porque cada clic ejecutaba un serializador de analítica síncrono. Se aplazó con requestIdleCallback; el INP volvió a 120 ms."
+ },
+ {
+  "key": "auth_web",
+  "title": "Una condición de carrera con el refresh token cerraba la sesión de los usuarios",
+  "content": "Dos pestañas refrescaban el token a la vez; la segunda usaba un refresh token ya rotado, que se rechazaba, y se cerraba la sesión del usuario. Un lock con BroadcastChannel permite que una sola pestaña refresque el token y comparta el resultado."
+ },
+ {
+  "key": "forms",
+  "title": "Los formularios usan react-hook-form con esquemas de zod",
+  "content": "Las reglas de validación viven en un esquema de zod compartido con los tipos de la API; react-hook-form gestiona el estado. Nada de inputs controlados en formularios grandes."
+ },
+ {
+  "key": "fonts",
+  "title": "Flash de texto invisible con las fuentes autoalojadas",
+  "content": "Las fuentes se declaraban sin font-display, así que el texto permanecía invisible hasta 3 s en redes lentas. font-display: swap y precarga de los dos pesos principales."
+ },
+ {
+  "key": "webp",
+  "title": "Servir AVIF con WebP como alternativa desde el CDN de imágenes",
+  "content": "AVIF ahorra un 40% frente a JPEG en las fotos de producto; el CDN negocia según la cabecera Accept y recurre a WebP en los navegadores antiguos."
+ },
+ {
+  "key": "storybook",
+  "title": "Los componentes se documentan en Storybook con tests de interacción",
+  "content": "Cada átomo y cada molécula tiene su story; las play functions cubren los estados interactivos y se ejecutan en la CI con el test runner."
+ },
+ {
+  "key": "memleak",
+  "title": "Fuga de memoria por listeners de scroll que no se eliminaban en la página del mapa",
+  "content": "El componente del mapa añadía listeners de scroll a window al montarse y nunca los eliminaba; al navegar hacia atrás y hacia delante se acumulaban los handlers. Limpieza en el return del efecto."
+ }
+]

@@ -254,6 +254,18 @@ duties about what an answer explains.
     directory's project. The reply is the same outcome the tool serialises, with
     `sources` naming the ids that were replaced.
 
+15. **`leteo search` goes on to look by meaning when the words cannot answer,
+    and says so.** It asks the same search `mem_search` asks, with the stage on
+    unless the `semantic_search` setting beside the database says `false`
+    ([`search.md`](search.md) §15). A result the stage added carries
+    `"semantic": true` in the JSON on stdout, and stderr carries the sentence
+    `mem_search` answers with — that such a result may contain none of the words
+    asked for — in the place the relaxed-answer sentence would be. There is no
+    flag: the setting is the switch, and it is read on every search, so editing
+    the file takes effect on the next command. The first search that reaches the
+    stage on a store embeds what is in scope, which takes about half a second per
+    four thousand memories and is paid once.
+
 ## Invariants
 
 - Every documented command exists, and every command is documented. A test in

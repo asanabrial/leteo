@@ -60,7 +60,7 @@ differs from them.
 | `build_model.py` | convert, truncate, quantise, prune; prints and checks the SHA-256 of the output |
 | `checksums.json` | what each input and output hashes to, and what they were built from |
 | `requirements.txt` | the versions it was built with |
-| `hardset/` | the hard evaluation set, and the bootstrap evaluator — see its README |
+| `hardset/` | the hard evaluation set, and `check_sets.py`, which verifies it |
 
 The tokenizer is stored as `assets/model/tokenizer.json.gz`, deterministic gzip made by
 [`pack_gz.py`](pack_gz.py) (level 9, no name, zero mtime), because 843 KB of one-line JSON
@@ -69,5 +69,9 @@ is neither reviewable nor small. `checksums.json` records the stored bytes and, 
 another zlib may write other valid bytes for the same vocabulary. To read it:
 `gzip -dc assets/model/tokenizer.json.gz`.
 
-The weights are not a Cargo input: `cargo build` reads `assets/model/` as it
-finds it, and nothing in the build runs Python.
+The weights are a Cargo input: `src/semantic.rs` reads the three files with
+`include_bytes!`, so changing a byte under `assets/model/` rebuilds the binary,
+and the crate allowlist ships the directory. Nothing in the build runs Python. When the
+bytes change, `MODEL_ID` in `src/semantic.rs` changes with them: it is written beside
+every stored vector, and a vector from another model is found stale and made again.
+The model's licence text is `LICENSES/Apache-2.0.txt`, named in `NOTICE`.

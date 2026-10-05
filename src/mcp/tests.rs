@@ -3912,6 +3912,10 @@ fn no_sentence_an_agent_reads_carries_the_source_it_was_written_in() {
             crate::mcp::output::PARTIAL_MATCH_HINT.to_owned(),
         ),
         (
+            "semantic match hint",
+            crate::mcp::output::SEMANTIC_MATCH_HINT.to_owned(),
+        ),
+        (
             "nothing extracted hint",
             crate::mcp::output::NOTHING_EXTRACTED_HINT.to_owned(),
         ),
@@ -4708,6 +4712,83 @@ fn an_empty_search_says_whether_the_words_or_the_directory_emptied_it() {
         "a question that comes back empty either way is not a directory problem: {hint:?}"
     );
     assert!(hint.contains("Full-text search"), "{hint:?}");
+}
+
+/// `mem_search` reaches the semantic stage through the setting, labels what it
+/// finds, and the retry that counts "elsewhere" runs the stage as well — so the
+/// number it reports is the number `all_projects` would return, which is the
+/// promise the sentence makes.
+#[test]
+fn mem_search_labels_what_was_found_by_meaning_and_the_setting_turns_it_off() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::open(crate::store::StoreConfig::new(temp.path().join("mcp.db"))).unwrap();
+    store
+        .create_session("s1", "otro-proyecto", "C:/otro")
+        .unwrap();
+    store
+        .add_observation(crate::memory::model::AddObservation {
+            session_id: "s1".to_owned(),
+            kind: "decision".to_owned(),
+            title: "Rotate JWT signing keys every 30 days with kid header".to_owned(),
+            content: "Signing keys live in KMS and tokens carry a kid header.".to_owned(),
+            tool_name: None,
+            project: Some("otro-proyecto".to_owned()),
+            scope: "project".to_owned(),
+            topic_key: None,
+            prompt_sync_id: None,
+        })
+        .unwrap();
+    let server = LeteoMcpServer::with_options(
+        Arc::new(Mutex::new(store)),
+        McpOptions {
+            default_project: Some("leteo".to_owned()),
+            ..McpOptions::default()
+        },
+    );
+    let ask = |all_projects: bool| {
+        let Json(output) = server
+            .mem_search(Parameters(SearchParams {
+                query: "rotación de las claves de firma".to_owned(),
+                kind: None,
+                project: None,
+                all_projects,
+                scope: None,
+                limit: None,
+                match_mode: MatchMode::default(),
+            }))
+            .unwrap();
+        output
+    };
+
+    let everywhere = ask(true);
+    assert_eq!(everywhere.count, 1);
+    assert!(everywhere.results[0].semantic, "{:?}", everywhere.results);
+    assert_eq!(
+        everywhere.hint.as_deref(),
+        Some(crate::mcp::output::SEMANTIC_MATCH_HINT)
+    );
+
+    let here = ask(false);
+    assert_eq!(here.count, 0, "the memory is in another project");
+    let hint = here.hint.unwrap_or_default();
+    assert!(
+        hint.contains("elsewhere") && hint.contains("all_projects"),
+        "the retry runs the stage, so it finds what `all_projects` would: {hint:?}"
+    );
+
+    let database = server.lock_store().unwrap().database_path().to_owned();
+    std::fs::write(
+        database.parent().unwrap().join("settings.json"),
+        r#"{"semantic_search": false}"#,
+    )
+    .unwrap();
+    let off = ask(true);
+    assert_eq!(off.count, 0, "the setting is read on every search");
+    assert!(
+        off.hint.unwrap_or_default().contains("Full-text search"),
+        "and an empty answer is the lexical one"
+    );
 }
 
 #[test]

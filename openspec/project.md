@@ -30,7 +30,8 @@ enforced in only one of them is a rule that does not exist — see
 ```text
 src/
   store/       the database: schema, migrations, queries, diagnostics
-    search.rs      three-stage full-text search and ranking
+    search.rs      the lexical stages, their fusion, and the ranking
+    semantic_stage.rs  the semantic stage: vectors kept, read and merged
     schema.rs      the shape every database converges on, and the migrations
     diagnostics.rs doctor's checks and its repairs
     wire.rs        the replicated write paths, mirroring the local ones
@@ -42,9 +43,11 @@ src/
   hooks/       the five lifecycle events, their budgets, and what they emit
   cli/         the command-line surface
   recall/…     recall.rs, the opening context an agent is handed
+  semantic.rs  the embedded model the semantic search stage reads, and its constants
   sync/, cloud/  optional replication to a PostgreSQL peer
   setup/, tui/   installing into an agent, and the interactive configuration
 migrations/    the SQL, embedded at build time; never edited once released
+assets/model/  the embedding model compiled into the binary (tools/semantic/ rebuilds it)
 tests/         integration tests that run the built binary
 openspec/      these documents
 ```

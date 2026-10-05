@@ -1352,6 +1352,18 @@ fn doctor_repairs_a_full_text_index_that_has_gone_empty() {
     // directly, so a title word would still find the memory with both indexes
     // wiped — right for that stage, wrong as a probe of the index. `returned`
     // is in the body, where only the index can reach it.
+    //
+    // And the semantic stage switched off, for the same reason one level up: it
+    // reads vectors, not the index, so with it on this memory is found by
+    // meaning and the probe stops measuring the thing it is here to measure.
+    std::fs::write(
+        database
+            .parent()
+            .expect("the store's directory")
+            .join("settings.json"),
+        r#"{"semantic_search": false}"#,
+    )
+    .expect("turn the semantic stage off");
     let empty = run_json(
         leteo(&database)
             .arg("search")
@@ -1801,4 +1813,53 @@ fn the_consolidate_command_merges_and_hides_the_sources() {
             .any(|result| result["title"] == json!("The merged decision")),
         "the replacement is found: {found}"
     );
+}
+
+/// `leteo search` finds by meaning when the words find nothing, marks what it
+/// found and says so on stderr, and the settings file beside the database is
+/// what turns it off. Driven through the binary because the setting is read by
+/// the command and not by the store.
+#[test]
+fn search_goes_on_to_meaning_unless_the_setting_says_not_to() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("semantic.db");
+    leteo(&database)
+        .arg("save")
+        .arg("Rotate JWT signing keys every 30 days with kid header")
+        .arg("Signing keys live in KMS and tokens carry a kid header.")
+        .arg("--project")
+        .arg("alpha")
+        .assert()
+        .success();
+
+    let ask = |database: &Path| {
+        let mut command = leteo(database);
+        command
+            .arg("search")
+            .arg("rotación de las claves de firma")
+            .arg("--project")
+            .arg("alpha");
+        let output = command.assert().success().get_output().clone();
+        (
+            serde_json::from_slice::<Value>(&output.stdout).expect("CLI stdout is JSON"),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    let (found, said) = ask(&database);
+    assert_eq!(found.as_array().map(Vec::len), Some(1), "{found}");
+    assert_eq!(found[0]["semantic"], json!(true), "{found}");
+    assert!(
+        said.contains("found by meaning"),
+        "the line a person reads says why a result may not contain their words: {said}"
+    );
+
+    std::fs::write(
+        temp.path().join("settings.json"),
+        r#"{"semantic_search": false}"#,
+    )
+    .expect("turn the stage off");
+    let (found, said) = ask(&database);
+    assert_eq!(found.as_array().map(Vec::len), Some(0), "{found}");
+    assert!(!said.contains("by meaning"), "{said}");
 }

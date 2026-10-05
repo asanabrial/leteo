@@ -637,6 +637,10 @@ impl Wizard {
             // Writing the resolved value back would turn "follow the machine"
             // into "the machine's language the day this was installed", pinned
             // by a flow that no longer even asks the question.
+            // The two the wizard has no screen for are carried over as they
+            // are on disk. Dropping one would turn a setting somebody made by
+            // hand back into its default the next time they walk the wizard.
+            let on_disk = crate::settings::load(data_dir);
             let settings = crate::settings::Settings {
                 voice: self.voice,
                 language: self.language.clone(),
@@ -646,7 +650,8 @@ impl Wizard {
                 // as that changes. Writing what it resolves to today would pin
                 // the voice to a language nobody chose for it.
                 voice_language: self.voice_language,
-                context_size: crate::settings::load(data_dir).context_size,
+                context_size: on_disk.context_size,
+                semantic_search: on_disk.semantic_search,
             };
             match crate::settings::save(data_dir, &settings) {
                 Ok(()) => {

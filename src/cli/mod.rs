@@ -484,6 +484,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     MatchMode::All => SearchMode::All,
                     MatchMode::Any => SearchMode::Any,
                 },
+                semantic: crate::settings::load_beside(store.database_path()).semantic_search(),
             };
             let cap = store.max_search_results();
             let (found, more, corrections) =
@@ -551,6 +552,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                     "leteo search: {}",
                     crate::mcp::corrected_terms_hint(&corrections)
                 );
+            } else if found.iter().any(|result| result.semantic) {
+                eprintln!("leteo search: {}", crate::mcp::SEMANTIC_MATCH_HINT);
             } else if found.iter().any(|result| result.partial) {
                 eprintln!("leteo search: {}", crate::mcp::PARTIAL_MATCH_HINT);
             } else if more && found.len() >= cap {

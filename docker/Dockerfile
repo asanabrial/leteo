@@ -24,6 +24,10 @@ COPY src ./src
 # something this repository's history can show, and CI now builds this image on
 # every pull request.
 COPY migrations ./migrations
+# And the embedding model, for the same reason: `src/semantic.rs` reads it with
+# `include_bytes!`, so it is a build input and a missing directory fails the
+# build at that line.
+COPY assets/model ./assets/model
 RUN cargo build --release --locked --bin leteo
 
 FROM debian:bookworm-slim AS runtime
@@ -35,6 +39,8 @@ RUN apt-get update \
 
 COPY --from=build /src/target/release/leteo /usr/local/bin/leteo
 COPY LICENSE NOTICE /usr/share/doc/leteo/
+# The model inside the binary is Apache-2.0, whose text NOTICE points at.
+COPY LICENSES /usr/share/doc/leteo/LICENSES
 
 USER leteo
 WORKDIR /home/leteo

@@ -4,6 +4,22 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **A search the words cannot answer now goes on to look by meaning.** A seventh
+  stage, after the six lexical ones, finds a memory that shares no word with the
+  question — a paraphrase, or the same question in another language — using a static
+  embedding model compiled into the binary: no network, no server, nothing leaves
+  the machine. On an empty answer it speaks only above a cosine of 0.30; on the weakest
+  lexical answer (`nearest`) it is merged in by rank. A result it adds is marked
+  `semantic`, and the page says why once. On the engram-bench corpus overall MRR goes
+  from .835 to .887 and empty answers from 9 to 3 with no kind falling; on a set of
+  2,028 LLM-generated questions that do not use their target's words it adds .101 MRR
+  [.088, .114]. It costs 15 MB of binary (30.2 MB, against a 50 MB bound)
+  and about 100 MB of memory while it runs. Turn it off with `"semantic_search": false`
+  in `settings.json`. Basque is the weak language: the model was not trained on it
+  (#124).
+
 ### Changed
 
 - **The opening block and `mem_context` had no size bound.** They were bounded by a

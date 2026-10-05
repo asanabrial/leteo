@@ -12,6 +12,7 @@ mod relations;
 mod replication;
 mod schema;
 mod search;
+mod semantic;
 mod sessions;
 mod versions;
 
@@ -171,6 +172,10 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "content",
             "replaced_at",
         ],
+    ),
+    (
+        "observation_vectors",
+        &["observation_id", "model", "source_key", "vector"],
     ),
 ];
 

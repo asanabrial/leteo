@@ -1029,6 +1029,8 @@ mod projects;
 
 mod relations;
 
+mod semantic_stage;
+
 mod replication;
 
 mod diagnostics;

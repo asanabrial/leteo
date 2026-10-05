@@ -29,6 +29,10 @@ tokenizer vocabulary and the table rows are pruned to the pieces used by the
 languages Leteo supports. tools/semantic/ rebuilds those files from the
 original, and tools/semantic/checksums.json records what each one hashes to.
 
+The model is compiled into the leteo binary, so every copy of the binary carries
+it. The full text of the Apache License, Version 2.0 is in
+LICENSES/Apache-2.0.txt, which ships with the source and in the crate.
+
 Rust dependency notices and source links are generated in
 THIRD_PARTY_LICENSES.html from Cargo.lock. Leteo does not modify the MPL-2.0
 dependency sources distributed through crates.io.

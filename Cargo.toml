@@ -12,12 +12,11 @@ categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.97"
 # What the crate tarball holds: what builds, and what the tests that ship read.
 #
-# An allowlist rather than `exclude = ["npm"]`, so that what is left out is the
-# default and not the thing somebody remembered to name. Measured, the tarball is
-# 0.85 MB without the banner, the recordings, the docs and the tools, which are
-# nothing a build reads. A build input that lives outside `src/` and
-# `migrations/` has to be added here, or `cargo package` verifies a tree that
-# builds without it and `cargo publish` ships one that does not.
+# An allowlist rather than `exclude = ["npm"]`, because the tarball is limited
+# by crates.io to 10 MB and the embedded model is 9.8 MB of that compressed.
+# Everything that is not needed to build was already costing space it no longer
+# has: measured, the tarball is 0.85 MB without the banner, the recordings,
+# the docs and the tools, and the model brings it to about 10 MB.
 #
 # `npm/` stays out for the reason it was excluded before: it is the wrapper that
 # downloads a *released* binary for people who reach for `npx`, and inside the
@@ -26,6 +25,7 @@ rust-version = "1.97"
 include = [
     "/src/**",
     "/migrations/**",
+    "/assets/model/**",
     "/openspec/**",
     "/plugin/**",
     "/tests/**",
@@ -46,6 +46,7 @@ include = [
     "/README.md",
     "/CHANGELOG.md",
     "/LICENSE",
+    "/LICENSES/**",
     "/NOTICE",
 ]
 
@@ -92,6 +93,19 @@ flate2 = "1.1.5"
 futures-util = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 hex = "0.4.3"
 hmac = "0.13.0"
+# The semantic search stage: a static embedding model, which is a table lookup
+# and an average, so this is the whole of "in-process inference" — no ONNX, no
+# native runtime, no network, no shell-out.
+#
+# `default-features = false` is the point. The defaults pull `hf-hub` and
+# `ureq`, an HTTP client whose only job here would be to download a model the
+# binary already carries, and `onig`, a C regex library for a tokenizer that
+# `fancy-regex` serves in pure Rust. `local-only` is the feature that says so.
+# Measured on a patched clone with the model linked in: the release binary goes
+# from 15.63 MB to 30.60 MB, of which the model is 13.4 and this dependency the
+# rest; `openspec/specs/search.md` §15 has the account and the 50 MB bound that
+# `scripts/check-binary-size.sh` enforces.
+model2vec-rs = { version = "0.3.0", default-features = false, features = ["fancy-regex", "local-only"] }
 rand = "0.10.2"
 ratatui = "0.30.2"
 regex = "1.12.2"

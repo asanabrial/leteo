@@ -297,16 +297,24 @@ duties about what an answer explains.
     Without `--yes`, `uninstall` is the preview: nothing is touched and `model_files` lists what would go, by the
     same rule. `scripts/uninstall.sh` and `uninstall.ps1` repeat the removal by
     name for a binary that is gone or could not start, and leave the model files
-    to the binary whenever it ran, whatever it exited with. Could not start is
-    exit 126 or 127 in the shell script and an exception from the call in the
-    PowerShell one; any other exit, or an exception after the call began, means
-    the binary judged the model. A directory they keep is reported as kept,
+    to the binary whenever it ran, whatever it exited with. Ran is decided by
+    the line `leteo uninstall: started`, which `uninstall --yes` prints on
+    stderr before it judges any model file (`setup::UNINSTALL_STARTED`; a test
+    keeps both scripts' copies equal to it), and not by an exit code or an
+    exception type: dash re-runs an exec that failed with ENOEXEC as a script,
+    and exits 2 or 0 without the binary having run. No line means it could not
+    start, and a line means the binary judged the model, whatever came after. A
+    binary from before the line existed therefore reads as one that could not
+    start. A directory they keep is reported as kept,
     with the binary's report as the reason, not as holding strangers, and only
     when there was a report. Both scripts retry the data files by name whenever
     the binary did not finish with exit 0, which undoes no judgment because the
     binary and the scripts name those files identically.
     `tools/semantic/check_install.sh` runs both scripts behind a binary that
-    ran, kept a file and failed, and behind one that cannot start.
+    ran, kept a file and failed, behind one that started and failed before
+    removing anything, and behind one that cannot start; the shell script also
+    behind an executable that is no program, under dash where it is installed.
+    The PowerShell flows need `pwsh`, and without it the check exits 2.
 
 ## Invariants
 

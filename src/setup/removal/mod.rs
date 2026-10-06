@@ -33,6 +33,14 @@ pub struct Removal {
     pub remaining: Vec<String>,
 }
 
+/// The first thing `uninstall --yes` says on stderr, before it judges any model
+/// file. `scripts/uninstall.sh` and `uninstall.ps1` look for this line to learn
+/// that the binary started, because a shell's exit code cannot: under dash an
+/// exec that fails with ENOEXEC is re-run as a script and exits 2, which is
+/// indistinguishable from the binary failing. `tests/uninstall_marker.rs` keeps
+/// the scripts' copies of the text equal to this one.
+pub const UNINSTALL_STARTED: &str = "leteo uninstall: started";
+
 impl Removal {
     pub fn complete(&self) -> bool {
         self.agents.iter().all(|agent| agent.error.is_none())

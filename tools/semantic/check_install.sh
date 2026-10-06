@@ -11,12 +11,16 @@
 # `doctor`, and then removes Leteo three ways -- `leteo uninstall --yes`,
 # `uninstall.sh` with the binary there, and `uninstall.sh` with the binary gone --
 # and asserts that no model file or directory it created is left, and that
-# `share/` is.
+# `share/` is. Then it puts both uninstall scripts behind binaries that ran and
+# failed, and behind ones that cannot start, and asserts that the model a binary
+# judged is never taken by name.
 #
-# Unix only, by `install.sh`'s own limit. `install.ps1` is not covered here. The
-# npm wrapper is, in the last section: it is served over a local HTTPS endpoint
-# with a certificate made for the run, and it needs `node` and `openssl` and
-# `python3`, whose absence is a check that could not run and not a pass.
+# The npm wrapper is next: it is served over a local HTTPS endpoint with a
+# certificate made for the run, and it needs `node` and `openssl` and `python3`,
+# whose absence is a check that could not run and not a pass. `uninstall.ps1` is
+# last, and needs `pwsh`; without it that section is reported as not run, after
+# everything before it has. `install.sh` limits the rest to Unix, and
+# `install.ps1` is not covered here.
 #
 # Nothing touches the real home or store, and the way that is guaranteed is not
 # a list of what to unset. Every command runs under `env -i`, so the only things
@@ -73,6 +77,7 @@ else
 fi
 
 failed=0
+ps1_skipped=0
 check() {
     # check <description> <command...>
     description="$1"; shift
@@ -204,40 +209,44 @@ check "and so are the data files, which nothing else is left to remove" store_go
 check "the model is removed by name, as for a binary that is gone" none_left "$P"
 check "and the message does not cite a report that was never printed" not cites_a_report
 
-echo "-- uninstall.ps1, where PowerShell is available, behind the same two binaries"
-command -v pwsh >/dev/null 2>&1 || { echo "install check could not run: the uninstall.ps1 flow needs pwsh" >&2; exit 2; }
-# The model beside the executable, which is where uninstall.ps1 looks, and a
-# Linux binary under the name Windows gives it: PowerShell runs it as it is.
-windows_layout() {
-    mkdir -p "$1/bin"
-    cp "$BINARY" "$1/bin/leteo.exe"
-    cp -R assets/model "$1/bin/model"
-}
-run_ps1() {
-    isolated LETEO_INSTALL_DIR="$1/bin" pwsh -NoProfile -NonInteractive -File scripts/uninstall.ps1 -Yes >"$ROOT/uninstall.log" 2>&1 \
-        || { cat "$ROOT/uninstall.log"; failed=1; }
-}
-cites_a_report_ps1() { grep -q "the report from leteo uninstall above" "$ROOT/uninstall.log"; }
+# `ran` is decided by what the binary said, and not by the shell's exit code. An
+# executable that is not a program for this machine is answered with 126 or 127
+# by bash, but dash re-runs it as a script on ENOEXEC: with no `#!` line and a
+# body that says `exit 2`, that is a "binary" that exits 2 having judged
+# nothing, and with `exit 0` one that looks like a success.
+UNINSTALL_SH="sh"
+command -v dash >/dev/null 2>&1 && UNINSTALL_SH="dash"
+for fixture_exit in 2 0; do
+    echo "-- uninstall.sh under $UNINSTALL_SH behind an executable that is no program and exits $fixture_exit"
+    P="$ROOT/e$fixture_exit"
+    install_into "$P"
+    printf 'exit %s\n' "$fixture_exit" > "$P/bin/leteo"
+    chmod +x "$P/bin/leteo"
+    seed_store
+    isolated LETEO_INSTALL_DIR="$P/bin" "$UNINSTALL_SH" "$P/bin/uninstall.sh" --yes >"$ROOT/uninstall.log" 2>&1 || { cat "$ROOT/uninstall.log"; failed=1; }
+    check "the data files are removed by name" store_gone
+    check "the model is removed by name, as for a binary that is gone" none_left "$P"
+    check "and the message does not cite a report that was never printed" not cites_a_report
+done
 
-P="$ROOT/f"
-windows_layout "$P"
-plant_in "$P/bin/model"
-fail_an_agent
-run_ps1 "$P"
-heal_the_agent
-check "ps1: the binary exited non-zero" grep -q "leteo uninstall exited with" "$ROOT/uninstall.log"
-check "ps1: the file whose hash is not its pin survived" planted_survived "$P/bin/model"
-check "ps1: and the message cites the report" cites_a_report_ps1
+# A stand-in for a binary that started, said so, and then failed without doing
+# any of the removal itself, so what the script removes afterwards is the
+# script's own doing and not the binary's.
+ran_and_failed() {
+    printf '#!/bin/sh\n[ "$1" != uninstall ] || echo "leteo uninstall: started" >&2\nexit 1\n' > "$1"
+    chmod +x "$1"
+}
 
-P="$ROOT/g"
-windows_layout "$P"
-printf '#!/nonexistent-interpreter\n' > "$P/bin/leteo.exe"
-chmod +x "$P/bin/leteo.exe"
+echo "-- uninstall.sh behind a binary that started and failed before removing anything"
+P="$ROOT/h"
+install_into "$P"
+plant_in "$P/share/leteo/model"
+ran_and_failed "$P/bin/leteo"
 seed_store
-run_ps1 "$P"
-check "ps1: the data files are removed by name, which nothing else is left to do" store_gone
-check "ps1: a binary that cannot start leaves the model removed by name" lacks_model_files "$P/bin/model"
-check "ps1: and the message does not cite a report" not cites_a_report_ps1
+isolated LETEO_INSTALL_DIR="$P/bin" sh "$P/bin/uninstall.sh" --yes >"$ROOT/uninstall.log" 2>&1 || { cat "$ROOT/uninstall.log"; failed=1; }
+check "the data files are retried by name" store_gone
+check "the file the binary may have kept survived" planted_survived "$P/share/leteo/model"
+check "and the message cites the report" cites_a_report
 
 echo "-- the npm wrapper, against a local release"
 for tool in node openssl python3; do
@@ -356,8 +365,64 @@ rm -f "$CACHE/leteo"
 check "two runs at once on a directory whose binary was deleted both succeed" two_at_once
 check "and leave one whole install" npm_cache_whole
 
+echo "-- uninstall.ps1, behind the same binaries"
+if ! command -v pwsh >/dev/null 2>&1; then
+    echo "install check could not run the uninstall.ps1 flows: pwsh is not installed" >&2
+    ps1_skipped=1
+else
+# The model beside the executable, which is where uninstall.ps1 looks, and a
+# Linux binary under the name Windows gives it: PowerShell runs it as it is.
+windows_layout() {
+    mkdir -p "$1/bin"
+    cp "$BINARY" "$1/bin/leteo.exe"
+    cp -R assets/model "$1/bin/model"
+}
+run_ps1() {
+    isolated LETEO_INSTALL_DIR="$1/bin" pwsh -NoProfile -NonInteractive -File scripts/uninstall.ps1 -Yes >"$ROOT/uninstall.log" 2>&1 \
+        || { cat "$ROOT/uninstall.log"; failed=1; }
+}
+
+P="$ROOT/f"
+windows_layout "$P"
+plant_in "$P/bin/model"
+fail_an_agent
+run_ps1 "$P"
+heal_the_agent
+check "ps1: the binary exited non-zero" grep -q "leteo uninstall exited with" "$ROOT/uninstall.log"
+check "ps1: the file whose hash is not its pin survived" planted_survived "$P/bin/model"
+check "ps1: and the message cites the report" cites_a_report
+
+P="$ROOT/g"
+windows_layout "$P"
+printf '#!/nonexistent-interpreter\n' > "$P/bin/leteo.exe"
+chmod +x "$P/bin/leteo.exe"
+seed_store
+run_ps1 "$P"
+check "ps1: the data files are removed by name, which nothing else is left to do" store_gone
+check "ps1: a binary that cannot start leaves the model removed by name" lacks_model_files "$P/bin/model"
+check "ps1: and the message does not cite a report" not cites_a_report
+
+# The data directory's own model, which `-not $ran` guards separately from the
+# one beside the executable, and the retry of the data files after a binary that
+# ran and failed. The stand-in removes nothing, so both are the script's doing.
+P="$ROOT/i"
+windows_layout "$P"
+ran_and_failed "$P/bin/leteo.exe"
+mkdir -p "$ROOT/data/model"
+plant_in "$ROOT/data/model"
+seed_store
+run_ps1 "$P"
+check "ps1: the data files are retried by name after a binary that ran and failed" store_gone
+check "ps1: the file in the data directory's model survived" planted_survived "$ROOT/data/model"
+check "ps1: and the message cites the report" cites_a_report
+fi
+
 if [ "$failed" -ne 0 ]; then
     echo "install check FAILED (repository: $REPO)"
     exit 1
+fi
+if [ "$ps1_skipped" -ne 0 ]; then
+    echo "install check passed, without the uninstall.ps1 flows"
+    exit 2
 fi
 echo "install check passed"

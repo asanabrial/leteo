@@ -219,6 +219,9 @@ pub async fn run(cli: Cli) -> Result<()> {
                 ..crate::setup::SetupOptions::default()
             };
             let data_dir = data_directory(&cli)?;
+            if *yes {
+                eprintln!("{}", crate::setup::UNINSTALL_STARTED);
+            }
             let removed = crate::setup::uninstall_everything(&options, &data_dir);
             print_json(&removed)?;
             // A partial uninstall must not read as a clean one. Somebody who

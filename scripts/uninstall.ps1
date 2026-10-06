@@ -103,41 +103,45 @@ if (-not $Yes) {
 # `$ran` is whether the binary started and so judged the model files, whatever it
 # exited with: it exits non-zero on any incomplete removal, after it has already
 # kept the model files it did not recognise. The by-name removal of the model
-# below does not look at content, so it must not run behind it. A binary that
-# could not start judged nothing: PowerShell throws for that before any exit
-# code exists, and 126 or 127 is what uninstall.sh treats the same way, so the
-# two scripts agree on what counts. `$handled` is the narrower claim that it
+# below does not look at content, so it must not run behind it. Started is read
+# from the line `leteo uninstall --yes` prints on stderr before it judges
+# anything, the same line uninstall.sh looks for, and not from an exit code or an
+# exception type: PowerShell throws when a start fails, but nothing says the
+# exception was not raised after the process had begun, and an exit of 126 or 127
+# is as likely to be the binary's own. `$handled` is the narrower claim that it
 # finished, and gates only the data files, which the binary and this script name
 # identically, so trying them again after a failure undoes no judgment.
+$startedMarker = 'leteo uninstall: started'
 $ran = $false
 $handled = $false
 if (Test-Path $binary) {
     Say "  removing agent configuration and memories"
     try {
-        & $binary uninstall --yes
+        # Stderr is merged to read the marker, and the preference relaxed for
+        # the call: Windows PowerShell 5.1 turns a native command's stderr into a
+        # terminating error under 'Stop', which would end the script on the very
+        # line it is looking for.
+        $ErrorActionPreference = 'Continue'
+        & $binary uninstall --yes 2>&1 | ForEach-Object {
+            $line = "$_"
+            if ($line -eq $startedMarker) { $script:ran = $true }
+            Say $line
+        }
         $code = $LASTEXITCODE
-        if ($code -eq 126 -or $code -eq 127) {
+        $ErrorActionPreference = 'Stop'
+        if (-not $ran) {
             Say "  could not start leteo uninstall; carrying on with the files"
+        } elseif ($code -eq 0) {
+            $handled = $true
         } else {
-            $ran = $true
-            if ($code -eq 0) {
-                $handled = $true
-            } else {
-                Say "  leteo uninstall exited with $code; carrying on with the files"
-            }
+            Say "  leteo uninstall exited with $code; carrying on with the files"
         }
     } catch {
-        # Only a failure to start leaves the model unjudged. Anything thrown
-        # otherwise may have come after the binary had already kept a file, and
-        # the by-name removal must not guess that it did not.
-        $startFailure = $_.Exception -is [System.ComponentModel.Win32Exception] -or
-            $_.Exception -is [System.Management.Automation.ApplicationFailedException] -or
-            $_.Exception -is [System.Management.Automation.CommandNotFoundException]
-        $ran = -not $startFailure
-        if ($startFailure) {
-            Say "  could not run leteo uninstall: $($_.Exception.Message)"
-        } else {
+        $ErrorActionPreference = 'Stop'
+        if ($ran) {
             Say "  leteo uninstall was interrupted: $($_.Exception.Message)"
+        } else {
+            Say "  could not run leteo uninstall: $($_.Exception.Message)"
         }
         Say "  carrying on with the files"
     }

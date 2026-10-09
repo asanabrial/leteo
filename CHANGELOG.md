@@ -6,6 +6,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Added
 
+- **`leteo doctor --check <code>` runs only the check it names.** Asking about
+  `busy_timeout` no longer pays for `PRAGMA integrity_check`, which is several
+  seconds over a 96 MB store. The counts and pragmas are still gathered, and a
+  check that did not run leaves its own aggregate absent rather than zeroed, so
+  nothing reads as "the index holds nothing" when the index was never looked at
+  (#204).
+
 - **Catalan, Basque and Polish memories are stemmed in their own language.**
   `stemming::algorithm` now carries the three through `snowball_stemmers_rs`,
   so `migracions` finds a memory about `migració`. The setting already offered
@@ -34,6 +41,13 @@ All notable changes to Leteo are documented in this file.
   first fallback search on the 54k copy is 0.25 s against 2.39 s and writes
   nothing. `doctor` reports the coverage as `semantic_vectors`. (#205)
 
+- **`doctor` weighs a finding by what it costs.** Each check carries an
+  `error`, `warning` or `info` severity and `healthy` means no `error`, so a
+  store whose semantic model is missing, or that holds a memory typed under a
+  word no filter can name, is reported as degraded rather than broken — and one
+  whose full-text index has gone empty is still an error. `leteo doctor` exits
+  non-zero when an error exists and zero otherwise (#204).
+
 - **Every tool reply carries its JSON as text again, at every protocol
   revision.** 0.3.0 made a reply on `2025-06-18` or later send one sentence —
   `Result in structuredContent.` — instead of repeating the answer, on the
@@ -50,6 +64,13 @@ All notable changes to Leteo are documented in this file.
   as a token count (#112, #200).
 
 ### Fixed
+
+- **A memory typed under a word outside the eight is filed where a filter can
+  reach it.** `normalize::kind` folds an unknown type onto `discovery`, the
+  bucket the rest of the unclassifiable lands in, so a memory saved as
+  `implementation` or `optimization` is no longer invisible to every typed
+  search. A store written before the fold keeps the old words and `doctor`
+  reports them as a warning until `--repair` folds them (#204).
 
 - **`uninstall` stops deleting copies people made.** It matched the data
   directory by a bare `leteo.db` prefix, which is every hand-made

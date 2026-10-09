@@ -366,10 +366,15 @@ pub fn one_line(value: &str) -> String {
 /// real store had eighteen of them, written by agents that read the same
 /// instructions and picked a different word for the same idea.
 ///
-/// Only unmistakable synonyms fold. A type this does not recognise — the store
-/// also holds `implementation`, `feature`, `manual` — is kept verbatim rather
-/// than forced into the nearest documented bucket: an honest unknown type still
-/// says something true, and a wrong one does not.
+/// An unmistakable synonym folds onto its one obvious target. Anything else the
+/// vocabulary does not name — `implementation`, `feature`, `optimization` —
+/// folds onto `discovery`, the bucket the rest of the unclassifiable already
+/// lands in. It used to keep its own word, on the argument that an honest
+/// unknown type says something true and a guessed fold does not; what that cost
+/// was a memory no filtered search could ever return, which is the failure
+/// `mem_save`'s own `type` description warns about. A real store held 54 of
+/// them across six words and they kept arriving. The word itself is not lost —
+/// it is in the title and the body, which full-text search reads.
 pub fn kind(value: &str) -> String {
     let value = value.trim().to_lowercase();
     match value.as_str() {
@@ -403,7 +408,18 @@ pub fn kind(value: &str) -> String {
         "convention" | "guideline" | "rule" => "pattern",
         "setup" | "infra" | "infrastructure" | "ci" | "configuration" => "config",
         "feedback" | "user" | "preferences" => "preference",
-        _ => return value,
+        // A documented kind, and the one kind Leteo writes itself, pass
+        // through. Everything else folds onto `discovery` rather than keeping a
+        // word no filter can ask for.
+        _ => {
+            return if crate::memory::rules::KINDS.contains(&value.as_str())
+                || value == crate::memory::model::SESSION_SUMMARY
+            {
+                value
+            } else {
+                "discovery".to_owned()
+            };
+        }
     }
     .to_owned()
 }
@@ -1511,7 +1527,7 @@ is per host",
     }
 
     #[test]
-    fn synonyms_fold_onto_the_documented_types_and_unknown_ones_survive() {
+    fn synonyms_and_unknown_words_fold_onto_the_documented_types() {
         assert_eq!(kind("Bug"), "bugfix");
         assert_eq!(kind(" fix "), "bugfix");
         assert_eq!(kind("design"), "architecture");
@@ -1533,17 +1549,16 @@ is per host",
 
         assert_eq!(kind("session_summary"), "session_summary");
 
-        // No documented type means these, so they keep their own word rather
-        // than being forced into the nearest bucket. A real store holds them:
-        // `implementation` names how something was built, and `feature` what
-        // was built, and neither is a lie.
-        assert_eq!(kind("implementation"), "implementation");
-        assert_eq!(kind("feature"), "feature");
+        // A word the vocabulary does not name folds onto `discovery` rather
+        // than keeping a name no filter can ask for. A real store held 54 of
+        // them across six words — `implementation`, `feature`, `optimization`
+        // and three more — and they kept arriving.
+        assert_eq!(kind("implementation"), "discovery");
+        assert_eq!(kind("feature"), "discovery");
+        assert_eq!(kind("optimization"), "discovery");
 
-        // `manual` is the exception, because it is not a description at all —
-        // it is the default `mem_save` leaves when the caller named no type,
-        // and eighteen memories of a real store carry it while being invisible
-        // to every typed search.
+        // `manual` is the same fold, and the most likely way to reach it: it is
+        // the default `mem_save` leaves when the caller named no type.
         assert_eq!(kind("manual"), "discovery");
     }
 

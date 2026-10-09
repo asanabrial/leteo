@@ -3924,10 +3924,6 @@ fn no_sentence_an_agent_reads_carries_the_source_it_was_written_in() {
             crate::mcp::output::UNNAMED_SUMMARY_HINT.to_owned(),
         ),
         (
-            "unfiled kind hint",
-            crate::mcp::output::UNFILED_KIND_HINT.to_owned(),
-        ),
-        (
             "memory directive",
             crate::setup::MEMORY_DIRECTIVE.to_owned(),
         ),
@@ -4083,7 +4079,7 @@ fn the_descriptions_publish_the_preview_length_the_code_cuts_at() {
 }
 
 #[test]
-fn a_memory_filed_under_a_word_nothing_searches_for_is_told_so() {
+fn a_type_outside_the_vocabulary_is_filed_where_a_filter_can_reach_it() {
     let (_temp, server) = test_server(McpOptions::default());
     {
         let mut store = server.lock_store().unwrap();
@@ -4092,7 +4088,7 @@ fn a_memory_filed_under_a_word_nothing_searches_for_is_told_so() {
             .unwrap();
     }
 
-    let unfiled = server
+    let folded = server
         .mem_save(Parameters(
             serde_json::from_value(json!({
                 "session_id": "unfiled",
@@ -4105,16 +4101,19 @@ fn a_memory_filed_under_a_word_nothing_searches_for_is_told_so() {
         .unwrap()
         .0;
     assert_eq!(
-        unfiled.observation.kind, "optimization",
-        "the word survives"
+        folded.observation.kind, "discovery",
+        "a word no filter can name folds onto one it can"
     );
     assert_eq!(
-        unfiled.hint.as_deref(),
-        Some(crate::mcp::output::UNFILED_KIND_HINT),
-        "and the agent is told a filter will never reach it"
+        folded.hint, None,
+        "and there is nothing to warn about: the memory is reachable"
     );
 
-    for (kind, stored) in [("discovery", "discovery"), ("bug", "bugfix")] {
+    for (kind, stored) in [
+        ("discovery", "discovery"),
+        ("bug", "bugfix"),
+        ("implementation", "discovery"),
+    ] {
         let filed = server
             .mem_save(Parameters(
                 serde_json::from_value(json!({
@@ -4887,6 +4886,7 @@ fn an_empty_context_says_whether_the_store_or_the_directory_is_empty() {
                 limit: None,
                 session_limit: 5,
                 prompt_limit: 5,
+                byte_limit: None,
             }))
             .unwrap();
         output
@@ -5996,6 +5996,9 @@ fn zero_leaves_a_section_out_and_the_schema_says_which_zero_it_is() {
     for (field, minimum) in &floors {
         let expected = match field.as_str() {
             "mem_search.limit" | "mem_review.limit" => 1,
+            // The floor a `mem_context` answer cannot shrink past, published so
+            // a caller can see why a smaller `byte_limit` would not be met.
+            "mem_context.byte_limit" => CONTEXT_ENVELOPE_FLOOR as i64,
             _ => 0,
         };
         assert_eq!(
@@ -6180,7 +6183,7 @@ fn every_budget_publishes_the_ceiling_it_applies() {
     assert!(naked.is_empty(), "no ceiling published: {naked:?}");
     assert_eq!(
         examined.len(),
-        7,
+        8,
         "budgets changed; check they all still publish a ceiling: {examined:?}"
     );
 }
@@ -6492,9 +6495,9 @@ fn a_diagnosis_lists_examples_of_the_damage_and_counts_the_rest() {
 
     let report = store.doctor().unwrap();
     assert_eq!(
-        report.foreign_key_violations.len(),
-        orphans,
-        "el informe del store va entero"
+        report.foreign_key_violations.as_ref().map(Vec::len),
+        Some(orphans),
+        "the store's own report is the whole list"
     );
 
     let server = LeteoMcpServer::with_options(Arc::new(Mutex::new(store)), McpOptions::default());
@@ -6502,14 +6505,14 @@ fn a_diagnosis_lists_examples_of_the_damage_and_counts_the_rest() {
         .mem_doctor(Parameters(serde_json::from_value(json!({})).unwrap()))
         .expect("the diagnosis answers");
     assert_eq!(
-        answered.foreign_key_violations.len(),
-        VIOLATION_EXAMPLES,
-        "el agente ve ejemplos"
+        answered.foreign_key_violations.as_ref().map(Vec::len),
+        Some(VIOLATION_EXAMPLES),
+        "the agent sees examples"
     );
     assert_eq!(
         answered.foreign_key_violations_omitted,
         orphans - VIOLATION_EXAMPLES,
-        "y cuántas no ve"
+        "and how many it does not see"
     );
     assert!(
         answered
@@ -6567,6 +6570,10 @@ fn every_ceiling_a_tool_publishes_is_one_something_applies() {
     );
     let list = crate::store::StoreConfig::new("unused").max_context_results;
     let context = crate::settings::ContextSize::Deep.memories();
+    // The byte ceiling a `byte_limit` publishes, which is the third number this
+    // surface bounds an answer by: a list of rows, the depth of a context, and
+    // now the bytes of one.
+    let bytes = crate::settings::ContextSize::Deep.bytes();
 
     let mut published = Vec::new();
     for tool in server.router.list_all() {
@@ -6588,12 +6595,12 @@ fn every_ceiling_a_tool_publishes_is_one_something_applies() {
     );
     let strays: Vec<&(String, String, usize)> = published
         .iter()
-        .filter(|(_, _, maximum)| *maximum != list && *maximum != context)
+        .filter(|(_, _, maximum)| *maximum != list && *maximum != context && *maximum != bytes)
         .collect();
     assert!(
         strays.is_empty(),
-        "these publish a ceiling neither {list} (a list of rows) nor {context} (the depth of a \
-         context): {strays:?}"
+        "these publish a ceiling none of {list} (a list of rows), {context} (the depth of a \
+         context) or {bytes} (the bytes of one): {strays:?}"
     );
     assert_eq!(
         crate::mcp::output::VIOLATION_EXAMPLES,
@@ -6769,6 +6776,7 @@ fn the_context_tool_bounds_its_pinned_half_by_what_was_asked_for() {
                 limit: Some(asked),
                 session_limit: 5,
                 prompt_limit: 5,
+                byte_limit: None,
             }))
             .expect("the context answers");
         let pinned = answer
@@ -6827,6 +6835,7 @@ fn a_context_answer_is_never_larger_than_the_size_byte_budget() {
             limit: Some(80),
             session_limit: 5,
             prompt_limit: 10,
+            byte_limit: None,
         }))
         .expect("the context answers");
     let budget = crate::settings::ContextSize::Full.bytes();
@@ -6879,13 +6888,12 @@ fn a_scope_leteo_does_not_know_is_refiled_and_the_reply_says_so() {
     assert_eq!(both_known.observation.scope, "personal");
     assert!(both_known.hint.is_none(), "{:?}", both_known.hint);
 
+    // An unknown type folds onto a documented one and is filed quietly; the
+    // scope is the value that is replaced, so it is the one that is said.
     let odd_kind = save(&server, "Odd kind", "implementation", "personal");
-    let hint = odd_kind.hint.unwrap_or_default();
-    assert!(hint.contains("type is not one of"), "{hint}");
-    assert!(
-        !hint.contains("Scope"),
-        "nothing was said against the scope: {hint}"
-    );
+    assert_eq!(odd_kind.observation.kind, "discovery");
+    assert_eq!(odd_kind.observation.scope, "personal");
+    assert!(odd_kind.hint.is_none(), "{:?}", odd_kind.hint);
 
     let odd_scope = save(&server, "Odd scope", "decision", "personnal");
     assert_eq!(
@@ -6905,10 +6913,11 @@ fn a_scope_leteo_does_not_know_is_refiled_and_the_reply_says_so() {
     );
 
     let both_odd = save(&server, "Both odd", "implementation", "personnal");
+    assert_eq!(both_odd.observation.kind, "discovery");
     let hint = both_odd.hint.unwrap_or_default();
     assert!(
-        hint.contains("type is not one of") && hint.contains("personnal"),
-        "two mistakes are two sentences: {hint}"
+        hint.contains("personnal") && !hint.contains("type"),
+        "the scope is still named, and the type is not a mistake any more: {hint}"
     );
 }
 
@@ -7257,4 +7266,235 @@ fn mem_update_reports_the_body_it_replaced_and_calls_out_a_shrink() {
     let hint = updated.hint.expect("a shrink is called out");
     assert!(hint.contains("400"), "{hint}");
     assert!(hint.contains("include_history"), "{hint}");
+}
+
+/// A find/replace that outgrows the storage bound reports the cut from the text
+/// it edited, which the caller never held.
+///
+/// Reading the cut from `params.content` — which is absent for a find/replace —
+/// would report nothing and let the caller believe a body the store cut in half
+/// was stored whole.
+#[test]
+fn a_replace_that_outgrows_the_bound_reports_the_cut() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("bound", "leteo", "C:/workspace")
+            .unwrap();
+    }
+    let bound = server.lock_store().unwrap().max_observation_length();
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "bound",
+                "title": "Una memoria que crece",
+                "content": "TOKEN",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+
+    let updated = server
+        .mem_update(Parameters(
+            serde_json::from_value(json!({
+                "id": saved.observation.id,
+                "expected_project": "leteo",
+                "find": "TOKEN",
+                "replace": "x".repeat(bound + 1),
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_storage_cut(updated.storage_truncation, bound, "find/replace update");
+
+    // And a replacement that fits reports nothing, the way a whole-body write
+    // under the bound does. A second memory, because the first one's body is
+    // now a wall of `x` and no span of it is unique.
+    let small = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "bound",
+                "title": "Una memoria que no crece",
+                "content": "usa TOKEN aquí",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let short = server
+        .mem_update(Parameters(
+            serde_json::from_value(json!({
+                "id": small.observation.id,
+                "expected_project": "leteo",
+                "find": "TOKEN",
+                "replace": "otra cosa",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert!(
+        short.storage_truncation.is_none(),
+        "an edit under the bound is not a storage cut"
+    );
+}
+
+/// A `byte_limit` below the size setting shrinks the answer and counts what it
+/// dropped, so the caller can plan against a bound they asked for.
+#[test]
+fn mem_context_honours_a_byte_limit_below_the_size() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::open(crate::store::StoreConfig::new(temp.path().join("limit.db"))).unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for index in 0..80 {
+        store
+            .add_observation(AddObservation {
+                session_id: "s1".to_owned(),
+                kind: "discovery".to_owned(),
+                title: format!("Memoria {index}"),
+                content: "cuerpo ".repeat(80),
+                tool_name: None,
+                project: Some("leteo".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap();
+    }
+    let server = LeteoMcpServer::with_options(Arc::new(Mutex::new(store)), McpOptions::default());
+
+    let limit = 4_000_usize;
+    let Json(answer) = server
+        .mem_context(Parameters(ContextParams {
+            project: Some("leteo".to_owned()),
+            all_projects: false,
+            scope: None,
+            limit: Some(80),
+            session_limit: 5,
+            prompt_limit: 5,
+            byte_limit: Some(limit),
+        }))
+        .unwrap();
+    let serialized = serde_json::to_string(&answer).unwrap();
+    assert!(
+        serialized.len() <= limit,
+        "the answer is {} bytes against the {limit} asked for",
+        serialized.len()
+    );
+    assert!(
+        answer.memories_omitted > 0,
+        "the fixture has to make the bound drop something: {answer:?}"
+    );
+    assert!(
+        !answer.byte_limit_unmet,
+        "a bound above the envelope is met: {answer:?}"
+    );
+}
+
+/// A `byte_limit` cannot raise the answer above the size setting: the setting is
+/// the budget a person chose for this store, and one call is not the place to
+/// overrule it.
+#[test]
+fn mem_context_does_not_grow_past_the_size_setting() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(crate::store::StoreConfig::new(
+        temp.path().join("setting.db"),
+    ))
+    .unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    // Sized to exceed the default `Full` budget, so a ceiling that ignored the
+    // setting would answer with more.
+    for index in 0..80 {
+        store
+            .add_observation(AddObservation {
+                session_id: "s1".to_owned(),
+                kind: "discovery".to_owned(),
+                title: format!("Memoria {index} {}", "漢".repeat(140)),
+                content: "漢".repeat(400),
+                tool_name: None,
+                project: Some("leteo".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap();
+    }
+    let server = LeteoMcpServer::with_options(Arc::new(Mutex::new(store)), McpOptions::default());
+    let context = |byte_limit: Option<usize>| {
+        let Json(answer) = server
+            .mem_context(Parameters(ContextParams {
+                project: Some("leteo".to_owned()),
+                all_projects: false,
+                scope: None,
+                limit: Some(80),
+                session_limit: 5,
+                prompt_limit: 5,
+                byte_limit,
+            }))
+            .unwrap();
+        answer
+    };
+
+    let asked = context(Some(crate::settings::ContextSize::Deep.bytes()));
+    let natural = context(None);
+    assert!(
+        natural.memories_omitted > 0,
+        "the fixture has to exceed the setting, or a ceiling above it would not show"
+    );
+    assert_eq!(
+        serde_json::to_string(&asked).unwrap(),
+        serde_json::to_string(&natural).unwrap(),
+        "a byte_limit above the size setting changes nothing"
+    );
+}
+
+/// A bound under the envelope every answer carries cannot be kept, and the
+/// reply says so rather than reporting a bound it did not meet.
+#[test]
+fn mem_context_says_when_a_byte_limit_cannot_be_met() {
+    let (_temp, server) = test_server(McpOptions::default());
+    {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        store
+            .add_observation(AddObservation {
+                session_id: "s1".to_owned(),
+                kind: "discovery".to_owned(),
+                title: "Una memoria".to_owned(),
+                content: "un cuerpo".to_owned(),
+                tool_name: None,
+                project: Some("leteo".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap();
+    }
+
+    let Json(answer) = server
+        .mem_context(Parameters(ContextParams {
+            project: Some("leteo".to_owned()),
+            all_projects: false,
+            scope: None,
+            limit: None,
+            session_limit: 5,
+            prompt_limit: 5,
+            byte_limit: Some(100),
+        }))
+        .unwrap();
+    assert!(
+        answer.byte_limit_unmet,
+        "a bound under the envelope is reported, not quietly missed: {answer:?}"
+    );
+    assert!(
+        answer.memories_omitted > 0,
+        "everything droppable was dropped trying: {answer:?}"
+    );
 }

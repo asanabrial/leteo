@@ -235,6 +235,19 @@ pub struct UpdateObservation {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// A span of the stored body to replace, rather than the whole of it.
+    ///
+    /// The body is read and edited inside the same write transaction, so what
+    /// this counts against is what the row holds at that moment. The count is
+    /// what makes the edit safe: a `find` that is absent or names more than one
+    /// span is refused rather than guessed at, and the caller's `content` and
+    /// `find` are two ways to write the body and are refused together.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub find: Option<String>,
+    /// What replaces the single span `find` names. Absent means the span is
+    /// removed, and `replace` without `find` is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -330,6 +343,16 @@ pub struct UpdateOutcome {
     /// for a metadata-only change, which is out of the version history's scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaced: Option<ReplacedContent>,
+    /// The length the storage bound saw for a body a find/replace edited, when
+    /// it cut it.
+    ///
+    /// A full-body write hands the tool the text it sent, so the tool computes
+    /// its own cut from that; a find/replace never holds the edited text, so
+    /// the store — which does — reports it. Absent when the bound cut nothing,
+    /// and always absent for a write that was not a find/replace, whose cut
+    /// the caller measures from its own `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_cut: Option<usize>,
 }
 
 /// The title and body a later write replaced, as a read hands them back.
@@ -1008,6 +1031,36 @@ pub struct ForeignKeyViolation {
     pub foreign_key_index: i64,
 }
 
+/// How much a failing check weighs.
+///
+/// `healthy` is the absence of an `error`; everything else is a store that
+/// works. The two used to be one word, and the failure ran both ways: `doctor`
+/// called a healthy store unhealthy for a type one of its own save doors had
+/// written, and called a store whose meaning-based search was silently off
+/// healthy. A check that cannot affect whether the store works is a `warning`,
+/// and one whose only problem is that it found nothing to complain about is
+/// `info`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorSeverity {
+    /// Something is broken or lost: the store is not healthy.
+    Error,
+    /// A capability is degraded or worth a look; the store still works.
+    Warning,
+    /// No finding: a check that passed, with or without a note.
+    Info,
+}
+
+impl DoctorSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+}
+
 /// One named diagnostic.
 ///
 /// The code is stable and is what `leteo doctor --check` and the `check`
@@ -1016,9 +1069,19 @@ pub struct ForeignKeyViolation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DoctorCheck {
     pub code: String,
+    /// Whether the check holds. A `warning` is a finding — `ok` is false — that
+    /// leaves the store healthy; only an `error` makes it unhealthy.
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The weight of the finding, or `info` when there is none.
+    ///
+    /// Last, and not beside `ok` where it reads, because the fields above it
+    /// are a wire shape somebody reads by position: `tools/semantic/check_install.sh`
+    /// greps `"code":"…","ok":true,"detail":"…"` out of `leteo doctor`, and a
+    /// field inserted between `ok` and `detail` failed every installer check
+    /// that asks whether doctor verifies the model. A new field is appended.
+    pub severity: DoctorSeverity,
 }
 
 /// What one full-text index held before a rebuild and after it.
@@ -1038,6 +1101,7 @@ impl DoctorCheck {
         Self {
             code: code.to_owned(),
             ok: true,
+            severity: DoctorSeverity::Info,
             detail: None,
         }
     }
@@ -1049,14 +1113,30 @@ impl DoctorCheck {
         Self {
             code: code.to_owned(),
             ok: true,
+            severity: DoctorSeverity::Info,
             detail: Some(detail.into()),
         }
     }
 
+    /// A finding that degrades something without breaking it. `healthy` stays
+    /// true, the sentence is kept, and a reader who cares can act on it — which
+    /// is what the missing model and the nonstandard types always needed and
+    /// did not get.
+    pub fn warned(code: &str, detail: impl Into<String>) -> Self {
+        Self {
+            code: code.to_owned(),
+            ok: false,
+            severity: DoctorSeverity::Warning,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// A finding that the store does not work as promised.
     pub fn failed(code: &str, detail: impl Into<String>) -> Self {
         Self {
             code: code.to_owned(),
             ok: false,
+            severity: DoctorSeverity::Error,
             detail: Some(detail.into()),
         }
     }
@@ -1108,10 +1188,15 @@ pub struct DoctorReport {
     pub schema_supported: i32,
     /// Named diagnostics, in a stable order.
     pub checks: Vec<DoctorCheck>,
-    pub integrity_check: Vec<String>,
-    pub foreign_key_violations: Vec<ForeignKeyViolation>,
-    pub observation_fts_ok: bool,
-    pub prompt_fts_ok: bool,
+    /// The whole-file check's verdict, absent when that check was not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity_check: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_key_violations: Option<Vec<ForeignKeyViolation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_fts_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_fts_ok: Option<bool>,
     pub observations: i64,
     pub observation_fts_rows: i64,
     pub prompts: i64,
@@ -1120,6 +1205,19 @@ pub struct DoctorReport {
     pub journal_mode: String,
     pub busy_timeout_ms: i64,
     pub issues: Vec<String>,
+}
+
+impl DoctorReport {
+    /// Whether any check found an error — what `healthy` is the negation of.
+    ///
+    /// A warning is a finding and is not one of these: the report carries it in
+    /// `checks`, `healthy` stays true, and no script acting on the exit code
+    /// treats a degraded capability as a broken store.
+    pub fn has_error(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|check| !check.ok && check.severity == DoctorSeverity::Error)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

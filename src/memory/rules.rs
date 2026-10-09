@@ -55,8 +55,10 @@ pub const KINDS: &[&str] = &[
 /// [`KINDS`] is what an agent is taught to write and what a filter is asked
 /// for. `session_summary` is not in it and is not a mistake: nothing outside
 /// Leteo writes one, and the tools that list summaries ask for them by name.
-/// Anything else outside the list is a memory filed where nobody looks — see
-/// `UNFILED_KIND_HINT`.
+/// Anything else is a memory filed where nobody looks — the save door folds an
+/// unknown word onto `discovery` now, so only a store written before that fold
+/// still holds one, and `doctor` reports it as a warning until `--repair` folds
+/// it too.
 pub fn is_searchable_kind(kind: &str) -> bool {
     KINDS.contains(&kind) || kind == crate::memory::model::SESSION_SUMMARY
 }

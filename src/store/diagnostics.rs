@@ -290,7 +290,7 @@ impl Store {
     }
 
     pub fn doctor(&self) -> Result<DoctorReport, StoreError> {
-        self.integrity_doctor()
+        self.doctor_run(None)
     }
 
     /// A diagnostic report, optionally narrowed to one check and one project.
@@ -300,28 +300,30 @@ impl Store {
     /// code or project is refused rather than quietly matching nothing, because
     /// a diagnostic that silently reports "all clear" for a typo is worse than
     /// no diagnostic.
+    ///
+    /// Naming a check runs **only** that check. That is the whole of `--check`:
+    /// asking about `busy_timeout` should not pay for `PRAGMA integrity_check`,
+    /// which on a 96 MB store is several seconds the one answer does not need.
+    /// What a check that did not run would have measured is left absent rather
+    /// than zeroed, so no report reads as "the index holds nothing" when the
+    /// index was never looked at.
     pub fn doctor_scoped(
         &self,
         check: Option<&str>,
         project: Option<&str>,
     ) -> Result<(DoctorReport, Option<ProjectStats>), StoreError> {
-        let mut report = self.integrity_doctor()?;
-        if let Some(code) = check.map(str::trim).filter(|code| !code.is_empty()) {
-            if !DoctorCheck::CODES.contains(&code) {
-                return Err(invalid_parameter(format!(
-                    "unknown check {code:?}; valid codes are {}",
-                    DoctorCheck::CODES.join(", ")
-                )));
+        let report = match check.map(str::trim).filter(|code| !code.is_empty()) {
+            Some(code) => {
+                if !DoctorCheck::CODES.contains(&code) {
+                    return Err(invalid_parameter(format!(
+                        "unknown check {code:?}; valid codes are {}",
+                        DoctorCheck::CODES.join(", ")
+                    )));
+                }
+                self.doctor_run(Some(code))?
             }
-            report.checks.retain(|entry| entry.code == code);
-            report.issues = report
-                .checks
-                .iter()
-                .filter(|entry| !entry.ok)
-                .filter_map(|entry| entry.detail.clone())
-                .collect();
-            report.healthy = report.issues.is_empty();
-        }
+            None => self.doctor_run(None)?,
+        };
         let stats = match project.map(normalize::project).filter(|p| !p.is_empty()) {
             Some(project) => Some(
                 self.list_projects_with_stats()?
@@ -334,29 +336,68 @@ impl Store {
         Ok((report, stats))
     }
 
-    pub fn integrity_doctor(&self) -> Result<DoctorReport, StoreError> {
-        let mut integrity_statement = self.connection.prepare("PRAGMA integrity_check")?;
-        let integrity_check = integrity_statement
-            .query_map([], |row| row.get(0))?
-            .collect::<Result<Vec<String>, _>>()?;
+    /// One diagnostic pass, over every check or over a single one.
+    ///
+    /// `only` is the requested code and narrows the run to it. Every check is
+    /// one `if want(..)` block over the same report, so an added check runs
+    /// under `doctor` and is selectable under `--check` with no second list to
+    /// keep in step.
+    ///
+    /// The counts and pragmas below are gathered first and unconditionally. On
+    /// a 96 MB file they cost a few milliseconds against the seconds `PRAGMA
+    /// integrity_check` costs, and carrying them only when their own check ran
+    /// would make `--check` answer a different question than `doctor` for no
+    /// time saved.
+    fn doctor_run(&self, only: Option<&str>) -> Result<DoctorReport, StoreError> {
+        let want = |code: &str| only.is_none_or(|only| only == code);
 
-        let mut foreign_key_statement = self.connection.prepare("PRAGMA foreign_key_check")?;
-        let foreign_key_violations = foreign_key_statement
-            .query_map([], |row| {
-                Ok(ForeignKeyViolation {
-                    table: row.get(0)?,
-                    row_id: row.get(1)?,
-                    parent: row.get(2)?,
-                    foreign_key_index: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let observations = query_count(&self.connection, "SELECT COUNT(*) FROM observations")?;
+        let prompts = query_count(&self.connection, "SELECT COUNT(*) FROM prompts")?;
+        // Counted from the shadow table rather than from the index itself.
+        // These are external-content tables, so `SELECT COUNT(*) FROM
+        // observations_fts` reads through to `observations` and agrees with it
+        // even when the index holds nothing at all — which made the check
+        // report a healthy store while every search came back empty.
+        let observation_fts_rows = indexed_row_count(&self.connection, "observations_fts");
+        let prompt_fts_rows = indexed_row_count(&self.connection, "prompts_fts");
+        let pending_mutations = query_count(
+            &self.connection,
+            "SELECT COUNT(*) FROM sync_mutations WHERE acked_at IS NULL",
+        )?;
+        let journal_mode: String = self
+            .connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        let busy_timeout_ms = self
+            .connection
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
 
+        let mut checks = Vec::new();
         let mut issues = Vec::new();
-        // One sentence for each index, used both in the list of what is wrong
-        // and as the check's own detail. Written twice, they contradicted each
-        // other in the same reply: `issues` said the index could not be checked
-        // while the check beside it said the index had failed.
+        let mut record = |check: DoctorCheck| {
+            // Only errors are issues. A warning is preserved in `checks` and
+            // leaves `healthy` alone, which is the whole difference between the
+            // two severities.
+            if !check.ok && check.severity == DoctorSeverity::Error {
+                issues.extend(check.detail.iter().cloned());
+            }
+            checks.push(check);
+        };
+
+        // Whether an index check gave a verdict or could not be made at all.
+        //
+        // SQLite's FTS5 integrity check is run by writing a magic row into the
+        // index, so anything that stops a write stops the check: a database
+        // opened read-only, one another process holds, a disk with nothing left
+        // on it. Every one of those used to be reported as `observations FTS
+        // integrity: <error>`, in the list of what is wrong with the store — so
+        // somebody whose only problem was a file permission was told their
+        // full-text index had failed, which is the kind of thing people rebuild
+        // an index over.
+        //
+        // `doctor` is the one command that has to keep failing loudly, and that
+        // only works if what it says is what happened. The verdict is still
+        // unhealthy either way: a store that could not be inspected is not a
+        // store that passed. What changes is the sentence.
         let check_index = |index: &str, name: &str| -> Option<String> {
             self.connection
                 .execute(
@@ -376,411 +417,450 @@ impl Store {
                     }
                 })
         };
-        let observation_fts = check_index("observations_fts", "observation");
-        let prompt_fts = check_index("prompts_fts", "prompt");
-        // The unstemmed index is searched beside the stemmed one, so it can go
-        // empty or stale on its own — and a search would still answer, just
-        // worse at the thing that index is for. Reported as its own checks
-        // rather than as another pair of numbers, because the two counts on the
-        // report have been the shape of `mem_doctor`'s output since before
-        // there was a second index.
-        let exact_fts = check_index("observations_exact", "unstemmed observation");
-        let stems_fts = check_index("observations_stemmed", "Snowball observation");
-        let observations = query_count(&self.connection, "SELECT COUNT(*) FROM observations")?;
-        let prompts = query_count(&self.connection, "SELECT COUNT(*) FROM prompts")?;
-        // Counted from the shadow table rather than from the index itself.
-        // These are external-content tables, so `SELECT COUNT(*) FROM
-        // observations_fts` reads through to `observations` and agrees with it
-        // even when the index holds nothing at all — which made this check
-        // report a healthy store while every search came back empty.
-        let observation_fts_rows = indexed_row_count(&self.connection, "observations_fts");
-        let exact_fts_rows = indexed_row_count(&self.connection, "observations_exact");
-        // Two counts for this one, because it is two things that can drift: the
-        // stems table against the memories, and the index against the stems.
-        let stems_rows =
-            query_count(&self.connection, "SELECT COUNT(*) FROM observation_stems").unwrap_or(-1);
-        // Only a memory with an integer id can have stems, so only those are
-        // owed any. A database that predates the baseline can carry a TEXT id,
-        // which no repair can give a row here, and counting it would report a
-        // mismatch that nothing could clear.
-        let stemmable = query_count(
-            &self.connection,
-            "SELECT COUNT(*) FROM observations WHERE typeof(id) = 'integer'",
-        )
-        .unwrap_or(-1);
-        let stems_fts_rows = indexed_row_count(&self.connection, "observations_stemmed");
-        let prompt_fts_rows = indexed_row_count(&self.connection, "prompts_fts");
-        // Whether every memory's hash still describes the memory.
-        //
-        // The hash is what dedupe compares — a save whose body matches an
-        // existing one bumps that row instead of writing a second — so a hash
-        // that has stopped matching its own content is a memory nothing can
-        // ever be deduplicated against, silently and for good.
-        //
-        // It happens. A real store of 3,940 held three, all from one project on
-        // one day five weeks earlier, none of them ever revised, and the text
-        // their hashes were taken of is in no row of that store. Whatever wrote
-        // them is gone; what was missing was anything that would notice.
-        //
-        // This is the same kind of check as the index ones beside it: two
-        // things the store keeps that have to agree, with no error raised when
-        // they stop. Reading every body costs 48 ms on that store, against a
-        // command that already runs `PRAGMA integrity_check` over the whole
-        // file.
-        let stale_hashes = stale_hash_count(&self.connection);
-        let missing_triggers = crate::store::schema::missing_full_text_triggers(&self.connection);
-        let pending_mutations = query_count(
-            &self.connection,
-            "SELECT COUNT(*) FROM sync_mutations WHERE acked_at IS NULL",
-        )?;
-        let journal_mode: String = self
-            .connection
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-        let busy_timeout_ms = self
-            .connection
-            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
 
-        let mut checks = Vec::new();
-        let mut record = |check: DoctorCheck| {
-            if let (false, Some(detail)) = (check.ok, check.detail.as_ref()) {
-                issues.push(detail.clone());
-            }
-            checks.push(check);
-        };
+        // The aggregates that only their own check can answer, present exactly
+        // when that check ran.
+        let mut integrity_check: Option<Vec<String>> = None;
+        let mut foreign_key_violations: Option<Vec<ForeignKeyViolation>> = None;
+        let mut observation_fts_ok: Option<bool> = None;
+        let mut prompt_fts_ok: Option<bool> = None;
 
-        record(if integrity_check.as_slice() == ["ok"] {
-            DoctorCheck::passed("sqlite_integrity")
-        } else {
-            DoctorCheck::failed(
-                "sqlite_integrity",
-                format!("SQLite integrity check: {integrity_check:?}"),
+        if want("sqlite_integrity") {
+            let verdict = {
+                let mut statement = self.connection.prepare("PRAGMA integrity_check")?;
+                statement
+                    .query_map([], |row| row.get(0))?
+                    .collect::<Result<Vec<String>, _>>()?
+            };
+            record(if verdict.as_slice() == ["ok"] {
+                DoctorCheck::passed("sqlite_integrity")
+            } else {
+                DoctorCheck::failed(
+                    "sqlite_integrity",
+                    format!("SQLite integrity check: {verdict:?}"),
+                )
+            });
+            integrity_check = Some(verdict);
+        }
+        if want("foreign_keys") {
+            let violations = {
+                let mut statement = self.connection.prepare("PRAGMA foreign_key_check")?;
+                statement
+                    .query_map([], |row| {
+                        Ok(ForeignKeyViolation {
+                            table: row.get(0)?,
+                            row_id: row.get(1)?,
+                            parent: row.get(2)?,
+                            foreign_key_index: row.get(3)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            record(if violations.is_empty() {
+                DoctorCheck::passed("foreign_keys")
+            } else {
+                DoctorCheck::failed(
+                    "foreign_keys",
+                    format!("{} foreign key violation(s)", violations.len()),
+                )
+            });
+            foreign_key_violations = Some(violations);
+        }
+        if want("observation_fts_integrity") {
+            let detail = check_index("observations_fts", "observation");
+            record(match &detail {
+                None => DoctorCheck::passed("observation_fts_integrity"),
+                Some(detail) => DoctorCheck::failed("observation_fts_integrity", detail.clone()),
+            });
+            observation_fts_ok = Some(detail.is_none());
+        }
+        if want("prompt_fts_integrity") {
+            let detail = check_index("prompts_fts", "prompt");
+            record(match &detail {
+                None => DoctorCheck::passed("prompt_fts_integrity"),
+                Some(detail) => DoctorCheck::failed("prompt_fts_integrity", detail.clone()),
+            });
+            prompt_fts_ok = Some(detail.is_none());
+        }
+        if want("observation_fts_sync") {
+            record(if observations == observation_fts_rows {
+                DoctorCheck::passed("observation_fts_sync")
+            } else {
+                DoctorCheck::failed(
+                    "observation_fts_sync",
+                    format!(
+                        "observation FTS row mismatch: table={observations}, fts={observation_fts_rows}; {REBUILD_REMEDY}"
+                    ),
+                )
+            });
+        }
+        if want("observation_exact_fts_integrity") {
+            let detail = check_index("observations_exact", "unstemmed observation");
+            record(match &detail {
+                None => DoctorCheck::passed("observation_exact_fts_integrity"),
+                Some(detail) => {
+                    DoctorCheck::failed("observation_exact_fts_integrity", detail.clone())
+                }
+            });
+        }
+        if want("observation_exact_fts_sync") {
+            let exact_fts_rows = indexed_row_count(&self.connection, "observations_exact");
+            record(if observations == exact_fts_rows {
+                DoctorCheck::passed("observation_exact_fts_sync")
+            } else {
+                DoctorCheck::failed(
+                    "observation_exact_fts_sync",
+                    format!(
+                        "unstemmed observation FTS row mismatch: table={observations}, fts={exact_fts_rows}; {REBUILD_REMEDY}"
+                    ),
+                )
+            });
+        }
+        if want("observation_stems_fts_integrity") {
+            let detail = check_index("observations_stemmed", "Snowball observation");
+            record(match &detail {
+                None => DoctorCheck::passed("observation_stems_fts_integrity"),
+                Some(detail) => {
+                    DoctorCheck::failed("observation_stems_fts_integrity", detail.clone())
+                }
+            });
+        }
+        if want("observation_stems_sync") {
+            // Two counts for this one, because it is two things that can drift:
+            // the stems table against the memories, and the index against the
+            // stems.
+            let stems_rows =
+                query_count(&self.connection, "SELECT COUNT(*) FROM observation_stems")
+                    .unwrap_or(-1);
+            // Only a memory with an integer id can have stems, so only those
+            // are owed any. A database that predates the baseline can carry a
+            // TEXT id, which no repair can give a row here, and counting it
+            // would report a mismatch that nothing could clear.
+            let stemmable = query_count(
+                &self.connection,
+                "SELECT COUNT(*) FROM observations WHERE typeof(id) = 'integer'",
             )
-        });
-        record(if foreign_key_violations.is_empty() {
-            DoctorCheck::passed("foreign_keys")
-        } else {
-            DoctorCheck::failed(
-                "foreign_keys",
-                format!("{} foreign key violation(s)", foreign_key_violations.len()),
-            )
-        });
-        record(match &observation_fts {
-            None => DoctorCheck::passed("observation_fts_integrity"),
-            Some(detail) => DoctorCheck::failed("observation_fts_integrity", detail.clone()),
-        });
-        record(match &prompt_fts {
-            None => DoctorCheck::passed("prompt_fts_integrity"),
-            Some(detail) => DoctorCheck::failed("prompt_fts_integrity", detail.clone()),
-        });
-        record(if observations == observation_fts_rows {
-            DoctorCheck::passed("observation_fts_sync")
-        } else {
-            DoctorCheck::failed(
-                "observation_fts_sync",
-                format!(
-                    "observation FTS row mismatch: table={observations}, fts={observation_fts_rows}; {REBUILD_REMEDY}"
-                ),
-            )
-        });
-        record(match &exact_fts {
-            None => DoctorCheck::passed("observation_exact_fts_integrity"),
-            Some(detail) => DoctorCheck::failed("observation_exact_fts_integrity", detail.clone()),
-        });
-        record(if observations == exact_fts_rows {
-            DoctorCheck::passed("observation_exact_fts_sync")
-        } else {
-            DoctorCheck::failed(
-                "observation_exact_fts_sync",
-                format!(
-                    "unstemmed observation FTS row mismatch: table={observations}, fts={exact_fts_rows}; {REBUILD_REMEDY}"
-                ),
-            )
-        });
-        record(match &stems_fts {
-            None => DoctorCheck::passed("observation_stems_fts_integrity"),
-            Some(detail) => DoctorCheck::failed("observation_stems_fts_integrity", detail.clone()),
-        });
-        record(if stemmable == stems_rows && stems_rows == stems_fts_rows {
-            DoctorCheck::passed("observation_stems_sync")
-        } else {
-            DoctorCheck::failed(
-                "observation_stems_sync",
-                format!(
-                    "Snowball observation index row mismatch: memories that can have stems={stemmable}, stems={stems_rows}, fts={stems_fts_rows}; {REBUILD_REMEDY}"
-                ),
-            )
-        });
-        record(if prompts == prompt_fts_rows {
-            DoctorCheck::passed("prompt_fts_sync")
-        } else {
-            DoctorCheck::failed(
-                "prompt_fts_sync",
-                format!(
-                    "prompt FTS row mismatch: table={prompts}, fts={prompt_fts_rows}; {REBUILD_REMEDY}"
-                ),
-            )
-        });
-        // Both of these are what make concurrent access safe, so a database
-        // that lost them is worth reporting even though nothing is corrupt.
-        record(if journal_mode.eq_ignore_ascii_case("wal") {
-            DoctorCheck::passed("journal_mode")
-        } else {
-            DoctorCheck::failed(
-                "journal_mode",
-                format!("journal mode is {journal_mode}, not wal"),
-            )
-        });
-        // Against what this store asked for, not against a number written
-        // twice. The wait is a budget now — a hook sets its own, shorter than
-        // the time its agent will wait before killing it — so a fixed 5000
-        // here called every hook's store unhealthy. What the check is for is a
-        // store that would fail instantly under a second writer, and that is
-        // what zero means.
-        //
-        // And not against how much of that budget is left, because the budget
-        // is one deadline for the whole open: the schema pass spends part of it
-        // waiting out another process, and what it leaves is what the
-        // connection carries. That remainder is *supposed* to be smaller.
-        //
-        // This allowed a flat second of it and then failed, which is not a
-        // check on the store but a claim about the machine. Caught by the
-        // suite: with a release build running beside it the open spent 1.5 s of
-        // the five, the connection carried 3,451 ms, and `doctor` called a
-        // perfectly healthy store unhealthy — twice in twenty-five runs, and it
-        // would be every time on a slow disk. The same flat second that Windows
-        // sleep granularity ate out of `store_wait` this morning.
-        //
-        // What is left is the two things that are actually wrong: a connection
-        // that cannot wait at all, and one carrying more than was ever asked
-        // for, which would mean something reset it behind the store's back. How
-        // much of the budget survived the open is reported either way, in
-        // `busy_timeout_ms`, for anyone who wants to know.
-        let expected_ms = self.config.busy_timeout.as_millis() as i64;
-        record(if busy_timeout_ms > 0 && busy_timeout_ms <= expected_ms {
-            DoctorCheck::passed("busy_timeout")
-        } else if busy_timeout_ms <= 0 {
-            DoctorCheck::failed(
-                "busy_timeout",
-                "the store cannot wait for another writer at all".to_owned(),
-            )
-        } else {
-            DoctorCheck::failed(
-                "busy_timeout",
-                format!(
-                    "busy timeout is {busy_timeout_ms}ms, more than the {expected_ms}ms this store was opened with"
-                ),
-            )
-        });
-
-        record(if missing_triggers.is_empty() {
-            DoctorCheck::passed("full_text_triggers")
-        } else {
-            DoctorCheck::failed(
-                "full_text_triggers",
-                format!(
-                    "{} of the triggers that keep the full-text indexes level with the rows are missing ({}), so edits made since stopped reaching search; `leteo doctor --repair` puts them back and rebuilds",
-                    missing_triggers.len(),
-                    missing_triggers.join(", ")
-                ),
-            )
-        });
-        // One live memory per key, per project, per scope — and the one
-        // operation that can break it says so once and then nothing does.
-        //
-        // `memory-model.md` §10 states the invariant and names its exception:
-        // merging two projects can leave two memories under one key, because
-        // each may have had its own, and the merge reports how many rather than
-        // choosing which to keep. That report is a number in one reply. After
-        // it, the store carries an ambiguity nothing mentions again, and the
-        // cost is not theoretical: the next save under that key revises
-        // whichever row the lookup reaches first and the other can never be
-        // revised by its own key again. Driven on a merged store, that is
-        // exactly what happens, and `doctor` called it healthy.
-        //
-        // No `--repair`, deliberately. Which of the two keeps the key is a
-        // question about what they say, and Leteo does not read them; the
-        // remedy is a person or an agent looking at both.
-        // The file a person edits by hand, and the one thing here that is not
-        // in the database. Serde rejects the whole document over one bad value,
-        // so a `context_size` of "slimm" does not quietly fall back to the
-        // default size: it discards the language, the voice and every other
-        // answer in that file. `load` answers with the defaults whatever
-        // happens — a hook must not fail because somebody is mid-edit — and
-        // until now nothing anywhere ever said the file was being ignored.
-        record(
-            match self
+            .unwrap_or(-1);
+            let stems_fts_rows = indexed_row_count(&self.connection, "observations_stemmed");
+            record(if stemmable == stems_rows && stems_rows == stems_fts_rows {
+                DoctorCheck::passed("observation_stems_sync")
+            } else {
+                DoctorCheck::failed(
+                    "observation_stems_sync",
+                    format!(
+                        "Snowball observation index row mismatch: memories that can have stems={stemmable}, stems={stems_rows}, fts={stems_fts_rows}; {REBUILD_REMEDY}"
+                    ),
+                )
+            });
+        }
+        if want("prompt_fts_sync") {
+            record(if prompts == prompt_fts_rows {
+                DoctorCheck::passed("prompt_fts_sync")
+            } else {
+                DoctorCheck::failed(
+                    "prompt_fts_sync",
+                    format!(
+                        "prompt FTS row mismatch: table={prompts}, fts={prompt_fts_rows}; {REBUILD_REMEDY}"
+                    ),
+                )
+            });
+        }
+        if want("journal_mode") {
+            // What makes concurrent access safe, so a database that lost it is
+            // worth reporting even though nothing is corrupt — and worth a
+            // warning rather than an error, because a store used by one
+            // process at a time still works.
+            record(if journal_mode.eq_ignore_ascii_case("wal") {
+                DoctorCheck::passed("journal_mode")
+            } else {
+                DoctorCheck::warned(
+                    "journal_mode",
+                    format!("journal mode is {journal_mode}, not wal"),
+                )
+            });
+        }
+        if want("busy_timeout") {
+            // Against what this store asked for, not against a number written
+            // twice. The wait is a budget now — a hook sets its own, shorter
+            // than the time its agent will wait before killing it — so a fixed
+            // 5000 here called every hook's store unhealthy. What the check is
+            // for is a store that would fail instantly under a second writer,
+            // and that is what zero means.
+            //
+            // And not against how much of that budget is left, because the
+            // budget is one deadline for the whole open: the schema pass spends
+            // part of it waiting out another process, and what it leaves is what
+            // the connection carries. That remainder is *supposed* to be
+            // smaller.
+            //
+            // This allowed a flat second of it and then failed, which is not a
+            // check on the store but a claim about the machine. Caught by the
+            // suite: with a release build running beside it the open spent 1.5 s
+            // of the five, the connection carried 3,451 ms, and `doctor` called
+            // a perfectly healthy store unhealthy — twice in twenty-five runs,
+            // and it would be every time on a slow disk. The same flat second
+            // that Windows sleep granularity ate out of `store_wait` this
+            // morning.
+            //
+            // What is left is the two things that are actually wrong: a
+            // connection that cannot wait at all, and one carrying more than was
+            // ever asked for, which would mean something reset it behind the
+            // store's back. How much of the budget survived the open is reported
+            // either way, in `busy_timeout_ms`, for anyone who wants to know.
+            let expected_ms = self.config.busy_timeout.as_millis() as i64;
+            record(if busy_timeout_ms > 0 && busy_timeout_ms <= expected_ms {
+                DoctorCheck::passed("busy_timeout")
+            } else if busy_timeout_ms <= 0 {
+                DoctorCheck::warned(
+                    "busy_timeout",
+                    "the store cannot wait for another writer at all".to_owned(),
+                )
+            } else {
+                DoctorCheck::warned(
+                    "busy_timeout",
+                    format!(
+                        "busy timeout is {busy_timeout_ms}ms, more than the {expected_ms}ms this store was opened with"
+                    ),
+                )
+            });
+        }
+        if want("full_text_triggers") {
+            let missing_triggers =
+                crate::store::schema::missing_full_text_triggers(&self.connection);
+            record(if missing_triggers.is_empty() {
+                DoctorCheck::passed("full_text_triggers")
+            } else {
+                DoctorCheck::failed(
+                    "full_text_triggers",
+                    format!(
+                        "{} of the triggers that keep the full-text indexes level with the rows are missing ({}), so edits made since stopped reaching search; `leteo doctor --repair` puts them back and rebuilds",
+                        missing_triggers.len(),
+                        missing_triggers.join(", ")
+                    ),
+                )
+            });
+        }
+        if want("settings_readable") {
+            // The file a person edits by hand, and the one thing here that is
+            // not in the database. Serde rejects the whole document over one bad
+            // value, so a `context_size` of "slimm" does not quietly fall back
+            // to the default size: it discards the language, the voice and every
+            // other answer in that file. `load` answers with the defaults
+            // whatever happens — a hook must not fail because somebody is
+            // mid-edit — and until now nothing anywhere ever said the file was
+            // being ignored.
+            let ignored = self
                 .config
                 .database_path
                 .parent()
                 .map(crate::settings::ignored)
-                .unwrap_or_default()
-            {
-                ignored if ignored.is_empty() => DoctorCheck::passed("settings_readable"),
-                ignored => DoctorCheck::failed(
+                .unwrap_or_default();
+            record(if ignored.is_empty() {
+                DoctorCheck::passed("settings_readable")
+            } else {
+                DoctorCheck::warned(
                     "settings_readable",
                     format!(
                         "the settings beside this database are being read past and the default used instead, on: {}; every other answer in the file still counts",
                         ignored.join("; ")
                     ),
-                ),
-            },
-        );
-        // The model semantic search reads, which lives in a file and not in the
-        // database, and which three different things can be wrong with. Naming
-        // which is the point: "search is by words only" is the symptom of all
-        // three, and the fix differs. An optional thing that is not installed is
-        // not an unhealthy store, so a missing model is noted and a present one
-        // that is not the model this build accepts is an issue.
-        // One read of the setting for both checks about the semantic stage, so
-        // `--check semantic_model` and `--check semantic_vectors` cannot disagree
-        // about whether it is on.
-        let semantic_on = self
-            .config
-            .database_path
-            .parent()
-            .map(crate::settings::load)
-            .unwrap_or_default()
-            .semantic_search();
-        record(if !semantic_on {
-            DoctorCheck::noted(
-                "semantic_model",
-                "semantic search is turned off by the semantic_search setting, so the model is not looked for",
-            )
-        } else {
-            match crate::semantic::status(self.data_dir(), self.model_dir()) {
-                status @ crate::semantic::Status::Verified(_) => {
-                    DoctorCheck::noted("semantic_model", status.explain())
-                }
-                status @ crate::semantic::Status::Missing(_) => {
-                    DoctorCheck::noted("semantic_model", status.explain())
-                }
-                status => DoctorCheck::failed("semantic_model", status.explain()),
-            }
-        });
-        // How much of the store the semantic stage can see.
-        //
-        // A note rather than a fault: vectors are derived and optional, a store
-        // with none searches by words alone, and the backfill fills them. The
-        // count is here because a missing vector was the one thing nobody could
-        // see — a search that finds nothing by meaning looks exactly like a
-        // store with nothing to find. Turned off by the setting, nothing embeds
-        // and nothing reads, so the count would name a repair that does nothing
-        // and it says so instead.
-        record(if !semantic_on {
-            DoctorCheck::noted(
-                "semantic_vectors",
-                "semantic search is turned off by the semantic_search setting, so no vector is made or read",
-            )
-        } else {
-            match self.vector_coverage() {
-                Ok((covered, total)) if covered == total => DoctorCheck::noted(
-                    "semantic_vectors",
-                    format!(
-                        "every one of the {total} memories the stage can reach has a current vector"
-                    ),
-                ),
-                Ok((covered, total)) => DoctorCheck::noted(
-                    "semantic_vectors",
-                    format!(
-                        "{covered} of {total} memories the stage can reach have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
-                    ),
-                ),
-                Err(error) => DoctorCheck::failed(
-                    "semantic_vectors",
-                    format!("the vector coverage could not be read: {error}"),
-                ),
-            }
-        });
-        record(match shared_topic_keys(&self.connection) {
-            0 => DoctorCheck::passed("topic_key_uniqueness"),
-            shared => DoctorCheck::failed(
-                "topic_key_uniqueness",
-                format!(
-                    "{shared} topic key(s) name more than one live memory in the same project and scope, so a save under one of them revises whichever comes first and leaves the rest unreachable by that key; read them with `leteo search <key>` and give one of each pair a key of its own"
-                ),
-            ),
-        });
-        // A memory filed under a word no filter can ask for.
-        //
-        // The category is a search filter. `mem_save` folds the close synonyms
-        // and keeps anything else verbatim, which is deliberate — a word Leteo
-        // does not know is still what somebody meant — and the save door says so
-        // at the moment it happens. Nothing ever said it about the memories
-        // already in: the hint is on the way in, and a store that collected them
-        // before the hint existed had no way to find out.
-        //
-        // Measured on a real store of 4,121: thirty-eight, under six words —
-        // `implementation`, `optimization`, `project`, `reference`, `feature`.
-        // Every one of them is invisible to `mem_search` with a `type`, which is
-        // how an agent narrows to decisions before proposing one.
-        //
-        // No `--repair`. Which of the eight a memory belongs under is a question
-        // about what it says, and Leteo does not read them.
-        record(match unsearchable_kinds(&self.connection).as_slice() {
-            [] => DoctorCheck::passed("observation_type_searchable"),
-            kinds => {
-                let total: i64 = kinds.iter().map(|(_, count)| count).sum();
-                let named = kinds
-                    .iter()
-                    .take(UNSEARCHABLE_KIND_EXAMPLES)
-                    .map(|(kind, count)| format!("{kind} ({count})"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let rest = kinds.len().saturating_sub(UNSEARCHABLE_KIND_EXAMPLES);
-                let and_more = if rest > 0 {
-                    format!(", and {rest} more word(s)")
-                } else {
-                    String::new()
-                };
-                DoctorCheck::failed(
-                    "observation_type_searchable",
-                    format!(
-                        "{total} memories carry a type no filtered search can name: {named}{and_more}. A search narrowed by type will never return them; call mem_update with the closest of {}, or leave them where the word matters more than being found by filter",
-                        crate::memory::rules::KINDS.join(", ")
-                    ),
                 )
-            }
-        });
-        record(match stale_hashes {
-            0 => DoctorCheck::passed("observation_hash_sync"),
-            stale => DoctorCheck::failed(
-                "observation_hash_sync",
-                format!(
-                    "{stale} memories carry a hash that no longer describes them, so nothing can be deduplicated against them; run `leteo doctor --repair` to take it again"
+            });
+        }
+        if want("semantic_model") {
+            // The model semantic search reads, which lives in a file and not in
+            // the database, and which three different things can be wrong with.
+            // Naming which is the point: "search is by words only" is the
+            // symptom of all three, and the fix differs. A missing or unverified
+            // model is a warning — the store works, one capability is gone —
+            // and never an error, because an optional thing that is not there is
+            // not a broken store.
+            record(
+                if !self
+                    .config
+                    .database_path
+                    .parent()
+                    .map(crate::settings::load)
+                    .unwrap_or_default()
+                    .semantic_search()
+                {
+                    DoctorCheck::noted(
+                        "semantic_model",
+                        "semantic search is turned off by the semantic_search setting, so the model is not looked for",
+                    )
+                } else {
+                    match crate::semantic::status(self.data_dir(), self.model_dir()) {
+                        status @ crate::semantic::Status::Verified(_) => {
+                            DoctorCheck::noted("semantic_model", status.explain())
+                        }
+                        status => DoctorCheck::warned("semantic_model", status.explain()),
+                    }
+                },
+            );
+        }
+        if want("semantic_vectors") {
+            // How much of the store the semantic stage can see.
+            //
+            // A warning rather than a note, like the missing model: a store with
+            // no vectors searches by words alone, and this is the one place that
+            // says so — a search that finds nothing by meaning looks exactly like
+            // a store with nothing to find. Turned off by the setting, nothing
+            // embeds and nothing reads, so the count would name a repair that
+            // does nothing and it says so instead.
+            record(
+                if !self
+                    .config
+                    .database_path
+                    .parent()
+                    .map(crate::settings::load)
+                    .unwrap_or_default()
+                    .semantic_search()
+                {
+                    DoctorCheck::noted(
+                        "semantic_vectors",
+                        "semantic search is turned off by the semantic_search setting, so no vector is made or read",
+                    )
+                } else {
+                    match self.vector_coverage() {
+                        Ok((covered, total)) if covered == total => DoctorCheck::noted(
+                            "semantic_vectors",
+                            format!(
+                                "every one of the {total} memories the stage can reach has a current vector"
+                            ),
+                        ),
+                        Ok((covered, total)) => DoctorCheck::warned(
+                            "semantic_vectors",
+                            format!(
+                                "{covered} of {total} memories the stage can reach have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
+                            ),
+                        ),
+                        Err(error) => DoctorCheck::failed(
+                            "semantic_vectors",
+                            format!("the vector coverage could not be read: {error}"),
+                        ),
+                    }
+                },
+            );
+        }
+        if want("topic_key_uniqueness") {
+            // One live memory per key, per project, per scope — and the one
+            // operation that can break it says so once and then nothing does.
+            //
+            // `memory-model.md` §10 states the invariant and names its
+            // exception: merging two projects can leave two memories under one
+            // key, because each may have had its own, and the merge reports how
+            // many rather than choosing which to keep. That report is a number
+            // in one reply. After it, the store carries an ambiguity nothing
+            // mentions again, and the cost is not theoretical: the next save
+            // under that key revises whichever row the lookup reaches first and
+            // the other can never be revised by its own key again. Driven on a
+            // merged store, that is exactly what happens, and `doctor` called it
+            // healthy.
+            //
+            // No `--repair`, deliberately. Which of the two keeps the key is a
+            // question about what they say, and Leteo does not read them.
+            record(match shared_topic_keys(&self.connection) {
+                0 => DoctorCheck::passed("topic_key_uniqueness"),
+                shared => DoctorCheck::failed(
+                    "topic_key_uniqueness",
+                    format!(
+                        "{shared} topic key(s) name more than one live memory in the same project and scope, so a save under one of them revises whichever comes first and leaves the rest unreachable by that key; read them with `leteo search <key>` and give one of each pair a key of its own"
+                    ),
                 ),
-            ),
-        });
-        // Captures a busy store could not take and no later open has replayed.
-        //
-        // A busy store is not damage, and the check says so with work waiting
-        // rather than with a fault: the count, the age of the oldest, and the
-        // flag that replays them. Empty is the ordinary state and passes, so
-        // the check is silent until a hook has actually lost a race.
-        let spool = crate::hooks::spool::pending(&crate::hooks::spool::directory(self.data_dir()));
-        record(match spool.entries {
-            0 => DoctorCheck::passed("hook_spool"),
-            entries => DoctorCheck::failed(
-                "hook_spool",
-                format!(
-                    "{entries} hook capture(s) are waiting beside the store to be stored and the oldest is {} old; `leteo doctor --repair` replays them",
-                    spool
-                        .oldest
-                        .map(crate::hooks::spool::describe_age)
-                        .unwrap_or_else(|| "a moment".to_owned())
+            });
+        }
+        if want("observation_type_searchable") {
+            // A memory filed under a word no filter can ask for.
+            //
+            // The category is a search filter, and the save door folds an
+            // unknown word onto `discovery` — `normalize::kind` again — because
+            // a memory nothing can filter to is a memory nothing finds. A store
+            // written before that fold still holds the old words, and this is
+            // where it is said. A warning rather than an error: the memories are
+            // there and a full-text search still reaches them.
+            //
+            // `doctor --repair` folds them through the same `normalize::kind`
+            // the door uses, which is the one place the rule lives.
+            record(match unsearchable_kinds(&self.connection).as_slice() {
+                [] => DoctorCheck::passed("observation_type_searchable"),
+                kinds => {
+                    let total: i64 = kinds.iter().map(|(_, count)| count).sum();
+                    let named = kinds
+                        .iter()
+                        .take(UNSEARCHABLE_KIND_EXAMPLES)
+                        .map(|(kind, count)| format!("{kind} ({count})"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let rest = kinds.len().saturating_sub(UNSEARCHABLE_KIND_EXAMPLES);
+                    let and_more = if rest > 0 {
+                        format!(", and {rest} more word(s)")
+                    } else {
+                        String::new()
+                    };
+                    DoctorCheck::warned(
+                        "observation_type_searchable",
+                        format!(
+                            "{total} memories carry a type no filtered search can name: {named}{and_more}. The save door now folds an unknown type onto {}; `leteo doctor --repair` folds these too",
+                            crate::memory::rules::KINDS.join(", ")
+                        ),
+                    )
+                }
+            });
+        }
+        if want("observation_hash_sync") {
+            // The hash is what dedupe compares — a save whose body matches an
+            // existing one bumps that row instead of writing a second — so a
+            // hash that has stopped matching its own content is a memory nothing
+            // can ever be deduplicated against, silently and for good.
+            //
+            // It happens. A real store of 3,940 held three, all from one project
+            // on one day five weeks earlier, none of them ever revised, and the
+            // text their hashes were taken of is in no row of that store.
+            // Whatever wrote them is gone; what was missing was anything that
+            // would notice.
+            record(match stale_hash_count(&self.connection) {
+                0 => DoctorCheck::passed("observation_hash_sync"),
+                stale => DoctorCheck::failed(
+                    "observation_hash_sync",
+                    format!(
+                        "{stale} memories carry a hash that no longer describes them, so nothing can be deduplicated against them; run `leteo doctor --repair` to take it again"
+                    ),
                 ),
-            ),
-        });
+            });
+        }
+        if want("hook_spool") {
+            // Captures a busy store could not take and no later open has
+            // replayed. A busy store is not damage, and the check says so with
+            // work waiting rather than with a fault, as a warning: the count,
+            // the age of the oldest, and the flag that replays them.
+            let spool =
+                crate::hooks::spool::pending(&crate::hooks::spool::directory(self.data_dir()));
+            record(match spool.entries {
+                0 => DoctorCheck::passed("hook_spool"),
+                entries => DoctorCheck::warned(
+                    "hook_spool",
+                    format!(
+                        "{entries} hook capture(s) are waiting beside the store to be stored and the oldest is {} old; `leteo doctor --repair` replays them",
+                        spool
+                            .oldest
+                            .map(crate::hooks::spool::describe_age)
+                            .unwrap_or_else(|| "a moment".to_owned())
+                    ),
+                ),
+            });
+        }
 
-        let healthy = issues.is_empty();
         Ok(DoctorReport {
-            healthy,
+            healthy: !checks
+                .iter()
+                .any(|check| !check.ok && check.severity == DoctorSeverity::Error),
             schema_version: schema_version(&self.connection)?,
             schema_supported: SCHEMA_VERSION,
             checks,
             integrity_check,
             foreign_key_violations,
-            observation_fts_ok: observation_fts.is_none(),
-            prompt_fts_ok: prompt_fts.is_none(),
+            observation_fts_ok,
+            prompt_fts_ok,
             observations,
             observation_fts_rows,
             prompts,

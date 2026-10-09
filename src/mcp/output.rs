@@ -602,7 +602,9 @@ pub(super) struct DoctorOutput {
     pub(super) schema_version: i32,
     pub(super) schema_supported: i32,
     pub(super) checks: Vec<DoctorCheckOutput>,
-    pub(super) integrity_check: Vec<String>,
+    /// The whole-file check's verdict, absent when that check was not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) integrity_check: Option<Vec<String>>,
     /// The violations, as examples rather than as an inventory.
     ///
     /// `PRAGMA foreign_key_check` answers one row per orphaned row, and this
@@ -614,12 +616,14 @@ pub(super) struct DoctorOutput {
     /// than anything done per row, and a person who wants the inventory has
     /// `leteo doctor` at a terminal, where there is no context window to spend
     /// and the store's own report is uncut.
-    pub(super) foreign_key_violations: Vec<ForeignKeyViolationOutput>,
+    pub(super) foreign_key_violations: Option<Vec<ForeignKeyViolationOutput>>,
     /// How many violations there were beyond the ones listed.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub(super) foreign_key_violations_omitted: usize,
-    pub(super) observation_fts_ok: bool,
-    pub(super) prompt_fts_ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) observation_fts_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) prompt_fts_ok: Option<bool>,
     pub(super) observations: i64,
     pub(super) observation_fts_rows: i64,
     pub(super) prompts: i64,
@@ -646,17 +650,19 @@ impl DoctorOutput {
             schema_supported: report.schema_supported,
             checks: report.checks.into_iter().map(Into::into).collect(),
             integrity_check: report.integrity_check,
-            foreign_key_violations: report
-                .foreign_key_violations
-                .iter()
-                .take(VIOLATION_EXAMPLES)
-                .cloned()
-                .map(Into::into)
-                .collect(),
+            foreign_key_violations: report.foreign_key_violations.as_ref().map(|violations| {
+                violations
+                    .iter()
+                    .take(VIOLATION_EXAMPLES)
+                    .cloned()
+                    .map(Into::into)
+                    .collect()
+            }),
             foreign_key_violations_omitted: report
                 .foreign_key_violations
-                .len()
-                .saturating_sub(VIOLATION_EXAMPLES),
+                .as_ref()
+                .map(|violations| violations.len().saturating_sub(VIOLATION_EXAMPLES))
+                .unwrap_or(0),
             observation_fts_ok: report.observation_fts_ok,
             prompt_fts_ok: report.prompt_fts_ok,
             observations: report.observations,
@@ -677,6 +683,12 @@ pub(super) struct DoctorCheckOutput {
     pub(super) ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) detail: Option<String>,
+    /// `error`, `warning` or `info`. Only an `error` makes the report
+    /// unhealthy; a `warning` is a degraded capability and is kept here.
+    ///
+    /// Appended after `detail`, as on [`crate::memory::model::DoctorCheck`],
+    /// so the two reports carry the same fields in the same order.
+    pub(super) severity: String,
 }
 
 impl From<crate::memory::model::DoctorCheck> for DoctorCheckOutput {
@@ -684,6 +696,7 @@ impl From<crate::memory::model::DoctorCheck> for DoctorCheckOutput {
         Self {
             code: value.code,
             ok: value.ok,
+            severity: value.severity.as_str().to_owned(),
             detail: value.detail,
         }
     }
@@ -773,22 +786,17 @@ pub(super) const UNNAMED_SUMMARY_HINT: &str = "This summary was saved without a 
     not a heading and is not a date. Call mem_update on it with a title, or save \
     it again opening with a line that says what the session was for.";
 
-/// What to say when a memory was filed under a word nothing searches for.
-///
 /// What to say when the scope somebody sent is not one of the three.
 ///
-/// The sibling of [`UNFILED_KIND_HINT`], and the louder of the two. A type Leteo
-/// does not know is kept verbatim: the word survives, and what it costs is that
-/// a search narrowed by type will not return the memory. A scope it does not
-/// know is *replaced* — `normalize::scope` folds anything else onto `project`,
-/// because losing a memory at the door over a label is a worse answer than
-/// filing it where almost all of them belong — so the caller's own value is
-/// discarded, and a read narrowed to the scope they asked for will never return
-/// the memory they believe they filed there.
+/// A scope Leteo does not know is *replaced* — `normalize::scope` folds
+/// anything else onto `project`, because losing a memory at the door over a
+/// label is a worse answer than filing it where almost all of them belong — so
+/// the caller's own value is discarded, and a read narrowed to the scope they
+/// asked for will never return the memory they believe they filed there.
 ///
-/// One door said so and the other did not. Driven side by side on the same
-/// call, `type: implementation` came back with a hint and `scope: personnal`
-/// came back with nothing at all, filed as `project`.
+/// Said to whoever wrote it, while they still know what the memory was. A type
+/// Leteo does not know is folded the same way and needs no sentence: it becomes
+/// a documented kind, which a filter can reach.
 pub(crate) fn refiled_scope_hint(asked: &str) -> String {
     format!(
         "Scope {asked:?} is not one of {}, so this memory was filed as {}. A read narrowed to the scope you asked for will not return it.",
@@ -796,30 +804,6 @@ pub(crate) fn refiled_scope_hint(asked: &str) -> String {
         crate::memory::normalize::SCOPES[0]
     )
 }
-
-/// A kind outside the eight is stored verbatim on purpose, and folding is only
-/// safe for a synonym with one obvious target: `bug` is a `bugfix` and nothing
-/// else, while `optimization` could as easily be a bugfix, a decision or a
-/// discovery, and guessing would file it wrong and say nothing. So the word
-/// survives — and the memory becomes one a search narrowed by type can never
-/// return, which is the failure `mem_save`'s own `type` description warns
-/// about.
-///
-/// A real store had 36 of them across five words: `implementation` 22,
-/// `project` 5, `optimization` 4, `reference` 3, `feature` 2 — and they were
-/// still arriving, four on the day this was written. The fold table had been
-/// reactive until now: somebody notices a word and adds it, which is why
-/// `manual` sat there for eighteen memories before anybody looked. This closes
-/// the loop for every word nobody has thought of yet.
-///
-/// Said to whoever wrote it, while they still know what the memory was, and on
-/// both surfaces: an agent gets it in the answer, a person at a terminal on
-/// stderr.
-pub(crate) const UNFILED_KIND_HINT: &str = "This memory's type is not one of the \
-    eight a search can narrow by - bugfix, decision, policy, architecture, \
-    discovery, pattern, config, preference - so a search filtered by type will \
-    never return it. Call mem_update with the closest of the eight, or leave it \
-    if the word matters more than being found by filter.";
 
 /// What to say when a search matched nothing.
 ///
@@ -1264,7 +1248,27 @@ pub(super) struct ContextOutput {
     /// How many sessions the byte budget left out.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub(super) sessions_omitted: usize,
+    /// Set when the byte bound asked for was still not met after every entry
+    /// was dropped, because the envelope alone is larger than the bound.
+    ///
+    /// `byte_limit` can shrink the answer but cannot shrink it past what it
+    /// always carries — the project, the language, the empty lists. A value
+    /// under that floor is answered as well as it can be and says so, rather
+    /// than reporting a bound it did not keep.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) byte_limit_unmet: bool,
 }
+
+/// The bytes a `mem_context` answer carries before it holds any memory, session
+/// or prompt — the floor a `byte_limit` cannot shrink past.
+///
+/// Measured by serializing the empty answer with the default language, which
+/// came to 350 bytes. `within` drops entries but never the envelope, so a bound
+/// below this cannot be met and the reply says so with `byte_limit_unmet`. The
+/// floor is the *default* envelope; a chosen language directive is longer and
+/// moves the true floor, which is why the not-met answer is decided by
+/// measuring the reply rather than by comparing against this number.
+pub(crate) const CONTEXT_ENVELOPE_FLOOR: usize = 350;
 
 /// A memory named rather than quoted: what it is, and how to fetch it.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1401,6 +1405,7 @@ impl ContextOutput {
             memories_omitted: 0,
             prompts_omitted: 0,
             sessions_omitted: 0,
+            byte_limit_unmet: false,
         }
     }
 
@@ -1438,6 +1443,10 @@ impl ContextOutput {
                 self.sessions_omitted += 1;
                 continue;
             }
+            // Nothing left to drop and the answer is still over the bound: the
+            // envelope alone is larger than what was asked for. Reported rather
+            // than returned as though the bound had been kept.
+            self.byte_limit_unmet = true;
             return self;
         }
     }

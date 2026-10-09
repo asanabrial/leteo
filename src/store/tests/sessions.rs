@@ -46,7 +46,11 @@ fn deleting_a_project_keeps_the_sessions_that_hold_another_projects_rows() {
         "and that prompt is untouched"
     );
     assert!(
-        store.doctor().unwrap().foreign_key_violations.is_empty(),
+        store
+            .doctor()
+            .unwrap()
+            .foreign_key_violations
+            .is_some_and(|violations| violations.is_empty()),
         "the store has to still hold together"
     );
 }

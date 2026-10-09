@@ -460,3 +460,232 @@ fn an_export_carries_the_version_history_and_an_import_restores_it() {
         1
     );
 }
+
+/// A find/replace is a content-changing write like any other: it keeps the text
+/// it replaced, moves the revision count once, and stores the hash of what it
+/// wrote.
+#[test]
+fn a_find_and_replace_keeps_the_version_it_replaced() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Una decisión", "el método antiguo aquí"))
+        .unwrap()
+        .observation;
+
+    let updated = store
+        .update_observation_with_replaced(
+            saved.id,
+            None,
+            UpdateObservation {
+                find: Some("antiguo".to_owned()),
+                replace: Some("nuevo".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(updated.observation.content, "el método nuevo aquí");
+    assert_eq!(
+        updated.observation.revision_count,
+        saved.revision_count + 1,
+        "the revision count moves once"
+    );
+    let versions = store.observation_versions(&saved.sync_id).unwrap();
+    assert_eq!(
+        versions.len(),
+        1,
+        "exactly one version, the text it replaced"
+    );
+    assert_eq!(versions[0].revision, saved.revision_count);
+    assert_eq!(versions[0].content, "el método antiguo aquí");
+
+    let stored_hash: String = store
+        .connection
+        .query_row(
+            "SELECT normalized_hash FROM observations WHERE id = ?1",
+            [saved.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_hash,
+        crate::memory::normalize::normalized_hash("el método nuevo aquí"),
+        "the row carries the hash of the edited text, not of the text it replaced"
+    );
+}
+
+/// A `find` that names more than one span is refused, and the refusal leaves the
+/// revision, the history and the journal exactly as they were.
+#[test]
+fn a_find_that_occurs_twice_changes_nothing() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Repetido", "aquí y aquí"))
+        .unwrap()
+        .observation;
+    let queued = |store: &Store| -> i64 {
+        store
+            .connection
+            .query_row("SELECT COUNT(*) FROM sync_mutations", [], |row| row.get(0))
+            .unwrap()
+    };
+    let before = queued(&store);
+
+    let refused = store.update_observation_with_replaced(
+        saved.id,
+        None,
+        UpdateObservation {
+            find: Some("aquí".to_owned()),
+            replace: Some("allí".to_owned()),
+            ..UpdateObservation::default()
+        },
+    );
+    assert!(
+        matches!(refused, Err(StoreError::EditAmbiguous { matches: 2 })),
+        "{refused:?}"
+    );
+
+    let after = store.get_observation(saved.id).unwrap();
+    assert_eq!(after.content, "aquí y aquí", "the body is untouched");
+    assert_eq!(
+        after.revision_count, saved.revision_count,
+        "the revision count does not move"
+    );
+    assert!(
+        store
+            .observation_versions(&saved.sync_id)
+            .unwrap()
+            .is_empty(),
+        "no version was kept"
+    );
+    assert_eq!(queued(&store), before, "and nothing was journalled");
+}
+
+/// A `find` that is not in the body is refused for the same reason, with its own
+/// code: nothing is written and the store is left as it was.
+#[test]
+fn a_find_that_is_absent_changes_nothing() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Ausente", "el cuerpo de siempre"))
+        .unwrap()
+        .observation;
+    let queued = |store: &Store| -> i64 {
+        store
+            .connection
+            .query_row("SELECT COUNT(*) FROM sync_mutations", [], |row| row.get(0))
+            .unwrap()
+    };
+    let before = queued(&store);
+
+    let refused = store.update_observation_with_replaced(
+        saved.id,
+        None,
+        UpdateObservation {
+            find: Some("no está".to_owned()),
+            replace: Some("da igual".to_owned()),
+            ..UpdateObservation::default()
+        },
+    );
+    assert!(
+        matches!(refused, Err(StoreError::EditNotFound)),
+        "{refused:?}"
+    );
+
+    let after = store.get_observation(saved.id).unwrap();
+    assert_eq!(
+        after.content, "el cuerpo de siempre",
+        "the body is untouched"
+    );
+    assert_eq!(after.revision_count, saved.revision_count);
+    assert!(
+        store
+            .observation_versions(&saved.sync_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(queued(&store), before, "and nothing was journalled");
+}
+
+/// A replacement goes through the same redaction a whole-body write does, so a
+/// `<private>` span cannot arrive by the partial door and be handed back later.
+#[test]
+fn a_private_span_written_through_replace_is_not_stored() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Token", "usa TOKEN aquí"))
+        .unwrap()
+        .observation;
+
+    let updated = store
+        .update_observation_with_replaced(
+            saved.id,
+            None,
+            UpdateObservation {
+                find: Some("TOKEN".to_owned()),
+                replace: Some("<private>ghp_secreto</private>".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+
+    assert!(
+        !updated.observation.content.contains("ghp_secreto"),
+        "a private span never lands through a replace: {}",
+        updated.observation.content
+    );
+    assert!(updated.observation.content.contains("[REDACTED]"));
+}
+
+/// The edit a find/replace makes is an ordinary revision, so the peer receives
+/// it as an upsert carrying the edited body rather than as anything new.
+#[test]
+fn a_find_and_replace_reaches_the_peer_as_an_upsert() {
+    let (_source_temp, mut source) = store();
+    source.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = source
+        .add_observation(observation("s1", "Replicada", "el método antiguo"))
+        .unwrap()
+        .observation;
+    source
+        .update_observation_with_replaced(
+            saved.id,
+            None,
+            UpdateObservation {
+                find: Some("antiguo".to_owned()),
+                replace: Some("nuevo".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+
+    let upsert = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap()
+        .into_iter()
+        .rfind(|mutation| mutation.entity == crate::sync::ENTITY_OBSERVATION)
+        .expect("the edit queues an observation upsert");
+
+    let (_peer_temp, mut peer) = store();
+    peer.create_session("s1", "leteo", "C:/repo").unwrap();
+    peer.apply_pulled_sync_mutation("cloud", &upsert).unwrap();
+
+    let (content, revision_count): (String, i64) = peer
+        .connection
+        .query_row(
+            "SELECT content, revision_count FROM observations WHERE sync_id = ?1",
+            [&saved.sync_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(content, "el método nuevo", "the edited body travelled");
+    assert_eq!(
+        revision_count,
+        saved.revision_count + 1,
+        "and it is the revision the edit made"
+    );
+}

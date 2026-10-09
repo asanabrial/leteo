@@ -25,7 +25,7 @@ use crate::{
         ConsolidateObservations, DoctorReport, ForeignKeyViolation, JudgeBySemanticParams,
         JudgeRelationParams, MergeResult, Observation, ObservationVersion, PassiveCapture,
         PassiveCaptureResult, Prompt, Relation, SearchMode, SearchOptions, SearchResult, Session,
-        SessionSummary, Stats, TimelineEntry, TimelineResult, UpdateObservation,
+        SessionSummary, Stats, TimelineEntry, TimelineResult, UpdateObservation, UpdateOutcome,
     },
     memory::normalize,
     project::{ProjectDetection, detect_current_project, detect_project},
@@ -1025,6 +1025,8 @@ fn store_error(error: StoreError) -> CallToolResult {
         StoreError::SessionNotFound(_) => "session_not_found",
         StoreError::ObservationNotFound(_) => "observation_not_found",
         StoreError::ObservationDeleted { .. } => "observation_deleted",
+        StoreError::EditNotFound => error_code::EDIT_NOT_FOUND,
+        StoreError::EditAmbiguous { .. } => error_code::EDIT_AMBIGUOUS,
         StoreError::ConsolidationSources { .. } => error_code::CONSOLIDATION_SOURCES,
         StoreError::RelationNotFound(_) => "relation_not_found",
         StoreError::InvalidRelationVerb { .. } => "invalid_relation",
@@ -1059,6 +1061,8 @@ mod error_code {
     pub const AMBIGUOUS_PROJECT: &str = "ambiguous_project";
     pub const STORE_UNAVAILABLE: &str = "store_unavailable";
     pub const QUERY_TOO_LONG: &str = "query_too_long";
+    pub const EDIT_NOT_FOUND: &str = "edit_not_found";
+    pub const EDIT_AMBIGUOUS: &str = "edit_ambiguous";
     pub const CONSOLIDATION_SOURCES: &str = "consolidation_sources";
 }
 
@@ -1145,8 +1149,8 @@ mod tools;
 
 use output::*;
 pub(crate) use output::{
-    ELSEWHERE_CAP, MORE_MATCHED_HINT, NO_MATCH_HINT, PARTIAL_MATCH_HINT, SEMANTIC_MATCH_HINT,
-    UNFILED_KIND_HINT, clamped_hint, corrected_terms_hint, no_match_here_hint,
+    CONTEXT_ENVELOPE_FLOOR, ELSEWHERE_CAP, MORE_MATCHED_HINT, NO_MATCH_HINT, PARTIAL_MATCH_HINT,
+    SEMANTIC_MATCH_HINT, clamped_hint, corrected_terms_hint, no_match_here_hint,
 };
 use params::*;
 

@@ -331,10 +331,14 @@ fn doctor_reports_sqlite_fts_foreign_keys_and_journal_health() {
 
     let report = store.doctor().unwrap();
     assert!(report.healthy, "{:?}", report.issues);
-    assert_eq!(report.integrity_check, ["ok"]);
-    assert!(report.foreign_key_violations.is_empty());
-    assert!(report.observation_fts_ok);
-    assert!(report.prompt_fts_ok);
+    assert_eq!(report.integrity_check, Some(vec!["ok".to_owned()]));
+    assert_eq!(
+        report.foreign_key_violations,
+        Some(Vec::new()),
+        "the check ran and found nothing"
+    );
+    assert_eq!(report.observation_fts_ok, Some(true));
+    assert_eq!(report.prompt_fts_ok, Some(true));
     assert_eq!(report.observations, report.observation_fts_rows);
     assert_eq!(report.prompts, report.prompt_fts_rows);
     assert!(report.pending_mutations >= 3);

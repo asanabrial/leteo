@@ -34,10 +34,9 @@ pub(super) struct SaveParams {
     /// Backward-compatible alias for content.
     pub(super) observation: Option<String>,
     /// One of: bugfix, decision, policy, architecture, discovery, pattern,
-    /// config, preference. The category is a search filter, so a word outside this list
-    /// is a memory that filtering never returns — a real store collected
-    /// `implementation`, `feature` and `manual` that way. Close synonyms are
-    /// folded on the way in; anything else is kept verbatim.
+    /// config, preference. The category is a search filter, and a word outside
+    /// this list folds onto `discovery` on the way in, so the memory is still
+    /// reachable by a filter. Close synonyms fold onto their own kind.
     #[serde(rename = "type", default = "default_observation_type")]
     pub(super) kind: String,
     /// Name of the tool that produced the observation.
@@ -82,8 +81,17 @@ pub(super) struct UpdateParams {
     pub(super) kind: Option<String>,
     /// New title.
     pub(super) title: Option<String>,
-    /// New content.
+    /// New content: the whole body. Refused together with `find`.
     pub(super) content: Option<String>,
+    /// Exact text in the stored body to replace, once. The body is read and
+    /// edited inside the write transaction, so this counts against what is
+    /// stored. A `find` that is absent or matches more than once changes
+    /// nothing and is refused as `edit_not_found` or `edit_ambiguous`. Covers
+    /// the body, not the title. Refused together with `content`.
+    pub(super) find: Option<String>,
+    /// What replaces the one span `find` names. Absent means the span is
+    /// removed. `replace` without `find` is refused.
+    pub(super) replace: Option<String>,
     /// Project to move this memory into. `expected_project` names where it is
     /// now, and this names where it goes.
     pub(super) project: Option<String>,
@@ -98,6 +106,7 @@ impl UpdateParams {
         self.kind.is_none()
             && self.title.is_none()
             && self.content.is_none()
+            && self.find.is_none()
             && self.project.is_none()
             && self.scope.is_none()
             && self.topic_key.is_none()
@@ -262,6 +271,13 @@ pub(super) struct ContextParams {
     #[schemars(range(min = 0, max = 20))]
     #[serde(default = "default_context_prompts")]
     pub(super) prompt_limit: usize,
+    /// Ceiling on the bytes this answer may carry. Also accepted as `max_bytes`.
+    /// It only ever shrinks the reply below the size setting, never raises it.
+    /// A value below the envelope every answer carries cannot be met, and the
+    /// reply says so with `byte_limit_unmet`.
+    #[schemars(range(min = CONTEXT_ENVELOPE_FLOOR, max = 49000))]
+    #[serde(alias = "max_bytes")]
+    pub(super) byte_limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -403,7 +419,8 @@ pub(super) struct NoParams {}
 pub(super) struct DoctorParams {
     /// Project context to report; diagnostics remain store-wide.
     pub(super) project: Option<String>,
-    /// Optional upstream diagnostic check code; the local report includes all checks.
+    /// Optional diagnostic check code. When given, only that check runs and
+    /// the report carries it alone; an unknown code is refused.
     pub(super) check: Option<String>,
 }
 

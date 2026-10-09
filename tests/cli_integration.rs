@@ -19,6 +19,16 @@ fn run_json(command: &mut Command) -> Value {
     serde_json::from_slice(&output).expect("CLI stdout is JSON")
 }
 
+/// The JSON a command printed even though it exited non-zero.
+///
+/// `doctor` exits non-zero when it found an error, and it still prints the
+/// report — the exit code is what a script reads, the JSON is what a person
+/// reads.
+fn run_json_unhealthy(command: &mut Command) -> Value {
+    let output = command.assert().failure().get_output().stdout.clone();
+    serde_json::from_slice(&output).expect("CLI stdout is JSON")
+}
+
 #[test]
 fn cli_persists_and_queries_an_observation_in_an_absolute_temporary_database() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
@@ -1342,17 +1352,18 @@ fn a_listing_answers_about_the_project_the_directory_belongs_to() {
     );
 }
 
-/// `leteo save` says when a type puts a memory out of a filter's reach.
+/// `leteo save` folds a type no filter reaches onto a documented one.
 ///
-/// The same sentence the tool answers with, on the channel a person reads.
-/// Both doors, because the last three asymmetries between them were each a
-/// defect: a hint written for one surface and never given on the other.
+/// The type is a search filter, and a word outside the vocabulary used to be
+/// kept verbatim and reported on both surfaces — which left the memory one no
+/// filtered search could return. It folds onto `discovery` now, the bucket the
+/// rest of the unclassifiable lands in, so there is nothing to warn about.
 #[test]
-fn a_command_line_save_says_when_the_type_is_one_no_filter_reaches() {
+fn a_command_line_save_folds_a_type_no_filter_reaches() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let database = temp.path().join("unfiled.db");
 
-    let unfiled = leteo(&database)
+    let folded = leteo(&database)
         .arg("save")
         .arg("Delay-loading seven DLLs")
         .arg("the loader resolves them on first call")
@@ -1362,15 +1373,16 @@ fn a_command_line_save_says_when_the_type_is_one_no_filter_reaches() {
         .arg("optimization")
         .assert()
         .success();
-    let said = String::from_utf8_lossy(&unfiled.get_output().stderr).into_owned();
-    assert!(
-        said.contains("not one of the eight"),
-        "a type outside the eight has to be said out loud: {said}"
-    );
     // stdout stays what a script parses.
-    let printed: Value = serde_json::from_slice(&unfiled.get_output().stdout)
-        .expect("stdout is still the save's JSON");
-    assert_eq!(printed["observation"]["type"], json!("optimization"));
+    let printed: Value =
+        serde_json::from_slice(&folded.get_output().stdout).expect("stdout is the save's JSON");
+    assert_eq!(printed["observation"]["type"], json!("discovery"));
+    assert!(
+        String::from_utf8_lossy(&folded.get_output().stderr)
+            .trim()
+            .is_empty(),
+        "a folded type has nothing to warn about"
+    );
 
     let filed = leteo(&database)
         .arg("save")
@@ -1431,7 +1443,7 @@ fn doctor_repairs_a_full_text_index_that_has_gone_empty() {
         .expect("empty the indexes");
     drop(connection);
 
-    let broken = run_json(leteo(&database).arg("doctor"));
+    let broken = run_json_unhealthy(leteo(&database).arg("doctor"));
     assert_eq!(broken["healthy"], json!(false), "{broken}");
     // A word only the index carries. The title-fragment stage reads titles
     // directly, so a title word would still find the memory with both indexes
@@ -1490,6 +1502,100 @@ fn doctor_repairs_a_full_text_index_that_has_gone_empty() {
     for entry in idempotent["rebuilt"].as_array().expect("what was rebuilt") {
         assert_eq!(entry["rows_before"], entry["rows_after"], "{entry}");
     }
+}
+
+/// `doctor --check` runs only the check it was asked for.
+///
+/// The whole point is the time: `PRAGMA integrity_check` over a 96 MB store is
+/// seconds, and asking about `busy_timeout` should not pay them. Proven two
+/// ways — what the report omits, because a check that did not run leaves its
+/// aggregate absent rather than zero, and the clock, which is the criterion the
+/// issue was written against.
+#[test]
+fn doctor_check_runs_only_the_check_it_was_asked_for() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("scoped.db");
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory")
+            .arg("with a body of its own")
+            .arg("--project")
+            .arg("alpha"),
+    );
+
+    let started = std::time::Instant::now();
+    let scoped = run_json(
+        leteo(&database)
+            .arg("doctor")
+            .arg("--check")
+            .arg("busy_timeout"),
+    );
+    let elapsed = started.elapsed();
+
+    let checks = scoped["checks"].as_array().expect("checks");
+    assert_eq!(checks.len(), 1, "only the asked-for check ran: {scoped}");
+    assert_eq!(checks[0]["code"], json!("busy_timeout"));
+    assert!(
+        scoped.get("integrity_check").is_none(),
+        "the whole-file check did not run: {scoped}"
+    );
+    assert!(
+        scoped.get("observation_fts_ok").is_none(),
+        "the index integrity check did not run: {scoped}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "one check took {elapsed:?}"
+    );
+
+    // An unknown code is refused rather than quietly matching nothing.
+    leteo(&database)
+        .arg("doctor")
+        .arg("--check")
+        .arg("not_a_check")
+        .assert()
+        .failure();
+}
+
+/// `doctor` exits non-zero when it found an error, and zero otherwise.
+///
+/// The exit code is the half of the report a script reads. A healthy store, and
+/// one carrying a warning — a missing model, a word no filter can name — both
+/// exit zero, because the store works. An error exits non-zero and still prints
+/// the report, so the JSON is there for whoever reads it next.
+#[test]
+fn doctor_exits_non_zero_only_when_it_found_an_error() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("exit-code.db");
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory")
+            .arg("with a body of its own")
+            .arg("--project")
+            .arg("alpha"),
+    );
+
+    // No model is installed in a test store, so `semantic_model` is a warning.
+    let warning = run_json(leteo(&database).arg("doctor"));
+    assert_eq!(warning["healthy"], json!(true), "{warning}");
+    assert!(
+        warning["checks"].as_array().is_some_and(|checks| checks
+            .iter()
+            .any(|check| check["severity"] == json!("warning"))),
+        "the store carries a warning and is still healthy: {warning}"
+    );
+
+    // Break the index, which is an error.
+    let connection = rusqlite::Connection::open(&database).expect("open the store directly");
+    connection
+        .execute_batch("INSERT INTO observations_fts(observations_fts) VALUES('delete-all');")
+        .expect("empty the index");
+    drop(connection);
+
+    let broken = run_json_unhealthy(leteo(&database).arg("doctor"));
+    assert_eq!(broken["healthy"], json!(false), "{broken}");
 }
 
 #[test]
@@ -2002,10 +2108,11 @@ fn doctor_says_whether_the_model_is_missing_wrong_or_verified() {
 
     let missing = model_check(&database);
     assert_eq!(
-        missing["ok"],
-        json!(true),
-        "an optional thing that is not there is not an unhealthy store"
+        missing["severity"],
+        json!("warning"),
+        "an optional thing that is not there is a warning, not an error"
     );
+    assert_eq!(missing["ok"], json!(false));
     let said = missing["detail"].as_str().unwrap();
     assert!(
         said.contains("not installed") && said.contains("leteo model install"),
@@ -2037,7 +2144,11 @@ fn doctor_says_whether_the_model_is_missing_wrong_or_verified() {
         "{said}"
     );
     let report = run_json(leteo(&database).arg("doctor"));
-    assert_eq!(report["healthy"], json!(false), "a wrong model is an issue");
+    assert_eq!(
+        report["healthy"],
+        json!(true),
+        "a wrong model costs a capability, not the store"
+    );
 
     // And a missing file in a directory that is otherwise there.
     bytes[500] ^= 0x01;

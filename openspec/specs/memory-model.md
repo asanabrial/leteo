@@ -16,14 +16,18 @@ changes.
 2. **Eight types, and one the store writes itself.** An agent files a memory as
    `bugfix`, `decision`, `policy`, `architecture`, `discovery`, `pattern`,
    `config`, or `preference`. `session_summary` is the ninth and is written only
-   by Leteo when a session ends. Anything outside those nine is stored as given
-   and answered with a hint saying it will not be reachable by a type filter.
+   by Leteo when a session ends. Anything outside those nine folds onto
+   `discovery` on the way in, so a type filter can always reach it; a store
+   written before that fold still holds the old words, and `doctor` reports them
+   as a warning until `--repair` folds them.
 
-3. **Common synonyms fold onto the eight.** `bug`, `design`, `learning`, and
-   `setup` are folded on the way in *and* on the way out: a memory saved as
-   `bug` is stored as `bugfix`, and a search narrowed to `bug` finds it. Folding
-   at one end only is worse than not folding, because the caller is told the
-   memory is not there.
+3. **Every type folds onto one of the eight.** `bug`, `design`, `learning`, and
+   `setup` fold onto their one obvious target on the way in *and* on the way
+   out: a memory saved as `bug` is stored as `bugfix`, and a search narrowed to
+   `bug` finds it. A word the vocabulary does not name — `implementation`,
+   `feature`, `optimization` — folds onto `discovery`, the bucket the rest of
+   the unclassifiable lands in. Folding at one end only is worse than not
+   folding, because the caller is told the memory is not there.
 
 4. **Three types go stale, and say when.** A `decision` asks to be reread after
    six calendar months, a `policy` after twelve, a `preference` after three.
@@ -144,15 +148,12 @@ changes.
     project the directory resolved to, and a read narrowed to another project
     will not return it.
 
-    A scope outside the three is *replaced*, and the reply says so. That is the
-    difference from an unknown type, which is kept verbatim — the word survives
-    and the memory is merely unfilterable — while here the caller's own value is
-    discarded, so a read narrowed to the scope they asked for will never return
-    the memory they believe they filed there. One door said so and the other did
-    not: driven side by side on one call, `type: implementation` came back with
-    a hint and `scope: personnal` came back with nothing at all. Both mistakes
-    in one call now produce both sentences, because two things to fix is two
-    things to say. Replication and export ignore scope entirely. Whether
+    A scope outside the three is *replaced*, and the reply says so. A type
+    outside the nine is replaced too, but silently and onto `discovery` — a
+    documented kind a filter reaches — so the scope is the one that needs a
+    sentence. Here the caller's own value is discarded, and a read narrowed to
+    the scope they asked for will never return the memory they believe they
+    filed there. Replication and export ignore scope entirely. Whether
     that is right is
     [an open proposal](../changes/a-personal-memory-that-follows-you.md), which
     has the measurement that rules out the obvious version of the fix.
@@ -212,6 +213,14 @@ changes.
     byte for byte. `mem_get_observation` opens it with `include_history: true`
     ([`mcp-tools.md`](mcp-tools.md) §20); the live memory is unchanged in every
     other way.
+
+    **A `mem_update` may write the whole body or edit one span of it.** With
+    `find` and `replace` the body is read and edited inside the same transaction
+    as the write, so the span is counted against what the row holds and the
+    previous text is snapshotted exactly as a whole-body write snapshots it.
+    The edit is refused unless it names one span ([`mcp-tools.md`](mcp-tools.md)
+    §22); the title is never touched by it, because a title is written rather
+    than edited.
 
     **Only a change to the title or the body counts.** A write that moves the
     project, the type, the scope or the topic key replaces no text and keeps no

@@ -93,15 +93,20 @@ there from any provenance, and how it says when something has gone wrong.
    `semantic_model` is the one check about a file and not the database, and says
    which of three conditions holds: the model found and verified (and where),
    not installed, or present and not the model this build accepts, each with the
-   command that mends it (`leteo model install`, or `--from <directory>`). A
-   model that is simply not installed is an optional thing absent and does not
-   make the store unhealthy -- it is in the report and not in `issues` -- while
-   one that is there and wrong does, because something replaced or damaged it.
-   Turned off by the `semantic_search` setting, it says so and looks for nothing.
+   command that mends it (`leteo model install`, or `--from <directory>`). All
+   three but the verified one are warnings: a missing or unverified model costs
+   meaning-based search and leaves the store healthy, because the store still
+   works by words. Turned off by the `semantic_search` setting, it says so and
+   looks for nothing.
    `semantic_vectors` counts how many of the memories the semantic stage can
-   reach have a current vector and names the backfill, or `doctor --repair`,
-   for the rest. Like a missing model it is a note and not a fault: a store with
-   no vectors searches by its words alone, and the backfill is what fills them.
+   reach have a current vector. A gap is a warning, like a missing model: the
+   store still works by words, and the backfill or `doctor --repair` is what
+   fills it.
+
+   Every check carries a severity — `error`, `warning` or `info` — and `healthy`
+   means no `error`. `issues` is the `error` sentences alone, so a warning is in
+   the report and not in `issues`, exactly as the missing model always was.
+   `leteo doctor` exits non-zero when an `error` exists and zero otherwise.
    Every code is listed
    once in `DoctorCheck::CODES`, and tests hold the list to the checks that run.
 
@@ -111,16 +116,18 @@ there from any provenance, and how it says when something has gone wrong.
    nothing could ever be deduplicated against, silently and for good.
 
    Beside it, `observation_type_searchable` reports a memory filed under a word
-   no filter can ask for. The category is a search filter; the save door folds
-   the close synonyms and keeps anything else verbatim, which is deliberate, and
-   says so at the moment it happens — but nothing ever said it about the
-   memories already in, so a store that collected them before that hint existed
-   had no way to find out. A real store of 4,121 held thirty-eight, under five
-   words. The words are what somebody acts on, so the check names them with
-   their counts, commonest first, capped at eight with the rest counted, and
-   asks for the closest of the eight kinds by reading `KINDS` rather than
-   repeating it. No `--repair`: which of the eight a memory belongs under is a
-   question about what it says, and Leteo does not read them.
+   no filter can ask for. The category is a search filter, and the save door
+   folds an unknown word onto `discovery` — the bucket the rest of the
+   unclassifiable lands in — because a memory nothing can filter to is a memory
+   nothing finds. It used to keep the word verbatim and tell the caller so,
+   which left the memory unreachable by every filter. A store written before
+   that fold still holds the old words, and this is where it is said, as a
+   warning: the memories are there and full-text search still reaches them. A
+   real store of 4,121 held thirty-eight, under five words. The words are what
+   somebody acts on, so the check names them with their counts, commonest first,
+   capped at eight with the rest counted, and reads `KINDS` rather than
+   repeating it. `doctor --repair` folds them through the same `normalize::kind`
+   the door uses.
 
 6. **A missing full-text trigger is named and restored.** The triggers are the
    entire mechanism keeping an index level with its table; nothing else writes
@@ -314,7 +321,8 @@ there from any provenance, and how it says when something has gone wrong.
     databases predate it. Project names are folded to the spelling
     `normalize::project` produces, with `UPDATE OR REPLACE` so two spellings
     that collide on a unique project column leave one row rather than two, and
-    the type of every copied memory is folded through `normalize::kind` so a
+    the type of every copied memory is folded through `normalize::kind` — a
+    synonym onto its documented kind, any other word onto `discovery` — so a
     search narrowed by `bugfix` or `discovery` can return it. The two values
     derived from a row are recomputed rather than carried: `review_after`, a
     function of the type and the day the memory was written, and

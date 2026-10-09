@@ -485,7 +485,7 @@ fn opening_an_older_database_folds_the_types_already_written_to_it() {
         store.create_session("s1", "Leteo", "C:/repo").unwrap();
         for (title, kind) in [
             ("Fixed the leak", "bugfix"),
-            ("Wrote the adapter", "implementation"),
+            ("Wrote the adapter", "discovery"),
         ] {
             let mut input = observation("s1", title, "body");
             input.kind = kind.to_owned();
@@ -495,9 +495,10 @@ fn opening_an_older_database_folds_the_types_already_written_to_it() {
         // this is what the rows looked like before they were.
         store
             .connection
-            .execute(
-                "UPDATE observations SET type = 'bug' WHERE title = 'Fixed the leak'",
-                [],
+            .execute_batch(
+                "UPDATE observations SET type = 'bug' WHERE title = 'Fixed the leak';
+                 UPDATE observations SET type = 'implementation'
+                  WHERE title = 'Wrote the adapter';",
             )
             .unwrap();
         // Cleared rather than set to the version this ran at before. The
@@ -523,7 +524,10 @@ fn opening_an_older_database_folds_the_types_already_written_to_it() {
             .unwrap()
     };
     assert_eq!(kinds("Fixed the leak"), "bugfix");
-    // Not a synonym of anything documented, so it keeps its own word.
+    // The reopen rule is frozen — a released migration gives every database the
+    // same answer whenever it runs — so a word its own vocabulary never knew is
+    // left as the row held it. The save door and `doctor --repair` are what fold
+    // it now, through the live `normalize::kind`.
     assert_eq!(kinds("Wrote the adapter"), "implementation");
     assert_eq!(schema_version(&store.connection).unwrap(), SCHEMA_VERSION);
 }
@@ -1055,7 +1059,7 @@ fn a_type_the_vocabulary_folds_is_folded_in_a_store_that_was_already_stamped() {
         store.create_session("s1", "leteo", "C:/repo").unwrap();
         for (title, kind) in [
             ("A memory nobody typed", "discovery"),
-            ("Another one", "implementation"),
+            ("Another one", "discovery"),
         ] {
             let mut input = observation("s1", title, "body");
             input.kind = kind.to_owned();
@@ -1067,6 +1071,7 @@ fn a_type_the_vocabulary_folds_is_folded_in_a_store_that_was_already_stamped() {
             .connection
             .execute_batch(
                 "UPDATE observations SET type = 'manual' WHERE title = 'A memory nobody typed';
+                 UPDATE observations SET type = 'implementation' WHERE title = 'Another one';
                  PRAGMA user_version = 0;",
             )
             .unwrap();
@@ -1091,8 +1096,8 @@ fn a_type_the_vocabulary_folds_is_folded_in_a_store_that_was_already_stamped() {
     assert_eq!(
         kind_of("Another one"),
         "implementation",
-        "and a word it does not recognise keeps its own, because an honest \
-         unknown type still says something true"
+        "and the frozen reopen rule leaves a word its own vocabulary never \
+         knew exactly as it was"
     );
     // The indexes follow by their triggers, or a typed search would still find
     // the old word and miss the new one.

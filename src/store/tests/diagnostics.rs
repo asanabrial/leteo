@@ -702,8 +702,11 @@ fn every_break_the_report_can_repair_names_the_flag_and_is_repaired_by_it() {
 
     let report = store.doctor().unwrap();
     assert!(!report.healthy, "the store was broken on purpose");
-    let failed: Vec<&crate::memory::model::DoctorCheck> =
-        report.checks.iter().filter(|check| !check.ok).collect();
+    let failed: Vec<&crate::memory::model::DoctorCheck> = report
+        .checks
+        .iter()
+        .filter(|check| !check.ok && check.severity == crate::memory::model::DoctorSeverity::Error)
+        .collect();
     assert!(failed.len() >= 5, "{:?}", report.checks);
     for check in &failed {
         let detail = check.detail.clone().unwrap_or_default();
@@ -1142,11 +1145,11 @@ fn a_setting_that_is_read_past_is_named() {
 
 /// A memory filed under a word no filter can ask for is found and named.
 ///
-/// The category is a search filter. `mem_save` folds the close synonyms and
-/// keeps anything else verbatim — a word Leteo does not know is still what
-/// somebody meant — and the save door says so at the moment it happens. Nothing
-/// ever said it about the memories already in, so a store that collected them
-/// before that hint existed had no way to find out.
+/// The category is a search filter, and the save door folds an unknown word
+/// onto `discovery` now — a memory nothing can filter to is a memory nothing
+/// finds. A store written before that fold still holds the old words, and this
+/// is where it is said, as a warning and not an error: the memories are there
+/// and full-text search still reaches them.
 ///
 /// Measured on a real store of 4,121: thirty-eight, under five words.
 #[test]
@@ -1183,20 +1186,40 @@ fn a_type_no_filtered_search_can_name_is_reported_with_the_words() {
         // rarest is the one that falls off the end.
         for copy in 0..(words - index) {
             let mut add = observation("s1", &format!("Filed as w{index} no {copy}"), "a body");
-            add.kind = format!("w{index}");
+            add.kind = "discovery".to_owned();
             store.add_observation(add).unwrap();
         }
+    }
+    // Behind the store's back: the save door folds an unknown word now, so
+    // these are the rows a store written before that fold kept.
+    for index in 0..words {
+        store
+            .connection
+            .execute(
+                &format!(
+                    "UPDATE observations SET type = 'w{index}' WHERE title LIKE 'Filed as w{index} no %'"
+                ),
+                [],
+            )
+            .unwrap();
     }
     let expected: i64 = (1..=words as i64).sum();
 
     let report = store.doctor().unwrap();
-    assert!(!report.healthy);
+    assert!(
+        report.healthy,
+        "a word no filter can name is a warning, not a broken store: {report:?}"
+    );
     let check = report
         .checks
         .iter()
         .find(|check| check.code == "observation_type_searchable")
         .expect("the check is reported");
     assert!(!check.ok);
+    assert_eq!(
+        check.severity,
+        crate::memory::model::DoctorSeverity::Warning
+    );
     let detail = check.detail.as_deref().unwrap_or_default();
     assert!(
         detail.starts_with(&format!("{expected} memories")),
@@ -1453,12 +1476,11 @@ fn json_import_folds_types() {
 /// `doctor --repair` folds the types an older adoption copied verbatim.
 ///
 /// The fold is the same `normalize::kind` the save door uses, so the repair and
-/// the door agree; a type outside the vocabulary is left as the word somebody
-/// meant, which is what the door does too. No migration: a released one is
-/// never edited, and a new one would run once and leave every store opened
-/// before it unrepaired.
+/// the door agree: every word outside the vocabulary lands on `discovery`. No
+/// migration: a released one is never edited, and a new one would run once and
+/// leave every store opened before it unrepaired.
 #[test]
-fn a_repair_folds_the_types_the_save_door_folds_and_leaves_the_rest() {
+fn a_repair_folds_the_types_the_save_door_folds() {
     let (_temp, mut store) = store();
     store.create_session("s1", "leteo", "C:/repo").unwrap();
     for title in ["A bug", "A manual", "An implementation"] {
@@ -1471,15 +1493,12 @@ fn a_repair_folds_the_types_the_save_door_folds_and_leaves_the_rest() {
         .execute_batch(
             "UPDATE observations SET type = 'bug' WHERE title = 'A bug';
              UPDATE observations SET type = 'manual' WHERE title = 'A manual';
-             -- Mixed case is the case the synonym rule must not swallow: it is
-             -- not a synonym, and `kind` lowercases it without folding it, so a
-             -- repair that wrote every change would rename a word somebody
-             -- meant. Left exactly as it was.
+             -- Mixed case folds too: `kind` lowercases before it decides.
              UPDATE observations SET type = 'Implementation' WHERE title = 'An implementation';",
         )
         .unwrap();
 
-    assert_eq!(store.fold_observation_types().unwrap(), 2);
+    assert_eq!(store.fold_observation_types().unwrap(), 3);
     let kinds: Vec<String> = store
         .connection()
         .prepare("SELECT type FROM observations ORDER BY title")
@@ -1493,9 +1512,9 @@ fn a_repair_folds_the_types_the_save_door_folds_and_leaves_the_rest() {
         vec![
             "bugfix".to_owned(),
             "discovery".to_owned(),
-            "Implementation".to_owned()
+            "discovery".to_owned()
         ],
-        "the synonyms move and a word Leteo does not know stays"
+        "every synonym and every unknown word moves onto a documented kind"
     );
     assert_eq!(
         store.fold_observation_types().unwrap(),

@@ -486,13 +486,6 @@ pub async fn run(cli: Cli) -> Result<()> {
                 prompt_sync_id,
             })?;
             // The same sentence the tool answers with, on the channel a person
-            // reads. A type outside the eight is kept — see `UNFILED_KIND_HINT`
-            // for why guessing at a fold is worse — and the memory becomes one
-            // a search narrowed by type can never return.
-            if !crate::memory::rules::is_searchable_kind(&saved.observation.kind) {
-                eprintln!("leteo save: {}", crate::mcp::UNFILED_KIND_HINT);
-            }
-            // The same sentence the tool answers with, on the channel a person
             // reads: the JSON reply already carries `replaced`, and a shrink is
             // easier to catch before it scrolls past than inside it.
             if let Some(replaced) = saved.replaced.filter(|replaced| replaced.shrunk) {
@@ -874,6 +867,14 @@ pub async fn run(cli: Cli) -> Result<()> {
                 );
             }
             print_json(&output)?;
+            // The exit code is the half of this a script reads. A warning is
+            // not a failure — the store works — so only an error, or a hook or
+            // binary the report could not leave out, exits non-zero.
+            if output.get("healthy").and_then(serde_json::Value::as_bool) == Some(false) {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                std::process::exit(1);
+            }
         }
         Command::Conflicts { command } => run_conflicts(&mut store, command).await?,
         Command::Export { project, output } => {

@@ -41,20 +41,22 @@ duties about what an answer explains.
    ([`hooks.md`](hooks.md) §22, [`store-and-schema.md`](store-and-schema.md)
    §19).
 
-   `--check <code>` selects which verdict comes back and what `healthy` is
-   computed from — every check still runs. That is deliberate rather than
-   unfinished: the aggregate numbers in the report (`integrity_check`,
-   `foreign_key_violations`, the row counts, `pending_mutations`) are fed by the
-   checks, and a report that answered `observation_fts_rows: 0` because nobody
-   asked about the index would be a worse lie than the time it saves.
+   `--check <code>` runs **only** that check. The whole point of asking about
+   `busy_timeout` is not paying for `PRAGMA integrity_check`, which on a 96 MB
+   store is several seconds the one answer does not need. The counts and the
+   pragmas are gathered either way — they cost a few milliseconds and answer the
+   same question under `--check` as under `doctor` — while a check that did not
+   run leaves its own aggregate absent rather than zero: `integrity_check` and
+   `foreign_key_violations` are omitted, not empty, so no report reads as "the
+   index holds nothing" when the index was never looked at.
 
-   The time it would save, measured on a store of 4,013 memories in a 40 MB
-   file: `doctor` costs 315 ms, of which `PRAGMA integrity_check` over the whole
-   file is 150 and the three full-text integrity checks are 100. Everything else
-   together — the row counts, the foreign keys, reading every body for the hash
-   check, the shared topic keys, the triggers, the pragmas — is about 30. So a
-   single check could cost a tenth of that, and does not, and this is the note
-   somebody should read before changing it.
+   Every check carries a severity — `error`, `warning` or `info` — and `healthy`
+   means no `error`. A missing or unverified model, a word no filter can name, a
+   journal mode that is not `wal`, a spool with captures waiting, settings being
+   read past: each is a warning that names the capability lost and leaves the
+   store healthy. `leteo doctor` exits non-zero when an `error` exists and zero
+   otherwise, so a script can act on the code and a person on the report beside
+   it.
 
    `doctor` also reports a configured command whose executable is gone. Every
    supported agent's MCP configuration and hooks file is read for the Leteo

@@ -14,14 +14,15 @@ use crate::{
     memory::model::{
         AddObservation, AddOutcome, AddOutcomeKind, AddPrompt, Candidate, CandidateOptions, Caveat,
         CaveatVerb, ConsolidateObservations, ConsolidateOutcome, DeferredRow, DeleteProjectResult,
-        DeleteSessionResult, DoctorCheck, DoctorReport, ExportData, ExportObservationVersion,
-        ForeignKeyViolation, ImportResult, IndexRebuild, JudgeBySemanticParams,
-        JudgeRelationParams, ListDeferredOptions, ListRelationsOptions, Listing, MemoryRef,
-        MergeResult, Observation, ObservationVersion, PassiveCapture, PassiveCaptureResult,
-        PendingPair, PendingSide, ProjectStats, Prompt, PruneResult, Relation, RelationListItem,
-        RelationStats, ReplacedContent, ReplayDeferredResult, SaveRelationParams, ScanOptions,
-        ScanResult, SearchMode, SearchOptions, SearchResult, Session, SessionSummary, Stats,
-        SyncMutation, SyncState, TimelineEntry, TimelineResult, UpdateObservation, UpdateOutcome,
+        DeleteSessionResult, DoctorCheck, DoctorReport, DoctorSeverity, ExportData,
+        ExportObservationVersion, ForeignKeyViolation, ImportResult, IndexRebuild,
+        JudgeBySemanticParams, JudgeRelationParams, ListDeferredOptions, ListRelationsOptions,
+        Listing, MemoryRef, MergeResult, Observation, ObservationVersion, PassiveCapture,
+        PassiveCaptureResult, PendingPair, PendingSide, ProjectStats, Prompt, PruneResult,
+        Relation, RelationListItem, RelationStats, ReplacedContent, ReplayDeferredResult,
+        SaveRelationParams, ScanOptions, ScanResult, SearchMode, SearchOptions, SearchResult,
+        Session, SessionSummary, Stats, SyncMutation, SyncState, TimelineEntry, TimelineResult,
+        UpdateObservation, UpdateOutcome,
     },
     memory::normalize,
 };
@@ -584,6 +585,25 @@ pub enum StoreError {
         "observation {id} was deleted on {deleted_at}; its body is still readable with mem_get_observation, and saving the same thing again writes a new memory rather than restoring this one"
     )]
     ObservationDeleted { id: i64, deleted_at: String },
+    /// A find/replace whose `find` is not in the stored body.
+    ///
+    /// Storing the body unchanged and reporting a revision would say an edit
+    /// happened when none did, which is the failure the exact count exists to
+    /// prevent. Its own code (`edit_not_found`) rather than the ambiguous one,
+    /// because the two mistakes call for different next steps: this text is
+    /// somewhere else, that text needs to be more specific.
+    #[error("find is not in the stored body; nothing was changed")]
+    EditNotFound,
+    /// A find/replace whose `find` names more than one span.
+    ///
+    /// Replacing the first and leaving the rest is not what "replace" says, and
+    /// which one was meant is the caller's to know, so nothing is changed and
+    /// the count says how many there were. Its own code (`edit_ambiguous`)
+    /// rather than the not-found one, for the reason above.
+    #[error(
+        "find matches {matches} times in the stored body; a find/replace edits exactly one span, so nothing was changed"
+    )]
+    EditAmbiguous { matches: usize },
     /// A merge was asked for with a source list it cannot act on.
     ///
     /// An empty list is a merge of nothing, and a repeated id would record two

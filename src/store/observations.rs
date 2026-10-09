@@ -691,6 +691,31 @@ impl Store {
         let previous_content = current.content.clone();
         let previous_revision = current.revision_count;
 
+        // A partial edit names one span of the stored body, and every way it
+        // can fail to name exactly one is refused before anything is written.
+        // The count is taken against `current.content` — the row this
+        // transaction just read — so what is replaced is what was counted.
+        if input.find.is_none() && input.replace.is_some() {
+            return Err(invalid_parameter(
+                "replace needs find: name the span to replace, or write the whole body with content",
+            ));
+        }
+        if let Some(find) = input.find.as_deref() {
+            if find.is_empty() {
+                return Err(invalid_parameter("find cannot be empty"));
+            }
+            if input.content.is_some() {
+                return Err(invalid_parameter(
+                    "find and content are two ways to write the body; pass one",
+                ));
+            }
+            match current.content.matches(find).count() {
+                0 => return Err(StoreError::EditNotFound),
+                1 => {}
+                matches => return Err(StoreError::EditAmbiguous { matches }),
+            }
+        }
+
         // Every field normalises what the caller supplied and leaves what it
         // did not. `kind` was the exception: an update could write back the
         // `bug` that a save folds to `bugfix`, so the same word meant two
@@ -704,10 +729,26 @@ impl Store {
             .title
             .map(|value| normalize::title(&value, max_length))
             .unwrap_or(current.title);
-        let content = input
-            .content
-            .map(|value| normalize::truncate_content(normalize::strip_private(&value), max_length))
-            .unwrap_or(current.content);
+        // The body this write stores, and — for a find/replace — the length the
+        // storage bound saw before it cut. The caller never held the edited
+        // text, so this is the only place that length exists; a full-body write
+        // measures its own cut from the text it sent.
+        let mut edited_cut = None;
+        let content = if let Some(find) = input.find.as_deref() {
+            let edited = current
+                .content
+                .replacen(find, input.replace.as_deref().unwrap_or(""), 1);
+            let stripped = normalize::strip_private(&edited);
+            edited_cut = (stripped.len() > max_length).then_some(stripped.len());
+            normalize::truncate_content(stripped, max_length)
+        } else {
+            input
+                .content
+                .map(|value| {
+                    normalize::truncate_content(normalize::strip_private(&value), max_length)
+                })
+                .unwrap_or(current.content)
+        };
         // The same door as saving. Closing it on the write path alone left the
         // back way open: an update could blank a title that was already there,
         // which is worse than never having one.
@@ -838,6 +879,7 @@ impl Store {
         Ok(UpdateOutcome {
             observation,
             replaced,
+            edited_cut,
         })
     }
 

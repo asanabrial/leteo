@@ -156,11 +156,12 @@ fn a_type_synonym_is_folded_so_the_documented_filter_finds_it() {
             .all(|hit| hit.observation.kind == "bugfix")
     );
 
-    // A word the table does not fold is still compared as it was given, so a
-    // type kept verbatim stays reachable by its own name.
-    let mut verbatim = observation("s1", "A profiling note", "the pool was resized");
-    verbatim.kind = "optimization".to_owned();
-    store.add_observation(verbatim).unwrap();
+    // A word the vocabulary does not name folds at both ends: the save files it
+    // as `discovery`, and the search folds the word it is asked for the same
+    // way, so asking for `optimization` still finds the memory.
+    let mut unknown = observation("s1", "A profiling note", "the pool was resized");
+    unknown.kind = "optimization".to_owned();
+    store.add_observation(unknown).unwrap();
     assert_eq!(
         store
             .search(
@@ -552,6 +553,7 @@ fn updates_pins_and_reviews_observations() {
                 project: Some(" New--Project ".to_owned()),
                 scope: Some("personal".to_owned()),
                 topic_key: Some(" Architecture/Auth Model ".to_owned()),
+                ..UpdateObservation::default()
             },
         )
         .unwrap();
@@ -1805,7 +1807,7 @@ fn one_order_of_operations(seed: u64, exhaustive: bool) {
     let red: Vec<&str> = report
         .checks
         .iter()
-        .filter(|check| !check.ok)
+        .filter(|check| !check.ok && check.severity == crate::memory::model::DoctorSeverity::Error)
         .map(|check| check.code.as_str())
         .collect();
     assert!(

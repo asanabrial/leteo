@@ -200,6 +200,22 @@ useful part out of a context window has failed even if every field is right.
    memories are dropped last, so a budget spends the oldest and least
    informative entries first.
 
+   And the byte budget is a parameter, `byte_limit` (also accepted as
+   `max_bytes`), so a caller can ask for less than the size setting for one
+   call. It only ever shrinks the answer below the size setting, never raises it:
+   the setting is the budget a person chose for this store, and one call is not
+   the place to overrule it. The deep ceiling — 49,000, the largest this surface
+   ever produces — is what the parameter publishes as its `maximum`, the largest
+   an answer reaches once the setting itself is deep. Every answer carries
+   an envelope whatever it holds — the project, the language, the empty lists —
+   measured at 350 bytes with the default language, and a bound under it cannot
+   be met however much is dropped: the reply says so with `byte_limit_unmet`
+   rather than reporting a bound it did not keep. The floor is published as the
+   parameter's `minimum`, so a caller sees before the call why a smaller number
+   would not be honoured; a chosen language directive is longer and moves the
+   true floor, which is why the not-met answer is decided by measuring the
+   reply rather than by comparing against the published number.
+
    And the lists nothing asks for. A budget is a parameter somebody passes;
    `mem_doctor` has none for its violations, because `PRAGMA foreign_key_check`
    answers one row per orphaned row and the tool carried every one of them: 300
@@ -211,6 +227,12 @@ useful part out of a context window has failed even if every field is right.
    anything done per row. Cut at the tool and not in the store, so
    `leteo doctor` still prints the inventory: a pipe has no context window to
    spend, which is the same split `mem_context` and `leteo context` make.
+
+   Each check in the report carries a `severity` — `error`, `warning` or
+   `info` — and `healthy` is the absence of an `error`, so an agent can tell a
+   degraded capability from a broken store; see
+   [`store-and-schema.md`](store-and-schema.md) §4. A `check` argument runs only
+   that check.
 
    Held over the whole surface rather than tool by tool, so the next budget
    cannot arrive without one — which is how the last two were found. Both
@@ -439,20 +461,22 @@ useful part out of a context window has failed even if every field is right.
    again, and reports that memory is broken or empty. It now says the server
    has to be restarted and that retrying will not help.
 
-   There are two ceilings on this surface and only two: a list of rows stops at
-   the store's own ceiling for a context read, and the depth of a context stops
-   at what `--context deep` gives. Each is applied from one place. Published,
-   they are seven hand-written numbers in `schemars` annotations, which cannot
-   read a constant — so nothing tied the two sides together, and a one-line
-   change to either applied ceiling would leave six schemas publishing a limit
-   this server no longer has. A guard now reads every ceiling the tools publish
-   and requires it to be one of the two, and holds the doctor's example count to
-   the same number its own comment claims it uses.
+   There are three ceilings on this surface and only three: a list of rows stops
+   at the store's own ceiling for a context read, the depth of a context stops
+   at what `--context deep` gives, and the bytes of a context stop at
+   `ContextSize::Deep.bytes()`. Each is applied from one place. Published, they
+   are eight hand-written numbers in `schemars` annotations, which cannot read a
+   constant — so nothing tied the two sides together, and a one-line change to
+   an applied ceiling would leave the schemas publishing a limit this server no
+   longer has. A guard now reads every ceiling the tools publish and requires it
+   to be one of the three, and holds the doctor's example count to the same
+   number its own comment claims it uses.
 
-   Driven over the protocol, all seven are applied as published: asked for ten
+   Driven over the protocol, all eight are applied as published: asked for ten
    times each ceiling, `mem_context` answers with 80 memories, 20 prompts and
    the sessions it has, `mem_search` with 20, `mem_timeline` with 20 either
-   side.
+   side, and `mem_context` with `byte_limit: 49000` is bounded by the deep
+   ceiling's bytes.
 
    And a page says how much of the queue it is not. The session opening names
    the whole review queue — "eighteen memories to read again, open it with
@@ -466,8 +490,7 @@ useful part out of a context window has failed even if every field is right.
 
 8. **A hint explains an answer the caller did not expect.** No match, a partial
    match, a summary saved without a name, nothing extracted from a passive
-   capture, a type outside the eight — each has one sentence saying what
-   happened and what to do about it.
+   capture — each has one sentence saying what happened and what to do about it.
 
    An empty answer from a read the directory narrowed says which of its two
    reasons it is: the store has never heard of this, or it is filed in another
@@ -774,6 +797,12 @@ useful part out of a context window has failed even if every field is right.
     `mem_context` from 14,401 bytes to 10,921 on a real project, and until now
     there was no way to ask.
 
+    And a floor that is not zero: `mem_context`'s `byte_limit` publishes the
+    envelope every answer carries — 350 bytes with the default language — as its
+    `minimum`, because a bound under it cannot be met and the reply says so with
+    `byte_limit_unmet`. It is a lower bound rather than a clamp: a value below
+    it is accepted and reported as unmet, not silently raised to the floor.
+
     The other end of the same budget: `mem_timeline` had no ceiling at all, and
     a window of a million came back with the whole session — 191 KB on a real
     one, from the tool on the surface whose purpose says a payload that pushes
@@ -900,6 +929,12 @@ useful part out of a context window has failed even if every field is right.
     Restoring is an ordinary `mem_update` with the old text; there is no restore
     tool.
 
+    A find/replace is a content-changing write like any other, so it is inside
+    that same rule: `mem_update` with `find` and `replace` edits one span of the
+    stored body and keeps the text it replaced as a version, exactly as a
+    whole-body write does. The tool never holds the edited text, so the store
+    reports the storage cut it made from that text — see §22.
+
 21. **`mem_search` can answer by meaning, and its description says so in a
     sentence.** When the words find little or nothing the tool goes on to the
     semantic stage ([`search.md`](search.md) §15) unless the `semantic_search`
@@ -925,6 +960,24 @@ useful part out of a context window has failed even if every field is right.
     write is a reason to turn the setting off for a store that must stay
     byte-identical under reads, such as one on read-only media, which still
     answers, from vectors made for the question and not kept.
+
+22. **A body can be edited in place, and a context answer can be bounded in
+    bytes.** `mem_update` takes `find` and `replace` as an alternative to
+    `content`: the stored body is read and edited inside the same write
+    transaction, `find` is counted against it, and the edit is refused unless it
+    names exactly one span — `edit_not_found` when the text is not there and
+    `edit_ambiguous` when it is there more than once, each changing nothing. The
+    replacement then goes through the same redaction and storage bound a
+    whole-body write does, so a `<private>` span cannot arrive by the partial
+    door. This covers the body and not the title: a title is one line, and a
+    span of one is not a unit anybody means. `mem_context` takes `byte_limit`
+    (also accepted as `max_bytes`), a per-call ceiling that only ever shrinks
+    the answer below the size setting; the answer is cut at an entry boundary
+    as §3 describes, and a bound under the envelope every answer carries is
+    reported with `byte_limit_unmet` rather than missed. History paging is
+    deliberately absent: `include_history`
+    returns the versions the retention bound keeps, and nothing walks further
+    back.
 
 ## Invariants
 
@@ -953,6 +1006,15 @@ useful part out of a context window has failed even if every field is right.
   `a_passive_capture_naming_a_session_files_under_that_sessions_project`, and
   the session door's idempotency under a drift by
   `a_repeated_session_start_in_a_drifted_directory_returns_the_session_unchanged`
+- `src/store/tests/versions.rs` — §22's edit is held by
+  `a_find_and_replace_keeps_the_version_it_replaced`,
+  `a_find_that_occurs_twice_changes_nothing`,
+  `a_find_that_is_absent_changes_nothing`,
+  `a_private_span_written_through_replace_is_not_stored` and
+  `a_find_and_replace_reaches_the_peer_as_an_upsert`, and the byte bound by
+  `a_replace_that_outgrows_the_bound_reports_the_cut`,
+  `mem_context_honours_a_byte_limit_below_the_size` and
+  `mem_context_says_when_a_byte_limit_cannot_be_met` in `src/mcp/tests.rs`
 - `src/store/sessions.rs` — `recent_projects_in_directory`, the lookup the
   write path and the session-start hook share
 - `src/store/tests/diagnostics.rs` — the store-side project counts and the bound `mem_stats` applies

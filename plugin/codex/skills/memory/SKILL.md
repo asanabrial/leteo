@@ -157,7 +157,10 @@ keep, `mem_consolidate` writes one replacement and records a judged `supersedes`
 relation from it to every source in a single transaction. The sources stop
 appearing in search and context but stay readable by id with
 `mem_get_observation`. For a single better revision, `mem_update` or a new save
-under the same `topic_key` is the smaller move.
+under the same `topic_key` is the smaller move; to correct one span of a body
+without rewriting the rest, `mem_update` takes `find` and `replace`, and a
+`find` that is absent or matches more than once is refused with
+`edit_not_found` or `edit_ambiguous`.
 
 ## WHEN A MEMORY COMES ROUND FOR A REREAD
 

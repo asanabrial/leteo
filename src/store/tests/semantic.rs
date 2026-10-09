@@ -154,19 +154,20 @@ fn the_floor_is_the_published_one() {
 }
 
 /// A setting off, or a caller that does not ask, is today's search: the same
-/// answer, and not one byte written.
+/// answer, and not one byte written. The store has vectors from its writes;
+/// the search is what must leave the file exactly as it found it.
 #[test]
 fn without_the_stage_the_search_is_the_lexical_one_and_writes_nothing() {
     let Some((_temp, store, _)) = store_with_keys() else {
         return;
     };
+    let changes = store.connection.total_changes();
     assert!(
         store
             .search(ASKED_IN_SPANISH, SearchOptions::default())
             .unwrap()
             .is_empty()
     );
-    assert_eq!(vector_rows(&store), 0);
 
     // `mode: any` asked for a disjunction and gets one, the way every relaxed
     // stage is switched off there.
@@ -175,7 +176,11 @@ fn without_the_stage_the_search_is_the_lexical_one_and_writes_nothing() {
         ..on()
     };
     assert!(store.search(ASKED_IN_SPANISH, any).unwrap().is_empty());
-    assert_eq!(vector_rows(&store), 0);
+    assert_eq!(
+        store.connection.total_changes(),
+        changes,
+        "a search writes nothing, with the stage on or off"
+    );
 }
 
 /// Every stage above `nearest` is stronger than a cosine, and a search one of
@@ -185,6 +190,7 @@ fn a_question_a_stronger_stage_answers_is_never_touched() {
     let Some((_temp, store, keys)) = store_with_keys() else {
         return;
     };
+    let changes = store.connection.total_changes();
     for question in [
         "rotate signing keys",  // every word: the strict pass
         "rotat",                // a word's beginning: the prefix stage
@@ -204,9 +210,9 @@ fn a_question_a_stronger_stage_answers_is_never_touched() {
             .any(|hit| hit.observation.id == keys.id)
     );
     assert_eq!(
-        vector_rows(&store),
-        0,
-        "a search that answered did not so much as load the model"
+        store.connection.total_changes(),
+        changes,
+        "a search that answered writes nothing"
     );
 }
 
@@ -306,7 +312,6 @@ fn a_topic_key_answer_is_exact_and_the_stage_stays_out_of_it() {
     let found = store.search("architecture/auth-tokens", on()).unwrap();
     assert_eq!(ids(&found), vec![keyed.id], "{found:?}");
     assert!(found.iter().all(|hit| !hit.semantic));
-    assert_eq!(vector_rows(&store), 0);
 
     // With the indexes emptied the full-text stages find nothing, so the lookup
     // is the only thing that answered and the stage would be next in line —
@@ -319,12 +324,13 @@ fn a_topic_key_answer_is_exact_and_the_stage_stays_out_of_it() {
              INSERT INTO observations_exact(observations_exact) VALUES('delete-all');",
         )
         .unwrap();
+    let changes = store.connection.total_changes();
     let found = store.search("architecture/auth-tokens", on()).unwrap();
     assert_eq!(ids(&found), vec![keyed.id], "{found:?}");
     assert_eq!(
-        vector_rows(&store),
-        0,
-        "the lookup answered, so nothing was embedded"
+        store.connection.total_changes(),
+        changes,
+        "the lookup answered, so the stage did not run"
     );
 }
 
@@ -516,9 +522,9 @@ fn the_stage_keeps_the_projects_it_is_asked_about_and_widens_when_asked() {
     assert!(store.search(ASKED_IN_SPANISH, typed).unwrap().is_empty());
 }
 
-/// A vector made from text that has since changed is replaced the next time
-/// the stage fires, whichever write path changed it — the stage reads a key
-/// off the row, and no write path has to remember to say so.
+/// A vector made from text that has since changed is replaced where the change
+/// was written: the write re-embeds the row, and the stage reads a key off the
+/// row, so no write path has to remember to say the vector is stale.
 #[test]
 fn a_vector_whose_text_changed_is_made_again() {
     let Some((_temp, mut store, keys)) = store_with_keys() else {
@@ -578,6 +584,10 @@ fn a_vector_whose_text_changed_is_made_again() {
         ids(&store.search(ASKED_IN_SPANISH, on()).unwrap()),
         vec![keys.id]
     );
+    // The title alone, which the content hash does not cover: the update makes
+    // the vector again, so the key changes where the change was made rather
+    // than at some later search.
+    let (key_title, _) = stored(&store);
     store
         .update_observation(
             keys.id,
@@ -588,20 +598,19 @@ fn a_vector_whose_text_changed_is_made_again() {
             },
         )
         .unwrap();
-    let (key_title, _) = stored(&store);
-    store.search(ASKED_IN_SPANISH, on()).unwrap();
     let (key_title_after, _) = stored(&store);
     assert_ne!(
         key_title, key_title_after,
         "a changed title is a stale vector"
     );
 
-    // A vector from another model is stale whatever it was made from.
+    // A vector from another model is stale whatever it was made from, and the
+    // backfill is what replaces it.
     store
         .connection
         .execute("UPDATE observation_vectors SET model = 'another'", [])
         .unwrap();
-    store.search(ASKED_IN_SPANISH, on()).unwrap();
+    store.backfill_vectors(16).unwrap();
     let models: Vec<String> = store
         .connection
         .prepare("SELECT DISTINCT model FROM observation_vectors")
@@ -628,11 +637,10 @@ fn a_current_vector_is_left_alone() {
     assert_eq!(store.connection.total_changes(), before);
 }
 
-/// A store that cannot be written still answers: the vectors are made for the
-/// question and thrown away, nothing is kept, and the connection's patience is
-/// what it was.
+/// A store that cannot be written still answers: the search only reads, so
+/// `query_only` costs it nothing and the connection's patience is what it was.
 #[test]
-fn a_store_that_cannot_keep_vectors_still_answers() {
+fn a_store_that_cannot_be_written_still_answers() {
     let Some((_temp, store, keys)) = store_with_keys() else {
         return;
     };
@@ -643,14 +651,86 @@ fn a_store_that_cannot_keep_vectors_still_answers() {
             .unwrap()
     };
     let before = patience(&store);
+    let changes = store.connection.total_changes();
     store
         .connection
         .execute_batch("PRAGMA query_only = ON")
         .unwrap();
     let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
     assert_eq!(ids(&found), vec![keys.id], "{found:?}");
-    assert_eq!(vector_rows(&store), 0);
+    assert_eq!(store.connection.total_changes(), changes);
     assert_eq!(patience(&store), before);
+}
+
+/// A search writes nothing. The store's own file is the witness: with every
+/// vector gone — the state of a store that has not been searched since the
+/// vectors stopped being built inside a search — the bytes are the same before
+/// and after.
+#[test]
+fn a_semantic_search_on_a_store_missing_vectors_writes_nothing() {
+    let Some((temp, store, _keys)) = store_with_keys() else {
+        return;
+    };
+    store
+        .connection
+        .execute("DELETE FROM observation_vectors", [])
+        .unwrap();
+    let database = temp.path().join("leteo.db");
+    let before = std::fs::read(&database).unwrap();
+    let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
+    assert!(found.is_empty(), "no vector to find by meaning: {found:?}");
+    assert_eq!(
+        before,
+        std::fs::read(&database).unwrap(),
+        "a search changed the store's file"
+    );
+}
+
+/// A memory is embedded where it is written, so it is found by meaning without
+/// a search having run first.
+#[test]
+fn a_saved_memory_has_a_current_vector_without_a_search() {
+    let Some((_temp, mut store)) = model_store() else {
+        return;
+    };
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", JWT_TITLE, JWT_BODY))
+        .unwrap()
+        .observation;
+    assert_eq!(vector_rows(&store), 1, "the save made its vector");
+    let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
+    assert_eq!(ids(&found), vec![saved.id], "{found:?}");
+}
+
+/// `doctor` says how much of the store the stage can see, and names the repair.
+#[test]
+fn doctor_reports_the_vector_coverage_and_names_the_repair() {
+    let Some((_temp, mut store)) = model_store() else {
+        return;
+    };
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", JWT_TITLE, JWT_BODY))
+        .unwrap();
+    let detail = |store: &Store| -> String {
+        store
+            .doctor()
+            .unwrap()
+            .checks
+            .into_iter()
+            .find(|check| check.code == "semantic_vectors")
+            .and_then(|check| check.detail)
+            .unwrap()
+    };
+    assert!(detail(&store).contains("every one"), "{}", detail(&store));
+    store
+        .connection
+        .execute("DELETE FROM observation_vectors", [])
+        .unwrap();
+    let said = detail(&store);
+    assert!(said.contains("0 of 1"), "{said}");
+    assert!(said.contains("doctor --repair"), "{said}");
 }
 
 /// Every surface that searches turns the stage on the same way: from the
@@ -750,35 +830,10 @@ fn a_model_that_does_not_verify_is_never_loaded() {
     assert_eq!(vector_rows(&store), 0);
 }
 
-/// More memories than one chunk are all embedded and kept, across the boundary.
+/// A backfill of more memories than one chunk embeds and keeps every one,
+/// across the boundary.
 #[test]
-fn a_first_firing_larger_than_a_chunk_embeds_everything() {
-    let Some((_temp, mut store)) = model_store() else {
-        return;
-    };
-    store.create_session("s1", "leteo", "C:/repo").unwrap();
-    store
-        .add_observation(observation("s1", JWT_TITLE, JWT_BODY))
-        .unwrap();
-    for index in 0..300 {
-        store
-            .add_observation(observation(
-                "s1",
-                &format!("Memory number {index}"),
-                &format!("a note about subject {index} and nothing else"),
-            ))
-            .unwrap();
-    }
-    store.search(ASKED_IN_SPANISH, on()).unwrap();
-    assert_eq!(vector_rows(&store), 301);
-}
-
-/// The first firing writes a chunk at a time, which is what bounds its memory:
-/// 301 memories are two commits of the vectors, not one. Counted from SQLite's
-/// own commit hook, because the bound is a property of how the work is divided
-/// and a test of the answer cannot see how it was.
-#[test]
-fn the_first_firing_keeps_its_vectors_a_chunk_at_a_time() {
+fn a_backfill_larger_than_a_chunk_embeds_everything() {
     let Some((_temp, mut store)) = model_store() else {
         return;
     };
@@ -792,6 +847,39 @@ fn the_first_firing_keeps_its_vectors_a_chunk_at_a_time() {
             ))
             .unwrap();
     }
+    // The state of a store whose vectors were never built: every one gone, and
+    // the backfill is what makes them again.
+    store
+        .connection
+        .execute("DELETE FROM observation_vectors", [])
+        .unwrap();
+    assert_eq!(store.backfill_vectors(301).unwrap(), 301);
+    assert_eq!(vector_rows(&store), 301);
+}
+
+/// The backfill writes a chunk at a time, which is what bounds its memory: 301
+/// memories are two commits of the vectors, not one. Counted from SQLite's own
+/// commit hook, because the bound is a property of how the work is divided and
+/// a test of the answer cannot see how it was.
+#[test]
+fn the_backfill_keeps_its_vectors_a_chunk_at_a_time() {
+    let Some((_temp, mut store)) = model_store() else {
+        return;
+    };
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for index in 0..301 {
+        store
+            .add_observation(observation(
+                "s1",
+                &format!("Memory number {index}"),
+                &format!("a note about subject {index} and nothing else"),
+            ))
+            .unwrap();
+    }
+    store
+        .connection
+        .execute("DELETE FROM observation_vectors", [])
+        .unwrap();
     let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = std::sync::Arc::clone(&commits);
     store
@@ -801,21 +889,13 @@ fn the_first_firing_keeps_its_vectors_a_chunk_at_a_time() {
             false
         }))
         .unwrap();
-    let counted = |store: &Store, options: SearchOptions| {
-        let before = commits.load(std::sync::atomic::Ordering::SeqCst);
-        store.search(ASKED_IN_SPANISH, options).unwrap();
-        commits.load(std::sync::atomic::Ordering::SeqCst) - before
-    };
-    // The lexical stages commit too (the typo stage's vocabulary is a temporary
-    // table), so the stage's own commits are what it adds to a search without it.
-    counted(&store, SearchOptions::default());
-    let without = counted(&store, SearchOptions::default());
-    let with = counted(&store, on());
+    let embedded = store.backfill_vectors(301).unwrap();
+    let commits = commits.load(std::sync::atomic::Ordering::SeqCst);
     store.connection.commit_hook(None::<fn() -> bool>).unwrap();
+    assert_eq!(embedded, 301);
     assert_eq!(vector_rows(&store), 301);
     assert_eq!(
-        with - without,
-        2,
+        commits, 2,
         "301 memories are one chunk of 256 and one of 45"
     );
 }

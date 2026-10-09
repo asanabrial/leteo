@@ -86,10 +86,10 @@ there from any provenance, and how it says when something has gone wrong.
    `sqlite_integrity`, `foreign_keys`, four full-text `*_integrity` checks,
    four `*_sync` row-count checks, `observation_hash_sync`,
    `observation_type_searchable`, `full_text_triggers`, `topic_key_uniqueness`,
-   `settings_readable`, `semantic_model`, `journal_mode`, `busy_timeout`,
-   `hook_spool`. `hook_spool` counts the captures a busy hook kept for a later
-   open and names the age of the oldest, and `doctor --repair` drains them
-   (§19).
+   `settings_readable`, `semantic_model`, `semantic_vectors`, `journal_mode`,
+   `busy_timeout`, `hook_spool`. `hook_spool` counts the captures a busy hook
+   kept for a later open and names the age of the oldest, and `doctor --repair`
+   drains them (§19).
    `semantic_model` is the one check about a file and not the database, and says
    which of three conditions holds: the model found and verified (and where),
    not installed, or present and not the model this build accepts, each with the
@@ -98,6 +98,10 @@ there from any provenance, and how it says when something has gone wrong.
    make the store unhealthy -- it is in the report and not in `issues` -- while
    one that is there and wrong does, because something replaced or damaged it.
    Turned off by the `semantic_search` setting, it says so and looks for nothing.
+   `semantic_vectors` counts how many of the memories the semantic stage can
+   return have a current vector and names the backfill, or `doctor --repair`,
+   for the rest. Like a missing model it is a note and not a fault: a store with
+   no vectors searches by its words alone, and the backfill is what fills them.
    Every code is listed
    once in `DoctorCheck::CODES`, and tests hold the list to the checks that run.
 
@@ -377,17 +381,23 @@ there from any provenance, and how it says when something has gone wrong.
     and a row from another model is stale. `source_key` is the content hash the
     row already carries and its title, concatenated, which SQL can compare with
     the live row without reading its text: a row whose key differs is stale. The
-    key is a function of the row, so the save, a revision, an update, a merge, a
-    replicated write, an import and an adoption are all covered, and none of
-    them has a hook to forget. A memory the model has no token for gets a row
-    with an empty vector, so it is not found stale on every question.
+    key is a function of the row, so no write path has to say a vector went
+    stale, and the paths that own a memory's text — a save, a revision, an
+    update, a consolidation, an import — give their row a vector as they commit.
+    A write that does not, a replicated upsert or an adoption, is filled by the
+    backfill; either way the staleness is found the same way. A memory the model
+    has no token for gets a row with an empty vector, so it is not found stale on
+    every question.
 
     The cascade is the one rule the database keeps for the three hard-delete
     paths — a memory, a session, a project — instead of each remembering to. The
-    table is derived and local: it is not replicated, not exported, not counted
-    by `doctor`, and losing it costs the time to make it again. That is what lets
-    migration 20 be a plain `CREATE TABLE` with no repair path, no full-text
-    rebuild, and no column added to an existing table.
+    table is derived and local: it is not replicated, not exported, and losing it
+    costs the time to make it again, which is a backfill or `doctor --repair` and
+    not a repair path inside a migration. `doctor` reports how much of the store
+    holds a current vector (`semantic_vectors`, §4) rather than counting a gap as
+    damage, because a store with no vectors searches by its words alone. That is
+    what lets migration 20 be a plain `CREATE TABLE` with no repair path, no
+    full-text rebuild, and no column added to an existing table.
 
 17. **The language a memory was stemmed in is a table of its own, kept by
     triggers that call a function.** Migration 21 adds `observation_stems`:

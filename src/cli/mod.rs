@@ -745,6 +745,30 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .transpose()?;
             let rehashed = repair.then(|| store.recompute_stale_hashes()).transpose()?;
             let folded = repair.then(|| store.fold_observation_types()).transpose()?;
+            // The vectors the stage is missing. `doctor --repair` is the one
+            // command that says "do it now": the background backfill drains a
+            // store on its own schedule, and a one-shot import or a store nobody
+            // has searched since the vectors stopped being built during a search
+            // has nobody else to ask. It loads the model, and steps through the
+            // store a bounded chunk at a time rather than all at once.
+            let embedded = repair.then(|| {
+                let mut total = 0usize;
+                loop {
+                    match store.backfill_vectors(crate::store::semantic_stage::BACKFILL_BUDGET) {
+                        Ok(done) => {
+                            total += done;
+                            if done < crate::store::semantic_stage::BACKFILL_BUDGET {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "the vector backfill stopped early");
+                            break;
+                        }
+                    }
+                }
+                total
+            });
             // And the captures a busy hook left beside the database. Before the
             // report, so the `hook_spool` check describes the spool as it is
             // after the repair rather than as it was when somebody asked.
@@ -766,6 +790,9 @@ pub async fn run(cli: Cli) -> Result<()> {
                 }
                 if let Some(rehashed) = rehashed {
                     object.insert("rehashed".to_owned(), serde_json::to_value(rehashed)?);
+                }
+                if let Some(embedded) = embedded {
+                    object.insert("embedded".to_owned(), serde_json::to_value(embedded)?);
                 }
                 if let Some(folded) = folded {
                     object.insert("folded_types".to_owned(), serde_json::to_value(folded)?);
@@ -892,10 +919,12 @@ pub async fn run(cli: Cli) -> Result<()> {
                     "cloud replication is not configured; run `leteo cloud config set` first"
                 );
             }
+            let backfill = start_background_backfill(&config)?;
             // Nothing else to do on this thread: replication runs on its own,
             // and Ctrl-C is how it ends.
             tokio::signal::ctrl_c().await?;
             autosync.shutdown().await;
+            let _ = tokio::task::spawn_blocking(move || backfill.shutdown()).await;
         }
         Command::Mcp { tools, project } => {
             let autosync = start_background_autosync(&config, &cloud_config_path)?;
@@ -904,6 +933,10 @@ pub async fn run(cli: Cli) -> Result<()> {
             // a busy hook could not store. Bounded by the store's own budget.
             let deadline = store.wait_deadline();
             crate::hooks::spool::drain(&mut store, deadline);
+            // The search no longer builds vectors, so the store's own backlog is
+            // filled by a thread that waits for the model to come up rather than
+            // by the search that needed it.
+            let backfill = start_background_backfill(&config)?;
             let served = crate::mcp::run_stdio_with_options(
                 Arc::new(Mutex::new(store)),
                 crate::mcp::McpOptions {
@@ -913,6 +946,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             )
             .await;
             autosync.shutdown().await;
+            let _ = tokio::task::spawn_blocking(move || backfill.shutdown()).await;
             served?;
         }
         Command::Tui => {

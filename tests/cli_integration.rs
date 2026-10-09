@@ -1911,7 +1911,11 @@ fn search_goes_on_to_meaning_unless_the_setting_says_not_to() {
     };
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let database = temp.path().join("semantic.db");
+    // The model directory reaches the save too: a memory is embedded where it is
+    // written, so a save with the model configured is what puts a vector in the
+    // store for the search to find.
     leteo(&database)
+        .env("LETEO_MODEL_DIR", &model)
         .arg("save")
         .arg("Rotate JWT signing keys every 30 days with kid header")
         .arg("Signing keys live in KMS and tokens carry a kid header.")

@@ -22,6 +22,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Changed
 
+- **A search no longer writes vectors; a memory gets its vector where it is
+  written.** `mem_search` used to embed every memory in scope with no current
+  vector and keep them while it held the store's single lock: on a 54k-memory
+  store with no vectors the first fallback search spent seconds embedding and
+  writing before it could answer, and a store it could not write held every
+  vector in memory for the question. A save, a revision, a consolidation and an
+  import now give their row a vector as they commit, a bounded background
+  backfill fills what an existing store is missing, and the search only reads.
+  The same first fallback search on the 54k copy is 0.25 s against 2.39 s and
+  writes nothing. `doctor` reports the coverage as `semantic_vectors` and
+  `doctor --repair` fills it on demand. (#205)
+
 - **Every tool reply carries its JSON as text again, at every protocol
   revision.** 0.3.0 made a reply on `2025-06-18` or later send one sentence —
   `Result in structuredContent.` — instead of repeating the answer, on the

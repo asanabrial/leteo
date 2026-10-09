@@ -60,6 +60,14 @@ pub(super) type StageError = Box<dyn std::error::Error + Send + Sync>;
 /// cost on disk.
 const CHUNK: usize = 256;
 
+/// How many memories one bounded backfill call embeds.
+///
+/// An import embeds this many and hands the rest to the background backfill;
+/// `doctor --repair` loops it until the store is caught up. Neither reply may
+/// wait on making vectors for a whole store, and this is the bound that keeps
+/// each step short enough to sit between two other things.
+pub(crate) const BACKFILL_BUDGET: usize = 1024;
+
 struct Fresh {
     id: i64,
     key: String,
@@ -76,10 +84,12 @@ impl Store {
     /// nearest `limit` regardless: the list that is fused with a lexical answer
     /// that was already being given.
     ///
-    /// Embeds first whatever is in scope and has no current vector, which is
-    /// where the one-time cost of a store that has never been asked this lives:
-    /// 0.24 s to embed 5,336 memories and 0.1 to 0.2 s to keep them, then the
-    /// scan itself, 6.6 ms. A store that never reaches this stage never pays.
+    /// It reads the vectors that are already stored and writes nothing, so a
+    /// search never holds the store's lock for the seconds a first firing on a
+    /// large store used to cost. That work belongs to the write paths and the
+    /// backfill now ([`Store::embed_written`], [`Store::backfill_step`]); a
+    /// memory with no current vector is simply absent from the answer rather
+    /// than embedded here.
     pub(super) fn semantic_candidates(
         &self,
         query: &str,
@@ -92,8 +102,6 @@ impl Store {
         if question.is_empty() {
             return Ok(Vec::new());
         }
-        let unkept = self.refresh_vectors(&model, options)?;
-
         let visible = visible_observations(1, 2, 3);
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.id, o.type, v.vector FROM observations o
@@ -111,19 +119,9 @@ impl Store {
         ])?;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
-            if unkept.contains_key(&id) {
-                continue;
-            }
             let stored = row.get_ref(2)?.as_blob()?;
             if let Some(cosine) = semantic::cosine(stored, &question) {
                 scored.push((cosine, id, row.get(1)?));
-            }
-        }
-        // Vectors made for this question and not kept: the write lost the lock
-        // or the file is read-only. They answer it all the same.
-        for (id, (kind, vector)) in &unkept {
-            if let Some(cosine) = semantic::cosine(vector, &question) {
-                scored.push((cosine, *id, kind.clone()));
             }
         }
 
@@ -147,25 +145,133 @@ impl Store {
             .collect())
     }
 
-    /// Makes a current vector for every memory in scope that has none, a chunk
-    /// at a time.
+    /// Embeds and keeps a current vector for the memories a write just touched.
     ///
-    /// Returns the ones it made and could not keep, by id with their type and
-    /// bytes, so the question that caused the work is still answered from them.
-    fn refresh_vectors(
+    /// Called after the write's own transaction has committed, so the vector is
+    /// written outside it and a failure to embed cannot roll back the memory.
+    /// The model is loaded here if it is not up yet: the first write in a
+    /// process pays the load, and a new memory is searchable by meaning at once
+    /// rather than waiting for the backfill. The `semantic_search` setting off
+    /// means no vectors are made at all.
+    pub(crate) fn embed_written(&self, ids: &[i64]) {
+        if ids.is_empty() || !self.semantic_enabled() {
+            return;
+        }
+        let outcome = (|| {
+            let model = semantic::load(self.data_dir(), self.model_dir())?;
+            self.embed_and_keep(&model, self.stale_among(ids)?)
+        })();
+        if let Err(error) = outcome {
+            if error.is::<crate::semantic::Unavailable>() {
+                tracing::debug!(%error, "the semantic stage is off; the written memories are left for the backfill");
+            } else {
+                tracing::warn!(%error, "the semantic stage could not keep vectors for what was just written");
+            }
+        }
+    }
+
+    /// Embeds and keeps a current vector for up to `budget` memories that need
+    /// one, newest first, across the whole store.
+    ///
+    /// The bounded backfill, one step at a time. It never loads the model: a
+    /// process that has not searched yet has no reason to pay for it, and the
+    /// thread that calls this waits until a search or a save has. Returns how
+    /// many it embedded, so a caller looping can tell a full budget — more may
+    /// remain — from a short one, which means it has caught up.
+    pub(crate) fn backfill_step(&self, budget: usize) -> Result<usize, StageError> {
+        if !self.semantic_enabled() || !self.model_loaded() {
+            return Ok(0);
+        }
+        let model = semantic::load(self.data_dir(), self.model_dir())?;
+        self.embed_and_keep(&model, self.stale_any(budget)?)
+    }
+
+    /// Embeds and keeps a current vector for up to `budget` memories that need
+    /// one, loading the model if it is not up.
+    ///
+    /// `doctor --repair` calls it, because a person asked: the background
+    /// backfill is bounded and may take a while to catch up on a store that has
+    /// just been adopted or imported, and the repair is the one command that
+    /// says "do it now".
+    pub(crate) fn backfill_vectors(&self, budget: usize) -> Result<usize, StageError> {
+        if !self.semantic_enabled() {
+            return Ok(0);
+        }
+        let model = semantic::load(self.data_dir(), self.model_dir())?;
+        self.embed_and_keep(&model, self.stale_any(budget)?)
+    }
+
+    /// Whether the `semantic_search` setting asks for vectors at all.
+    fn semantic_enabled(&self) -> bool {
+        crate::settings::load_beside(self.database_path()).semantic_search()
+    }
+
+    /// Whether a model is already up for this store, without loading one.
+    fn model_loaded(&self) -> bool {
+        semantic::is_loaded(self.data_dir(), self.model_dir())
+    }
+
+    /// How many of the memories the stage can return have a current vector.
+    ///
+    /// The denominator is the visibility the scan itself uses — live, not
+    /// superseded, not a session summary — so the number is the fraction of the
+    /// store's searchable memories the stage can see, not the fraction of every
+    /// row that holds a vector. `doctor` reports it, and `(covered, total)` is
+    /// what lets it say "every one" without a second query.
+    pub(crate) fn vector_coverage(&self) -> Result<(i64, i64), rusqlite::Error> {
+        let visible = visible_observations(1, 2, 3);
+        let summary = crate::memory::model::SESSION_SUMMARY;
+        let total: i64 = self.connection.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM observations o
+                 WHERE {visible} AND o.type != ?4"
+            ),
+            params![
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                summary,
+            ],
+            |row| row.get(0),
+        )?;
+        let covered: i64 = self.connection.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM observations o
+                 CROSS JOIN observation_vectors v ON v.observation_id = o.id
+                 WHERE {visible} AND o.type != ?4
+                   AND v.model = ?5 AND v.source_key = {SOURCE_KEY}"
+            ),
+            params![
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                summary,
+                semantic::MODEL_ID,
+            ],
+            |row| row.get(0),
+        )?;
+        Ok((covered, total))
+    }
+
+    /// Reads, embeds and keeps the given stale memories, a chunk at a time.
+    ///
+    /// The chunk is what bounds the text and vectors held at once, as before;
+    /// what changed is only who calls it. A memory gone since its id was read is
+    /// skipped, and a batch whose write loses the lock is logged and dropped —
+    /// the backfill's next step makes it again.
+    fn embed_and_keep(
         &self,
         model: &StaticModel,
-        options: &SearchOptions,
-    ) -> Result<BTreeMap<i64, (String, Vec<u8>)>, StageError> {
-        let stale = self.stale_vectors(options)?;
-        let mut unkept = BTreeMap::new();
+        stale: Vec<(i64, String)>,
+    ) -> Result<usize, StageError> {
         if stale.is_empty() {
-            return Ok(unkept);
+            return Ok(0);
         }
         let mut read = self.connection.prepare(&format!(
             "SELECT o.title, o.type, substr(o.content, 1, {BODY_CHARS})
              FROM observations o WHERE o.id = ?1"
         ))?;
+        let mut kept = 0;
         for chunk in stale.chunks(CHUNK) {
             let mut rows = Vec::with_capacity(chunk.len());
             let mut texts = Vec::with_capacity(chunk.len());
@@ -186,6 +292,9 @@ impl Store {
                 texts.push(semantic::document_text(&title, &content));
                 rows.push((*id, key.clone(), kind));
             }
+            if rows.is_empty() {
+                continue;
+            }
             let vectors = semantic::embed(model, &texts)?;
             let fresh: Vec<Fresh> = rows
                 .iter()
@@ -196,36 +305,72 @@ impl Store {
                     vector: semantic::encode(&vector),
                 })
                 .collect();
-            if let Err(error) = self.keep_vectors(&fresh) {
-                tracing::warn!(%error, "the semantic stage could not keep its vectors; using them for this question only");
-                for (row, (_, _, kind)) in fresh.into_iter().zip(rows) {
-                    unkept.insert(row.id, (kind, row.vector));
-                }
-            }
+            self.keep_vectors(&fresh)?;
+            kept += fresh.len();
         }
-        Ok(unkept)
+        Ok(kept)
     }
 
-    /// The ids, and keys, of the memories in scope whose vector is missing, from
-    /// another model, or made from text that has since changed.
+    /// Up to `budget` memories whose vector is missing, from another model, or
+    /// made from text that has since changed, newest first.
+    ///
+    /// Not scoped to a project: the backfill serves the whole store, and a write
+    /// that just happened wants its own row found whether or not the writer
+    /// named a project. Newest first so a save's own row is the first a bounded
+    /// step reaches.
     ///
     /// Session summaries are not embedded: the stage never returns one, for the
     /// reason every relaxed stage leaves them out, so a vector for one would be
     /// space and time spent on a row nothing reads.
-    fn stale_vectors(&self, options: &SearchOptions) -> Result<Vec<(i64, String)>, StageError> {
+    fn stale_any(&self, budget: usize) -> Result<Vec<(i64, String)>, StageError> {
         let visible = visible_observations(1, 2, 3);
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.id, {SOURCE_KEY}
              FROM observations o
              LEFT JOIN observation_vectors v ON v.observation_id = o.id
              WHERE {visible} AND o.type != ?4
+               AND (v.observation_id IS NULL OR v.model != ?5 OR v.source_key != {SOURCE_KEY})
+             ORDER BY o.id DESC LIMIT ?6"
+        ))?;
+        let rows = statement.query_map(
+            params![
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                crate::memory::model::SESSION_SUMMARY,
+                semantic::MODEL_ID,
+                budget as i64,
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The memories among `ids` whose vector needs making, in the order given.
+    ///
+    /// The ids come from this crate's own writes and are integers, so they are
+    /// written into the `IN` list rather than bound one by one; nothing a caller
+    /// supplied reaches this string. An empty list is not a question this asks —
+    /// `embed_written` returns before it would.
+    fn stale_among(&self, ids: &[i64]) -> Result<Vec<(i64, String)>, StageError> {
+        let visible = visible_observations(1, 2, 3);
+        let list = ids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT o.id, {SOURCE_KEY}
+             FROM observations o
+             LEFT JOIN observation_vectors v ON v.observation_id = o.id
+             WHERE {visible} AND o.id IN ({list}) AND o.type != ?4
                AND (v.observation_id IS NULL OR v.model != ?5 OR v.source_key != {SOURCE_KEY})"
         ))?;
         let rows = statement.query_map(
             params![
-                options.kind,
-                options.project,
-                options.scope,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
                 crate::memory::model::SESSION_SUMMARY,
                 semantic::MODEL_ID,
             ],

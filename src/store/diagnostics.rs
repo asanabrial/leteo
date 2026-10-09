@@ -278,6 +278,14 @@ impl Store {
         }
 
         tx.commit()?;
+        // A memory is given a vector where it is written, and an import is a
+        // write like any other: with the model up, the rows it restored get
+        // vectors now, and without it they are left for the backfill. Bounded,
+        // because an import can be the whole store and its reply must not wait
+        // on making vectors for all of it.
+        if let Err(error) = self.backfill_vectors(super::semantic_stage::BACKFILL_BUDGET) {
+            tracing::warn!(%error, "the semantic stage could not keep vectors for what was imported");
+        }
         Ok(result)
     }
 
@@ -648,6 +656,31 @@ impl Store {
                 }
             },
         );
+        // How much of the store the semantic stage can see.
+        //
+        // A note rather than a fault: vectors are derived and optional, a store
+        // with none searches by words alone, and the backfill fills them. The
+        // count is here because a missing vector was the one thing nobody could
+        // see — a search that finds nothing by meaning looks exactly like a
+        // store with nothing to find.
+        record(match self.vector_coverage() {
+            Ok((covered, total)) if covered == total => DoctorCheck::noted(
+                "semantic_vectors",
+                format!(
+                    "every one of the {total} memories the stage can return has a current vector"
+                ),
+            ),
+            Ok((covered, total)) => DoctorCheck::noted(
+                "semantic_vectors",
+                format!(
+                    "{covered} of {total} memories the stage can return have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
+                ),
+            ),
+            Err(error) => DoctorCheck::failed(
+                "semantic_vectors",
+                format!("the vector coverage could not be read: {error}"),
+            ),
+        });
         record(match shared_topic_keys(&self.connection) {
             0 => DoctorCheck::passed("topic_key_uniqueness"),
             shared => DoctorCheck::failed(

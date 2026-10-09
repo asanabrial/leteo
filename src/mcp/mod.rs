@@ -903,7 +903,10 @@ session opens.
 
 SUMMARIES: mem_session_summary takes the session's title from the first line \
 of the content that is not a heading, so open with what the session was for. A \
-summary beginning with a date is one nobody can find again.";
+summary beginning with a date is one nobody can find again.
+
+SESSION QUESTIONS: for what happened in a session, use mem_timeline and the \
+session tools, not only mem_search; a summary is found by type=session_summary.";
 
 pub async fn run_stdio_with_options(
     store: Arc<Mutex<Store>>,

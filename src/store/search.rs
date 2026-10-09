@@ -175,6 +175,18 @@ pub(super) fn visible_observations(kind: usize, project: usize, scope: usize) ->
     )
 }
 
+/// Whether this search leaves session summaries out of its relaxed stages.
+///
+/// A summary is long and touches everything, so it is the best partial match for
+/// almost any question and the right answer to almost none; that is the rule for
+/// a query that did not ask for them, measured in `search.md` §6. A query that
+/// named the type asked for exactly this, and `visible_observations` already
+/// narrows to it — excluding it after that returned nothing at all, which is the
+/// contradiction `is_searchable_kind` promised a caller would not hit.
+pub(super) fn excludes_summaries(options: &SearchOptions) -> bool {
+    options.kind.as_deref() != Some(crate::memory::model::SESSION_SUMMARY)
+}
+
 /// The coefficients and scales of the Engram rerank, under measurement rather
 /// than adopted.
 ///
@@ -1063,7 +1075,9 @@ impl Store {
             return Ok(Vec::new());
         }
         let mut candidates = self.stemmed_candidates(&terms, true, options, RECALL_SAMPLE)?;
-        candidates.retain(|candidate| candidate.kind != crate::memory::model::SESSION_SUMMARY);
+        if excludes_summaries(options) {
+            candidates.retain(|candidate| candidate.kind != crate::memory::model::SESSION_SUMMARY);
+        }
         // The median of two is not a distribution, and nothing here is worth
         // saying without one.
         if candidates.len() < MIN_RECALL_SAMPLE {
@@ -1110,7 +1124,9 @@ impl Store {
             return Ok(Vec::new());
         }
         let mut matched = self.matching_observations(FTS_STEMMED, &terms, options, limit, true)?;
-        matched.retain(|result| result.kind != crate::memory::model::SESSION_SUMMARY);
+        if excludes_summaries(options) {
+            matched.retain(|result| result.kind != crate::memory::model::SESSION_SUMMARY);
+        }
         matched.sort_by(|left, right| left.rank.total_cmp(&right.rank));
         matched.truncate(limit);
         Ok(matched)
@@ -1184,7 +1200,9 @@ impl Store {
         let mut matched = rows
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)?;
-        matched.retain(|result| result.kind != crate::memory::model::SESSION_SUMMARY);
+        if excludes_summaries(options) {
+            matched.retain(|result| result.kind != crate::memory::model::SESSION_SUMMARY);
+        }
         matched.truncate(limit);
         Ok(matched)
     }
@@ -1326,8 +1344,11 @@ impl Store {
         // because a session's worth of prose matches whatever is left of it.
         //
         // The strict pass keeps them. A question whose words genuinely name
-        // what a session did should still find that session.
-        matched.retain(|result| result.kind != crate::memory::model::SESSION_SUMMARY);
+        // what a session did should still find that session, and a query that
+        // names the type is asking for them, so both keep them.
+        if excludes_summaries(options) {
+            matched.retain(|result| result.kind != crate::memory::model::SESSION_SUMMARY);
+        }
         matched.sort_by(|left, right| left.rank.total_cmp(&right.rank));
         matched.truncate(limit);
         Ok(matched)
@@ -1597,6 +1618,11 @@ impl Store {
 /// `tools/` asks what this stage would do under a different floor, and a
 /// harness holding its own copy of the SQL measures a query the product does
 /// not issue. That has already cost an afternoon once.
+///
+/// It keeps excluding summaries even though a typed search no longer must: the
+/// hint guesses what this conversation already knows, and §6's measurement is
+/// that a summary heads almost none of those. A prompt carries no `type`, so
+/// there is nothing here for a caller to name.
 pub(crate) fn prompt_recall_sql() -> String {
     let not_superseded = super::relations::not_superseded();
     format!(

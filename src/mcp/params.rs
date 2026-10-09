@@ -197,7 +197,7 @@ pub(super) struct SearchParams {
     /// Full-text query or an exact topic key containing a slash. At most 8192 bytes of raw query; a longer one is refused with `query_too_long` before it is tokenised.
     pub(super) query: String,
     /// Restrict results to this observation category. One of: bugfix, decision, policy, architecture, discovery, pattern, config, preference. Close
-    /// synonyms are folded, so `bug` finds a `bugfix`.
+    /// synonyms are folded, so `bug` finds a `bugfix`. `session_summary` is also accepted, and is how a summary is found: the relaxed stages leave summaries out unless this names them.
     #[serde(rename = "type")]
     pub(super) kind: Option<String>,
     /// Restrict results to this project.

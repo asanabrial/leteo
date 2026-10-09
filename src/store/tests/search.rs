@@ -1313,6 +1313,56 @@ fn a_loosened_question_is_not_answered_by_a_session_summary() {
     assert!(!exact[0].partial);
 }
 
+/// A search that names the type finds the summary the relaxed stages keep out.
+///
+/// `is_searchable_kind` says a search narrowed by type can return a summary, and
+/// `visible_observations` narrows to it — but every relaxed stage then removed
+/// it, so `type: session_summary` returned nothing at all once the strict pass
+/// failed. The exclusion is for a query that did not ask; one that names the
+/// type asked for exactly this.
+#[test]
+fn a_query_that_names_the_type_finds_the_summary_the_relaxed_stages_keep_out() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+
+    let mut summary = observation(
+        "s1",
+        "Session summary: leteo",
+        "the session went over the connection pool, the retry ladder, the index the \
+         planner would not choose, and a great many other things besides",
+    );
+    summary.kind = crate::memory::model::SESSION_SUMMARY.to_owned();
+    let summary = store.add_observation(summary).unwrap().observation;
+    store
+        .add_observation(observation(
+            "s1",
+            "The retry ladder was capped at three",
+            "the connection pool gave up too early",
+        ))
+        .unwrap();
+
+    let by_type = || SearchOptions {
+        kind: Some(crate::memory::model::SESSION_SUMMARY.to_owned()),
+        ..SearchOptions::default()
+    };
+
+    // The widened stage: `kubernetes` is a word this store has never seen, so the
+    // strict pass finds nothing and one word is dropped.
+    let widened = store.search("retry ladder kubernetes", by_type()).unwrap();
+    assert!(
+        widened.iter().any(|hit| hit.observation.id == summary.id),
+        "a type-narrowed loosened question finds the summary: {widened:?}"
+    );
+
+    // The prefix stage: no word is dropped and none is added, so the strict pass
+    // cannot match `sess` against `session`.
+    let prefix = store.search("sess summ leteo", by_type()).unwrap();
+    assert!(
+        prefix.iter().any(|hit| hit.observation.id == summary.id),
+        "a type-narrowed fragment finds the summary: {prefix:?}"
+    );
+}
+
 #[test]
 fn a_full_page_says_whether_more_is_behind_it_at_every_limit_including_the_cap() {
     // Asked at the cap, the answer used to be silence.

@@ -106,7 +106,7 @@ impl Store {
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.id, o.type, v.vector FROM observations o
              CROSS JOIN observation_vectors v ON v.observation_id = o.id
-             WHERE {visible} AND o.type != ?4
+             WHERE {visible} AND (?4 IS NULL OR o.type != ?4)
                AND v.model = ?5 AND v.source_key = {SOURCE_KEY}"
         ))?;
         let mut scored: Vec<(f32, i64, String)> = Vec::new();
@@ -114,7 +114,8 @@ impl Store {
             options.kind,
             options.project,
             options.scope,
-            crate::memory::model::SESSION_SUMMARY,
+            super::search::excludes_summaries(options)
+                .then_some(crate::memory::model::SESSION_SUMMARY),
             semantic::MODEL_ID,
         ])?;
         while let Some(row) = rows.next()? {
@@ -211,26 +212,22 @@ impl Store {
         semantic::is_loaded(self.data_dir(), self.model_dir())
     }
 
-    /// How many of the memories the stage can return have a current vector.
+    /// How many of the memories the stage can reach have a current vector.
     ///
-    /// The denominator is the visibility the scan itself uses — live, not
-    /// superseded, not a session summary — so the number is the fraction of the
-    /// store's searchable memories the stage can see, not the fraction of every
-    /// row that holds a vector. `doctor` reports it, and `(covered, total)` is
-    /// what lets it say "every one" without a second query.
+    /// The denominator is the visibility the scan itself uses — live and not
+    /// superseded — session summaries included, because a query that names the
+    /// type reads them (§15 of `search.md`). So the number is the fraction of
+    /// the store the stage can see, not the fraction of every row that holds a
+    /// vector. `doctor` reports it, and `(covered, total)` is what lets it say
+    /// "every one" without a second query.
     pub(crate) fn vector_coverage(&self) -> Result<(i64, i64), rusqlite::Error> {
         let visible = visible_observations(1, 2, 3);
-        let summary = crate::memory::model::SESSION_SUMMARY;
         let total: i64 = self.connection.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM observations o
-                 WHERE {visible} AND o.type != ?4"
-            ),
+            &format!("SELECT COUNT(*) FROM observations o WHERE {visible}"),
             params![
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
-                summary,
             ],
             |row| row.get(0),
         )?;
@@ -238,14 +235,12 @@ impl Store {
             &format!(
                 "SELECT COUNT(*) FROM observations o
                  CROSS JOIN observation_vectors v ON v.observation_id = o.id
-                 WHERE {visible} AND o.type != ?4
-                   AND v.model = ?5 AND v.source_key = {SOURCE_KEY}"
+                 WHERE {visible} AND v.model = ?4 AND v.source_key = {SOURCE_KEY}"
             ),
             params![
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
-                summary,
                 semantic::MODEL_ID,
             ],
             |row| row.get(0),
@@ -319,25 +314,32 @@ impl Store {
     /// named a project. Newest first so a save's own row is the first a bounded
     /// step reaches.
     ///
-    /// Session summaries are not embedded: the stage never returns one, for the
-    /// reason every relaxed stage leaves them out, so a vector for one would be
-    /// space and time spent on a row nothing reads.
+    /// Every visible memory whose vector is missing, from another model, or made
+    /// from text that has since changed, newest first, up to `budget`.
+    ///
+    /// Not scoped to a project: the backfill serves the whole store, and a write
+    /// that just happened wants its own row found whether or not the writer
+    /// named a project. Newest first so a save's own row is the first a bounded
+    /// step reaches.
+    ///
+    /// Session summaries are included. The stage leaves them out of an ordinary
+    /// answer, but a query that names the type reads them (§15 of `search.md`),
+    /// so a vector for one is read rather than wasted.
     fn stale_any(&self, budget: usize) -> Result<Vec<(i64, String)>, StageError> {
         let visible = visible_observations(1, 2, 3);
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.id, {SOURCE_KEY}
              FROM observations o
              LEFT JOIN observation_vectors v ON v.observation_id = o.id
-             WHERE {visible} AND o.type != ?4
-               AND (v.observation_id IS NULL OR v.model != ?5 OR v.source_key != {SOURCE_KEY})
-             ORDER BY o.id DESC LIMIT ?6"
+             WHERE {visible}
+               AND (v.observation_id IS NULL OR v.model != ?4 OR v.source_key != {SOURCE_KEY})
+             ORDER BY o.id DESC LIMIT ?5"
         ))?;
         let rows = statement.query_map(
             params![
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
-                crate::memory::model::SESSION_SUMMARY,
                 semantic::MODEL_ID,
                 budget as i64,
             ],
@@ -363,15 +365,14 @@ impl Store {
             "SELECT o.id, {SOURCE_KEY}
              FROM observations o
              LEFT JOIN observation_vectors v ON v.observation_id = o.id
-             WHERE {visible} AND o.id IN ({list}) AND o.type != ?4
-               AND (v.observation_id IS NULL OR v.model != ?5 OR v.source_key != {SOURCE_KEY})"
+             WHERE {visible} AND o.id IN ({list})
+               AND (v.observation_id IS NULL OR v.model != ?4 OR v.source_key != {SOURCE_KEY})"
         ))?;
         let rows = statement.query_map(
             params![
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
-                crate::memory::model::SESSION_SUMMARY,
                 semantic::MODEL_ID,
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),

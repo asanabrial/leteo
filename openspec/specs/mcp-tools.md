@@ -911,6 +911,11 @@ useful part out of a context window has failed even if every field is right.
     array from 66,931 to 67,199 bytes. The blurb is published schema text, which
     is why it is one sentence and says what the field means only by naming it.
 
+    A query may narrow to `type: session_summary`. That is the one way a summary
+    is found, because every relaxed stage leaves summaries out otherwise
+    ([`search.md`](search.md) §6), and the schema names the type so a caller can
+    ask for one.
+
     `mem_search` keeps `read_only_hint: true`, and that stays a true statement
     about memories: the stage may write rows into `observation_vectors`, a cache
     derived from them that no tool returns, replicates or counts

@@ -667,13 +667,13 @@ impl Store {
             Ok((covered, total)) if covered == total => DoctorCheck::noted(
                 "semantic_vectors",
                 format!(
-                    "every one of the {total} memories the stage can return has a current vector"
+                    "every one of the {total} memories the stage can reach has a current vector"
                 ),
             ),
             Ok((covered, total)) => DoctorCheck::noted(
                 "semantic_vectors",
                 format!(
-                    "{covered} of {total} memories the stage can return have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
+                    "{covered} of {total} memories the stage can reach have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
                 ),
             ),
             Err(error) => DoctorCheck::failed(

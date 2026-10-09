@@ -99,7 +99,7 @@ there from any provenance, and how it says when something has gone wrong.
    one that is there and wrong does, because something replaced or damaged it.
    Turned off by the `semantic_search` setting, it says so and looks for nothing.
    `semantic_vectors` counts how many of the memories the semantic stage can
-   return have a current vector and names the backfill, or `doctor --repair`,
+   reach have a current vector and names the backfill, or `doctor --repair`,
    for the rest. Like a missing model it is a note and not a fault: a store with
    no vectors searches by its words alone, and the backfill is what fills them.
    Every code is listed

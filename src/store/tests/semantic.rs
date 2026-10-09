@@ -392,24 +392,18 @@ fn hidden_memories_never_surface_by_meaning() {
     assert_eq!(left, 0, "a hard delete cascades to the vector");
 }
 
-/// Session summaries are long and touch everything, which is why every relaxed
-/// stage leaves them out; this one neither returns one nor spends a vector on it.
-///
-/// Both halves are asserted separately, because each hides the other: with no
-/// vector for a summary the scan has nothing to return, so a scan that forgot
-/// to exclude them would pass. A summary is therefore given a vector by hand —
-/// a copy of the best match's — and has to stay out of the answer on the
-/// strength of its type alone.
+/// Session summaries are long and touch everything, which is why an ordinary
+/// search leaves them out. They are given a vector all the same, because a
+/// query that names the type reads them; this one asks without naming it and
+/// must not return one.
 #[test]
-fn a_session_summary_is_neither_returned_nor_embedded() {
+fn a_session_summary_is_not_returned_by_an_ordinary_search() {
     let Some((_temp, mut store, keys)) = store_with_keys() else {
         return;
     };
     let mut summary = observation("s1", JWT_TITLE, JWT_BODY);
     summary.kind = SESSION_SUMMARY.to_owned();
     let summary = store.add_observation(summary).unwrap().observation;
-    let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
-    assert_eq!(ids(&found), vec![keys.id], "{found:?}");
     let embedded = |store: &Store| -> i64 {
         store
             .connection
@@ -420,24 +414,45 @@ fn a_session_summary_is_neither_returned_nor_embedded() {
             )
             .unwrap()
     };
-    assert_eq!(embedded(&store), 0, "no vector is made for a summary");
+    assert_eq!(
+        embedded(&store),
+        1,
+        "a summary is given a vector where it is written"
+    );
 
-    store
-        .connection
-        .execute(
-            "INSERT INTO observation_vectors (observation_id, model, source_key, vector)
-             SELECT s.id, k.model, ifnull(s.normalized_hash, '') || '|' || s.title, k.vector
-               FROM observations s, observation_vectors k
-              WHERE s.id = ?1 AND k.observation_id = ?2",
-            [summary.id, keys.id],
-        )
-        .unwrap();
-    assert_eq!(embedded(&store), 1);
     let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
     assert_eq!(
         ids(&found),
         vec![keys.id],
-        "a summary with a perfect vector still is not an answer: {found:?}"
+        "a summary with a perfect vector is still not an answer: {found:?}"
+    );
+}
+
+/// A summary is returned when the query names the type.
+///
+/// `is_searchable_kind` says a search narrowed by type can return a summary; the
+/// stage used to exclude it whatever the caller asked, so `type:
+/// session_summary` got nothing. Naming the type is the one way to ask for a
+/// summary, and the vector it reads is already there — a write gives every
+/// memory one now, summaries included.
+#[test]
+fn a_session_summary_is_returned_when_the_type_is_named() {
+    let Some((_temp, mut store, _keys)) = store_with_keys() else {
+        return;
+    };
+    let mut summary = observation("s1", JWT_TITLE, JWT_BODY);
+    summary.kind = SESSION_SUMMARY.to_owned();
+    let summary = store.add_observation(summary).unwrap().observation;
+
+    let by_type = SearchOptions {
+        kind: Some(SESSION_SUMMARY.to_owned()),
+        ..on()
+    };
+    let found = store.search(ASKED_IN_SPANISH, by_type).unwrap();
+    assert_eq!(
+        ids(&found),
+        vec![summary.id],
+        "a type-narrowed search returns the summary: {found:?}"
     );
 }
 

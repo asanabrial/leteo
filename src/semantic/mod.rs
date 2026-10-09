@@ -400,11 +400,10 @@ pub fn load(data_dir: &Path, explicit: Option<&Path>) -> Result<Arc<StaticModel>
 /// Whether a verified model is already loaded for this store, without loading
 /// one.
 ///
-/// The write paths and the background backfill ask this so neither is the
-/// reason the model comes up: a save in a process that has not searched stays
-/// cheap, and the vectors are kept once a search has paid for the load. The
-/// places are the same ordered list `load` searches, so an answer here and an
-/// answer there cannot disagree about which directory the model is in.
+/// The background backfill asks this so it is never the reason the model comes
+/// up: it keeps nothing until a search or a write has already paid for the load.
+/// The places are the same ordered list `load` searches, so an answer here and
+/// an answer there cannot disagree about which directory the model is in.
 pub fn is_loaded(data_dir: &Path, explicit: Option<&Path>) -> bool {
     let places = locations(data_dir, explicit);
     let cache = LOADED

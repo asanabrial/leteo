@@ -279,8 +279,8 @@ impl Store {
 
         tx.commit()?;
         // A memory is given a vector where it is written, and an import is a
-        // write like any other: with the model up, the rows it restored get
-        // vectors now, and without it they are left for the backfill. Bounded,
+        // write like any other: the rows it restored get vectors now, up to the
+        // bound, and the rest are left for the background backfill. Bounded,
         // because an import can be the whole store and its reply must not wait
         // on making vectors for all of it.
         if let Err(error) = self.backfill_vectors(super::semantic_stage::BACKFILL_BUDGET) {
@@ -631,55 +631,65 @@ impl Store {
         // three, and the fix differs. An optional thing that is not installed is
         // not an unhealthy store, so a missing model is noted and a present one
         // that is not the model this build accepts is an issue.
-        record(
-            if !self
-                .config
-                .database_path
-                .parent()
-                .map(crate::settings::load)
-                .unwrap_or_default()
-                .semantic_search()
-            {
-                DoctorCheck::noted(
-                    "semantic_model",
-                    "semantic search is turned off by the semantic_search setting, so the model is not looked for",
-                )
-            } else {
-                match crate::semantic::status(self.data_dir(), self.model_dir()) {
-                    status @ crate::semantic::Status::Verified(_) => {
-                        DoctorCheck::noted("semantic_model", status.explain())
-                    }
-                    status @ crate::semantic::Status::Missing(_) => {
-                        DoctorCheck::noted("semantic_model", status.explain())
-                    }
-                    status => DoctorCheck::failed("semantic_model", status.explain()),
+        // One read of the setting for both checks about the semantic stage, so
+        // `--check semantic_model` and `--check semantic_vectors` cannot disagree
+        // about whether it is on.
+        let semantic_on = self
+            .config
+            .database_path
+            .parent()
+            .map(crate::settings::load)
+            .unwrap_or_default()
+            .semantic_search();
+        record(if !semantic_on {
+            DoctorCheck::noted(
+                "semantic_model",
+                "semantic search is turned off by the semantic_search setting, so the model is not looked for",
+            )
+        } else {
+            match crate::semantic::status(self.data_dir(), self.model_dir()) {
+                status @ crate::semantic::Status::Verified(_) => {
+                    DoctorCheck::noted("semantic_model", status.explain())
                 }
-            },
-        );
+                status @ crate::semantic::Status::Missing(_) => {
+                    DoctorCheck::noted("semantic_model", status.explain())
+                }
+                status => DoctorCheck::failed("semantic_model", status.explain()),
+            }
+        });
         // How much of the store the semantic stage can see.
         //
         // A note rather than a fault: vectors are derived and optional, a store
         // with none searches by words alone, and the backfill fills them. The
         // count is here because a missing vector was the one thing nobody could
         // see — a search that finds nothing by meaning looks exactly like a
-        // store with nothing to find.
-        record(match self.vector_coverage() {
-            Ok((covered, total)) if covered == total => DoctorCheck::noted(
+        // store with nothing to find. Turned off by the setting, nothing embeds
+        // and nothing reads, so the count would name a repair that does nothing
+        // and it says so instead.
+        record(if !semantic_on {
+            DoctorCheck::noted(
                 "semantic_vectors",
-                format!(
-                    "every one of the {total} memories the stage can reach has a current vector"
+                "semantic search is turned off by the semantic_search setting, so no vector is made or read",
+            )
+        } else {
+            match self.vector_coverage() {
+                Ok((covered, total)) if covered == total => DoctorCheck::noted(
+                    "semantic_vectors",
+                    format!(
+                        "every one of the {total} memories the stage can reach has a current vector"
+                    ),
                 ),
-            ),
-            Ok((covered, total)) => DoctorCheck::noted(
-                "semantic_vectors",
-                format!(
-                    "{covered} of {total} memories the stage can reach have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
+                Ok((covered, total)) => DoctorCheck::noted(
+                    "semantic_vectors",
+                    format!(
+                        "{covered} of {total} memories the stage can reach have a current vector; the rest are found by their words only until the background backfill or `leteo doctor --repair` embeds them"
+                    ),
                 ),
-            ),
-            Err(error) => DoctorCheck::failed(
-                "semantic_vectors",
-                format!("the vector coverage could not be read: {error}"),
-            ),
+                Err(error) => DoctorCheck::failed(
+                    "semantic_vectors",
+                    format!("the vector coverage could not be read: {error}"),
+                ),
+            }
         });
         record(match shared_topic_keys(&self.connection) {
             0 => DoctorCheck::passed("topic_key_uniqueness"),

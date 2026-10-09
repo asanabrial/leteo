@@ -150,10 +150,10 @@ impl Store {
     ///
     /// Called after the write's own transaction has committed, so the vector is
     /// written outside it and a failure to embed cannot roll back the memory.
-    /// The model is loaded here if it is not up yet: the first write in a
-    /// process pays the load, and a new memory is searchable by meaning at once
-    /// rather than waiting for the backfill. The `semantic_search` setting off
-    /// means no vectors are made at all.
+    /// The model is loaded here if it is not up yet, so a new memory is
+    /// searchable by meaning at once rather than waiting for the backfill: the
+    /// first write in a process pays the load and the rest reuse it. The
+    /// `semantic_search` setting off means no vectors are made at all.
     pub(crate) fn embed_written(&self, ids: &[i64]) {
         if ids.is_empty() || !self.semantic_enabled() {
             return;
@@ -306,14 +306,6 @@ impl Store {
         Ok(kept)
     }
 
-    /// Up to `budget` memories whose vector is missing, from another model, or
-    /// made from text that has since changed, newest first.
-    ///
-    /// Not scoped to a project: the backfill serves the whole store, and a write
-    /// that just happened wants its own row found whether or not the writer
-    /// named a project. Newest first so a save's own row is the first a bounded
-    /// step reaches.
-    ///
     /// Every visible memory whose vector is missing, from another model, or made
     /// from text that has since changed, newest first, up to `budget`.
     ///

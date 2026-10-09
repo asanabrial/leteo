@@ -677,27 +677,28 @@ fn a_store_that_cannot_be_written_still_answers() {
     assert_eq!(patience(&store), before);
 }
 
-/// A search writes nothing. The store's own file is the witness: with every
-/// vector gone — the state of a store that has not been searched since the
-/// vectors stopped being built inside a search — the bytes are the same before
-/// and after.
+/// A search writes nothing. The witness is SQLite's own change counter and not
+/// the database file's bytes: the store is in WAL, so a write lands in
+/// `leteo.db-wal` and leaves `leteo.db` byte-identical — a file comparison here
+/// would pass whatever the search did. The vectors are gone, which is the state
+/// of a store that has not been searched since the vectors stopped being built
+/// inside a search.
 #[test]
 fn a_semantic_search_on_a_store_missing_vectors_writes_nothing() {
-    let Some((temp, store, _keys)) = store_with_keys() else {
+    let Some((_temp, store, _keys)) = store_with_keys() else {
         return;
     };
     store
         .connection
         .execute("DELETE FROM observation_vectors", [])
         .unwrap();
-    let database = temp.path().join("leteo.db");
-    let before = std::fs::read(&database).unwrap();
+    let changes = store.connection.total_changes();
     let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
     assert!(found.is_empty(), "no vector to find by meaning: {found:?}");
     assert_eq!(
-        before,
-        std::fs::read(&database).unwrap(),
-        "a search changed the store's file"
+        store.connection.total_changes(),
+        changes,
+        "a search writes nothing"
     );
 }
 
@@ -913,4 +914,34 @@ fn the_backfill_keeps_its_vectors_a_chunk_at_a_time() {
         commits, 2,
         "301 memories are one chunk of 256 and one of 45"
     );
+}
+
+/// The backfill waits for the model; it is never the reason it comes up.
+///
+/// A model directory nothing else in this process has loaded, so `is_loaded`
+/// answers about this test alone: with nothing searched or written the backfill
+/// step does nothing and does not load, and `doctor --repair`'s pass is the one
+/// that pays the load.
+#[test]
+fn the_backfill_never_loads_the_model_itself() {
+    let Some(model) = crate::semantic::tests::repository_model() else {
+        return;
+    };
+    let temp = TempDir::new().unwrap();
+    let copy = temp.path().join("model");
+    std::fs::create_dir_all(&copy).unwrap();
+    for (name, _) in crate::semantic::MODEL_FILES {
+        std::fs::copy(model.join(name), copy.join(name)).unwrap();
+    }
+    let mut config = StoreConfig::new(temp.path().join("leteo.db"));
+    config.model_dir = Some(copy.clone());
+    let store = Store::open(config).unwrap();
+    assert!(!crate::semantic::is_loaded(temp.path(), Some(&copy)));
+    assert_eq!(store.backfill_step(16).unwrap(), 0);
+    assert!(
+        !crate::semantic::is_loaded(temp.path(), Some(&copy)),
+        "the backfill step loaded the model"
+    );
+    assert_eq!(store.backfill_vectors(16).unwrap(), 0);
+    assert!(crate::semantic::is_loaded(temp.path(), Some(&copy)));
 }

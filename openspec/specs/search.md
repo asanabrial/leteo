@@ -431,10 +431,11 @@ before any of it.
     written like any other memory.
 
     **Where the vectors live.** In `observation_vectors`, one row per memory,
-    made where the memory is written: a save, a revision, a consolidation, an
-    import and an adoption each give the row they touched a vector and keep it,
-    and a bounded background backfill fills what an existing store is missing.
-    The search reads them and writes nothing ([`store-and-schema.md`](store-and-schema.md)
+    made where the memory is written: a save, a revision, a consolidation and an
+    import each give the row they touched a vector and keep it, and a bounded
+    backfill fills what is left — a replicated write, an adoption, and what an
+    existing store was missing. The search reads them and writes nothing
+    ([`store-and-schema.md`](store-and-schema.md)
     §16), which is what takes the one-time cost off the search's path. Whether a
     vector is current is a function of the row — its content hash and title, and
     the model that made it — so every write path is covered without any of them

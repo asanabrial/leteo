@@ -634,6 +634,15 @@ pub async fn run(cli: Cli) -> Result<()> {
                 eprintln!("leteo search: {}", crate::mcp::MORE_MATCHED_HINT);
             }
             print_json(&found)?;
+            // A one-shot process has no background backfill, and this search just
+            // loaded the model to answer: spending a bounded slice of that load on
+            // the vectors the store is missing is what fills an existing store for
+            // somebody who only ever runs the CLI. The stage itself wrote nothing;
+            // this runs after the answer is printed, is bounded, and a store it
+            // cannot write is not an error.
+            if let Err(error) = store.backfill_step(crate::store::semantic_stage::BACKFILL_BUDGET) {
+                tracing::debug!(%error, "the CLI could not fill vectors after the search");
+            }
         }
         Command::Prompt {
             content,

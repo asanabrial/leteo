@@ -1156,7 +1156,7 @@ mod projects;
 
 mod relations;
 
-mod semantic_stage;
+pub(crate) mod semantic_stage;
 
 mod replication;
 

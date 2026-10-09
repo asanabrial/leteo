@@ -1159,6 +1159,7 @@ impl DoctorCheck {
         "topic_key_uniqueness",
         "settings_readable",
         "semantic_model",
+        "semantic_vectors",
         "full_text_triggers",
         "journal_mode",
         "busy_timeout",

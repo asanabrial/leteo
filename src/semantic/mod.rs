@@ -324,6 +324,15 @@ impl std::error::Error for Unavailable {}
 /// What a loaded model was loaded from, so a change to the files is noticed.
 type Stamp = Vec<(u64, Option<SystemTime>)>;
 
+/// The models loaded in this process, one per directory they were found in.
+///
+/// One per directory rather than one per process, because two stores on one
+/// machine can name different model directories. `load` writes it and
+/// `is_loaded` reads it, so the backfill can ask whether the model is up without
+/// being the reason it comes up.
+type Loaded = HashMap<PathBuf, (Stamp, Arc<StaticModel>)>;
+static LOADED: Mutex<Option<Loaded>> = Mutex::new(None);
+
 fn stamp(directory: &Path) -> Stamp {
     MODEL_FILES
         .iter()
@@ -347,8 +356,6 @@ fn stamp(directory: &Path) -> Stamp {
 /// Re-checked when the files change (size or modification time), and not on every
 /// call; the lookup on the way is a few `stat`s.
 pub fn load(data_dir: &Path, explicit: Option<&Path>) -> Result<Arc<StaticModel>, Unavailable> {
-    type Loaded = HashMap<PathBuf, (Stamp, Arc<StaticModel>)>;
-    static LOADED: Mutex<Option<Loaded>> = Mutex::new(None);
     let places = locations(data_dir, explicit);
     let mut cache = LOADED
         .lock()
@@ -388,6 +395,24 @@ pub fn load(data_dir: &Path, explicit: Option<&Path>) -> Result<Arc<StaticModel>
         }
     }
     Err(Unavailable(wrong.unwrap_or(Status::Missing(places))))
+}
+
+/// Whether a verified model is already loaded for this store, without loading
+/// one.
+///
+/// The background backfill asks this so it is never the reason the model comes
+/// up: it keeps nothing until a search or a write has already paid for the load.
+/// The places are the same ordered list `load` searches, so an answer here and
+/// an answer there cannot disagree about which directory the model is in.
+pub fn is_loaded(data_dir: &Path, explicit: Option<&Path>) -> bool {
+    let places = locations(data_dir, explicit);
+    let cache = LOADED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(cache) = cache.as_ref() else {
+        return false;
+    };
+    places.iter().any(|place| cache.contains_key(place))
 }
 
 fn build(config: &[u8], weights: &[u8], tokenizer_gz: &[u8]) -> Result<StaticModel, String> {

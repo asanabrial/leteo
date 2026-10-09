@@ -426,18 +426,23 @@ before any of it.
     `visible_observations` in `src/store/search.rs`, and the ranked stages, the
     title scan and this stage all read it: not deleted, not hidden by a judged
     verdict (§9), inside the type, project and scope asked about. Session
-    summaries are left out, for §6's reason, and are not embedded — unless the
-    query names the type, which is the one way to ask for one and the one case a
-    vector is made for it.
+    summaries are left out of an ordinary answer, for §6's reason, but a query
+    that names the type reads them, and they are given a vector where they are
+    written like any other memory.
 
     **Where the vectors live.** In `observation_vectors`, one row per memory,
-    made lazily: when the stage fires it embeds whatever is in scope and has no
-    current vector, and keeps them. Whether one is current is a function of the
-    row — its content hash and title, and the model that made it — so every
-    write path is covered without any of them remembering to say so
-    ([`store-and-schema.md`](store-and-schema.md) §16). A store that never
-    reaches the stage never pays, and a store that cannot be written still
-    answers: the vectors are made for that question and thrown away.
+    made where the memory is written: a save, a revision, a consolidation and an
+    import each give the row they touched a vector and keep it, and a bounded
+    backfill fills what is left — a replicated write, an adoption, and what an
+    existing store was missing. The search reads them and writes nothing
+    ([`store-and-schema.md`](store-and-schema.md)
+    §16), which is what takes the one-time cost off the search's path. Whether a
+    vector is current is a function of the row — its content hash and title, and
+    the model that made it — so every write path is covered without any of them
+    remembering to say so. A memory with no current vector is simply absent from
+    the answer; the backfill makes it, or `doctor --repair` on demand. A store
+    that cannot be written still answers: it answers from the vectors already
+    there, and nothing is made for the question.
 
     **How it says so.** A row it added carries `semantic: true`, and the answer
     carries one sentence saying such a row may contain none of the words asked
@@ -450,12 +455,13 @@ before any of it.
     is deliberate: the number is the number `all_projects` would return, which
     is what the sentence promises, and a retry that skipped the stage would
     report "nothing elsewhere" about a question the wider search answers. It
-    costs what the first firing in the wider scope costs.
+    costs what a search in the wider scope costs, and no vectors are made for it.
 
     **The setting.** `semantic_search` in `settings.json`, on unless it is
-    `false`. Off, the search is the lexical one and writes nothing. A library
-    caller that does not set `SearchOptions::semantic` gets the lexical search
-    too; the two surfaces an agent or a person searches through read the setting.
+    `false`. Off, the search is the lexical one, no vector is made on any write
+    path, and the backfill does nothing. A library caller that does not set
+    `SearchOptions::semantic` gets the lexical search too; the two surfaces an
+    agent or a person searches through read the setting.
 
     **What it was measured to buy**, against the same binary with the setting
     off, so the only difference is the stage:
@@ -525,13 +531,14 @@ before any of it.
       The model is 12.9 MB beside it.
     - **Memory** -- the one place it is stated. 15.7 MB resident for a search that
       does not reach the stage; about 103 MB for a process that has loaded the
-      model, because the int8 table is expanded to f32; 121 MB at the peak of the
-      first firing on a 4,000-memory store. What bounds that peak is the chunk:
+      model, because the int8 table is expanded to f32; 121 MB at the peak of a
+      backfill on a 4,000-memory store. What bounds that peak is the chunk:
       memories are embedded and kept 256 at a time, so the text and vectors held at
       once do not grow with the store (the ids of what is stale do, at about a
-      hundred bytes each). A store that cannot be written is the exception: its
-      vectors are held until the question is answered, a kilobyte per memory in
-      scope.
+      hundred bytes each). The search pays none of this: it reads the vectors that
+      are there and holds one question's. A 1,030-memory 120-query MCP run peaks at
+      104 MB, which is the model's own footprint and not the vectors; a run that
+      never reaches the stage stays at 19 MB.
     - **Time.** An ordinary search is unchanged: a strict answer on a
       4,150-memory real store took 6.2 ms before and 5.6 ms after. An empty question there goes
       from 48.7 ms (the lexical stages, which are most of it) to 78.5 ms, p90
@@ -543,9 +550,17 @@ before any of it.
       few of those milliseconds. Through `mem_search` over MCP on the hard-set stores
       the whole run's p50 is 1.8 against 1.9 ms and p90 3.3 against 3.6 ms,
       because almost no question reaches the stage.
-    - **The first firing** on a store embeds every memory in scope: 0.51 s for
-      4,048 memories on the real-store copy, and the store grows by 5.5 MB
-      (1 KB a memory). The cost is linear in the store and paid once per memory.
+    - **The first fallback search on a store with no vectors** no longer embeds
+      anything: on a 54,050-memory copy it is 0.25 s and writes nothing, where
+      making a vector for every memory in scope first cost 2.39 s and wrote 41,975
+      of them. The same copy with its vectors already present answers the same
+      question in 0.14 to 0.23 s, so a search that had a cache pays nothing new.
+    - **The backfill** on a store gives a vector to every memory that lacks one,
+      256 at a time and off the search path: 0.51 s for 4,048 memories on the
+      real-store copy, and the store grows by 5.5 MB (1 KB a memory). The cost is
+      linear in the store and paid once per memory, and the search that used to
+      pay it for the memories in scope now pays none of it. `doctor --repair`
+      runs the same pass to completion on demand.
 
     **What it does not do.** It does not fix Basque, which the model was not
     trained on: the 47% cross-lingual alignment of its UI strings, against

@@ -439,6 +439,7 @@ impl Store {
                 }
                 enqueue_observation(&tx, &observation)?;
                 tx.commit()?;
+                self.embed_written(&[observation.id]);
                 let replaced = replaced_at.map(|_| ReplacedContent {
                     bytes: previous_content.len(),
                     shrunk: crate::memory::model::content_shrank(
@@ -514,6 +515,7 @@ impl Store {
             fields,
         )?;
         tx.commit()?;
+        self.embed_written(&[observation.id]);
         Ok(AddOutcome {
             kind: AddOutcomeKind::Inserted,
             observation,
@@ -618,6 +620,7 @@ impl Store {
             )?);
         }
         tx.commit()?;
+        self.embed_written(&[observation.id]);
         Ok(ConsolidateOutcome {
             observation,
             relations,
@@ -868,6 +871,7 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        self.embed_written(&[id]);
         let replaced = replaced_at.map(|_| ReplacedContent {
             bytes: previous_content.len(),
             shrunk: crate::memory::model::content_shrank(previous_content.len(), content.len()),

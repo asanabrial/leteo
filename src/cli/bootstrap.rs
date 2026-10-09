@@ -97,6 +97,81 @@ pub(super) fn start_background_autosync(
     })
 }
 
+/// How the background backfill ends: a flag the loop checks, and the thread.
+pub(super) struct BackgroundBackfill {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl BackgroundBackfill {
+    pub(super) fn shutdown(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Fills the vectors an existing store is missing, in the background.
+///
+/// The search no longer builds vectors, so a store that predates that — or one
+/// whose writes happened in a process where the model was never up — is served
+/// by this instead. Its own thread and its own SQLite connection, like the
+/// autosync loop and for the same reason: `keep_vectors` waits briefly for a
+/// write lock, and doing that on a request's thread would be a latency nobody
+/// could explain from the outside.
+///
+/// It never loads the model. The load is the one cost `search.md` §15 states in
+/// memory, and a session that never searches has no reason to pay it: this waits
+/// until a search or a save has brought the model up, then drains what needs a
+/// vector. `backfill_step` returns zero both when it is caught up and when the
+/// model is not up, so the loop idles in either case and does the work the
+/// moment the model appears.
+pub(super) fn start_background_backfill(store_config: &StoreConfig) -> Result<BackgroundBackfill> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let store_config = store_config.clone();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&stop);
+    let handle = std::thread::Builder::new()
+        .name("leteo-backfill".to_owned())
+        .spawn(move || {
+            let store = match Store::open(store_config) {
+                Ok(store) => store,
+                Err(error) => {
+                    tracing::error!(%error, "background backfill could not open the store");
+                    return;
+                }
+            };
+            // How long to wait after a step: a full chunk means there is more to
+            // do, so it comes back quickly; nothing to do means the store is
+            // caught up or the model is not up, and it comes back rarely.
+            const BUSY: Duration = Duration::from_secs(1);
+            const IDLE: Duration = Duration::from_secs(30);
+            while !flag.load(Ordering::Relaxed) {
+                let wait = match store.backfill_step(256) {
+                    Ok(0) => IDLE,
+                    Ok(_) => BUSY,
+                    Err(error) => {
+                        tracing::debug!(%error, "the background backfill could not keep its vectors");
+                        IDLE
+                    }
+                };
+                // Sliced, so a shutdown does not wait out the whole interval.
+                let deadline = Instant::now() + wait;
+                while Instant::now() < deadline && !flag.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        })
+        .context("start the background backfill thread")?;
+    Ok(BackgroundBackfill {
+        stop,
+        handle: Some(handle),
+    })
+}
+
 /// How many memories this store already holds, or `None` if it cannot be read.
 ///
 /// `None` is not zero and callers must not flatten it into one. A first run has

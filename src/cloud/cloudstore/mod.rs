@@ -62,6 +62,49 @@ pub struct AuditEntry<'a> {
     pub reason_code: Option<&'a str>,
 }
 
+/// How many rows each dashboard list shows.
+///
+/// The pages print these same numbers when a list is cut, so the limit a reader
+/// is told and the limit the query applies are one constant.
+pub const PROJECT_LIST_LIMIT: usize = 200;
+pub const SESSION_LIST_LIMIT: usize = 100;
+pub const MEMORY_LIST_LIMIT: usize = 100;
+pub const MEMORY_SEARCH_LIMIT: usize = 50;
+
+/// A list that was cut at its limit says so rather than looking complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Limited<T> {
+    pub items: Vec<T>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseProject {
+    pub name: String,
+    pub last_activity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseSession {
+    pub id: String,
+    pub directory: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowseMemory {
+    pub project: String,
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub content: String,
+    pub topic_key: Option<String>,
+    pub session_id: String,
+    pub updated_at: String,
+}
+
 impl CloudStore {
     pub async fn connect(
         database_url: &str,
@@ -598,6 +641,233 @@ impl CloudStore {
         .await?;
         Ok(row.try_get("valid")?)
     }
+}
+
+impl CloudStore {
+    /// The projects among `allowed` that hold any data, most recently active first.
+    pub async fn list_projects(
+        &self,
+        allowed: &[String],
+    ) -> Result<Limited<BrowseProject>, CloudStoreError> {
+        if allowed.is_empty() {
+            return Ok(Limited {
+                items: Vec::new(),
+                truncated: false,
+            });
+        }
+        let rows = sqlx::query(
+            "SELECT project, MAX(occurred_at) AS last_activity
+             FROM cloud_mutations WHERE project = ANY($1)
+             GROUP BY project ORDER BY last_activity DESC, project LIMIT $2",
+        )
+        .bind(allowed)
+        .bind(i64_from_usize(PROJECT_LIST_LIMIT + 1)?)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut items = rows
+            .into_iter()
+            .map(|row| {
+                let last_activity: DateTime<Utc> = row.try_get("last_activity")?;
+                Ok(BrowseProject {
+                    name: row.try_get("project")?,
+                    last_activity: last_activity.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        let truncated = items.len() > PROJECT_LIST_LIMIT;
+        items.truncate(PROJECT_LIST_LIMIT);
+        Ok(Limited { items, truncated })
+    }
+
+    /// Every project name the log holds, for resolving a `*` grant.
+    ///
+    /// Names only, and not cut: a search resolved against a truncated set would
+    /// silently skip the projects past the cut.
+    pub async fn all_project_names(&self) -> Result<Vec<String>, CloudStoreError> {
+        let rows = sqlx::query("SELECT DISTINCT project FROM cloud_mutations ORDER BY project")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| row.try_get("project"))
+            .collect::<Result<_, _>>()
+            .map_err(CloudStoreError::from)
+    }
+
+    pub async fn list_sessions(
+        &self,
+        project: &str,
+    ) -> Result<Limited<BrowseSession>, CloudStoreError> {
+        let project = require_project(project)?;
+        let rows = self
+            .latest_entities(
+                std::slice::from_ref(&project),
+                crate::sync::ENTITY_SESSION,
+                None,
+                None,
+                SESSION_LIST_LIMIT,
+            )
+            .await?;
+        Ok(Limited {
+            truncated: rows.truncated,
+            items: rows
+                .items
+                .into_iter()
+                .map(|row| BrowseSession {
+                    id: row.key,
+                    directory: payload_text(&row.payload, "directory"),
+                    started_at: payload_text(&row.payload, "started_at"),
+                    ended_at: payload_optional(&row.payload, "ended_at"),
+                    summary: payload_optional(&row.payload, "summary"),
+                })
+                .collect(),
+        })
+    }
+
+    /// The current memories of `projects`, newest change first.
+    ///
+    /// With a `term`, only those whose title, content or topic key contain it,
+    /// matched against the memory as it is now rather than as any earlier
+    /// version of it read.
+    pub async fn list_memories(
+        &self,
+        projects: &[String],
+        term: Option<&str>,
+        limit: usize,
+    ) -> Result<Limited<BrowseMemory>, CloudStoreError> {
+        let rows = self
+            .latest_entities(projects, crate::sync::ENTITY_OBSERVATION, None, term, limit)
+            .await?;
+        Ok(Limited {
+            truncated: rows.truncated,
+            items: rows.items.into_iter().map(memory_from_row).collect(),
+        })
+    }
+
+    pub async fn get_memory(
+        &self,
+        project: &str,
+        key: &str,
+    ) -> Result<Option<BrowseMemory>, CloudStoreError> {
+        let project = require_project(project)?;
+        let rows = self
+            .latest_entities(
+                std::slice::from_ref(&project),
+                crate::sync::ENTITY_OBSERVATION,
+                Some(key),
+                None,
+                1,
+            )
+            .await?;
+        Ok(rows.items.into_iter().next().map(memory_from_row))
+    }
+
+    /// The latest state of each entity of one kind, with deletions dropped.
+    ///
+    /// The log is append-only, so the current state is the highest `seq` per
+    /// entity. The deletion and the search term are applied after that pick: a
+    /// memory whose newest version was deleted must not resurface through an
+    /// older version that still matches.
+    async fn latest_entities(
+        &self,
+        projects: &[String],
+        entity: &str,
+        key: Option<&str>,
+        term: Option<&str>,
+        limit: usize,
+    ) -> Result<Limited<LatestRow>, CloudStoreError> {
+        if projects.is_empty() {
+            return Ok(Limited {
+                items: Vec::new(),
+                truncated: false,
+            });
+        }
+        let pattern = term.map(like_pattern);
+        let rows = sqlx::query(
+            "SELECT project, entity_key, payload, occurred_at FROM (
+                 SELECT DISTINCT ON (project, entity_key)
+                        project, entity_key, op, payload, occurred_at, seq
+                 FROM cloud_mutations
+                 WHERE project = ANY($1) AND entity = $2
+                   AND ($3::text IS NULL OR entity_key = $3)
+                 ORDER BY project, entity_key, seq DESC
+             ) latest
+             WHERE op <> $4 AND COALESCE(payload->>'deleted_at', '') = ''
+               AND ($5::text IS NULL
+                    OR payload->>'title' ILIKE $5
+                    OR payload->>'content' ILIKE $5
+                    OR payload->>'topic_key' ILIKE $5)
+             ORDER BY occurred_at DESC, seq DESC LIMIT $6",
+        )
+        .bind(projects)
+        .bind(entity)
+        .bind(key)
+        .bind(crate::sync::OP_DELETE)
+        .bind(pattern)
+        .bind(i64_from_usize(limit + 1)?)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut items = rows
+            .into_iter()
+            .map(|row| {
+                let occurred_at: DateTime<Utc> = row.try_get("occurred_at")?;
+                Ok(LatestRow {
+                    project: row.try_get("project")?,
+                    key: row.try_get("entity_key")?,
+                    payload: row.try_get("payload")?,
+                    occurred_at: occurred_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        let truncated = items.len() > limit;
+        items.truncate(limit);
+        Ok(Limited { items, truncated })
+    }
+}
+
+struct LatestRow {
+    project: String,
+    key: String,
+    payload: Value,
+    occurred_at: String,
+}
+
+fn memory_from_row(row: LatestRow) -> BrowseMemory {
+    BrowseMemory {
+        project: row.project,
+        key: row.key,
+        kind: payload_text(&row.payload, "type"),
+        title: payload_text(&row.payload, "title"),
+        content: payload_text(&row.payload, "content"),
+        topic_key: payload_optional(&row.payload, "topic_key"),
+        session_id: payload_text(&row.payload, "session_id"),
+        updated_at: row.occurred_at,
+    }
+}
+
+fn payload_text(payload: &Value, field: &str) -> String {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn payload_optional(payload: &Value, field: &str) -> Option<String> {
+    Some(payload_text(payload, field)).filter(|text| !text.is_empty())
+}
+
+/// A substring pattern in which the user's `%`, `_` and `\` mean themselves.
+fn like_pattern(term: &str) -> String {
+    let mut pattern = String::with_capacity(term.len() + 2);
+    pattern.push('%');
+    for character in term.chars() {
+        if matches!(character, '%' | '_' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
 }
 
 fn require_project(project: &str) -> Result<String, CloudStoreError> {

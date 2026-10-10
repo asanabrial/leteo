@@ -528,6 +528,11 @@ fn every_query_over_a_tenants_rows_narrows_to_that_tenant() {
              None, which it does only for a principal holding the `*` grant",
         ),
         (
+            "SELECT DISTINCT project FROM cloud_mutations",
+            "resolving a `*` grant to concrete names: reached only for a principal \
+             holding it, and it returns project names with no row beneath them",
+        ),
+        (
             "(SELECT COUNT(*) FROM cloud_chunks) AS chunks",
             "an administrator's totals, which are counts and carry no rows",
         ),
@@ -577,4 +582,170 @@ fn every_query_over_a_tenants_rows_narrows_to_that_tenant() {
          listed as deliberately global:\n{}",
         unnarrowed.join("\n")
     );
+}
+
+#[test]
+fn a_search_term_matches_literally() {
+    assert_eq!(like_pattern("plain"), "%plain%");
+    assert_eq!(like_pattern("100%_done\\"), "%100\\%\\_done\\\\%");
+}
+
+fn entry(project: &str, entity: &str, key: &str, op: &str, payload: Value) -> MutationEntry {
+    MutationEntry {
+        project: project.to_owned(),
+        entity: entity.to_owned(),
+        entity_key: key.to_owned(),
+        op: op.to_owned(),
+        payload,
+    }
+}
+
+fn observation(project: &str, key: &str, title: &str, content: &str) -> MutationEntry {
+    entry(
+        project,
+        crate::sync::ENTITY_OBSERVATION,
+        key,
+        crate::sync::OP_UPSERT,
+        serde_json::json!({
+            "sync_id": key,
+            "session_id": "session-1",
+            "type": "note",
+            "scope": "project",
+            "title": title,
+            "content": content,
+        }),
+    )
+}
+
+fn soft_deleted(mut entry: MutationEntry) -> MutationEntry {
+    entry.payload["deleted_at"] = serde_json::json!("2026-01-02T00:00:00Z");
+    entry
+}
+
+/// What the dashboard reads is the current state of the log, one project at a time.
+///
+/// Four things could each go wrong without a failing status: a superseded
+/// version still showing, a deleted memory showing, a search matching an older
+/// text than the memory has now, and a project reading another's rows.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn browsing_reads_the_current_state_of_one_project_at_a_time() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let store = CloudStore::connect(&database_url, 2).await.unwrap();
+    store.migrate().await.unwrap();
+    let stamp = Utc::now().timestamp_micros();
+    let (a, b) = (format!("browse-a-{stamp}"), format!("browse-b-{stamp}"));
+
+    store
+        .insert_mutations(&[
+            entry(
+                &a,
+                crate::sync::ENTITY_SESSION,
+                "session-1",
+                crate::sync::OP_UPSERT,
+                serde_json::json!({
+                    "id": "session-1",
+                    "directory": "/work/a",
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "summary": "first session",
+                }),
+            ),
+            observation(&a, "kept", "old title", "the old words"),
+            observation(&a, "kept", "new title", "100%_literal words"),
+            observation(&a, "gone", "deleted title", "deleted words"),
+            entry(
+                &a,
+                crate::sync::ENTITY_OBSERVATION,
+                "gone",
+                crate::sync::OP_DELETE,
+                serde_json::json!({"sync_id": "gone"}),
+            ),
+            soft_deleted(observation(&a, "soft", "soft deleted title", "x")),
+            observation(&b, "secret", "b only title", "b only words"),
+        ])
+        .await
+        .unwrap();
+
+    let own = [a.clone()];
+    let memories = store.list_memories(&own, None, 10).await.unwrap();
+    let titles = memories
+        .items
+        .iter()
+        .map(|memory| memory.title.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(titles, ["new title"], "only the current, undeleted memory");
+    assert!(!memories.truncated);
+
+    let sessions = store.list_sessions(&a).await.unwrap();
+    assert_eq!(sessions.items.len(), 1);
+    assert_eq!(sessions.items[0].directory, "/work/a");
+    assert_eq!(sessions.items[0].summary.as_deref(), Some("first session"));
+    assert!(store.list_sessions(&b).await.unwrap().items.is_empty());
+
+    let found = |term: &'static str, projects: Vec<String>| {
+        let store = store.clone();
+        async move {
+            store
+                .list_memories(&projects, Some(term), 10)
+                .await
+                .unwrap()
+                .items
+        }
+    };
+    assert_eq!(found("NEW title", own.to_vec()).await.len(), 1);
+    assert!(found("old words", own.to_vec()).await.is_empty());
+    assert!(found("deleted words", own.to_vec()).await.is_empty());
+    assert!(found("soft deleted", own.to_vec()).await.is_empty());
+    assert!(found("b only", own.to_vec()).await.is_empty());
+    assert!(found("%", vec![b.clone()]).await.is_empty());
+    assert_eq!(found("100%_literal", own.to_vec()).await.len(), 1);
+    assert_eq!(found("b only", vec![a.clone(), b.clone()]).await.len(), 1);
+
+    assert!(
+        store
+            .list_memories(&[], None, 10)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(store.get_memory(&a, "secret").await.unwrap().is_none());
+    assert!(store.get_memory(&a, "gone").await.unwrap().is_none());
+    let read = store.get_memory(&b, "secret").await.unwrap().unwrap();
+    assert_eq!(read.content, "b only words");
+
+    let projects = store.list_projects(&own).await.unwrap();
+    assert_eq!(
+        projects
+            .items
+            .iter()
+            .map(|project| project.name.as_str())
+            .collect::<Vec<_>>(),
+        [a.as_str()]
+    );
+    assert!(store.list_projects(&[]).await.unwrap().items.is_empty());
+    let every = store.all_project_names().await.unwrap();
+    assert!(every.contains(&a) && every.contains(&b));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_list_cut_at_its_limit_says_so() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let store = CloudStore::connect(&database_url, 2).await.unwrap();
+    store.migrate().await.unwrap();
+    let project = format!("browse-limit-{}", Utc::now().timestamp_micros());
+    store
+        .insert_mutations(&[
+            observation(&project, "one", "one", "x"),
+            observation(&project, "two", "two", "x"),
+        ])
+        .await
+        .unwrap();
+
+    let own = [project];
+    let cut = store.list_memories(&own, None, 1).await.unwrap();
+    assert_eq!((cut.items.len(), cut.truncated), (1, true));
+    let whole = store.list_memories(&own, None, 2).await.unwrap();
+    assert_eq!((whole.items.len(), whole.truncated), (2, false));
 }

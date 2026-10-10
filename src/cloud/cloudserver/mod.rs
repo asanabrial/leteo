@@ -18,7 +18,7 @@ use crate::sync::{ChunkData, MutationEntry, canonicalize_for_project, decode_chu
 use super::{
     MAX_MUTATION_BATCH_SIZE,
     auth::{AuthError, AuthService, Principal, PrincipalRole, PrincipalSource},
-    cloudstore::{AuditEntry, CloudStore, CloudStoreError},
+    cloudstore::{AuditEntry, CloudStore, CloudStoreError, MEMORY_LIST_LIMIT, MEMORY_SEARCH_LIMIT},
     config::CloudConfig,
 };
 
@@ -29,9 +29,15 @@ mod payload;
 #[cfg(test)]
 mod tests;
 
-use browser::{cookie_value, dashboard_cookie, escape_html, nonempty_or, requires_secure_cookie};
+use browser::{
+    cookie_value, dashboard_cookie, escape_html, nonempty_or, render_memory, render_project,
+    render_projects, render_search, requires_secure_cookie,
+};
 use error::ApiError;
-use guard::{authenticate, authorize_project, ensure_not_paused};
+use guard::{
+    authenticate, authorize_project, dashboard_session_is_live, ensure_not_paused, login_redirect,
+    visible_projects,
+};
 use payload::{validate_chunk_payload, validate_mutation_entries, validate_session_references};
 
 pub(super) const DASHBOARD_COOKIE: &str = "leteo_dashboard";
@@ -81,6 +87,10 @@ impl CloudServer {
             .route("/sync/mutations/pull", get(pull_mutations))
             .route("/dashboard/login", get(login_page).post(login))
             .route("/dashboard", get(dashboard))
+            .route("/dashboard/projects", get(browse_projects))
+            .route("/dashboard/project", get(browse_project))
+            .route("/dashboard/memory", get(browse_memory))
+            .route("/dashboard/search", get(browse_search))
             .layer(DefaultBodyLimit::max(self.state.config.max_push_body_bytes))
             .with_state(Arc::clone(&self.state))
     }
@@ -369,31 +379,17 @@ async fn dashboard(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let Some(session) = cookie_value(&headers, DASHBOARD_COOKIE) else {
-        return Ok(Redirect::to("/dashboard/login").into_response());
+        return Ok(login_redirect());
     };
-    let principal = match state.auth.parse_dashboard_session(session) {
-        Ok(principal) => principal,
-        Err(_) => return Ok(Redirect::to("/dashboard/login").into_response()),
+    let Ok(principal) = state.auth.parse_dashboard_session(session) else {
+        return Ok(login_redirect());
     };
-    if principal.source == PrincipalSource::ManagedToken {
-        let principal_id = principal
-            .id
-            .parse()
-            .map_err(|_| ApiError::unauthorized("invalid dashboard principal"))?;
-        let token_id = principal
-            .token_id
-            .ok_or_else(|| ApiError::unauthorized("invalid dashboard token"))?;
-        if !state
-            .store
-            .dashboard_session_valid(principal_id, token_id)
-            .await?
-        {
-            return Ok(Redirect::to("/dashboard/login").into_response());
-        }
+    if !dashboard_session_is_live(&state, &principal).await? {
+        return Ok(login_redirect());
     }
     let stats = state.store.stats().await?;
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Leteo Cloud</title><style>body{{font:16px system-ui;max-width:64rem;margin:3rem auto;padding:1rem;background:#f4f1e8;color:#17211b}}dl{{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1rem}}div{{padding:1.25rem;background:white;border-top:4px solid #27684a}}dt{{font-size:.8rem;text-transform:uppercase}}dd{{font-size:2rem;margin:.3rem 0}}</style></head><body><header><p>Signed in as {}</p><h1>Cloud runtime</h1></header><dl><div><dt>Principals</dt><dd>{}</dd></div><div><dt>Chunks</dt><dd>{}</dd></div><div><dt>Mutations</dt><dd>{}</dd></div><div><dt>Paused projects</dt><dd>{}</dd></div></dl></body></html>"#,
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Leteo Cloud</title><style>body{{font:16px system-ui;max-width:64rem;margin:3rem auto;padding:1rem;background:#f4f1e8;color:#17211b}}dl{{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1rem}}div{{padding:1.25rem;background:white;border-top:4px solid #27684a}}dt{{font-size:.8rem;text-transform:uppercase}}dd{{font-size:2rem;margin:.3rem 0}}</style></head><body><header><p>Signed in as {}</p><h1>Cloud runtime</h1></header><dl><div><dt>Principals</dt><dd>{}</dd></div><div><dt>Chunks</dt><dd>{}</dd></div><div><dt>Mutations</dt><dd>{}</dd></div><div><dt>Paused projects</dt><dd>{}</dd></div></dl><p><a href="/dashboard/projects">Browse projects and memories</a></p></body></html>"#,
         escape_html(&principal.display_name),
         stats.principals,
         stats.chunks,
@@ -401,4 +397,138 @@ async fn dashboard(
         stats.paused_projects,
     );
     Ok(Html(html).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowseQuery {
+    project: Option<String>,
+    key: Option<String>,
+    q: Option<String>,
+}
+
+/// The longest search term accepted, in characters.
+const MAX_SEARCH_TERM_CHARS: usize = 200;
+
+async fn browse_projects(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(session) = cookie_value(&headers, DASHBOARD_COOKIE) else {
+        return Ok(login_redirect());
+    };
+    let Ok(principal) = state.auth.parse_dashboard_session(session) else {
+        return Ok(login_redirect());
+    };
+    if !dashboard_session_is_live(&state, &principal).await? {
+        return Ok(login_redirect());
+    }
+    let visible = visible_projects(&state, &principal).await?;
+    let projects = state.store.list_projects(&visible).await?;
+    Ok(Html(render_projects(&principal.display_name, &projects)).into_response())
+}
+
+async fn browse_project(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<BrowseQuery>,
+) -> Result<Response, ApiError> {
+    let Some(session) = cookie_value(&headers, DASHBOARD_COOKIE) else {
+        return Ok(login_redirect());
+    };
+    let Ok(principal) = state.auth.parse_dashboard_session(session) else {
+        return Ok(login_redirect());
+    };
+    if !dashboard_session_is_live(&state, &principal).await? {
+        return Ok(login_redirect());
+    }
+    let project = authorize_project(&state, &principal, query.project.as_deref()).await?;
+    let sessions = state.store.list_sessions(&project).await?;
+    let memories = state
+        .store
+        .list_memories(std::slice::from_ref(&project), None, MEMORY_LIST_LIMIT)
+        .await?;
+    Ok(Html(render_project(
+        &principal.display_name,
+        &project,
+        &sessions,
+        &memories,
+    ))
+    .into_response())
+}
+
+async fn browse_memory(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<BrowseQuery>,
+) -> Result<Response, ApiError> {
+    let Some(session) = cookie_value(&headers, DASHBOARD_COOKIE) else {
+        return Ok(login_redirect());
+    };
+    let Ok(principal) = state.auth.parse_dashboard_session(session) else {
+        return Ok(login_redirect());
+    };
+    if !dashboard_session_is_live(&state, &principal).await? {
+        return Ok(login_redirect());
+    }
+    let project = authorize_project(&state, &principal, query.project.as_deref()).await?;
+    let key = query.key.as_deref().map(str::trim).unwrap_or_default();
+    let Some(memory) = state.store.get_memory(&project, key).await? else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "repairable",
+            "memory_not_found",
+            "no such memory in this project",
+        ));
+    };
+    Ok(Html(render_memory(&principal.display_name, &memory)).into_response())
+}
+
+async fn browse_search(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<BrowseQuery>,
+) -> Result<Response, ApiError> {
+    let Some(session) = cookie_value(&headers, DASHBOARD_COOKIE) else {
+        return Ok(login_redirect());
+    };
+    let Ok(principal) = state.auth.parse_dashboard_session(session) else {
+        return Ok(login_redirect());
+    };
+    if !dashboard_session_is_live(&state, &principal).await? {
+        return Ok(login_redirect());
+    }
+    let term = query.q.as_deref().map(str::trim).unwrap_or_default();
+    if term.chars().count() > MAX_SEARCH_TERM_CHARS {
+        return Err(ApiError::bad_request(format!(
+            "a search term is at most {MAX_SEARCH_TERM_CHARS} characters"
+        )));
+    }
+    let (scope, only_project) = match query
+        .project
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        Some(requested) => {
+            let project = authorize_project(&state, &principal, Some(requested)).await?;
+            (vec![project.clone()], Some(project))
+        }
+        None => (visible_projects(&state, &principal).await?, None),
+    };
+    let results = if term.is_empty() {
+        None
+    } else {
+        Some(
+            state
+                .store
+                .list_memories(&scope, Some(term), MEMORY_SEARCH_LIMIT)
+                .await?,
+        )
+    };
+    Ok(Html(render_search(
+        &principal.display_name,
+        term,
+        only_project.as_deref(),
+        results.as_ref(),
+    ))
+    .into_response())
 }

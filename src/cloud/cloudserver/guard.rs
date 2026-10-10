@@ -75,3 +75,50 @@ pub(super) async fn ensure_not_paused(
     )
     .with_project(project))
 }
+
+pub(super) fn login_redirect() -> Response {
+    Redirect::to("/dashboard/login").into_response()
+}
+
+/// Whether a signed dashboard session still names a principal that may sign in.
+///
+/// The cookie is a signature over claims made at login, so a revoked token
+/// keeps verifying until it expires. Managed tokens are therefore asked of the
+/// store on every page; the legacy ones have nothing to ask.
+pub(super) async fn dashboard_session_is_live(
+    state: &AppState,
+    principal: &Principal,
+) -> Result<bool, ApiError> {
+    if principal.source != PrincipalSource::ManagedToken {
+        return Ok(true);
+    }
+    let principal_id = principal
+        .id
+        .parse()
+        .map_err(|_| ApiError::unauthorized("invalid dashboard principal"))?;
+    let token_id = principal
+        .token_id
+        .ok_or_else(|| ApiError::unauthorized("invalid dashboard token"))?;
+    Ok(state
+        .store
+        .dashboard_session_valid(principal_id, token_id)
+        .await?)
+}
+
+/// The concrete projects a principal's grants reach.
+///
+/// A `*` grant is resolved to the names the log holds, so every browse query
+/// binds an explicit list and none of them has a branch that means "everyone's".
+pub(super) async fn visible_projects(
+    state: &AppState,
+    principal: &Principal,
+) -> Result<Vec<String>, ApiError> {
+    match state
+        .auth
+        .enrolled_projects(&state.store, principal)
+        .await?
+    {
+        Some(projects) => Ok(projects),
+        None => Ok(state.store.all_project_names().await?),
+    }
+}

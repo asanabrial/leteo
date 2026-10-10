@@ -6,6 +6,14 @@ All notable changes to Leteo are documented in this file.
 
 ### Added
 
+- **The cloud dashboard can be browsed, read-only.** An administrator signed
+  in to `leteo cloud serve` can list the projects, open a project's sessions
+  and memories, read one memory whole, and search titles, content and topic
+  keys, all server-rendered with no new dependency. A user sees only the
+  projects their grants reach: the admin role signs in but does not bypass a
+  grant, and a project, memory or scoped search outside it is refused with 403.
+  Lists are cut at published limits and say so on the page (#134).
+
 - **The language menu says which translation a machine made.** Romanian was
   added machine-translated rather than written by somebody who speaks it, and the
   menu that offered it said nothing, which reads as a native translation. It now

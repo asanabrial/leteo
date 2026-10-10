@@ -700,6 +700,17 @@ of this applies to a normal installation.
 | `LETEO_CLOUD_MAX_POOL` | PostgreSQL connection-pool limit |
 | `LETEO_CLOUD_MAX_PUSH_BYTES` | Maximum cloud push body size |
 
+**Browsing what the server holds.** Sign in at `/dashboard/login` with an admin
+token and `/dashboard` links to a read-only browse: the projects, each
+project's sessions and memories, and a search over memory titles, content and
+topic keys. It is server-rendered, edits nothing, and shows the current state of
+the log, so a deleted memory does not appear. Being an admin lets you sign in
+but is not a pass to every project: the browse shows only the projects your
+token holds a grant on (all of them for a `*` grant), and asking for any other
+project by name is refused with 403. Lists are cut at 200 projects, 100
+sessions, 100 memories or 50 search matches, and the page says when it was cut.
+Administering users, grants and tokens is not part of it.
+
 ## License And Attribution
 
 Leteo is distributed under the MIT License. See [LICENSE](LICENSE) and

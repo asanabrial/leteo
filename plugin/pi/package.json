@@ -1,0 +1,45 @@
+{
+  "name": "@asanabrial/leteo-pi",
+  "version": "0.3.0",
+  "description": "Leteo persistent memory for Pi: session lifecycle, prompt and tool capture, compaction recovery, and the memory tools.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "leteo",
+    "memory",
+    "persistent-memory",
+    "mcp",
+    "coding-agent",
+    "extension"
+  ],
+  "homepage": "https://github.com/asanabrial/leteo/tree/main/plugin/pi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asanabrial/leteo.git",
+    "directory": "plugin/pi"
+  },
+  "bugs": {
+    "url": "https://github.com/asanabrial/leteo/issues"
+  },
+  "author": "Alexis Sanabria Lopez",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./leteo.ts"
+    ]
+  },
+  "files": [
+    "leteo.ts",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test leteo.test.ts"
+  }
+}

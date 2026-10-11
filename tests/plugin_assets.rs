@@ -578,3 +578,114 @@ fn the_opencode_plugin_serves_both_majors_without_bun() {
         "the plugin must not call a Bun-only API on the hook path"
     );
 }
+
+/// The text of the `MEMORY_PROTOCOL` template literal in a plugin source.
+fn memory_protocol_in(path: &str) -> String {
+    let source = std::fs::read_to_string(repository_root().join(path))
+        .unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let start = source
+        .find("const MEMORY_PROTOCOL = `")
+        .unwrap_or_else(|| panic!("{path} declares MEMORY_PROTOCOL"))
+        + "const MEMORY_PROTOCOL = `".len();
+    // The protocol quotes tool names in backticks it escapes, so the literal
+    // ends at the first backtick that is not preceded by a backslash.
+    let mut escaped = false;
+    for (offset, character) in source[start..].char_indices() {
+        match character {
+            '\\' if !escaped => escaped = true,
+            '`' if !escaped => return source[start..start + offset].to_owned(),
+            _ => escaped = false,
+        }
+    }
+    panic!("{path} closes MEMORY_PROTOCOL")
+}
+
+/// Two plugins say the same thing to the model.
+///
+/// OpenCode and Pi are TypeScript files that cannot import each other, so each
+/// carries the protocol it appends to the system prompt. They were one text, and
+/// the way they stop being is somebody improving one.
+#[test]
+fn the_pi_package_appends_the_protocol_the_opencode_plugin_does() {
+    assert_eq!(
+        memory_protocol_in("plugin/pi/leteo.ts"),
+        memory_protocol_in("plugin/opencode/leteo.ts")
+    );
+}
+
+/// The Pi package is the one caller the binary's Pi guard lets through, and it
+/// says so in words the binary reads. A rename on either side silences every
+/// hook the package runs, with nothing failing anywhere.
+#[test]
+fn the_pi_package_names_itself_as_the_binary_expects() {
+    let source = std::fs::read_to_string(repository_root().join("plugin/pi/leteo.ts"))
+        .expect("the Pi package exists");
+    assert!(
+        source.contains(&format!(
+            "{}: HOOK_CLIENT",
+            leteo::hooks::HOOK_CLIENT_VARIABLE
+        )),
+        "the hooks must be run with {} set",
+        leteo::hooks::HOOK_CLIENT_VARIABLE
+    );
+    assert!(
+        source.contains(&format!(
+            "const HOOK_CLIENT = \"{}\"",
+            leteo::hooks::PI_HOOK_CLIENT
+        )),
+        "the package must name itself {:?}",
+        leteo::hooks::PI_HOOK_CLIENT
+    );
+}
+
+/// The Pi package is a Pi package: its manifest declares the extension, the
+/// extension exists. Its version is held with the other manifests by
+/// `every_manifest_publishes_the_version_this_crate_is`.
+#[test]
+fn the_pi_package_manifest_declares_an_extension_that_exists() {
+    let root = repository_root().join("plugin/pi");
+    let manifest = read_json(&root.join("package.json"));
+    assert_eq!(manifest["name"].as_str(), Some("@asanabrial/leteo-pi"));
+    // The host provides Pi's packages, and a copy in `dependencies` can bypass
+    // its module mapping; a peer dependency is the form its documentation asks for.
+    assert!(manifest.get("dependencies").is_none());
+    assert_eq!(
+        manifest["peerDependencies"]["@earendil-works/pi-coding-agent"].as_str(),
+        Some("*")
+    );
+    assert_eq!(manifest["license"].as_str(), Some("MIT"));
+    assert!(
+        manifest["keywords"]
+            .as_array()
+            .is_some_and(|keywords| keywords.iter().any(|keyword| keyword == "pi-package")),
+        "Pi's gallery finds packages by the pi-package keyword"
+    );
+    let extensions = manifest["pi"]["extensions"]
+        .as_array()
+        .expect("the manifest lists its extensions");
+    assert!(!extensions.is_empty());
+    for extension in extensions {
+        let relative = extension.as_str().expect("an extension is a path");
+        assert!(
+            root.join(relative).is_file(),
+            "{relative} is declared and missing"
+        );
+    }
+}
+
+/// The Pi package registers the profile `leteo setup` writes for every other
+/// agent. Setup fills the line in from `--tools`; the source holds the default,
+/// and this keeps it the same one.
+#[test]
+fn the_pi_package_registers_the_default_tool_profile() {
+    let source = std::fs::read_to_string(repository_root().join("plugin/pi/leteo.ts"))
+        .expect("the Pi package exists");
+    assert!(
+        source.contains(&format!(
+            "const MCP_TOOLS = \"{}\"",
+            leteo::setup::DEFAULT_TOOLS
+        )),
+        "the package must default to the {:?} profile",
+        leteo::setup::DEFAULT_TOOLS
+    );
+}

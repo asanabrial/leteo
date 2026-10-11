@@ -732,6 +732,7 @@ fn every_manifest_publishes_the_version_this_crate_is() {
         // declared, and this line is what said so.
         ("server.json", 3),
         ("npm/package.json", 1),
+        ("plugin/pi/package.json", 1),
         // Two: one marketplace entry per bundle a client installs from here.
         // Both ZCode and Claude Code read this same file, so it grew a second
         // entry when the ZCode bundle shipped, and this line is what said so.

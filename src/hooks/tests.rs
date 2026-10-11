@@ -1568,6 +1568,33 @@ fn a_renamed_project_is_recognised_however_the_path_was_spelled() {
     );
 }
 
+/// The fold moves memories between projects on the word of a recorded
+/// directory, so a relative one must not authorise it: `.` resolved against the
+/// hook's own directory and read as "recorded here".
+#[test]
+fn a_relative_recorded_directory_does_not_authorise_the_fold() {
+    let temp = TempDir::new().unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    let here = std::env::current_dir().unwrap();
+    let legacy = crate::memory::normalize::project(&here.file_name().unwrap().to_string_lossy());
+    store
+        .create_session("old", &legacy, "C:/placeholder")
+        .unwrap();
+    store
+        .connection()
+        .execute("UPDATE sessions SET directory = '.' WHERE id = 'old'", [])
+        .unwrap();
+
+    let mut outcome = HookOutcome::default();
+    migrate_directory_project(&mut store, &here, "renamed", &mut outcome);
+
+    assert!(
+        store.session_directories("renamed").unwrap().is_empty(),
+        "the legacy project was folded into another on a relative directory: {outcome:?}"
+    );
+    assert_eq!(store.session_directories(&legacy).unwrap(), vec!["."]);
+}
+
 #[test]
 fn the_reminder_waits_for_the_session_to_start_and_for_the_saving_to_stop() {
     // Two conditions hold the reminder back and each covers a case the other

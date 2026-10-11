@@ -898,6 +898,43 @@ fn a_remote_that_changed_makes_the_session_door_ask_too() {
     assert_eq!(chosen.0.session.project, "old-remote");
 }
 
+/// A session whose recorded directory is relative names no place, so it is
+/// never evidence of drift.
+///
+/// `.` was recorded once, after a failed `current_dir`, and `same_directory`
+/// resolved it against the reading process: every repository an MCP server was
+/// started in then offered the phantom project as a candidate. The detection
+/// path here is this process's own directory, which is where `.` resolves.
+#[test]
+fn a_relative_recorded_directory_is_not_offered_as_a_candidate() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    for (id, project, directory) in [("dot", "unknown", "."), ("nested", "stray", "src/mcp")] {
+        store.create_session(id, project, "C:/placeholder").unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE sessions SET directory = ?1 WHERE id = ?2",
+                rusqlite::params![directory, id],
+            )
+            .unwrap();
+    }
+    let here = std::env::current_dir().unwrap();
+    let detection = ProjectDetection {
+        project: "real-repo".to_owned(),
+        source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+        path: here.to_string_lossy().into_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    };
+
+    let (project, _) = server
+        .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .expect("a relative spelling is not a drifted directory");
+    assert_eq!(project, "real-repo");
+}
+
 /// The process override wins over the drift gate, as it wins over detection.
 ///
 /// The override is the operator's answer for this process, given before any

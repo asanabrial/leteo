@@ -765,6 +765,26 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Whether a directory string is spelled as an absolute path on any platform.
+///
+/// Stores carry paths written on other machines, and `Path::is_absolute` judges
+/// by the host: on Unix it rejects `C:/repo` and `\\server\share`, which are
+/// complete paths where they were recorded. So the three families are listed
+/// here once — a leading separator (Unix, and UNC in either slash), and a drive
+/// letter followed by a separator — and everything that must tell a place from
+/// a relative spelling asks this.
+pub(crate) fn is_absolute_spelling(value: &str) -> bool {
+    let value = value.trim();
+    if value.starts_with(['/', '\\']) {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+}
+
 /// Whether a stored session directory names the directory a caller is in.
 ///
 /// The same directory is written in several ways across machines — a trailing
@@ -777,6 +797,16 @@ fn path_string(path: &Path) -> String {
 /// into another. Lives here rather than in `hooks::session`, where it grew,
 /// because the MCP write path and the session-start hook now both ask it.
 pub(crate) fn same_directory(recorded: &str, directory: &Path) -> bool {
+    // A relative recorded directory names no place: `.` is whichever directory
+    // the reader happens to be in, and the canonical comparison below resolved
+    // it against exactly that. One session recorded as `.` after a failed
+    // `current_dir` was therefore offered as a drift candidate in every
+    // repository an MCP server was started in. This sits before the literal
+    // comparison too, or `.` would still equal a detection path of `.`.
+    if !is_absolute_spelling(recorded) {
+        return false;
+    }
+
     fn comparable(value: &str) -> String {
         let value = value
             .trim()
@@ -831,6 +861,46 @@ pub(crate) fn remove_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// Stores carry paths from other machines, so the host's `is_absolute`
+    /// cannot be the judge: it rejects `C:/repo` on Unix and `/repo` on Windows.
+    #[test]
+    fn an_absolute_spelling_is_recognised_whatever_machine_wrote_it() {
+        for absolute in [
+            "/home/ana/repo",
+            "C:/repo",
+            r"C:\repo",
+            "c:/",
+            r"\\server\share",
+            "//server/share",
+        ] {
+            assert!(is_absolute_spelling(absolute), "{absolute:?}");
+        }
+        for relative in [
+            "", " ", ".", "..", "foo/bar", r"foo\bar", "C:", "C:repo", "~/repo",
+        ] {
+            assert!(!is_absolute_spelling(relative), "{relative:?}");
+        }
+    }
+
+    /// A relative recorded directory is whichever directory the reader is in,
+    /// so it must match nothing, the reader's own directory included.
+    #[test]
+    fn a_relative_recorded_directory_matches_no_directory() {
+        let here = std::env::current_dir().unwrap();
+        assert!(
+            !same_directory(".", &here),
+            "`.` resolves against the reader"
+        );
+        assert!(!same_directory("foo/bar", &here.join("foo").join("bar")));
+        assert!(!same_directory(".", Path::new(".")), "and not even itself");
+        assert!(same_directory(&here.to_string_lossy(), &here));
+        assert!(same_directory("C:/repo/", Path::new(r"C:\repo")));
+        assert!(same_directory(
+            r"\\server\share\x",
+            Path::new("//server/share/x")
+        ));
+    }
+
     /// The working directory is asked about once, not once per caller.
     ///
     /// Detection shells out to `git rev-parse --show-toplevel`, and usually to

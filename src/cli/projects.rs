@@ -83,11 +83,11 @@ fn similar_projects(canonical: &str, stats: &[ProjectStats]) -> Vec<String> {
         if entry.name == canonical || sources.contains(&entry.name) {
             continue;
         }
-        if entry
-            .directories
-            .iter()
-            .any(|directory| directories.contains(directory))
-        {
+        // A relative directory is every directory at once, so two projects that
+        // both recorded `.` are not thereby the same project.
+        if entry.directories.iter().any(|directory| {
+            crate::project::is_absolute_spelling(directory) && directories.contains(directory)
+        }) {
             sources.push(entry.name.clone());
         }
     }
@@ -402,6 +402,27 @@ mod tests {
         assert!(
             canonical_of("nas.archive").is_none(),
             "a project with 46 memories is not somebody else's source: {groups:?}"
+        );
+    }
+
+    /// `.` is not a place. Two projects that both recorded it share no
+    /// directory, and grouping them folded one into the other on the strength
+    /// of a spelling that means "wherever the reader is".
+    #[test]
+    fn a_relative_directory_does_not_link_two_projects() {
+        let stats = vec![
+            project("alpha-service", 10, &["."]),
+            project("omega-worker", 5, &["."]),
+        ];
+        assert!(similar_projects("alpha-service", &stats).is_empty());
+        let stats = vec![
+            project("alpha-service", 10, &["/work/shared"]),
+            project("omega-worker", 5, &["/work/shared"]),
+        ];
+        assert_eq!(
+            similar_projects("alpha-service", &stats),
+            vec!["omega-worker".to_owned()],
+            "an absolute shared directory still does"
         );
     }
 

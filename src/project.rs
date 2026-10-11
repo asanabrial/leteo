@@ -338,7 +338,9 @@ fn detect_current_project_uncached() -> ProjectDetection {
 /// answered project `unknown` at path `.`, and the write doors, which look at
 /// the project and not at `error_hint`, filed a session there. That session was
 /// then matched against every directory its reader stood in. Nothing is
-/// detected instead, so every door refuses with the reason. Takes the
+/// detected instead, so a write that relies on detection refuses with the
+/// reason; one that names its project explicitly is still written, under no
+/// directory, on the CLI door. Takes the
 /// `io::Result` so the failure can be exercised without breaking the test
 /// process's own directory.
 pub(crate) fn detection_for_working_directory(

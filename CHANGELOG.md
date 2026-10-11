@@ -88,7 +88,9 @@ All notable changes to Leteo are documented in this file.
   an `ambiguous_project` candidate everywhere, the session-start hook could fold
   a project on its strength, and `projects consolidate` grouped by it. A relative
   recorded directory now matches nothing, an unreadable working directory
-  refuses the write with the reason instead of filing it, and `create_session`,
+  refuses a write that relies on detection with the reason instead of filing
+  it under `unknown` (a CLI save naming `--project` is still written, under no
+  directory), and `create_session`,
   the replicated session upsert and spool replay store no directory rather than
   a relative one. Rows already holding `.` are neutralised without a migration;
   the stranded `unknown` project can be merged away with the existing project

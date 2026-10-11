@@ -365,6 +365,23 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         _ => {}
     }
+    // Inside Pi the hook has nothing to do, and must not open the store to find
+    // that out. The payload is drained so the agent writing it is not left with
+    // a closed pipe.
+    if let Command::Hook { .. } = &cli.command
+        && crate::hooks::defers_to_pi(
+            std::env::var(crate::hooks::PI_HOST_VARIABLE)
+                .ok()
+                .as_deref(),
+            std::env::var(crate::hooks::HOOK_CLIENT_VARIABLE)
+                .ok()
+                .as_deref(),
+        )
+    {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        println!("{{}}");
+        return Ok(());
+    }
     let mut config = store_config(&cli)?;
     // A hook gives up before the agent that launched it does. The number is on
     // the event — see `HookEvent::store_wait` — because it is the event that

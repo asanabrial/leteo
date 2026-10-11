@@ -54,6 +54,12 @@ binary's own list by a guard in the Rust crate
 and nowhere held, they drift — the Codex bundle had already done so twice
 before the guard was widened to watch the matcher.
 
+Inside Pi every one of these hooks does nothing. Pi runs Claude models through
+pi-claude-bridge, which loads Claude Code settings, and Pi's own Leteo package
+already owns that session; the binary reads the `PI_CODING_AGENT` variable Pi
+sets and answers `{}` without opening the store. The Pi package is let through
+by naming itself with `LETEO_HOOK_CLIENT=pi`.
+
 Every hook is best-effort and bounded: Leteo gives up before Claude Code does,
 and a hook that could not do its work says so rather than failing silently.
 Memory is an assistant, not a gate.

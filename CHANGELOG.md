@@ -99,6 +99,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Claude Code's hooks no longer register a second session inside Pi.** Pi
+  runs Claude models through pi-claude-bridge, which loads the user's Claude
+  Code settings, so every `leteo hook` it fired put the conversation in the
+  store beside the one the Pi package owns. A hook now answers `{}` without
+  opening the store when `PI_CODING_AGENT` is set, unless the caller names
+  itself with `LETEO_HOOK_CLIENT=pi`, which the Pi package does (#269).
+
 - **A session recorded in a relative directory no longer matches every
   repository.** When the working directory could not be read, a save was filed
   under a project called `unknown` at `.`, and `.` was then resolved against

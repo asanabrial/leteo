@@ -39,6 +39,27 @@ use session::{
     resolve_project, resolve_session_id,
 };
 
+/// What Pi sets in the environment of every process it starts.
+pub const PI_HOST_VARIABLE: &str = "PI_CODING_AGENT";
+
+/// What the Pi package sets on the hooks it runs itself, and the value it uses.
+pub const HOOK_CLIENT_VARIABLE: &str = "LETEO_HOOK_CLIENT";
+pub const PI_HOOK_CLIENT: &str = "pi";
+
+/// Whether a hook should do nothing because Pi already owns this session.
+///
+/// Pi runs Claude models through pi-claude-bridge, which loads the user's Claude
+/// Code settings, so Claude Code's hooks fire inside a Pi session that the Pi
+/// package has already registered and every conversation would be in the store
+/// twice. The hooks Claude Code runs are plain `leteo hook <event>` commands
+/// that carry nothing of their own to tell them from the Pi package's, and both
+/// inherit `PI_CODING_AGENT`; so the package names itself, and it is the only
+/// caller let through.
+pub fn defers_to_pi(host: Option<&str>, client: Option<&str>) -> bool {
+    host.is_some_and(|value| !value.trim().is_empty())
+        && client.map(str::trim) != Some(PI_HOOK_CLIENT)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     SessionStart,

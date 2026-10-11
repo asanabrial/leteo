@@ -714,3 +714,120 @@ async fn a_dashboard_user_browses_only_the_projects_they_hold_a_grant_on() {
     .await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// A cookie outlives the token it was minted from, so each browse page has to
+/// ask the store whether the session is still live. The four handlers each
+/// carry their own check, which is why every route is requested after the
+/// revocation and a failure names the one that served the page.
+///
+/// The rejected inputs ride along because they need the same signed-in
+/// session: a missing project, a blank memory key, and a search term one
+/// character over the limit.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_revoked_dashboard_session_is_refused_and_bad_browse_input_is_rejected() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let stamp = Utc::now().timestamp_micros();
+    let project = format!("revoked-{stamp}");
+    let name = format!("viewer-revoked-{stamp}");
+
+    let config = CloudConfig {
+        database_url,
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+    server.state.store.migrate().await.unwrap();
+
+    let token = mint_admin(&server, &config.token_pepper, &name, &project).await;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/dashboard/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(format!("token={token}")))
+        .unwrap();
+    let response = server.router().oneshot(request).await.unwrap();
+    assert!(response.status().is_redirection());
+    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+    let cookie = cookie.split(';').next().unwrap().to_owned();
+
+    let get = async |uri: &str| {
+        let request = Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        server.router().oneshot(request).await.unwrap().status()
+    };
+
+    let long_term = "x".repeat(MAX_SEARCH_TERM_CHARS + 1);
+    let routes = [
+        "/dashboard/projects".to_owned(),
+        format!("/dashboard/project?project={project}"),
+        format!("/dashboard/memory?project={project}&key=absent"),
+        format!("/dashboard/search?q=anything&project={project}"),
+    ];
+
+    for route in &routes[..2] {
+        assert_eq!(get(route).await, StatusCode::OK, "{route} before revoking");
+    }
+    assert_eq!(
+        get(&routes[2]).await,
+        StatusCode::NOT_FOUND,
+        "{} before revoking",
+        routes[2]
+    );
+    assert_eq!(
+        get(&routes[3]).await,
+        StatusCode::OK,
+        "{} before revoking",
+        routes[3]
+    );
+
+    assert_eq!(
+        get("/dashboard/project").await,
+        StatusCode::BAD_REQUEST,
+        "a missing project"
+    );
+    assert_eq!(
+        get(&format!("/dashboard/memory?project={project}&key=%20%20")).await,
+        StatusCode::NOT_FOUND,
+        "a blank memory key"
+    );
+    assert_eq!(
+        get(&format!("/dashboard/search?q={long_term}")).await,
+        StatusCode::BAD_REQUEST,
+        "a search term over the limit"
+    );
+    assert_eq!(
+        get(&format!(
+            "/dashboard/search?q={}",
+            "x".repeat(MAX_SEARCH_TERM_CHARS)
+        ))
+        .await,
+        StatusCode::OK,
+        "a search term at the limit"
+    );
+
+    sqlx::query(
+        "UPDATE cloud_principal_tokens SET revoked_at = NOW()
+         WHERE principal_id IN (SELECT id FROM cloud_principals WHERE display_name = $1)",
+    )
+    .bind(&name)
+    .execute(server.state.store.pool())
+    .await
+    .unwrap();
+
+    for route in &routes {
+        let status = get(route).await;
+        assert!(
+            status.is_redirection(),
+            "{route} served a session whose token was revoked: {status}"
+        );
+    }
+}

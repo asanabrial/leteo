@@ -715,119 +715,177 @@ async fn a_dashboard_user_browses_only_the_projects_they_hold_a_grant_on() {
     assert_eq!(status, StatusCode::OK);
 }
 
-/// A cookie outlives the token it was minted from, so each browse page has to
-/// ask the store whether the session is still live. The four handlers each
-/// carry their own check, which is why every route is requested after the
-/// revocation and a failure names the one that served the page.
-///
-/// The rejected inputs ride along because they need the same signed-in
-/// session: a missing project, a blank memory key, and a search term one
-/// character over the limit.
-#[tokio::test]
-#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
-async fn a_revoked_dashboard_session_is_refused_and_bad_browse_input_is_rejected() {
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
+/// One signed-in administrator on a fresh project, for the tests that ask a
+/// browse route about a session or an input.
+struct SignedInAdmin {
+    server: CloudServer,
+    cookie: String,
+    project: String,
+    name: String,
+}
 
-    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
-    let stamp = Utc::now().timestamp_micros();
-    let project = format!("revoked-{stamp}");
-    let name = format!("viewer-revoked-{stamp}");
+impl SignedInAdmin {
+    async fn sign_in() -> Self {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
 
-    let config = CloudConfig {
-        database_url,
-        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
-        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
-        ..CloudConfig::default()
-    };
-    let server = CloudServer::from_config(config.clone()).await.unwrap();
-    server.state.store.migrate().await.unwrap();
+        let stamp = Utc::now().timestamp_micros();
+        let project = format!("browse-input-{stamp}");
+        let name = format!("viewer-input-{stamp}");
+        let config = CloudConfig {
+            database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+            dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+            token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+            ..CloudConfig::default()
+        };
+        let server = CloudServer::from_config(config.clone()).await.unwrap();
+        server.state.store.migrate().await.unwrap();
+        let token = mint_admin(&server, &config.token_pepper, &name, &project).await;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/dashboard/login")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!("token={token}")))
+            .unwrap();
+        let response = server.router().oneshot(request).await.unwrap();
+        assert!(response.status().is_redirection());
+        let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        let cookie = cookie.split(';').next().unwrap().to_owned();
+        Self {
+            server,
+            cookie,
+            project,
+            name,
+        }
+    }
 
-    let token = mint_admin(&server, &config.token_pepper, &name, &project).await;
-    let request = Request::builder()
-        .method("POST")
-        .uri("/dashboard/login")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from(format!("token={token}")))
-        .unwrap();
-    let response = server.router().oneshot(request).await.unwrap();
-    assert!(response.status().is_redirection());
-    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
-    let cookie = cookie.split(';').next().unwrap().to_owned();
+    async fn get(&self, uri: &str) -> (StatusCode, Option<String>) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
 
-    let get = async |uri: &str| {
         let request = Request::builder()
             .uri(uri)
-            .header(header::COOKIE, &cookie)
+            .header(header::COOKIE, &self.cookie)
             .body(Body::empty())
             .unwrap();
-        server.router().oneshot(request).await.unwrap().status()
-    };
-
-    let long_term = "x".repeat(MAX_SEARCH_TERM_CHARS + 1);
-    let routes = [
-        "/dashboard/projects".to_owned(),
-        format!("/dashboard/project?project={project}"),
-        format!("/dashboard/memory?project={project}&key=absent"),
-        format!("/dashboard/search?q=anything&project={project}"),
-    ];
-
-    for route in &routes[..2] {
-        assert_eq!(get(route).await, StatusCode::OK, "{route} before revoking");
+        let response = self.server.router().oneshot(request).await.unwrap();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .map(|value| value.to_str().unwrap().to_owned());
+        (response.status(), location)
     }
-    assert_eq!(
-        get(&routes[2]).await,
-        StatusCode::NOT_FOUND,
-        "{} before revoking",
-        routes[2]
-    );
-    assert_eq!(
-        get(&routes[3]).await,
-        StatusCode::OK,
-        "{} before revoking",
-        routes[3]
-    );
 
-    assert_eq!(
-        get("/dashboard/project").await,
-        StatusCode::BAD_REQUEST,
-        "a missing project"
-    );
-    assert_eq!(
-        get(&format!("/dashboard/memory?project={project}&key=%20%20")).await,
-        StatusCode::NOT_FOUND,
-        "a blank memory key"
-    );
-    assert_eq!(
-        get(&format!("/dashboard/search?q={long_term}")).await,
-        StatusCode::BAD_REQUEST,
-        "a search term over the limit"
-    );
-    assert_eq!(
-        get(&format!(
+    async fn revoke(&self) {
+        sqlx::query(
+            "UPDATE cloud_principal_tokens SET revoked_at = NOW()
+             WHERE principal_id IN (SELECT id FROM cloud_principals WHERE display_name = $1)",
+        )
+        .bind(&self.name)
+        .execute(self.server.state.store.pool())
+        .await
+        .unwrap();
+    }
+
+    /// A cookie outlives the token it was minted from, so each browse page has
+    /// to ask the store whether the session is still live. The route is served
+    /// first so that the refusal afterwards cannot be a request that never
+    /// worked.
+    async fn assert_refused_once_revoked(&self, uri: &str, served_status: StatusCode) {
+        let (status, _) = self.get(uri).await;
+        assert_eq!(status, served_status, "{uri} before revoking");
+        self.revoke().await;
+        let (status, location) = self.get(uri).await;
+        assert!(
+            status.is_redirection(),
+            "{uri} served a session whose token was revoked: {status}"
+        );
+        assert_eq!(
+            location.as_deref(),
+            Some("/dashboard/login"),
+            "{uri} sent a revoked session somewhere other than the sign-in page"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_project_list_refuses_a_revoked_session() {
+    let session = SignedInAdmin::sign_in().await;
+    session
+        .assert_refused_once_revoked("/dashboard/projects", StatusCode::OK)
+        .await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_project_page_refuses_a_revoked_session() {
+    let session = SignedInAdmin::sign_in().await;
+    let uri = format!("/dashboard/project?project={}", session.project);
+    session
+        .assert_refused_once_revoked(&uri, StatusCode::OK)
+        .await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_memory_page_refuses_a_revoked_session() {
+    let session = SignedInAdmin::sign_in().await;
+    let uri = format!("/dashboard/memory?project={}&key=absent", session.project);
+    session
+        .assert_refused_once_revoked(&uri, StatusCode::NOT_FOUND)
+        .await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_search_page_refuses_a_revoked_session() {
+    let session = SignedInAdmin::sign_in().await;
+    let uri = format!("/dashboard/search?q=anything&project={}", session.project);
+    session
+        .assert_refused_once_revoked(&uri, StatusCode::OK)
+        .await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_project_page_without_a_project_is_a_bad_request() {
+    let session = SignedInAdmin::sign_in().await;
+    let (status, _) = session.get("/dashboard/project").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_memory_page_with_a_blank_key_finds_nothing() {
+    let session = SignedInAdmin::sign_in().await;
+    let (status, _) = session
+        .get(&format!(
+            "/dashboard/memory?project={}&key=%20%20",
+            session.project
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_search_term_is_limited_to_the_published_length() {
+    let session = SignedInAdmin::sign_in().await;
+    let (status, _) = session
+        .get(&format!(
+            "/dashboard/search?q={}",
+            "x".repeat(MAX_SEARCH_TERM_CHARS + 1)
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "one character over");
+    let (status, _) = session
+        .get(&format!(
             "/dashboard/search?q={}",
             "x".repeat(MAX_SEARCH_TERM_CHARS)
         ))
-        .await,
-        StatusCode::OK,
-        "a search term at the limit"
-    );
-
-    sqlx::query(
-        "UPDATE cloud_principal_tokens SET revoked_at = NOW()
-         WHERE principal_id IN (SELECT id FROM cloud_principals WHERE display_name = $1)",
-    )
-    .bind(&name)
-    .execute(server.state.store.pool())
-    .await
-    .unwrap();
-
-    for route in &routes {
-        let status = get(route).await;
-        assert!(
-            status.is_redirection(),
-            "{route} served a session whose token was revoked: {status}"
-        );
-    }
+        .await;
+    assert_eq!(status, StatusCode::OK, "exactly at the limit");
 }

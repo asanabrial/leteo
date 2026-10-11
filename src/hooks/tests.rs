@@ -2481,6 +2481,29 @@ fn a_capture_that_meets_a_held_store_is_kept_once_it_is_free() {
     );
 }
 
+/// A spooled capture can name a session that does not exist yet, and replay
+/// creates it from the entry. An entry written by a build that recorded `.`
+/// must not bring the relative directory back.
+#[test]
+fn a_replayed_spool_entry_does_not_record_a_relative_directory() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "late-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A relative directory is never recorded"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, ".").unwrap();
+
+    let drained = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(drained.stored, 1, "{drained:?}");
+    assert_eq!(store.get_session("late-session").unwrap().directory, "");
+}
+
 /// A capture drained twice is stored once.
 ///
 /// The drain removes an entry it replayed, so a second drain of the same text

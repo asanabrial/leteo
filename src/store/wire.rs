@@ -229,7 +229,7 @@ fn apply_session_upsert_tx(
         params![
             payload.id,
             project,
-            payload.directory,
+            crate::project::recordable_directory(&payload.directory),
             payload.started_at,
             payload.ended_at,
             summary

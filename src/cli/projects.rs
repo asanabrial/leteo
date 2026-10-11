@@ -329,7 +329,11 @@ pub(super) fn resolve_write_session(
     };
     let id = crate::mcp::manual_session_id(&project);
     let directory = if detection.path.is_empty() {
-        std::env::current_dir()?.to_string_lossy().into_owned()
+        // An explicit project can still be written when the working directory
+        // cannot be read; the session then carries no directory, not a guess.
+        std::env::current_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
     } else {
         detection.path
     };

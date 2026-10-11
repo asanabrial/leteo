@@ -570,3 +570,29 @@ fn a_session_summary_is_redacted_and_bounded_on_both_paths() {
     assert!(!replicated.contains("hunter2"), "{replicated}");
     assert!(replicated.contains("[REDACTED]"), "{replicated}");
 }
+
+/// `.` names no place, and a session recorded there matched whichever
+/// directory the reader stood in. Every creator passes through `create_session`,
+/// so the store itself keeps a relative spelling out.
+#[test]
+fn a_session_never_records_a_relative_directory() {
+    let (_temp, mut store) = store();
+    for (id, directory) in [("dot", "."), ("nested", "foo/bar"), ("blank", "")] {
+        let session = store.create_session(id, "atlas", directory).unwrap();
+        assert_eq!(session.directory, "", "{directory:?}");
+    }
+    assert_eq!(
+        store
+            .create_session("drive", "atlas", "C:/repo")
+            .unwrap()
+            .directory,
+        "C:/repo"
+    );
+    assert_eq!(
+        store
+            .create_session("unix", "atlas", "/work/repo")
+            .unwrap()
+            .directory,
+        "/work/repo"
+    );
+}

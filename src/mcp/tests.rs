@@ -935,6 +935,28 @@ fn a_relative_recorded_directory_is_not_offered_as_a_candidate() {
     assert_eq!(project, "real-repo");
 }
 
+/// A working directory that cannot be read refuses the write with the
+/// detection error, rather than filing the memory under `unknown` at `.`.
+#[test]
+fn a_write_from_an_unreadable_working_directory_is_refused() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let store = server.lock_store().unwrap();
+    let detection =
+        crate::project::detection_for_working_directory(Err(std::io::Error::other("gone")));
+
+    let error = server
+        .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .expect_err("there is no project to file the memory under");
+    let payload = error_payload(&error);
+    assert_eq!(payload["error"]["code"], "project_detection_failed");
+    assert!(
+        payload["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("gone")),
+        "{payload}"
+    );
+}
+
 /// The process override wins over the drift gate, as it wins over detection.
 ///
 /// The override is the operator's answer for this process, given before any

@@ -14,6 +14,7 @@ pub const SOURCE_GIT_CHILD: &str = "git_child";
 pub const SOURCE_DIR_BASENAME: &str = "dir_basename";
 pub const SOURCE_AMBIGUOUS: &str = "ambiguous";
 pub const SOURCE_PROCESS_OVERRIDE: &str = "process_override";
+pub const SOURCE_UNAVAILABLE: &str = "unavailable";
 
 /// What every entry point says when a project name is missing.
 ///
@@ -299,8 +300,8 @@ fn detection_from_children(cwd: &Path, children: &[PathBuf], timed_out: bool) ->
     }
 }
 
-/// Detects the current process directory. Failure to obtain it is folded into
-/// the normal basename fallback by `detect_project`.
+/// Detects the current process directory. Failure to obtain it detects nothing
+/// and keeps the reason in `error_hint`; see `detection_for_working_directory`.
 /// Answered once per process, because the answer cannot change within one.
 ///
 /// Detection shells out to `git rev-parse --show-toplevel`, and often to
@@ -327,13 +328,34 @@ pub fn detect_current_project() -> ProjectDetection {
 }
 
 fn detect_current_project_uncached() -> ProjectDetection {
-    match std::env::current_dir() {
+    detection_for_working_directory(std::env::current_dir())
+}
+
+/// What detection says for the result of asking the OS for the working
+/// directory.
+///
+/// A failure used to be folded into `detect_project("")`, which succeeded: it
+/// answered project `unknown` at path `.`, and the write doors, which look at
+/// the project and not at `error_hint`, filed a session there. That session was
+/// then matched against every directory its reader stood in. Nothing is
+/// detected instead, so a write that relies on detection refuses with the
+/// reason; one that names its project explicitly is still written, under no
+/// directory, on the CLI door. Takes the
+/// `io::Result` so the failure can be exercised without breaking the test
+/// process's own directory.
+pub(crate) fn detection_for_working_directory(
+    directory: std::io::Result<PathBuf>,
+) -> ProjectDetection {
+    match directory {
         Ok(directory) => detect_project(directory),
-        Err(error) => {
-            let mut result = detect_project("");
-            result.error_hint = Some(format!("failed to resolve current directory: {error}"));
-            result
-        }
+        Err(error) => ProjectDetection {
+            project: String::new(),
+            source: SOURCE_UNAVAILABLE.to_owned(),
+            path: String::new(),
+            available_projects: Vec::new(),
+            warning: None,
+            error_hint: Some(format!("failed to resolve current directory: {error}")),
+        },
     }
 }
 
@@ -765,6 +787,41 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Whether a directory string is spelled as an absolute path on any platform.
+///
+/// Stores carry paths written on other machines, and `Path::is_absolute` judges
+/// by the host: on Unix it rejects `C:/repo` and `\\server\share`, which are
+/// complete paths where they were recorded. So the three families are listed
+/// here once — a leading separator (Unix, and UNC in either slash), and a drive
+/// letter followed by a separator — and everything that must tell a place from
+/// a relative spelling asks this.
+pub(crate) fn is_absolute_spelling(value: &str) -> bool {
+    let value = value.trim();
+    if value.starts_with(['/', '\\']) {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+}
+
+/// The directory a session may store: the given one when it is spelled as an
+/// absolute path, otherwise nothing.
+///
+/// A relative directory recorded on one machine means a different place on
+/// every other, so it is worth less than no directory: the empty string is
+/// already skipped by every matcher. Used by the one door every local creator
+/// passes, `Store::create_session`, and by the replicated upsert, which does not.
+pub(crate) fn recordable_directory(directory: &str) -> &str {
+    if is_absolute_spelling(directory) {
+        directory
+    } else {
+        ""
+    }
+}
+
 /// Whether a stored session directory names the directory a caller is in.
 ///
 /// The same directory is written in several ways across machines — a trailing
@@ -777,6 +834,16 @@ fn path_string(path: &Path) -> String {
 /// into another. Lives here rather than in `hooks::session`, where it grew,
 /// because the MCP write path and the session-start hook now both ask it.
 pub(crate) fn same_directory(recorded: &str, directory: &Path) -> bool {
+    // A relative recorded directory names no place: `.` is whichever directory
+    // the reader happens to be in, and the canonical comparison below resolved
+    // it against exactly that. One session recorded as `.` after a failed
+    // `current_dir` was therefore offered as a drift candidate in every
+    // repository an MCP server was started in. This sits before the literal
+    // comparison too, or `.` would still equal a detection path of `.`.
+    if !is_absolute_spelling(recorded) {
+        return false;
+    }
+
     fn comparable(value: &str) -> String {
         let value = value
             .trim()
@@ -831,6 +898,75 @@ pub(crate) fn remove_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// A working directory that cannot be read is not a project called
+    /// `unknown` at `.`. That detection was filed as a session, and a session
+    /// recorded at `.` could never be found or removed again.
+    #[test]
+    fn an_unreadable_working_directory_detects_nothing_and_says_why() {
+        let detection = detection_for_working_directory(Err(std::io::Error::other("gone")));
+        assert!(detection.project.is_empty(), "{detection:?}");
+        assert!(detection.path.is_empty(), "{detection:?}");
+        assert!(detection.available_projects.is_empty());
+        assert!(
+            detection
+                .error_hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("gone")),
+            "{detection:?}"
+        );
+        let readable = detection_for_working_directory(Ok(std::env::current_dir().unwrap()));
+        assert!(readable.error_hint.is_none() && !readable.project.is_empty());
+    }
+
+    #[test]
+    fn only_an_absolute_directory_is_recordable() {
+        assert_eq!(recordable_directory("C:/repo"), "C:/repo");
+        assert_eq!(recordable_directory("/work/repo"), "/work/repo");
+        assert_eq!(recordable_directory("."), "");
+        assert_eq!(recordable_directory("foo/bar"), "");
+        assert_eq!(recordable_directory(""), "");
+    }
+
+    /// Stores carry paths from other machines, so the host's `is_absolute`
+    /// cannot be the judge: it rejects `C:/repo` on Unix and `/repo` on Windows.
+    #[test]
+    fn an_absolute_spelling_is_recognised_whatever_machine_wrote_it() {
+        for absolute in [
+            "/home/ana/repo",
+            "C:/repo",
+            r"C:\repo",
+            "c:/",
+            r"\\server\share",
+            "//server/share",
+        ] {
+            assert!(is_absolute_spelling(absolute), "{absolute:?}");
+        }
+        for relative in [
+            "", " ", ".", "..", "foo/bar", r"foo\bar", "C:", "C:repo", "~/repo",
+        ] {
+            assert!(!is_absolute_spelling(relative), "{relative:?}");
+        }
+    }
+
+    /// A relative recorded directory is whichever directory the reader is in,
+    /// so it must match nothing, the reader's own directory included.
+    #[test]
+    fn a_relative_recorded_directory_matches_no_directory() {
+        let here = std::env::current_dir().unwrap();
+        assert!(
+            !same_directory(".", &here),
+            "`.` resolves against the reader"
+        );
+        assert!(!same_directory("foo/bar", &here.join("foo").join("bar")));
+        assert!(!same_directory(".", Path::new(".")), "and not even itself");
+        assert!(same_directory(&here.to_string_lossy(), &here));
+        assert!(same_directory("C:/repo/", Path::new(r"C:\repo")));
+        assert!(same_directory(
+            r"\\server\share\x",
+            Path::new("//server/share/x")
+        ));
+    }
+
     /// The working directory is asked about once, not once per caller.
     ///
     /// Detection shells out to `git rev-parse --show-toplevel`, and usually to

@@ -81,6 +81,21 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A session recorded in a relative directory no longer matches every
+  repository.** When the working directory could not be read, a save was filed
+  under a project called `unknown` at `.`, and `.` was then resolved against
+  whichever directory the reader stood in: the write gate offered `unknown` as
+  an `ambiguous_project` candidate everywhere, the session-start hook could fold
+  a project on its strength, and `projects consolidate` grouped by it. A relative
+  recorded directory now matches nothing, an unreadable working directory
+  refuses a write that relies on detection with the reason instead of filing
+  it under `unknown` (a CLI save naming `--project` is still written, under no
+  directory), and `create_session`,
+  the replicated session upsert and spool replay store no directory rather than
+  a relative one. Rows already holding `.` are neutralised without a migration;
+  the stranded `unknown` project can be merged away with the existing project
+  merge once upgraded (#259).
+
 - **A memory typed under a word outside the eight is filed where a filter can
   reach it.** `normalize::kind` folds an unknown type onto `discovery`, the
   bucket the rest of the unclassifiable lands in, so a memory saved as

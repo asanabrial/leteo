@@ -83,6 +83,9 @@ impl Store {
         directory: &str,
     ) -> Result<Session, StoreError> {
         let project = normalize::project(project);
+        // Every local creator passes here, so this is where a relative
+        // directory is kept out: see `recordable_directory`.
+        let directory = crate::project::recordable_directory(directory);
         let tx = self.write_transaction()?;
         let created = tx.execute(
             "INSERT OR IGNORE INTO sessions (id, project, directory) VALUES (?1, ?2, ?3)",

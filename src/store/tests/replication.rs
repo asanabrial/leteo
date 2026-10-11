@@ -39,6 +39,37 @@ fn a_session_that_already_exists_queues_nothing_to_replicate() {
     );
 }
 
+/// A peer still running the build that recorded `.` sends it on; the pull must
+/// not put the relative directory back into a store that refuses to write one.
+#[test]
+fn a_pulled_session_never_records_a_relative_directory() {
+    let (_temp, mut store) = store();
+    let mutation = SyncMutation {
+        seq: 1,
+        target_key: "cloud".to_owned(),
+        entity: "session".to_owned(),
+        entity_key: "remote-session".to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "id": "remote-session",
+            "project": "unknown",
+            "directory": ".",
+            "started_at": "2026-07-27T12:00:00Z"
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "unknown".to_owned(),
+        occurred_at: "2026-07-27T12:00:00Z".to_owned(),
+        acked_at: None,
+    };
+    assert!(
+        store
+            .apply_pulled_sync_mutation("cloud", &mutation)
+            .unwrap()
+    );
+    assert_eq!(store.get_session("remote-session").unwrap().directory, "");
+}
+
 #[test]
 fn replication_cannot_put_back_a_synonym_the_migration_removed() {
     let (_temp, mut store) = store();

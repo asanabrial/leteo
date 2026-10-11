@@ -1568,6 +1568,33 @@ fn a_renamed_project_is_recognised_however_the_path_was_spelled() {
     );
 }
 
+/// The fold moves memories between projects on the word of a recorded
+/// directory, so a relative one must not authorise it: `.` resolved against the
+/// hook's own directory and read as "recorded here".
+#[test]
+fn a_relative_recorded_directory_does_not_authorise_the_fold() {
+    let temp = TempDir::new().unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    let here = std::env::current_dir().unwrap();
+    let legacy = crate::memory::normalize::project(&here.file_name().unwrap().to_string_lossy());
+    store
+        .create_session("old", &legacy, "C:/placeholder")
+        .unwrap();
+    store
+        .connection()
+        .execute("UPDATE sessions SET directory = '.' WHERE id = 'old'", [])
+        .unwrap();
+
+    let mut outcome = HookOutcome::default();
+    migrate_directory_project(&mut store, &here, "renamed", &mut outcome);
+
+    assert!(
+        store.session_directories("renamed").unwrap().is_empty(),
+        "the legacy project was folded into another on a relative directory: {outcome:?}"
+    );
+    assert_eq!(store.session_directories(&legacy).unwrap(), vec!["."]);
+}
+
 #[test]
 fn the_reminder_waits_for_the_session_to_start_and_for_the_saving_to_stop() {
     // Two conditions hold the reminder back and each covers a case the other
@@ -2452,6 +2479,29 @@ fn a_capture_that_meets_a_held_store_is_kept_once_it_is_free() {
         1,
         "with the learning in the store"
     );
+}
+
+/// A spooled capture can name a session that does not exist yet, and replay
+/// creates it from the entry. An entry written by a build that recorded `.`
+/// must not bring the relative directory back.
+#[test]
+fn a_replayed_spool_entry_does_not_record_a_relative_directory() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "late-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A relative directory is never recorded"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, ".").unwrap();
+
+    let drained = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(drained.stored, 1, "{drained:?}");
+    assert_eq!(store.get_session("late-session").unwrap().directory, "");
 }
 
 /// A capture drained twice is stored once.

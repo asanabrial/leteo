@@ -2508,9 +2508,14 @@ fn a_spooled_capture_drained_twice_is_stored_once() {
 
 /// Two drainers take different entries rather than both replaying one.
 ///
-/// A claim is a rename, which is atomic, so the number of entries taken across
-/// two drains is the number of entries there were. Reading each entry in place
-/// instead would have both drainers replay all of them.
+/// A claim is a rename, which is atomic, so no entry is replayed by both.
+/// Reading each entry in place instead would have both drainers replay all of
+/// them. Raw claims cannot prove it: a drainer that finds the store busy
+/// renames its entry back and stops, and the other may claim it again, which
+/// made this test count 9 claims of 8 entries on a Windows runner (#257). Nor
+/// can `stored`, because the store keeps a replayed learning once however
+/// often it is replayed. Claims net of entries handed back can, once a final
+/// drain has taken whatever a busy drainer put back.
 #[test]
 fn two_drainers_claim_each_entry_once() {
     let (temp, mut store) = store();
@@ -2538,23 +2543,36 @@ fn two_drainers_claim_each_entry_once() {
         let database = database.clone();
         move || {
             let mut store = Store::open(StoreConfig::new(&database)).unwrap();
-            spool::drain(&mut store, deadline).claimed
+            spool::drain(&mut store, deadline)
         }
     });
     let second = std::thread::spawn({
         let database = database.clone();
         move || {
             let mut store = Store::open(StoreConfig::new(&database)).unwrap();
-            spool::drain(&mut store, deadline).claimed
+            spool::drain(&mut store, deadline)
         }
     });
-    let claimed = first.join().unwrap() + second.join().unwrap();
+    let mut store = Store::open(StoreConfig::new(&database)).unwrap();
+    let mut reports = vec![first.join().unwrap(), second.join().unwrap()];
+    reports.push(spool::drain(
+        &mut store,
+        Instant::now() + Duration::from_secs(10),
+    ));
     assert_eq!(
-        claimed, count,
-        "each entry is claimed by exactly one drainer"
+        reports.last().unwrap().remaining,
+        0,
+        "the spool drains completely: {reports:?}"
+    );
+    let replayed: usize = reports
+        .iter()
+        .map(|report| report.claimed - report.returned)
+        .sum();
+    assert_eq!(
+        replayed, count,
+        "each entry is replayed by exactly one drainer: {reports:?}"
     );
 
-    let store = Store::open(StoreConfig::new(&database)).unwrap();
     assert_eq!(
         store
             .recent_observations(Some("hook-project"), Some(50), true)

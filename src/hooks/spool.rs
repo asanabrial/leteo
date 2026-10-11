@@ -94,9 +94,16 @@ pub struct Pending {
 /// What one drain did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DrainReport {
-    /// Entries this drain took by renaming, and therefore replayed. The count
-    /// is what says two drainers never take the same entry.
+    /// Entries this drain took by renaming. An entry it renamed back because
+    /// the store was busy is counted here and may be claimed again by another
+    /// drain, so across drains this can exceed the entries there were.
     pub claimed: usize,
+    /// Claimed entries renamed back because the store was busy, for a later
+    /// drain to take again. `claimed - returned` is what this drain replayed,
+    /// and across drains it is what says no entry was replayed twice: the
+    /// store keeps a replayed learning once whoever replays it, so `stored`
+    /// cannot say it.
+    pub returned: usize,
     /// Learnings that reached the store across those entries.
     pub stored: usize,
     /// Entries removed because replay failed for a reason a retry cannot mend.
@@ -199,6 +206,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
             Ok(_) => {}
             Err(error) if error.is_busy() => {
                 let _ = fs::rename(&claimed, &path);
+                report.returned += 1;
                 break;
             }
             Err(_) => {
@@ -216,6 +224,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
                 // Put the name back, so the next drain finds the entry where it
                 // left it rather than in a claimed file nothing looks at.
                 let _ = fs::rename(&claimed, &path);
+                report.returned += 1;
                 break;
             }
             Err(_) => {

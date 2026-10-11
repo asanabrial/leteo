@@ -6,6 +6,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Added
 
+- **Pi gets a package that registers Leteo's MCP server itself.** `leteo setup
+  pi` writes `plugin/pi` into Pi's agent directory, lists it under `packages` in
+  `settings.json` (idempotent, and the other settings and packages are left as
+  they were), and removes the `leteo` entry an earlier setup wrote in
+  `mcp.json`, since a server of that name there overrides the package's
+  registration. The package opens and ends the session, persists prompts,
+  captures Key Learnings from tool output of more than 50 characters (Leteo's
+  own tools excluded), saves the compaction summary, recovers context after it,
+  appends the memory protocol to the system prompt, and registers `leteo mcp`
+  with the `direct` exposure, so the model can call the tools without searching
+  for them. A reload does not end the session (#269).
+
 - **The comparison page measures more than Engram.** The harness behind it now
   runs every engine through one adapter, which starts the engine isolated under a
   throwaway state, writes the held-out corpus through its own write path, searches

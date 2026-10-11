@@ -97,8 +97,20 @@ fn antigravity_uses_the_shared_gemini_mcp_config_and_context_file() {
     assert!(instructions.contains(MEMORY_PROTOCOL_BEGIN));
 }
 
+fn pi_package_dir(temp: &TempDir) -> PathBuf {
+    temp.path()
+        .join(".pi")
+        .join("agent")
+        .join("packages")
+        .join("leteo")
+}
+
+fn pi_settings(temp: &TempDir) -> PathBuf {
+    temp.path().join(".pi").join("agent").join("settings.json")
+}
+
 #[test]
-fn pi_registers_the_agent_profile_and_has_no_instruction_file() {
+fn pi_gets_a_package_in_its_settings_and_no_mcp_entry() {
     let temp = TempDir::new().unwrap();
     let setup_options = options(&temp);
     let paths = resolve_agent_paths("pi", &setup_options).unwrap();
@@ -110,19 +122,31 @@ fn pi_registers_the_agent_profile_and_has_no_instruction_file() {
     assert_eq!(paths.instructions, None, "Pi reads no instruction file");
     assert_eq!(paths.hooks, None);
 
-    write_fixture(
-        &paths.mcp_config,
-        r#"{"mcpServers":{"other":{"command":"other"}},"theme":"dark"}"#,
-    );
     let result = setup("pi", &setup_options).unwrap();
-    assert_eq!(result.changed_files(), 1);
+    // The two package files and the settings that list them; Pi's MCP file is
+    // not created, because nothing is registered in it.
+    assert_eq!(result.changed_files(), 3);
+    assert!(
+        !paths.mcp_config.exists(),
+        "no mcp.json for a native package"
+    );
 
-    let config = read_json(&paths.mcp_config);
-    assert_eq!(config["theme"], "dark");
-    assert_eq!(config["mcpServers"]["other"]["command"], "other");
-    let leteo = &config["mcpServers"]["leteo"];
-    assert_eq!(leteo["args"], json!(["mcp", "--tools=agent"]));
-    assert_eq!(leteo["lifecycle"], "eager");
+    let package = pi_package_dir(&temp);
+    let manifest = read_json(&package.join("package.json"));
+    assert_eq!(manifest["pi"]["extensions"], json!(["./leteo.ts"]));
+    let extension = fs::read_to_string(package.join("leteo.ts")).unwrap();
+    assert!(
+        extension.contains(&format!(
+            "const INSTALLED_BINARY = {}",
+            serde_json::to_string(temp.path().join("bin").join("leteo").to_str().unwrap()).unwrap()
+        )),
+        "the extension runs the binary that installed it"
+    );
+
+    assert!(extension.contains("const MCP_TOOLS = \"agent\""));
+
+    let settings = read_json(&pi_settings(&temp));
+    assert_eq!(settings["packages"], json!([package.to_str().unwrap()]));
 
     let error = setup(
         "pi",
@@ -137,6 +161,212 @@ fn pi_registers_the_agent_profile_and_has_no_instruction_file() {
 
     let second = setup("pi", &setup_options).unwrap();
     assert_eq!(second.changed_files(), 0, "the second run is a no-op");
+}
+
+#[test]
+fn the_pi_package_written_is_the_one_in_the_repository() {
+    let temp = TempDir::new().unwrap();
+    setup("pi", &options(&temp)).unwrap();
+    let package = pi_package_dir(&temp);
+    assert_eq!(
+        fs::read_to_string(package.join("package.json")).unwrap(),
+        include_str!("../../plugin/pi/package.json")
+    );
+    // The extension differs from the source in one line, the installed binary;
+    // the tool profile is the source's own default.
+    let written = fs::read_to_string(package.join("leteo.ts")).unwrap();
+    let source = include_str!("../../plugin/pi/leteo.ts");
+    let differing = written
+        .lines()
+        .zip(source.lines())
+        .filter(|(written, source)| written != source)
+        .count();
+    assert_eq!(differing, 1);
+    assert_eq!(written.lines().count(), source.lines().count());
+}
+
+#[test]
+fn pi_setup_records_the_tool_profile_it_was_asked_for() {
+    let temp = TempDir::new().unwrap();
+    setup(
+        "pi",
+        &SetupOptions {
+            tools: Some("agent,admin".to_owned()),
+            ..options(&temp)
+        },
+    )
+    .unwrap();
+    let extension = fs::read_to_string(pi_package_dir(&temp).join("leteo.ts")).unwrap();
+    assert!(extension.contains("const MCP_TOOLS = \"agent,admin\""));
+}
+
+#[test]
+fn pi_setup_keeps_the_settings_and_packages_that_are_not_leteos() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    write_fixture(
+        &pi_settings(&temp),
+        r#"{
+    "theme": "dark",
+    "packages": ["npm:gentle-engram@0.4.1", {"source": "./mine", "extensions": []}]
+}"#,
+    );
+
+    setup("pi", &setup_options).unwrap();
+    let settings = read_json(&pi_settings(&temp));
+    assert_eq!(settings["theme"], "dark");
+    assert_eq!(
+        settings["packages"],
+        json!([
+            "npm:gentle-engram@0.4.1",
+            {"source": "./mine", "extensions": []},
+            pi_package_dir(&temp).to_str().unwrap()
+        ])
+    );
+    assert!(
+        fs::read_to_string(pi_settings(&temp))
+            .unwrap()
+            .contains("\n    \"theme\""),
+        "the file keeps the indent it had"
+    );
+    assert_eq!(setup("pi", &setup_options).unwrap().changed_files(), 0);
+}
+
+#[test]
+fn pi_setup_recognises_its_package_however_the_settings_spell_the_path() {
+    let temp = TempDir::new().unwrap();
+    for spelled in [
+        json!("./packages/leteo"),
+        json!("packages/leteo/"),
+        json!({"source": "./packages/leteo", "skills": []}),
+    ] {
+        write_fixture(
+            &pi_settings(&temp),
+            &json!({"packages": [spelled.clone()]}).to_string(),
+        );
+        let result = setup("pi", &options(&temp)).unwrap();
+        let settings = read_json(&pi_settings(&temp));
+        assert_eq!(
+            settings["packages"],
+            json!([spelled]),
+            "the entry was already Leteo's"
+        );
+        assert!(
+            result.actions.iter().all(|action| {
+                action.kind != ActionKind::PackageRegistration || action.change == Change::Unchanged
+            }),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn pi_setup_refuses_settings_it_cannot_read_rather_than_replace_them() {
+    let temp = TempDir::new().unwrap();
+    write_fixture(&pi_settings(&temp), "{ not json");
+    let error = setup("pi", &options(&temp)).unwrap_err();
+    assert!(format!("{error:#}").contains("settings.json"), "{error:#}");
+    assert_eq!(
+        fs::read_to_string(pi_settings(&temp)).unwrap(),
+        "{ not json"
+    );
+
+    write_fixture(&pi_settings(&temp), r#"{"packages": "npm:x"}"#);
+    let error = setup("pi", &options(&temp)).unwrap_err();
+    assert!(format!("{error:#}").contains("packages"), "{error:#}");
+}
+
+#[test]
+fn pi_setup_takes_out_the_mcp_entry_leteo_wrote_and_leaves_the_others() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let mcp = resolve_agent_paths("pi", &setup_options)
+        .unwrap()
+        .mcp_config;
+    write_fixture(
+        &mcp,
+        r#"{"mcpServers":{"other":{"command":"other"},"leteo":{"command":"/old/leteo","args":["mcp","--tools=agent"],"lifecycle":"eager"}},"theme":"dark"}"#,
+    );
+
+    let result = setup("pi", &setup_options).unwrap();
+    assert_eq!(result.changed_files(), 4);
+    let config = read_json(&mcp);
+    assert!(config["mcpServers"].get("leteo").is_none(), "{config}");
+    assert_eq!(config["mcpServers"]["other"]["command"], "other");
+    assert_eq!(config["theme"], "dark");
+
+    let before = fs::read(&mcp).unwrap();
+    assert_eq!(setup("pi", &setup_options).unwrap().changed_files(), 0);
+    assert_eq!(
+        fs::read(&mcp).unwrap(),
+        before,
+        "a clean file is not rewritten"
+    );
+}
+
+#[test]
+fn pi_counts_as_configured_by_its_package_and_not_by_the_old_mcp_entry() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let mcp = resolve_agent_paths("pi", &setup_options)
+        .unwrap()
+        .mcp_config;
+    write_fixture(&mcp, r#"{"mcpServers":{"leteo":{"command":"/old/leteo"}}}"#);
+    assert!(
+        !is_configured("pi", &setup_options),
+        "the old entry is the thing setup replaces, so it must not hide that setup is due"
+    );
+    setup("pi", &setup_options).unwrap();
+    assert!(is_configured("pi", &setup_options));
+}
+
+#[test]
+fn pi_setup_writes_nothing_on_a_dry_run() {
+    let temp = TempDir::new().unwrap();
+    let result = setup(
+        "pi",
+        &SetupOptions {
+            dry_run: true,
+            ..options(&temp)
+        },
+    )
+    .unwrap();
+    assert_eq!(result.changed_files(), 3);
+    assert!(!temp.path().join(".pi").exists());
+}
+
+#[test]
+fn pi_uninstall_takes_the_package_and_its_registration_and_only_those() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    write_fixture(
+        &pi_settings(&temp),
+        r#"{"theme":"dark","packages":["npm:gentle-engram@0.4.1"]}"#,
+    );
+    let mcp = resolve_agent_paths("pi", &setup_options)
+        .unwrap()
+        .mcp_config;
+    write_fixture(&mcp, r#"{"mcpServers":{"other":{"command":"other"}}}"#);
+    setup("pi", &setup_options).unwrap();
+    write_fixture(&pi_package_dir(&temp).join("notes.txt"), "mine");
+
+    uninstall("pi", &setup_options).unwrap();
+    let settings = read_json(&pi_settings(&temp));
+    assert_eq!(settings["packages"], json!(["npm:gentle-engram@0.4.1"]));
+    assert_eq!(settings["theme"], "dark");
+    assert!(!pi_package_dir(&temp).join("package.json").exists());
+    assert!(!pi_package_dir(&temp).join("leteo.ts").exists());
+    assert!(
+        pi_package_dir(&temp).join("notes.txt").exists(),
+        "a file Leteo did not write stays, and so does its directory"
+    );
+    assert_eq!(read_json(&mcp)["mcpServers"]["other"]["command"], "other");
+    assert!(!is_configured("pi", &setup_options));
+
+    fs::remove_file(pi_package_dir(&temp).join("notes.txt")).unwrap();
+    setup("pi", &setup_options).unwrap();
+    uninstall("pi", &setup_options).unwrap();
+    assert!(!pi_package_dir(&temp).exists(), "an emptied directory goes");
 }
 
 #[test]

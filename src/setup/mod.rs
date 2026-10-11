@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 mod agents;
+mod pi_package;
 mod removal;
 mod render;
 pub mod wizard;
@@ -186,6 +187,10 @@ pub enum ActionKind {
     McpConfiguration,
     Instructions,
     Hooks,
+    /// A file of the package Pi loads Leteo from.
+    Package,
+    /// The entry in Pi's `settings.json` that lists that package.
+    PackageRegistration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -255,6 +260,9 @@ pub fn is_configured(agent: &str, options: &SetupOptions) -> bool {
     let Ok(environment) = SetupEnvironment::resolve(options) else {
         return false;
     };
+    if pi_package::is_pi(adapter) {
+        return pi_package::is_registered(&environment);
+    }
     let path = resolve_paths(adapter, &environment).mcp_config;
     let Ok(text) = fs::read_to_string(&path) else {
         return false;
@@ -369,6 +377,10 @@ pub fn uninstall(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
             ActionKind::Hooks,
             options.dry_run,
         )?);
+    }
+
+    if pi_package::is_pi(adapter) {
+        actions.extend(pi_package::uninstall(options, &environment)?);
     }
 
     Ok(SetupResult {
@@ -556,6 +568,9 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
     let environment = SetupEnvironment::resolve(options)?;
     refuse_a_path_that_will_not_be_there(&environment.executable)?;
     let paths = resolve_paths(adapter, &environment);
+    if pi_package::is_pi(adapter) {
+        return pi_package::setup(adapter, options, &environment, &paths.mcp_config);
+    }
 
     let existing_config = read_optional(&paths.mcp_config)?;
 
@@ -1079,19 +1094,10 @@ fn mcp_entry(format: McpFormat, executable: &Path, tools: &str) -> Result<Value>
             "command": [command, "mcp", profile],
             "enabled": true
         }),
-        // `eager` starts the server when the session does. Pi has no MCP of its
-        // own — `pi-mcp-extension` reads this file — and in that extension
-        // `lazy` does not mean "start on first use": it means the server stays
-        // down until somebody types `/mcp:start leteo`, and it is the default
-        // that applies when the field is left out. Leteo was writing it, so its
-        // tools were absent from every Pi session that did not turn them on by
-        // hand. A memory you have to remember to switch on is the one thing
-        // this cannot be.
-        McpFormat::Pi => json!({
-            "command": command,
-            "args": ["mcp", profile],
-            "lifecycle": "eager"
-        }),
+        // Pi takes Leteo as a package, and an MCP entry beside it would
+        // register every tool twice. `pi_package` handles Pi before any
+        // entry is rendered.
+        McpFormat::Pi => bail!("Pi registers Leteo through its package, not an MCP entry"),
         McpFormat::Zcode => json!({
             "type": "stdio",
             "command": command,

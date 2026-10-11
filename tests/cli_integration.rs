@@ -2279,3 +2279,79 @@ fn model_install_from_a_copy_installs_what_verifies_and_refuses_what_does_not() 
         good
     );
 }
+
+/// Runs `leteo save` from a working directory that has been removed under it,
+/// which is how `std::env::current_dir()` genuinely fails — no hook, the real
+/// binary. `sh` enters the directory and removes it before exec'ing, so the
+/// child inherits a cwd that `getcwd` can no longer name.
+#[cfg(unix)]
+fn save_from_a_removed_directory(database: &Path, extra: &[&str]) -> std::process::Output {
+    let gone = tempfile::tempdir().expect("create the directory to remove");
+    let gone_path = gone.path().to_path_buf();
+    let binary = assert_cmd::cargo::cargo_bin("leteo");
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(
+            r#"cd "$GONE" && rmdir "$GONE" && exec "$LETEO" --database "$DB" save "A title" "A body" "$@""#,
+        )
+        .arg("sh")
+        .args(extra)
+        .env("GONE", &gone_path)
+        .env("LETEO", binary)
+        .env("DB", database)
+        .env_remove("LETEO_PROJECT")
+        .env_remove("LETEO_DATA_DIR")
+        .env("LETEO_DATABASE", database)
+        .env_remove("LETEO_MODEL_DIR")
+        .env("LETEO_MODEL_URL", "http://127.0.0.1:9")
+        .output()
+        .expect("run leteo");
+    // The directory is already gone; keep `TempDir`'s drop from complaining.
+    std::mem::forget(gone);
+    output
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_from_an_unreadable_working_directory_is_refused_and_records_nothing() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-cli.db");
+
+    let output = save_from_a_removed_directory(&database, &[]);
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to resolve current directory"),
+        "the detection error is what the caller is told: {stderr}"
+    );
+    let connection = rusqlite::Connection::open(&database).expect("open the temporary store");
+    let count = |table: &str| -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count rows")
+    };
+    assert_eq!(count("sessions"), 0, "no session was filed under `unknown`");
+    assert_eq!(count("observations"), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_naming_its_project_from_an_unreadable_working_directory_records_no_directory() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-cli.db");
+
+    let output = save_from_a_removed_directory(&database, &["--project", "chosen"]);
+
+    assert!(output.status.success(), "{output:?}");
+    let connection = rusqlite::Connection::open(&database).expect("open the temporary store");
+    let (project, directory): (String, String) = connection
+        .query_row("SELECT project, directory FROM sessions", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("exactly one session");
+    assert_eq!(project, "chosen");
+    assert_eq!(directory, "", "an empty directory, never `.`");
+}

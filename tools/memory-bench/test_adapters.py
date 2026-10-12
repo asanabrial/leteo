@@ -137,9 +137,10 @@ class Teardown(unittest.TestCase):
         entry = self.run_one(self.Broken)
         self.assertEqual(entry["status"], "failed")
         self.assertIn("store left open", entry["reason"])
+        self.assertEqual(entry["reason"].count("store left open"), 1)
         self.assertEqual(entry["rows"], [])
 
-    def test_a_close_fault_does_not_replace_the_fault_the_run_had(self):
+    def test_a_close_fault_is_named_beside_the_fault_the_run_had(self):
         class LoadAndClose(self.Broken):
             def load(self, members):
                 raise RuntimeError("store unreadable")
@@ -147,7 +148,7 @@ class Teardown(unittest.TestCase):
         entry = self.run_one(LoadAndClose)
         self.assertEqual(entry["status"], "failed")
         self.assertIn("store unreadable", entry["reason"])
-        self.assertNotIn("store left open", entry["reason"])
+        self.assertIn("store left open", entry["reason"])
 
 
 class LeteoNeedsThisRunsEngram(unittest.TestCase):

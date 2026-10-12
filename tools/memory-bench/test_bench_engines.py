@@ -161,16 +161,29 @@ class FakeLLM:
 
 
 class LLMTeardown(unittest.TestCase):
-    def test_a_close_that_raises_is_failed_even_though_the_passes_ran(self):
+    def run_llm(self, cls):
         saved = (bench_engines.queries, bench_engines.no_answer)
         bench_engines.queries, bench_engines.no_answer = lambda: [], lambda: []
         with tempfile.TemporaryDirectory() as state:
             try:
-                entry = bench_engines.run_llm(FakeLLM, state, [], "2026-01-01", 2)
+                return bench_engines.run_llm(cls, state, [], "2026-01-01", 2)
             finally:
                 bench_engines.queries, bench_engines.no_answer = saved
+
+    def test_a_close_that_raises_is_failed_even_though_the_passes_ran(self):
+        entry = self.run_llm(FakeLLM)
         self.assertEqual(entry["status"], "failed")
         self.assertIn("store left open", entry["reason"])
+
+    def test_a_close_fault_beside_a_pass_fault_still_discards_the_partial_run(self):
+        class Faulty(FakeLLM):
+            def load(self, members):
+                raise RuntimeError("model did not load")
+
+        entry = self.run_llm(Faulty)
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("model did not load", entry["failed"])
+        self.assertIn("store left open", entry["failed"])
 
 
 if __name__ == "__main__":

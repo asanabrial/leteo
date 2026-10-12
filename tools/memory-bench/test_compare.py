@@ -203,6 +203,14 @@ class RunRepeated(unittest.TestCase):
         self.assertIn("store left open", entry["reason"])
         self.assertIn("**failed:**", compare.engines_table([entry]))
 
+    def test_a_close_fault_is_named_beside_the_pass_fault(self):
+        FakeAdapter.fail_on = 2
+        FakeAdapter.close_fail_on = 2
+        entry = bench_engines.run_repeated(FakeAdapter, self.state, corpus(), "2026-01-01", 3)
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("no engine", entry["reason"])
+        self.assertIn("store left open", entry["reason"])
+
     def test_a_prerequisite_check_reports_is_skipped(self):
         FakeAdapter.check_fail_on = 1
         entry = bench_engines.run_repeated(FakeAdapter, self.state, corpus(), "2026-01-01", 3)

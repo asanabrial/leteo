@@ -129,5 +129,49 @@ class Refusals(unittest.TestCase):
         self.assertEqual(self.run_main(["--tier", "llm"], [FakeMeasured], {"fake": SKIPPED_OPTIONAL}), 2)
 
 
+class FakeLLM:
+    """The smallest LLM-tier engine `run_llm` can drive: it loads, answers nothing."""
+
+    name, label = "fake-llm", "Fake LLM"
+
+    def __init__(self, state):
+        self.notes = []
+
+    def check(self):
+        pass
+
+    def version(self):
+        return "0"
+
+    def models(self):
+        return {}
+
+    @property
+    def ollama(self):
+        return {"version": "0"}
+
+    def load(self, members):
+        pass
+
+    def search(self, project, query, limit):
+        return []
+
+    def close(self):
+        raise RuntimeError("store left open")
+
+
+class LLMTeardown(unittest.TestCase):
+    def test_a_close_that_raises_is_failed_even_though_the_passes_ran(self):
+        saved = (bench_engines.queries, bench_engines.no_answer)
+        bench_engines.queries, bench_engines.no_answer = lambda: [], lambda: []
+        with tempfile.TemporaryDirectory() as state:
+            try:
+                entry = bench_engines.run_llm(FakeLLM, state, [], "2026-01-01", 2)
+            finally:
+                bench_engines.queries, bench_engines.no_answer = saved
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("store left open", entry["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

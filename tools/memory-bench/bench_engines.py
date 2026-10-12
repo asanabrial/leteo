@@ -63,16 +63,18 @@ def teardown(adapter, fault):
 
     A `close` that raises would run in the runner's `finally`, replace the fault
     the `except` had already caught, and leave the runner before the entry was
-    written -- so the engine would carry no status, no reason, and no page. The
-    fault to classify and the clause the reason must carry for the close are
-    returned instead, kept apart: a store that was never shut down is a second
-    thing the page has to name, and the LLM tier discards its partial run for it.
+    written -- so the engine would carry no status, no reason, and no page. It
+    returns the fault to classify, the clause the reason must carry for the close
+    when that is additional, and whether closing raised at all: a store that was
+    never shut down is a second thing the page has to name, and the LLM tier
+    discards its partial run for it however the run itself ended.
     """
     try:
         adapter.close()
     except Exception as e:  # noqa: BLE001 - a teardown fault is named, never scored
-        return fault or e, f"; close failed: {type(e).__name__}: {e}"
-    return fault, ""
+        clause = f"; close failed: {type(e).__name__}: {e}"
+        return fault or e, clause if fault is not None else "", True
+    return fault, "", False
 
 
 def run_one(cls, state, members, date):
@@ -87,15 +89,14 @@ def run_one(cls, state, members, date):
     except Exception as e:  # noqa: BLE001 - any engine fault is named, never scored
         fault = e
     finally:
-        had = fault is not None
-        fault, note = teardown(adapter, fault)
+        fault, note, _ = teardown(adapter, fault)
     if fault is not None:
         # A crash is not a missing prerequisite: `skipped` says the engine could
         # not start, and a run that started and then faulted has to be readable
         # as that on the page rather than as a skip with a long reason.
         status, detail = ending(fault)
         reason = detail if status == "skipped" else f"could not run: {detail}"
-        entry.update(status=status, reason=reason + (note if had else ""), rows=[], no_answer=[])
+        entry.update(status=status, reason=reason + note, rows=[], no_answer=[])
     return entry
 
 def run_repeated(cls, state, members, date, passes):
@@ -112,7 +113,7 @@ def run_repeated(cls, state, members, date, passes):
     is reported as the fault it is instead.
     """
     entry = engine_entry(cls, date, cls.required, passes=[])
-    fault, note, had = None, "", False
+    fault, note = None, ""
     for k in range(1, passes + 1):
         adapter = cls(os.path.join(state, f"pass-{k}"))
         try:
@@ -127,8 +128,7 @@ def run_repeated(cls, state, members, date, passes):
         except Exception as e:  # noqa: BLE001 - any engine fault is named, never scored
             fault = e
         finally:
-            had = fault is not None
-            fault, note = teardown(adapter, fault)
+            fault, note, _ = teardown(adapter, fault)
         if fault is not None:
             break
     if fault is not None or len(entry["passes"]) != passes:
@@ -143,8 +143,7 @@ def run_repeated(cls, state, members, date, passes):
             reason = f"stopped after {len(entry['passes'])} of {passes} passes: {detail}"
         else:
             reason = detail if status == "skipped" else f"could not run: {detail}"
-        entry.update(status=status, reason=reason + (note if had else ""),
-                     rows=[], no_answer=[], passes=[])
+        entry.update(status=status, reason=reason + note, rows=[], no_answer=[], passes=[])
     return entry
 
 
@@ -190,13 +189,12 @@ def run_llm(cls, state, members, date, passes):
         except Exception as e:  # noqa: BLE001 - any engine fault is named, never scored
             fault = e
         finally:
-            had = fault is not None
-            fault, note = teardown(adapter, fault)
+            fault, note, torn = teardown(adapter, fault)
         if fault is not None:
             status, detail = ending(fault)
             failure = status, detail
-            entry["failed"] = f"pass {k}: {detail}" + (note if had else "")
-            if note:
+            entry["failed"] = f"pass {k}: {detail}" + note
+            if torn:
                 # A store that was never shut down is not a completed run, so the
                 # passes it took are not kept, whatever this tier does with a pass
                 # that merely faulted.

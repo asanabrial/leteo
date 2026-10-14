@@ -8,12 +8,20 @@
 // Run with: `node --test leteo.test.ts` from this directory.
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-import leteo, { attemptHook, leteoBinary, resultText, runHook, summaryTitle } from "./leteo.ts"
+import leteo, {
+  attemptHook,
+  exposureFor,
+  leteoBinary,
+  piVersion,
+  resultText,
+  runHook,
+  summaryTitle,
+} from "./leteo.ts"
 
 const HERE = fileURLToPath(new URL(".", import.meta.url))
 
@@ -108,15 +116,19 @@ test("the manifest names the extension Pi loads", () => {
   assert.ok(existsSync(join(HERE, "leteo.ts")))
 })
 
-test("the factory registers the MCP server directly callable and subscribes to the lifecycle events", () => {
+test("the factory registers the MCP server with the exposure the running Pi takes and subscribes to the lifecycle events", async () => {
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const server = pi.servers.get("leteo")
     assert.equal(server.command, process.env.LETEO_BIN)
     assert.deepEqual(server.args, ["mcp", "--tools=agent"])
-    assert.equal(server.exposure, "direct", "the model must see the tools without searching for them")
+    assert.equal(
+      server.exposure,
+      exposureFor(await piVersion()),
+      "the exposure follows the version Pi exports, which no Pi answers in this runner",
+    )
     assert.ok(server.description)
     for (const name of [
       "session_start",
@@ -135,11 +147,56 @@ test("the factory registers the MCP server directly callable and subscribes to t
   }
 })
 
+test("the exposure is deferred from 1.2.0 and direct below it", () => {
+  assert.equal(exposureFor("1.2.0"), "deferred")
+  assert.equal(exposureFor("1.2.1"), "deferred")
+  assert.equal(exposureFor("2.0.0"), "deferred")
+  assert.equal(exposureFor("1.1.0"), "direct")
+  assert.equal(exposureFor("1.0.4"), "direct")
+  assert.equal(exposureFor("0.99.2"), "direct")
+  assert.equal(exposureFor(undefined), "direct", "a Pi whose version cannot be read keeps the tools declared")
+  assert.equal(exposureFor("1.2"), "deferred", "a missing part counts as zero, so 1.2 is 1.2.0")
+  assert.equal(exposureFor("not a version"), "direct")
+})
+
+/** The extension as Pi loads it, in a directory whose `node_modules` answers Pi's version. */
+function extensionUnderPi(version: string): string {
+  const directory = mkdtempSync(join(tmpdir(), "leteo-pi-version-"))
+  const extension = join(directory, "leteo.ts")
+  writeFileSync(extension, readFileSync(new URL("./leteo.ts", import.meta.url), "utf8"))
+  const packageDirectory = join(directory, "node_modules", "@earendil-works", "pi-coding-agent")
+  mkdirSync(packageDirectory, { recursive: true })
+  writeFileSync(
+    join(packageDirectory, "package.json"),
+    JSON.stringify({ name: "@earendil-works/pi-coding-agent", version, type: "module", main: "index.js" }),
+  )
+  writeFileSync(join(packageDirectory, "index.js"), `export const VERSION = ${JSON.stringify(version)}\n`)
+  return extension
+}
+
+test("the registration follows the version Pi itself exports", async () => {
+  const h = harness()
+  try {
+    for (const [version, exposure] of [
+      ["1.2.0", "deferred"],
+      ["1.1.0", "direct"],
+    ] as const) {
+      const extension = await import(pathToFileURL(extensionUnderPi(version)).href)
+      assert.equal(await extension.piVersion(), version, "the version comes from the Pi that loaded the package")
+      const pi = fakePi()
+      await extension.default(pi as any)
+      assert.equal(pi.servers.get("leteo").exposure, exposure, `the exposure Pi ${version} is given`)
+    }
+  } finally {
+    h.cleanup()
+  }
+})
+
 test("session_start opens the session as the Pi package", async () => {
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     await pi.handlers.get("session_start")!({ type: "session_start", reason: "startup" }, context())
     const [started] = hooks(h, "session-start")
     assert.deepEqual(started.payload, {
@@ -153,7 +210,7 @@ test("session_start opens the session as the Pi package", async () => {
   }
 })
 
-test("a Leteo tool call is bound to the Pi session when its schema takes one", () => {
+test("a Leteo tool call is bound to the Pi session when its schema takes one", async () => {
   const h = harness()
   try {
     const pi = fakePi([
@@ -161,7 +218,7 @@ test("a Leteo tool call is bound to the Pi session when its schema takes one", (
       { name: "mcp__leteo__mem_stats", parameters: { properties: {} } },
       { name: "bash", parameters: { properties: { session_id: {} } } },
     ])
-    leteo(pi as any)
+    await leteo(pi as any)
     const call = pi.handlers.get("tool_call")!
 
     const save = { toolName: "mcp__leteo__mem_save", input: { title: "A decision" } as any }
@@ -188,7 +245,7 @@ test("before_agent_start appends the protocol, the tool names, the opening conte
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     await pi.handlers.get("session_start")!({ type: "session_start", reason: "startup" }, context())
 
     const options = { appendSystemPrompt: "existing" }
@@ -232,7 +289,7 @@ test("a reload does not hand the opening context over a second time", async () =
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     await pi.handlers.get("session_start")!({ type: "session_start", reason: "reload" }, context())
     const options = { appendSystemPrompt: "" }
     await pi.handlers.get("before_agent_start")!(
@@ -249,7 +306,7 @@ test("an older Pi gets the protocol through the returned system prompt", async (
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const result = await pi.handlers.get("before_agent_start")!(
       { type: "before_agent_start", prompt: "hi", systemPrompt: "base prompt" },
       context(),
@@ -264,7 +321,7 @@ test("a prompt that another extension injected is not captured", async () => {
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     pi.handlers.get("input")!({ type: "input", text: "synthetic", source: "extension" }, context())
     await pi.handlers.get("before_agent_start")!(
       {
@@ -297,7 +354,7 @@ test("tool results are captured except Leteo's own and anything of 50 characters
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const end = pi.handlers.get("tool_execution_end")!
     const learnings = "## Key Learnings:\n1. The hook path never blocks the turn\n2. Capture runs after the tool"
     const text = (value: string) => ({ content: [{ type: "text", text: value }] })
@@ -330,7 +387,7 @@ test("shutdown waits for a capture still running before it ends the session", as
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const learnings = "## Key Learnings:\n1. Shutdown must not outrun a capture that has already started"
     pi.handlers.get("tool_execution_end")!(
       { toolName: "subagent", result: { content: [{ type: "text", text: learnings }] } },
@@ -366,7 +423,7 @@ test("a compaction saves the summary in the session's directory, recovers contex
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     await pi.handlers.get("session_compact")!(
       { type: "session_compact", compactionEntry: { summary: "## Goal\nShip the Pi package" } },
       context("pi-session-1", HERE),
@@ -403,7 +460,7 @@ test("shutdown ends the session unless Pi is reloading", async () => {
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const shutdown = pi.handlers.get("session_shutdown")!
     await shutdown({ type: "session_shutdown", reason: "reload" }, context())
     assert.equal(hooks(h, "session-stop").length, 0, "a reload keeps the session running")
@@ -468,7 +525,7 @@ test("a summary that starts like an option is still a summary", async () => {
   const h = harness()
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const summary = "--project=other\n- fixed the bug"
     await pi.handlers.get("session_compact")!(
       { type: "session_compact", compactionEntry: { summary } },
@@ -491,7 +548,7 @@ test("a summary that could not be saved is not reported as saved", async () => {
   const h = harness({ LETEO_FAKE_SAVE_EXIT: "1" })
   try {
     const pi = fakePi()
-    leteo(pi as any)
+    await leteo(pi as any)
     const failing = { ...context("pi-session-1", HERE), ui: { notify: (text: string) => notices.push(text) } }
     await pi.handlers.get("session_compact")!(
       { type: "session_compact", compactionEntry: { summary: "Goal: ship" } },

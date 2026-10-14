@@ -2815,6 +2815,7 @@ fn replayed(reports: &[spool::DrainReport]) -> usize {
 
 /// Two drainers take different entries rather than both replaying one.
 ///
+/// A claim is a marker plus a rename, so no entry is replayed by both.
 /// Reading each entry in place instead would have both drainers replay all of
 /// them. Raw claims cannot prove it: a drainer that finds the store busy
 /// renames its entry back and stops, and the other may claim it again, which
@@ -2863,14 +2864,15 @@ fn races_replaying_an_entry_twice(iterations: usize, entries: usize) -> usize {
     failed
 }
 
-/// Two hundred runs of the two-drainer race, where the platform makes it lose.
+/// Two hundred runs of the two-drainer race, where a bare rename used to lose.
 ///
-/// The single race above fails about once in a few `windows-latest` runs (#293):
-/// `fs::rename` opens the source and moves that handle, so a drainer that opened
-/// an entry just before another renamed it moves the same file afterwards and
-/// both replay it. Two hundred iterations turn "once in a few" into a count,
-/// which is the pre-fix failure rate the issue asks to be stated. This is
-/// measured on `windows-latest`; the developer's machine cannot run it.
+/// The single race above failed about once in a few `windows-latest` runs
+/// (#293): `fs::rename` opens the source and moves that handle, so a drainer
+/// that opened an entry just before another renamed it moved the same file
+/// afterwards and both replayed it. Two hundred iterations turn "once in a few"
+/// into a count; the marker `claim` now holds across the rename is what brings
+/// it to zero. Measured on `windows-latest`; the developer's machine cannot run
+/// it.
 #[cfg(windows)]
 #[test]
 fn the_race_replays_no_entry_twice_in_two_hundred_runs() {
@@ -2880,6 +2882,59 @@ fn the_race_replays_no_entry_twice_in_two_hundred_runs() {
     assert_eq!(
         failed, 0,
         "{failed} of {iterations} two-drainer races replayed an entry twice"
+    );
+}
+
+/// A claim's marker is what excludes, and not decoration.
+///
+/// The rename moves the entry to a name only this drainer reads, but on Windows
+/// `fs::rename` moves a handle a drainer already opened, so the rename alone
+/// does not keep a second drainer out. The marker `create_new` makes is what
+/// does: an entry whose marker already exists is one this drainer has to leave
+/// alone, and taking the marker away lets the claim go through.
+#[test]
+fn a_claim_leaves_an_entry_another_drainer_has_marked() {
+    let (temp, mut store) = store();
+    let directory = temp.path().to_path_buf();
+    run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "agent-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A learning one drainer's marker has to keep the other out of"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "").unwrap();
+    let spool_dir = spool::directory(&data_dir);
+    let entry = std::fs::read_dir(&spool_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|suffix| suffix == "json"))
+        .expect("the entry is spooled");
+    let marker = spool::marker_path(&entry).expect("the entry has a marker name");
+
+    // The marker another drainer holds for the whole of its rename.
+    std::fs::write(&marker, b"").unwrap();
+    assert!(
+        spool::claim(&entry).is_none(),
+        "a drainer leaves an entry another drainer has marked"
+    );
+    assert_eq!(
+        spool::pending(&spool_dir).entries,
+        1,
+        "and the entry is still in the spool"
+    );
+
+    std::fs::remove_file(&marker).unwrap();
+    let claimed = spool::claim(&entry).expect("with the marker gone the claim goes through");
+    assert!(claimed.exists(), "the claim renamed the entry");
+    assert_eq!(
+        spool::pending(&spool_dir).entries,
+        0,
+        "and it is no longer in the spool"
     );
 }
 

@@ -2752,25 +2752,19 @@ fn a_spooled_capture_drained_twice_is_stored_once() {
     );
 }
 
-/// Two drainers take different entries rather than both replaying one.
+/// Runs the two-drainer race over `entries` freshly spooled captures, in one
+/// fresh store, and answers every drain's report in the order they ran.
 ///
-/// A claim is a rename, which is atomic, so no entry is replayed by both.
-/// Reading each entry in place instead would have both drainers replay all of
-/// them. Raw claims cannot prove it: a drainer that finds the store busy
-/// renames its entry back and stops, and the other may claim it again, which
-/// made this test count 9 claims of 8 entries on a Windows runner (#257). Nor
-/// can `stored`, because the store keeps a replayed learning once however
-/// often it is replayed. Claims net of entries handed back can, once a final
-/// drain has taken whatever a busy drainer put back.
-#[test]
-fn two_drainers_claim_each_entry_once() {
+/// The caller's own drain runs last, after both threads have joined, so it takes
+/// whatever a drainer that found the store busy handed back. Each race owns its
+/// store, so one race's leftovers cannot decide the next one's answer.
+fn two_drainer_race(entries: usize) -> (TempDir, Store, Vec<spool::DrainReport>) {
     let (temp, mut store) = store();
     let directory = temp.path().to_path_buf();
     run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
     let database = store.database_path().to_path_buf();
     let data_dir = store.data_dir().to_path_buf();
-    let count = 8;
-    for index in 0..count {
+    for index in 0..entries {
         let capture = PassiveCapture {
             session_id: "agent-session".to_owned(),
             project: "hook-project".to_owned(),
@@ -2805,17 +2799,41 @@ fn two_drainers_claim_each_entry_once() {
         &mut store,
         Instant::now() + Duration::from_secs(10),
     ));
+    (temp, store, reports)
+}
+
+/// How many entries a race's reports say were replayed.
+///
+/// A claim handed back to the spool because the store was busy is not a replay,
+/// and the store keeping a replayed learning once means `stored` cannot say it.
+fn replayed(reports: &[spool::DrainReport]) -> usize {
+    reports
+        .iter()
+        .map(|report| report.claimed - report.returned)
+        .sum()
+}
+
+/// Two drainers take different entries rather than both replaying one.
+///
+/// Reading each entry in place instead would have both drainers replay all of
+/// them. Raw claims cannot prove it: a drainer that finds the store busy
+/// renames its entry back and stops, and the other may claim it again, which
+/// made this test count 9 claims of 8 entries on a Windows runner (#257). Nor
+/// can `stored`, because the store keeps a replayed learning once however
+/// often it is replayed. Claims net of entries handed back can, once a final
+/// drain has taken whatever a busy drainer put back.
+#[test]
+fn two_drainers_claim_each_entry_once() {
+    let count = 8;
+    let (_temp, store, reports) = two_drainer_race(count);
     assert_eq!(
         reports.last().unwrap().remaining,
         0,
         "the spool drains completely: {reports:?}"
     );
-    let replayed: usize = reports
-        .iter()
-        .map(|report| report.claimed - report.returned)
-        .sum();
     assert_eq!(
-        replayed, count,
+        replayed(&reports),
+        count,
         "each entry is replayed by exactly one drainer: {reports:?}"
     );
 
@@ -2826,6 +2844,42 @@ fn two_drainers_claim_each_entry_once() {
             .len(),
         count,
         "and each learning is stored once"
+    );
+}
+
+/// How many of `iterations` two-drainer races replayed an entry twice.
+///
+/// Each iteration gets its own store, so this counts races that failed rather
+/// than failures that piled up in one spool.
+#[cfg(windows)]
+fn races_replaying_an_entry_twice(iterations: usize, entries: usize) -> usize {
+    let mut failed = 0;
+    for _ in 0..iterations {
+        let (_temp, _store, reports) = two_drainer_race(entries);
+        if replayed(&reports) != entries {
+            failed += 1;
+        }
+    }
+    failed
+}
+
+/// Two hundred runs of the two-drainer race, where the platform makes it lose.
+///
+/// The single race above fails about once in a few `windows-latest` runs (#293):
+/// `fs::rename` opens the source and moves that handle, so a drainer that opened
+/// an entry just before another renamed it moves the same file afterwards and
+/// both replay it. Two hundred iterations turn "once in a few" into a count,
+/// which is the pre-fix failure rate the issue asks to be stated. This is
+/// measured on `windows-latest`; the developer's machine cannot run it.
+#[cfg(windows)]
+#[test]
+fn the_race_replays_no_entry_twice_in_two_hundred_runs() {
+    let iterations = 200;
+    let entries = 8;
+    let failed = races_replaying_an_entry_twice(iterations, entries);
+    assert_eq!(
+        failed, 0,
+        "{failed} of {iterations} two-drainer races replayed an entry twice"
     );
 }
 

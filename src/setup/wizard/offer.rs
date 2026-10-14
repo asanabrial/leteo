@@ -7,7 +7,15 @@ use crate::setup::{SetupOptions, supported_agents};
 pub struct Offer {
     pub engram: Option<engram::Installation>,
     pub database: PathBuf,
-    pub store_has_memories: bool,
+    /// The live memories the store already holds, per recorded stem language
+    /// code, or `None` when the store could not be read at all.
+    ///
+    /// The memory-language step is the only reader, and it reads this to say
+    /// what a change of setting would leave behind. `None` is not "empty": a
+    /// store nobody could read is not one with nothing in it, and that step
+    /// warns without a number rather than staying quiet about memories it
+    /// cannot see.
+    pub memories_by_language: Option<Vec<(String, i64)>>,
     pub agents: Vec<AgentChoice>,
     pub probe: SetupOptions,
 }
@@ -20,7 +28,12 @@ pub struct AgentChoice {
     pub configured: bool,
 }
 
-pub fn offer(database: &Path, store_is_empty: bool, probe: &SetupOptions) -> Offer {
+pub fn offer(
+    database: &Path,
+    store_is_empty: bool,
+    memories_by_language: Option<Vec<(String, i64)>>,
+    probe: &SetupOptions,
+) -> Offer {
     let engram = store_is_empty
         .then(engram::default_database)
         .flatten()
@@ -29,7 +42,7 @@ pub fn offer(database: &Path, store_is_empty: bool, probe: &SetupOptions) -> Off
     Offer {
         engram,
         database: database.to_path_buf(),
-        store_has_memories: !store_is_empty,
+        memories_by_language,
         probe: probe.clone(),
         agents: supported_agents()
             .iter()

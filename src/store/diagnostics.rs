@@ -667,6 +667,42 @@ impl Store {
                 )
             });
         }
+        if want("memory_language") {
+            // The rows already in the store keep the language they were written
+            // under, and which language that is is a different question from the
+            // one the setting answers. It is the question somebody is asking
+            // when they change the setting and wonder what became of their
+            // history: a store whose setting is `auto` records its memories as
+            // English, so a later change to a named language leaves the older
+            // half stemmed for search in a language nothing now says.
+            //
+            // Information and not a fault. A store in two languages works, and
+            // `--repair` deliberately does not re-stem it: a row recorded as
+            // `en` cannot be told apart from one really written in English, so
+            // there is no repair this check could name.
+            let effective = self.memory_language();
+            let outside: Vec<(String, i64)> = self
+                .stem_language_counts()?
+                .into_iter()
+                .filter(|(code, _)| code != effective.code())
+                .collect();
+            record(if outside.is_empty() {
+                DoctorCheck::passed("memory_language")
+            } else {
+                let held = outside
+                    .iter()
+                    .map(|(code, count)| format!("{count} in {code}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                DoctorCheck::noted(
+                    "memory_language",
+                    format!(
+                        "a new memory is written in {}, but {held} memories already saved keep the language they were written in and are not converted",
+                        effective.code()
+                    ),
+                )
+            });
+        }
         if want("semantic_model") {
             // The model semantic search reads, which lives in a file and not in
             // the database, and which three different things can be wrong with.
@@ -918,6 +954,34 @@ impl Store {
             total_prompts,
             projects,
         })
+    }
+
+    /// How many live memories the store holds under each recorded stem
+    /// language, in code order.
+    ///
+    /// The language is stored on `observation_stems`, one row per memory, and it
+    /// is fixed when the memory is written: a later change of the
+    /// memory-writing setting re-stems only the rows it touches. So this answers
+    /// both halves of what such a change costs — how many memories stay behind,
+    /// and under which language.
+    ///
+    /// A memory whose `id` is not an integer has no stems row (migration 21),
+    /// which is why the sum can be short of the store's live count; those rows
+    /// have no language anything recorded, so they are absent rather than
+    /// counted under one.
+    pub fn stem_language_counts(&self) -> Result<Vec<(String, i64)>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT s.language, COUNT(*)
+               FROM observations o
+               JOIN observation_stems s ON s.observation_id = o.id
+              WHERE o.deleted_at IS NULL
+              GROUP BY s.language
+              ORDER BY s.language",
+        )?;
+        let counts = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<(String, i64)>, _>>()?;
+        Ok(counts)
     }
 }
 

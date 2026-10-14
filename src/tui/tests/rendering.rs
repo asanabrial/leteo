@@ -268,6 +268,7 @@ fn every_view_renders_in_a_small_terminal_without_panicking() {
     let mut wizard = crate::setup::wizard::Wizard::preferences(crate::setup::wizard::offer(
         std::path::Path::new(&app.database_path),
         true,
+        Some(Vec::new()),
         &app.setup_probe,
     ));
     let fits_every_window = |wizard: &crate::setup::wizard::Wizard| {

@@ -189,17 +189,26 @@ pub(super) fn stored_observations(cli: &Cli) -> Option<i64> {
 
 /// Whether this store is known to hold nothing.
 ///
-/// The question two different setup decisions turn on, and they used to ask it
-/// separately and answer it wrong the same way — by reading "could not tell" as
-/// "nothing there". `Some(0)` is the only answer that means empty.
-///
-/// One offers to migrate an Engram installation over the top of this database,
-/// and the other suppresses the warning that choosing a language leaves
-/// everything already saved in the language it was written in. Both are about a
-/// store that may hold every memory somebody has, and a database another Leteo
-/// happens to have open reads exactly like a missing one.
+/// The question the Engram offer turns on, and it used to be asked wrong — by
+/// reading "could not tell" as "nothing there". `Some(0)` is the only answer
+/// that means empty: a database another Leteo happens to have open reads
+/// exactly like a missing one, and offering to migrate Engram over the top of
+/// either is the mistake this guards.
 pub(super) fn store_is_known_empty(cli: &Cli) -> bool {
     stored_observations(cli) == Some(0)
+}
+
+/// The live memories this store already holds, per recorded stem language code,
+/// or `None` when the store could not be read.
+///
+/// The memory-language warning turns on this, and `None` keeps it: a store
+/// nobody could read may hold every memory somebody has, so the wizard warns
+/// without a count rather than staying quiet about what it cannot see.
+pub(super) fn stored_language_counts(cli: &Cli) -> Option<Vec<(String, i64)>> {
+    store_config(cli)
+        .ok()
+        .and_then(|config| Store::open(config).ok())
+        .and_then(|store| store.stem_language_counts().ok())
 }
 
 /// Describes an Engram installation worth adopting, when there is one.

@@ -338,6 +338,13 @@ struct App {
     /// half from the file as it is.
     voice_interface: crate::settings::Interface,
     stats: Stats,
+    /// The live memories the store holds, per recorded stem language code, or
+    /// `None` when the store could not be read.
+    ///
+    /// Held rather than queried when the setup page opens: the answer changes
+    /// only when a memory is written, so it is refreshed with the totals, and
+    /// the setup page reads whatever the last refresh left.
+    memories_by_language: Option<Vec<(String, i64)>>,
     recent: Vec<Observation>,
     sessions: Vec<SessionSummary>,
     prompts: Vec<Prompt>,

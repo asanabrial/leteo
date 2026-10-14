@@ -324,6 +324,34 @@ impl Wizard {
             .unwrap_or(0)
     }
 
+    /// The language the highlighted row would record a new memory under.
+    ///
+    /// Read from the cursor rather than from the answer in force, because the
+    /// highlighted row is the one `enter` records: the warning below it has to
+    /// be about the language that is about to be chosen, not the one already
+    /// set.
+    fn highlighted_language(&self) -> Option<&str> {
+        self.language_choices
+            .get(self.cursor)
+            .and_then(|choice| choice.as_deref())
+    }
+
+    /// How many of the store's memories a new memory language would leave
+    /// behind, or `None` when the store could not be read.
+    ///
+    /// A memory keeps the language it was written under, so this counts the
+    /// rows whose recorded code is not the code the chosen language names.
+    fn memories_kept_by(&self, language: Option<&str>) -> Option<i64> {
+        let chosen = crate::stemming::memory_language(language);
+        self.offer.memories_by_language.as_ref().map(|counts| {
+            counts
+                .iter()
+                .filter(|(code, _)| code != chosen.code())
+                .map(|(_, count)| count)
+                .sum()
+        })
+    }
+
     fn voice_cursor(&self) -> usize {
         crate::settings::Voice::ALL
             .iter()
@@ -573,10 +601,24 @@ impl Wizard {
                     ));
                 }
                 lines.push(Row::blank());
-                if self.offer.store_has_memories {
-                    lines.push(Row::new(Role::Hint, say.language_kept_warning));
-                    lines.push(Row::new(Role::Hint, say.language_split_warning_first));
-                    lines.push(Row::new(Role::Hint, say.language_split_warning_second));
+                match self.memories_kept_by(self.highlighted_language()) {
+                    // The store could not be read, so there is no number to
+                    // give: say what a change costs without pretending to know
+                    // how much of it there is.
+                    None => {
+                        lines.push(Row::new(Role::Hint, say.language_kept_warning));
+                        lines.push(Row::new(Role::Hint, say.language_split_warning_first));
+                        lines.push(Row::new(Role::Hint, say.language_split_warning_second));
+                    }
+                    Some(0) => {}
+                    Some(kept) => {
+                        lines.push(Row::new(
+                            Role::Hint,
+                            fill(say.language_kept_count, "count", kept),
+                        ));
+                        lines.push(Row::new(Role::Hint, say.language_split_warning_first));
+                        lines.push(Row::new(Role::Hint, say.language_split_warning_second));
+                    }
                 }
                 lines.push(Row::new(Role::Hint, say.language_other_hint));
             }

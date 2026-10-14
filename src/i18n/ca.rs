@@ -33,6 +33,7 @@ pub const SCREENS: Screens = Screens {
     language_auto_detail: "la llengua en què escriviu, sigui quina sigui",
     language_pinned_detail: "sempre, en qualsevol llengua que us escriguin",
     language_kept_warning: "  Les memòries ja desades mantenen la llengua en què es van escriure.",
+    language_kept_count: "  Les memòries ja desades mantenen la llengua en què es van escriure i no es converteixen: {count} d'elles.",
     language_split_warning_first: "  Canviar-ho deixa el magatzem en dues llengües, i una \
                                    cerca troba",
     language_split_warning_second: "  la meitat en què es fa.",

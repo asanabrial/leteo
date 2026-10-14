@@ -663,6 +663,15 @@ pub enum StoreError {
 pub struct Store {
     connection: Connection,
     config: StoreConfig,
+    /// The language this connection records a new memory under, resolved once
+    /// at `open` from `config.memory_language` or the setting beside the
+    /// database.
+    ///
+    /// Kept here rather than read back on demand because it is already fixed
+    /// for the life of the connection: the stem triggers call the registered
+    /// [`crate::stemming`] function, and that function answers this value and
+    /// not whatever the settings file says later.
+    memory_language: crate::settings::Interface,
     /// What `open` had left of its budget once the schema pass was done. See
     /// [`Store::budget_left_after_opening`].
     budget_left_after_opening: Duration,
@@ -700,6 +709,17 @@ impl Store {
         self.config.max_observation_length
     }
 
+    /// The language this connection records a new memory under.
+    ///
+    /// What [`crate::stemming`] registers on the connection, and so what
+    /// `leteo_stem_language()` answers: a row written now is recorded under
+    /// this, whatever language it is actually written in. A store whose setting
+    /// is `auto` opens as English, which is why a change of setting can leave
+    /// the rows already there under a language the setting no longer names.
+    pub fn memory_language(&self) -> crate::settings::Interface {
+        self.memory_language
+    }
+
     pub fn open(config: StoreConfig) -> Result<Self, StoreError> {
         if !config.database_path.is_absolute() {
             return Err(StoreError::RelativeDatabasePath(config.database_path));
@@ -733,6 +753,7 @@ impl Store {
         connection.busy_timeout(left)?;
         Ok(Self {
             connection,
+            memory_language: language,
             process_deadline: config.single_busy_budget.then_some(deadline),
             config,
             budget_left_after_opening: left,

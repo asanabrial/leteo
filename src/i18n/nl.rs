@@ -33,6 +33,7 @@ pub const SCREENS: Screens = Screens {
     language_auto_detail: "de taal waarin je schrijft, welke dat ook is",
     language_pinned_detail: "altijd, in welke taal men je ook schrijft",
     language_kept_warning: "  Al opgeslagen herinneringen houden de taal waarin ze geschreven zijn.",
+    language_kept_count: "  Al opgeslagen herinneringen houden de taal waarin ze geschreven zijn en worden niet omgezet: {count} ervan.",
     language_split_warning_first: "  Dit wijzigen laat de opslag in twee talen achter, en een \
                                    zoekopdracht vindt",
     language_split_warning_second: "  de helft waarin ze gesteld wordt.",

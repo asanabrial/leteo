@@ -10,9 +10,12 @@
 //! hook would have used.
 //!
 //! The shape is one file per entry rather than one growing log because a drain
-//! has to claim work without a lock of its own: a claim is a rename, which is
-//! atomic on every platform this ships to, so two drainers take different
-//! entries rather than both replaying the same one.
+//! has to claim work without a lock of its own. A claim renames the entry to a
+//! name only that drainer reads, and fences the rename with a marker made by
+//! `create_new`: a rename alone is not enough, because on Windows `fs::rename`
+//! opens the source and moves that handle, so a drainer that opened an entry
+//! just before another renamed it moves the same file afterwards and both
+//! replay it.
 
 use std::{
     fs,
@@ -178,8 +181,9 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
             break;
         }
         let Some(claimed) = claim(&path) else {
-            // Another drainer renamed it out from under this one, which is the
-            // whole point of claiming: it takes the entries this one does not.
+            // Another drainer has this entry: its marker is already there, or it
+            // has renamed the entry away. That is the whole point of claiming —
+            // this drain takes the entries that one does not.
             continue;
         };
         report.claimed += 1;
@@ -272,8 +276,10 @@ pub(crate) fn describe_age(age: Duration) -> String {
 
 /// The entry files in `dir`, oldest first.
 ///
-/// A claimed file is not one: it is a name this directory made up for an entry
-/// already being replayed, and it ends in `.claimed-<pid>` rather than `.json`.
+/// A claimed file is not one, and neither is a claim's marker: the first is a
+/// name this directory made up for an entry already being replayed, ending in
+/// `.claimed-<pid>`, and the second is the `<entry>.claim` that fences the
+/// rename. Neither ends in `.json`.
 fn entries(dir: &Path) -> Vec<PathBuf> {
     let Ok(read) = fs::read_dir(dir) else {
         return Vec::new();
@@ -324,13 +330,47 @@ fn enforce_cap(dir: &Path) {
     }
 }
 
-/// Takes one entry out of every drainer's reach by renaming it.
-fn claim(path: &Path) -> Option<PathBuf> {
+/// Takes one entry out of every drainer's reach.
+///
+/// The rename moves the entry to a name only this drainer looks for, but the
+/// rename alone does not exclude. On Windows `fs::rename` opens the source and
+/// moves that handle, so a drainer that opened the entry just before another
+/// renamed it moves the same file through its own handle afterwards, and both
+/// replay it — nine claims of eight entries in the race beside this (#293). The
+/// marker is what excludes: `create_new` fails for every drainer but the one
+/// that made it, on every platform, two threads in one process included, and it
+/// is held across the rename so a drainer arriving after it is gone finds the
+/// source name already taken and its own rename failing.
+pub(super) fn claim(path: &Path) -> Option<PathBuf> {
+    let marker = marker_path(path)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .ok()?;
     let mut name = path.file_name()?.to_os_string();
     name.push(format!(".claimed-{}", std::process::id()));
     let claimed = path.with_file_name(name);
-    fs::rename(path, &claimed).ok()?;
+    let renamed = fs::rename(path, &claimed);
+    // After the rename, never before: the marker has to exist for the whole of
+    // it, and removing it earlier reopens the window. A rename that failed
+    // clears it too, so a lost claim leaves the entry where the next drain finds
+    // it rather than stranded behind a marker nothing removes.
+    let _ = fs::remove_file(&marker);
+    renamed.ok()?;
     Some(claimed)
+}
+
+/// The exclusive marker for one entry: the entry's own name with `.claim`
+/// appended.
+///
+/// Not a `.json` name, so [`entries`] never enumerates it, and the leading
+/// millisecond field still reads, so [`sweep`] ages a marker a crash stranded
+/// exactly as it ages the entry the marker stands for.
+pub(super) fn marker_path(path: &Path) -> Option<PathBuf> {
+    let mut name = path.file_name()?.to_os_string();
+    name.push(".claim");
+    Some(path.with_file_name(name))
 }
 
 /// The wall clock the entry names are ordered by.

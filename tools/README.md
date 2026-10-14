@@ -264,7 +264,9 @@ basic-memory (run through `uvx`, as an external process only: it is AGPL-3.0) an
 version in `adapters.py`. An engine whose binary, package runner or service is
 missing is skipped with a named reason and has no row; an engine that starts and
 then faults is `failed` with the exception named, and has no row either, so a
-crash after starting is never read as a prerequisite that was absent.
+crash after starting is never read as a prerequisite that was absent. A fault
+raised while an engine is being closed is named the same way and does not take
+the rest of the run with it.
 
 An engine whose answer is not the same twice declares how many passes it needs
 (`Adapter.passes`, five for basic-memory, which fills its full-text index

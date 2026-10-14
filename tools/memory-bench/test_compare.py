@@ -132,6 +132,8 @@ class FakeAdapter(Adapter):
     crash_on = 0
     checks = 0
     check_fail_on = 0
+    closes = 0
+    close_fail_on = 0
     states = []
 
     def check(self):
@@ -153,6 +155,11 @@ class FakeAdapter(Adapter):
     def search(self, project, query, limit):
         return []
 
+    def close(self):
+        FakeAdapter.closes += 1
+        if FakeAdapter.closes == FakeAdapter.close_fail_on:
+            raise RuntimeError("store left open")
+
 
 class RunRepeated(unittest.TestCase):
     def setUp(self):
@@ -161,6 +168,8 @@ class RunRepeated(unittest.TestCase):
         FakeAdapter.crash_on = 0
         FakeAdapter.checks = 0
         FakeAdapter.check_fail_on = 0
+        FakeAdapter.closes = 0
+        FakeAdapter.close_fail_on = 0
         FakeAdapter.states = []
         self.state = tempfile.mkdtemp(prefix="leteo-run-repeated-")
         self.addCleanup(shutil.rmtree, self.state, ignore_errors=True)
@@ -185,6 +194,22 @@ class RunRepeated(unittest.TestCase):
         self.assertEqual(entry["rows"], [])
         self.assertIn("stopped after 1 of 3 passes", entry["reason"])
         self.assertIn("**failed:**", compare.engines_table([entry]))
+
+    def test_a_close_that_raises_ends_the_run_and_names_the_fault(self):
+        FakeAdapter.close_fail_on = 2
+        entry = bench_engines.run_repeated(FakeAdapter, self.state, corpus(), "2026-01-01", 3)
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["rows"], [])
+        self.assertIn("store left open", entry["reason"])
+        self.assertIn("**failed:**", compare.engines_table([entry]))
+
+    def test_a_close_fault_is_named_beside_the_pass_fault(self):
+        FakeAdapter.fail_on = 2
+        FakeAdapter.close_fail_on = 2
+        entry = bench_engines.run_repeated(FakeAdapter, self.state, corpus(), "2026-01-01", 3)
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("no engine", entry["reason"])
+        self.assertIn("store left open", entry["reason"])
 
     def test_a_prerequisite_check_reports_is_skipped(self):
         FakeAdapter.check_fail_on = 1

@@ -109,6 +109,48 @@ class Skipping(unittest.TestCase):
 
 
 
+class Teardown(unittest.TestCase):
+    """A store that cannot be closed is a fault, not a run that vanishes."""
+
+    class Broken(adapters.ServerMemoryAdapter):
+        def check(self):
+            pass
+
+        def version(self):
+            return "0"
+
+        def load(self, members):
+            pass
+
+        def close(self):
+            raise RuntimeError("store left open")
+
+    def run_one(self, cls):
+        saved = (bench_engines.queries, bench_engines.no_answer)
+        bench_engines.queries, bench_engines.no_answer = lambda: [], lambda: []
+        try:
+            return bench_engines.run_one(cls, tempfile.gettempdir(), [], "2026-01-01")
+        finally:
+            bench_engines.queries, bench_engines.no_answer = saved
+
+    def test_a_close_that_raises_is_named_and_the_entry_survives(self):
+        entry = self.run_one(self.Broken)
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("store left open", entry["reason"])
+        self.assertEqual(entry["reason"].count("store left open"), 1)
+        self.assertEqual(entry["rows"], [])
+
+    def test_a_close_fault_is_named_beside_the_fault_the_run_had(self):
+        class LoadAndClose(self.Broken):
+            def load(self, members):
+                raise RuntimeError("store unreadable")
+
+        entry = self.run_one(LoadAndClose)
+        self.assertEqual(entry["status"], "failed")
+        self.assertIn("store unreadable", entry["reason"])
+        self.assertIn("store left open", entry["reason"])
+
+
 class LeteoNeedsThisRunsEngram(unittest.TestCase):
     def test_a_keymap_left_by_an_earlier_run_is_not_an_engram_load(self):
         with tempfile.TemporaryDirectory() as bench:

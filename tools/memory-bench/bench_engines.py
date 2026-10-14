@@ -58,25 +58,46 @@ def ending(e):
     return "failed", f"{type(e).__name__}: {e}"
 
 
+def teardown(adapter, fault):
+    """Close an engine's store and report what closing it cost.
+
+    A `close` that raises would run in the runner's `finally`, replace the fault
+    the `except` had already caught, and leave the runner before the entry was
+    written -- so the engine would carry no status, no reason, and no page. It
+    returns the fault to classify, the clause the reason must carry for the close
+    when that is additional, and whether closing raised at all: a store that was
+    never shut down is a second thing the page has to name, and the LLM tier
+    discards its partial run for it however the run itself ended.
+    """
+    try:
+        adapter.close()
+    except Exception as e:  # noqa: BLE001 - a teardown fault is named, never scored
+        clause = f"; close failed: {type(e).__name__}: {e}"
+        return fault or e, clause if fault is not None else "", True
+    return fault, "", False
+
+
 def run_one(cls, state, members, date):
     adapter = cls(state)
     entry = engine_entry(cls, date, adapter.required)
+    fault, note = None, ""
     try:
         adapter.check()
         entry["version"] = adapter.version()
         adapter.load(members)
         entry["rows"], entry["no_answer"] = measure(adapter, members)
     except Exception as e:  # noqa: BLE001 - any engine fault is named, never scored
+        fault = e
+    finally:
+        fault, note, _ = teardown(adapter, fault)
+    if fault is not None:
         # A crash is not a missing prerequisite: `skipped` says the engine could
         # not start, and a run that started and then faulted has to be readable
         # as that on the page rather than as a skip with a long reason.
-        status, detail = ending(e)
-        entry.update(status=status, reason=detail if status == "skipped" else f"could not run: {detail}",
-                     rows=[], no_answer=[])
-    finally:
-        adapter.close()
+        status, detail = ending(fault)
+        reason = detail if status == "skipped" else f"could not run: {detail}"
+        entry.update(status=status, reason=reason + note, rows=[], no_answer=[])
     return entry
-
 
 def run_repeated(cls, state, members, date, passes):
     """One deterministic-tier engine whose store is not the same twice.
@@ -92,7 +113,7 @@ def run_repeated(cls, state, members, date, passes):
     is reported as the fault it is instead.
     """
     entry = engine_entry(cls, date, cls.required, passes=[])
-    fault = None
+    fault, note = None, ""
     for k in range(1, passes + 1):
         adapter = cls(os.path.join(state, f"pass-{k}"))
         try:
@@ -106,10 +127,11 @@ def run_repeated(cls, state, members, date, passes):
                 entry["rows"], entry["no_answer"] = rows, na
         except Exception as e:  # noqa: BLE001 - any engine fault is named, never scored
             fault = e
-            break
         finally:
-            adapter.close()
-    if len(entry["passes"]) != passes:
+            fault, note, _ = teardown(adapter, fault)
+        if fault is not None:
+            break
+    if fault is not None or len(entry["passes"]) != passes:
         # A `Skipped` after a pass has completed is not an absent prerequisite:
         # the engine started, answered that pass and then stopped, and the page
         # has to read that as a fault rather than as a machine that never had the
@@ -121,7 +143,7 @@ def run_repeated(cls, state, members, date, passes):
             reason = f"stopped after {len(entry['passes'])} of {passes} passes: {detail}"
         else:
             reason = detail if status == "skipped" else f"could not run: {detail}"
-        entry.update(status=status, reason=reason, rows=[], no_answer=[], passes=[])
+        entry.update(status=status, reason=reason + note, rows=[], no_answer=[], passes=[])
     return entry
 
 
@@ -145,8 +167,10 @@ def run_llm(cls, state, members, date, passes):
     """
     entry = engine_entry(cls, date, False, passes=[], failed="", models={}, planned=passes)
     failure = None
+    fault, note = None, ""
     for k in range(1, passes + 1):
         adapter = cls(os.path.join(state, f"pass-{k}"))
+        fault, note = None, ""
         try:
             free = shutil.disk_usage(state).free
             if free < MIN_FREE_BYTES:
@@ -163,12 +187,19 @@ def run_llm(cls, state, members, date, passes):
             rows, na = measure(adapter, members)
             entry["passes"].append(dict(rows=rows, no_answer=na, load_seconds=round(loaded), notes=adapter.notes))
         except Exception as e:  # noqa: BLE001 - any engine fault is named, never scored
-            status, detail = ending(e)
-            failure = status, detail
-            entry["failed"] = f"pass {k}: {detail}"
-            break
+            fault = e
         finally:
-            adapter.close()
+            fault, note, torn = teardown(adapter, fault)
+        if fault is not None:
+            status, detail = ending(fault)
+            failure = status, detail
+            entry["failed"] = f"pass {k}: {detail}" + note
+            if torn:
+                # A store that was never shut down is not a completed run, so the
+                # passes it took are not kept, whatever this tier does with a pass
+                # that merely faulted.
+                entry["passes"] = []
+            break
     if not entry["passes"]:
         status, detail = failure or ("skipped", "")
         entry.update(status=status,

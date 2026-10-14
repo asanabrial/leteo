@@ -6,6 +6,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Added
 
+- **Pi loads Leteo's memory tools when a session looks for them, not on every
+  request.** The package registered them `direct`, so the declarations of all
+  twenty agent-profile tools were sent with every request of every Pi session. On
+  Pi 1.2.0 and later it registers them `deferred`, and Pi's `tool_search` loads
+  them on demand; a Pi below that keeps `direct`, which is what it has always
+  had. Measured on Pi 1.2.0 with `opencode-go/deepseek-v4.1-flash`, an empty
+  project, a throwaway store and Estigia's server configured beside this one,
+  first-request prompt tokens were 13,832 with no Leteo, 20,037 with `direct`,
+  14,797 with `deferred` and 15,963 with the four session tools kept `direct`.
+  One recorded session under `deferred` called `tool_search`, then
+  `mem_session_start`, then `mem_save` (#297).
+
 - **The session cost the docs quote can be re-measured by anyone.**
   `tools/memory-bench/session_cost.py` runs both engines' hooks and MCP servers over
   throwaway copies of stores you name and totals what the model is sent in one

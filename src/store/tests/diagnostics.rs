@@ -1592,3 +1592,69 @@ fn the_store_reports_the_language_it_records_a_new_memory_under() {
     assert_eq!(plain.memory_language(), crate::settings::Interface::English);
     assert!(plain.stem_language_counts().unwrap().is_empty());
 }
+
+/// A store in two languages is reported, not repaired: the rows keep the
+/// language they were written in, so `doctor` says how many of each as
+/// information and never as a fault.
+#[test]
+fn a_store_whose_rows_are_not_in_the_memory_language_is_reported_as_information() {
+    let temp = TempDir::new().unwrap();
+    let mut spanish = StoreConfig::new(temp.path().join("leteo.db"));
+    spanish.memory_language = Some(crate::settings::Interface::Spanish);
+    let mut store = Store::open(spanish).unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", "Ejecuta el cron", "Cada noche."))
+        .unwrap();
+    store
+        .add_observation(observation("s1", "Otra nota", "Cada día."))
+        .unwrap();
+    drop(store);
+
+    // Reopened under English, which is what a change of the setting does.
+    let mut english = StoreConfig::new(temp.path().join("leteo.db"));
+    english.memory_language = Some(crate::settings::Interface::English);
+    let store = Store::open(english).unwrap();
+
+    let report = store.doctor().unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.code == "memory_language")
+        .expect("the language check is part of the report");
+    assert!(check.ok, "two languages is not a fault: {check:?}");
+    assert_eq!(check.severity, crate::memory::model::DoctorSeverity::Info);
+    let detail = check.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("2 in es"),
+        "the count is per language: {detail}"
+    );
+    assert!(
+        detail.contains("en"),
+        "and names what a new row gets: {detail}"
+    );
+    assert!(report.healthy, "a split store is healthy: {report:?}");
+}
+
+/// A store whose rows are all in the language in force has nothing to say.
+#[test]
+fn a_store_whose_rows_are_all_in_the_memory_language_is_not_reported() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", "Runs the nightly job", "Every night."))
+        .unwrap();
+
+    let report = store.doctor().unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.code == "memory_language")
+        .expect("the language check is part of the report");
+    assert!(check.ok);
+    assert_eq!(check.severity, crate::memory::model::DoctorSeverity::Info);
+    assert_eq!(
+        check.detail, None,
+        "nothing is said when nothing is left behind"
+    );
+}

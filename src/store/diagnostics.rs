@@ -667,6 +667,42 @@ impl Store {
                 )
             });
         }
+        if want("memory_language") {
+            // The rows already in the store keep the language they were written
+            // under, and which language that is is a different question from the
+            // one the setting answers. It is the question somebody is asking
+            // when they change the setting and wonder what became of their
+            // history: a store whose setting is `auto` records its memories as
+            // English, so a later change to a named language leaves the older
+            // half stemmed for search in a language nothing now says.
+            //
+            // Information and not a fault. A store in two languages works, and
+            // `--repair` deliberately does not re-stem it: a row recorded as
+            // `en` cannot be told apart from one really written in English, so
+            // there is no repair this check could name.
+            let effective = self.memory_language();
+            let outside: Vec<(String, i64)> = self
+                .stem_language_counts()?
+                .into_iter()
+                .filter(|(code, _)| code != effective.code())
+                .collect();
+            record(if outside.is_empty() {
+                DoctorCheck::passed("memory_language")
+            } else {
+                let held = outside
+                    .iter()
+                    .map(|(code, count)| format!("{count} in {code}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                DoctorCheck::noted(
+                    "memory_language",
+                    format!(
+                        "a new memory is written in {}, but {held} memories already saved keep the language they were written in and are not converted",
+                        effective.code()
+                    ),
+                )
+            });
+        }
         if want("semantic_model") {
             // The model semantic search reads, which lives in a file and not in
             // the database, and which three different things can be wrong with.

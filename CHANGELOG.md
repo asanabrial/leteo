@@ -94,8 +94,8 @@ All notable changes to Leteo are documented in this file.
 - **Changing the memory language says what it leaves behind.** A memory keeps
   the language it was written in, and nothing re-stems the ones already saved, so
   the setup screen's language step now warns with the count — and only when the
-  chosen language differs from the rows it would leave. It stays quiet on an
-  empty store and on one whose memories are all in the language being chosen.
+  chosen language differs from the rows it would leave. It stays quiet when
+  there is nothing the change would leave behind.
   `leteo doctor` reports the split as information, with the count per language,
   and still changes no memory's language under `--repair` (#185).
 

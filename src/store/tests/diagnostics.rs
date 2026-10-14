@@ -1630,7 +1630,7 @@ fn a_store_whose_rows_are_not_in_the_memory_language_is_reported_as_information(
         "the count is per language: {detail}"
     );
     assert!(
-        detail.contains("en"),
+        detail.contains("written in en"),
         "and names what a new row gets: {detail}"
     );
     assert!(report.healthy, "a split store is healthy: {report:?}");

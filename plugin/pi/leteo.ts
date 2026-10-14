@@ -318,6 +318,12 @@ export function summaryTitle(summary: string): string {
   return (line ?? "Pi compaction summary").replace(/\s+/g, " ").slice(0, 100)
 }
 
+/**
+ * Pi awaits an asynchronous factory before it binds the extension, so every
+ * subscription and the server registration below still land before the session's
+ * first event. Reading the running Pi's version is what makes this factory
+ * asynchronous.
+ */
 export default async function leteo(pi: ExtensionAPI) {
   /** Context to put in front of the agent on its next turn, by session. */
   const pendingContext = new Map<string, string>()

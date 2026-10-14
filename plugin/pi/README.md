@@ -37,9 +37,10 @@ the path setup recorded, `PATH`.
 | `session_shutdown` | `leteo hook session-stop` | Ends the session, unless Pi is only reloading |
 
 The memory tools are Leteo's MCP server, registered by the extension rather than
-by an entry in `mcp.json`, and exposed `direct`: the protocol tells the model to
-save unprompted, in the middle of other work, and a tool that is not declared or
-has to be searched for first is one it will not think to call. Pi names them
+by an entry in `mcp.json`. On Pi 1.2.0 and later they are exposed `deferred`:
+the twenty agent-profile declarations cost about 5,200 tokens on every request,
+and `tool_search` loads them when the session looks for them. Below 1.2.0 they
+stay `direct`, which is what those releases have always had. Pi names them
 `mcp__leteo__<tool>`, and the appended protocol says so. A `leteo` entry in
 `mcp.json` would override this registration by name, which is why setup removes
 the one an earlier version wrote.

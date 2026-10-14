@@ -37,6 +37,50 @@ export function leteoBinary(): string {
   return process.env.LETEO_BIN ?? (INSTALLED_BINARY || "leteo")
 }
 
+/**
+ * The version of Pi that loaded this package, or `undefined` when it cannot be
+ * read. Pi supplies `@earendil-works/pi-coding-agent` to extensions and aliases
+ * the specifier to its own entry point, so the import resolves inside Pi and
+ * fails in the test runner, which has no `node_modules` and starts no Pi.
+ */
+export async function piVersion(): Promise<string | undefined> {
+  try {
+    const { VERSION } = await import("@earendil-works/pi-coding-agent")
+    return typeof VERSION === "string" && VERSION.trim() !== "" ? VERSION : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The exposure the memory tools are registered with, on the Pi that is running:
+ * `deferred` from 1.2.0, and `direct` below it or when no version could be read.
+ *
+ * The gate sits at the release this was measured on, and `deferred` is older
+ * than that: it is in the 0.99.0 line, where it was still dropping the tools
+ * `tool_search` had loaded on resume and `/reload` until 1.0.0 fixed that, and a
+ * 1.1.0 run reaches the tools through `tool_search`. Lowering the gate is a
+ * change of its own, and owes its own measurement of the versions it moves.
+ */
+export function exposureFor(version: string | undefined): "deferred" | "direct" {
+  return atLeastVersion(version, "1.2.0") ? "deferred" : "direct"
+}
+
+/** Whether a dotted version reaches `minimum`. A version that cannot be read does not. */
+function atLeastVersion(version: string | undefined, minimum: string): boolean {
+  if (!version) return false
+  const numbers = (text: string) => text.split(".").map((part) => Number.parseInt(part, 10))
+  const running = numbers(version)
+  const wanted = numbers(minimum)
+  if (running.some(Number.isNaN) || wanted.some(Number.isNaN)) return false
+  for (let index = 0; index < Math.max(running.length, wanted.length); index++) {
+    const left = running[index] ?? 0
+    const right = wanted[index] ?? 0
+    if (left !== right) return left > right
+  }
+  return true
+}
+
 /** What Pi calls the tools of the MCP server registered as `leteo`. */
 const MCP_SERVER = "leteo"
 const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER}__`
@@ -274,7 +318,13 @@ export function summaryTitle(summary: string): string {
   return (line ?? "Pi compaction summary").replace(/\s+/g, " ").slice(0, 100)
 }
 
-export default function leteo(pi: ExtensionAPI) {
+/**
+ * Pi awaits an asynchronous factory before it binds the extension, so every
+ * subscription and the server registration below still land before the session's
+ * first event. Reading the running Pi's version is what makes this factory
+ * asynchronous.
+ */
+export default async function leteo(pi: ExtensionAPI) {
   /** Context to put in front of the agent on its next turn, by session. */
   const pendingContext = new Map<string, string>()
   /** Work started without being awaited, which shutdown waits for. */
@@ -289,17 +339,23 @@ export default function leteo(pi: ExtensionAPI) {
   // Registering only declares the server; Pi connects it when the session
   // starts, so nothing is spawned from the factory.
   //
-  // `direct` because the protocol this package appends tells the model to call
-  // these tools unprompted, after a bug fix or a decision, in the middle of
-  // other work. Under the default `codemode` they are neither declared nor
-  // listed, and under `deferred` the model must first search for them, so a
-  // memory would be saved only by a model that had already thought to look.
-  // The agent profile is about twenty tools, which is the "small, frequently
-  // used tool set" Pi's documentation names for `direct`.
+  // The protocol this package appends tells the model to call these tools
+  // unprompted, after a bug fix or a decision, in the middle of other work, and
+  // a tool that is not declared is one it has to search for first. That was the
+  // trade while a declaration cost what it did; measured on Pi 1.2.0 with
+  // `opencode-go/deepseek-v4.1-flash`, an empty project, a throwaway store and
+  // Estigia's server configured beside this one, first-request prompt tokens were
+  // 13,832 with no Leteo, 20,037 with `direct`, 14,797 with `deferred`, and
+  // 15,963 with the four session tools kept `direct`. `deferred` costs 5,240
+  // tokens less than `direct` and 1,166 less than the mixed registration, and
+  // the search is not a wall: one recorded run under it called `tool_search`,
+  // then `mem_session_start`, then `mem_save`.
+  //
+  // `direct` is what Pi before 1.2.0 keeps, which is what it has always had.
   pi.registerMcpServer(MCP_SERVER, {
     command: leteoBinary(),
     args: ["mcp", `--tools=${MCP_TOOLS}`],
-    exposure: "direct",
+    exposure: exposureFor(await piVersion()),
     description: "Leteo persistent memory: save and recall decisions, fixes and conventions across sessions",
   })
 

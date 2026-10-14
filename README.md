@@ -287,7 +287,8 @@ Pi takes Leteo as a package. `leteo setup pi` writes
 entry an earlier setup left in `mcp.json`. The package opens and closes the
 session, keeps your prompts and the Key Learnings of what tools return, saves
 the compaction summary, appends the memory protocol to the system prompt, and
-registers `leteo mcp` as an MCP server itself, with its tools exposed directly.
+registers `leteo mcp` as an MCP server itself, with its tools loaded on demand
+from Pi 1.2.0 on and declared on every request below it.
 An entry in `mcp.json` would override that registration by name, which is why
 setup no longer writes one.
 

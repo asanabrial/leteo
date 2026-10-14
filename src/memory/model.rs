@@ -1156,6 +1156,7 @@ impl DoctorCheck {
         "observation_type_searchable",
         "topic_key_uniqueness",
         "settings_readable",
+        "memory_language",
         "semantic_model",
         "semantic_vectors",
         "full_text_triggers",

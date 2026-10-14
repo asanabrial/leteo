@@ -492,6 +492,12 @@ than parsed, so it is free text and not limited to the thirteen above: `español
 `Spanish`, `português do Brasil` and `日本語` all work. Left unset, each memory
 is written in the language of the conversation that produced it.
 
+A memory keeps the language it was written under, so changing this affects only
+what is written from then on: the memories already saved are not converted, and a
+search over them still stems them the old way. Setup warns you with the count
+before the change is confirmed, and `leteo doctor` reports the split — how many
+memories are in each language — without calling it a fault.
+
 ## Settings
 
 Those three and three more are kept in `settings.json`, in the data directory —

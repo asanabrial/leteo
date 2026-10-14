@@ -86,6 +86,7 @@ pub struct Screens {
     pub language_auto_detail: &'static str,
     pub language_pinned_detail: &'static str,
     pub language_kept_warning: &'static str,
+    pub language_kept_count: &'static str,
     pub language_split_warning_first: &'static str,
     pub language_split_warning_second: &'static str,
     pub language_other_hint: &'static str,
@@ -421,6 +422,7 @@ mod tests {
             language_auto_detail,
             language_pinned_detail,
             language_kept_warning,
+            language_kept_count,
             language_split_warning_first,
             language_split_warning_second,
             language_other_hint,
@@ -594,6 +596,7 @@ mod tests {
             ("language_auto_detail", language_auto_detail),
             ("language_pinned_detail", language_pinned_detail),
             ("language_kept_warning", language_kept_warning),
+            ("language_kept_count", language_kept_count),
             ("language_split_warning_first", language_split_warning_first),
             (
                 "language_split_warning_second",

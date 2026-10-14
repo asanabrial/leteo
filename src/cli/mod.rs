@@ -171,14 +171,15 @@ pub async fn run(cli: Cli) -> Result<()> {
                     println!("{}\n", crate::setup::wizard::adoption_note(&found, held));
                 }
                 // `Some(0)`, not "zero or unknown". A store nobody could read
-                // is not an empty one, and reading it as empty got both of the
-                // decisions behind this flag wrong at once: it offered to
-                // migrate Engram over the top of it, and it withheld the
-                // warning that changing the language leaves what is already
-                // saved in the language it was written in.
+                // is not an empty one, and reading it as empty got the Engram
+                // decision behind this flag wrong: it offered to migrate Engram
+                // over the top of it. The language warning asks its own
+                // question below, and keeps warning when the store cannot be
+                // read.
                 let offer = crate::setup::wizard::offer(
                     &database,
                     store_is_known_empty(&cli),
+                    stored_language_counts(&cli),
                     &crate::setup::SetupOptions::default(),
                 );
                 crate::setup::wizard::run_interactive(offer)?;

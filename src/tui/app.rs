@@ -18,6 +18,7 @@ impl App {
             interface: settings.interface(),
             voice_interface: settings.voice_language(),
             stats: store.stats()?,
+            memories_by_language: store.stem_language_counts().ok(),
             recent: Vec::new(),
             sessions: Vec::new(),
             prompts: Vec::new(),
@@ -99,8 +100,10 @@ impl App {
         // the store having shrunk. What is narrowed is said beside them instead,
         // as a count of matches.
         let stats = store.stats()?;
+        let memories_by_language = store.stem_language_counts().ok();
         self.narrow(store)?;
         self.stats = stats;
+        self.memories_by_language = memories_by_language;
         // The open session is reloaded too, because turning its page is a
         // refresh like any other and it is not one of the three above.
         if let Some((summary, _)) = &self.session {
@@ -555,6 +558,7 @@ impl App {
                 let offer = crate::setup::wizard::offer(
                     Path::new(&self.database_path),
                     self.stats.total_observations == 0,
+                    self.memories_by_language.clone(),
                     &self.setup_probe,
                 );
                 Some(if page == Page::Setup {

@@ -21,7 +21,7 @@ fn offer_with(engram: Option<engram::Installation>) -> Offer {
     Offer {
         engram,
         database: fixture_data_dir().join("leteo.db"),
-        store_has_memories: false,
+        memories_by_language: Some(Vec::new()),
         probe: probe_in(fixture_data_dir()),
         agents: vec![
             choice("claude-code", "Claude Code", true),
@@ -979,46 +979,69 @@ fn the_language_question_offers_auto_and_opens_on_the_answer_in_force() {
 }
 
 #[test]
-fn a_store_that_already_holds_memories_is_warned_what_changing_the_language_costs() {
+fn the_language_question_warns_about_the_memories_a_new_language_would_leave_behind() {
     let temp = TempDir::new().unwrap();
     settings::save(
         temp.path(),
         &Settings {
+            // The store records its memories in Spanish, so what the warning is
+            // about is the rows a move to another language leaves behind.
+            language: Some(settings::Interface::Spanish.as_str().to_owned()),
             interface: Some(settings::Interface::English),
             voice_language: None,
             ..Settings::default()
         },
     )
     .unwrap();
-    let language_screen = |store_has_memories: bool| {
+    let language_screen = |memories: Option<Vec<(String, i64)>>| {
         let mut offer = offer_with(None);
         offer.database = temp.path().join("leteo.db");
         offer.probe = probe_in(temp.path());
         offer.agents[0].configured = true;
-        offer.store_has_memories = store_has_memories;
+        offer.memories_by_language = memories;
         let mut wizard = Wizard::preferences(offer);
         open_option(&mut wizard, Step::MemoryLanguage);
         screen(&wizard)
     };
 
-    let warned = language_screen(true);
+    // Every row already in the chosen language: nothing is left behind.
+    let quiet = language_screen(Some(vec![("es".to_owned(), 3)]));
     assert!(
-        warned.contains("keep the language they were written in"),
-        "a populated store has to be told what it keeps: {warned}"
+        !quiet.contains("two languages"),
+        "a store whose rows are all in the chosen language is not warned: {quiet}"
+    );
+
+    // One row in another language: that is the one the change leaves behind.
+    let warned = language_screen(Some(vec![("es".to_owned(), 3), ("en".to_owned(), 1)]));
+    assert!(
+        warned.contains("not converted: 1 of them"),
+        "the warning names how many memories stay behind: {warned}"
     );
     assert!(
         warned.contains("two languages"),
         "and what that leaves behind: {warned}"
     );
 
-    let quiet = language_screen(false);
+    let empty = language_screen(Some(Vec::new()));
     assert!(
-        !quiet.contains("two languages"),
-        "an empty store is not warned about memories it does not have: {quiet}"
+        !empty.contains("two languages"),
+        "an empty store is not warned about memories it does not have: {empty}"
     );
     assert!(
-        quiet.contains("settings.json"),
-        "the way out to any other language stays: {quiet}"
+        empty.contains("settings.json"),
+        "the way out to any other language stays: {empty}"
+    );
+
+    // A store nobody could read is not one with nothing in it: it is warned
+    // without a number rather than staying quiet about what it cannot see.
+    let unreadable = language_screen(None);
+    assert!(
+        unreadable.contains("keep the language they were written in"),
+        "an unreadable store still warns: {unreadable}"
+    );
+    assert!(
+        !unreadable.contains("of them"),
+        "but cannot count what it cannot see: {unreadable}"
     );
 }
 
@@ -1040,7 +1063,9 @@ fn no_screen_is_painted_with_a_placeholder_still_in_it() {
         offer.database = temp.path().join("leteo.db");
         offer.probe = probe_in(temp.path());
         offer.agents[0].configured = true;
-        offer.store_has_memories = true;
+        // A store whose rows are not in the language the answer names, so the
+        // count-bearing warning is painted and its placeholder is checked.
+        offer.memories_by_language = Some(vec![("es".to_owned(), 2)]);
         let mut wizard = Wizard::new(offer.clone());
         for _ in 0..10 {
             let painted = screen(&wizard);

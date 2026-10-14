@@ -959,7 +959,9 @@ impl Store {
     /// Asked of the rows rather than of the setting, because a store keeps the
     /// memories it was written with: a person who switched from Spanish to
     /// English last month still has Spanish memories to find, and the setting no
-    /// longer says so. The question is over a small indexed column and is asked
+    /// longer says so. Nothing converts them — the setup screen warns before the
+    /// change and `doctor` reports the split after it — so the rows are the only
+    /// answer. The question is over a small indexed column and is asked
     /// by every stage that reads the Snowball index, which is a few times a
     /// search that falls through to the relaxed stages and once for one the
     /// strict pass answers.

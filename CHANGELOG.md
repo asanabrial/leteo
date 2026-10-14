@@ -91,6 +91,14 @@ All notable changes to Leteo are documented in this file.
 
 ### Changed
 
+- **Changing the memory language says what it leaves behind.** A memory keeps
+  the language it was written in, and nothing re-stems the ones already saved, so
+  the setup screen's language step now warns with the count — and only when the
+  chosen language differs from the rows it would leave. It stays quiet on an
+  empty store and on one whose memories are all in the language being chosen.
+  `leteo doctor` reports the split as information, with the count per language,
+  and still changes no memory's language under `--repair` (#185).
+
 - **The per-prompt hint is quieter, and no longer tells the agent to read.**
   One relevance bar of 1.6 times the median now decides every candidate; the
   looser 1.2 bar for memories outside the session's opening block is gone. On

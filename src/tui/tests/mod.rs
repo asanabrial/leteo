@@ -239,6 +239,7 @@ fn test_app() -> App {
             total_prompts: 3,
             projects: vec!["leteo".to_owned()],
         },
+        memories_by_language: Some(Vec::new()),
         recent: vec![observation(1, "First memory")],
         sessions: vec![SessionSummary {
             id: "session-1".to_owned(),

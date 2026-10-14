@@ -33,6 +33,7 @@ pub const SCREENS: Screens = Screens {
     language_auto_detail: "la langue dans laquelle vous écrivez, quelle qu'elle soit",
     language_pinned_detail: "toujours, quelle que soit celle qu'on vous écrit",
     language_kept_warning: "  Les souvenirs déjà gardés conservent la langue de leur écriture.",
+    language_kept_count: "  Les souvenirs déjà gardés conservent la langue de leur écriture et ne sont pas convertis : {count} d'entre eux.",
     language_split_warning_first: "  Changer ceci laisse le dépôt en deux langues, et une \
                                    recherche trouve",
     language_split_warning_second: "  la moitié où elle est posée.",

@@ -32,6 +32,8 @@ pub const SCREENS: Screens = Screens {
     language_auto_detail: "the language you write in, whichever it is",
     language_pinned_detail: "always, however you are written to",
     language_kept_warning: "  Memories already saved keep the language they were written in.",
+    language_kept_count: "  Memories already saved keep the language they were written in and are \
+                         not converted: {count} of them.",
     language_split_warning_first: "  Changing this leaves the store in two languages, and a \
                                    search finds",
     language_split_warning_second: "  the half it is asked in.",

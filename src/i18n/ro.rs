@@ -33,6 +33,7 @@ pub const SCREENS: Screens = Screens {
     language_auto_detail: "limba în care scrii, oricare ar fi ea",
     language_pinned_detail: "mereu, indiferent cum ți se scrie",
     language_kept_warning: "  Memoriile deja salvate își păstrează limba în care au fost scrise.",
+    language_kept_count: "  Memoriile deja salvate își păstrează limba în care au fost scrise și nu sunt convertite: {count} dintre ele.",
     language_split_warning_first: "  Schimbarea lasă arhiva în două limbi, iar o căutare \
                                    găsește",
     language_split_warning_second: "  jumătatea în care este întrebată.",

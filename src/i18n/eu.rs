@@ -33,6 +33,7 @@ pub const SCREENS: Screens = Screens {
     language_auto_detail: "zuk idazten duzun hizkuntza, edozein dela ere",
     language_pinned_detail: "beti, zein hizkuntzatan idazten dizuten kontuan hartu gabe",
     language_kept_warning: "  Gordeta dauden memoriek idatzi ziren hizkuntza gordetzen dute.",
+    language_kept_count: "  Gordeta dauden memoriek idatzi ziren hizkuntza gordetzen dute eta ez dira bihurtzen: horietatik {count}.",
     language_split_warning_first: "  Hau aldatzeak biltegia bi hizkuntzatan uzten du, eta \
                                    bilaketa batek",
     language_split_warning_second: "  galdetzen den erdia aurkitzen du.",

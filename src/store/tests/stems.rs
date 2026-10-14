@@ -50,6 +50,31 @@ fn languages(store: &Store) -> Vec<(String, String)> {
         .unwrap()
 }
 
+/// Every column of every stems row, as SQLite's own text, in id order.
+///
+/// A snapshot rather than a field, so a change to a row the language does not
+/// carry — the stems themselves, or the copied identifiers — is a difference
+/// here too. `quote()` is what makes it comparable: it renders a value as the
+/// bytes the table holds, NULL included, so two equal snapshots are two
+/// identical rows.
+fn stem_rows(store: &Store) -> Vec<String> {
+    let mut statement = store
+        .connection
+        .prepare(
+            "SELECT quote(observation_id) || '|' || quote(language) || '|'
+                    || quote(title) || '|' || quote(content) || '|'
+                    || quote(tool_name) || '|' || quote(type) || '|'
+                    || quote(project) || '|' || quote(topic_key)
+               FROM observation_stems ORDER BY observation_id",
+        )
+        .unwrap();
+    statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
 /// One memory and one question per language, the question reaching the memory
 /// only through another inflection of a word it holds, at least three edits from
 /// it so neither `porter` nor the typo stage can answer. The English store is the
@@ -666,4 +691,60 @@ fn the_restore_reads_the_newest_definition_of_a_trigger() {
     let sql = crate::store::schema::full_text_trigger_sql("obs_stems_update").unwrap();
     assert!(sql.contains("WHEN new.title IS NOT old.title"), "{sql}");
     assert!(crate::store::schema::full_text_trigger_sql("obs_stems_identifiers").is_some());
+}
+
+/// A change of the memory-writing setting moves nothing already stored.
+///
+/// The rows keep the language they were written under — which is what the
+/// wizard warns about and `doctor` reports — and this is the guard on that
+/// promise, at the bytes rather than at the per-row code the test above reads.
+/// It fails if a repair ever re-stems an existing row under the setting in
+/// force instead of the language the row was written in.
+#[test]
+fn a_change_of_the_memory_language_setting_moves_no_row_that_is_already_stored() {
+    let temp = TempDir::new().unwrap();
+    let setting = |language: Interface| {
+        crate::settings::save(
+            temp.path(),
+            &crate::settings::Settings {
+                language: Some(language.as_str().to_owned()),
+                ..crate::settings::Settings::default()
+            },
+        )
+        .unwrap();
+    };
+
+    // A store that wrote Spanish and now writes English, through the settings
+    // file the wizard writes rather than through the test's own override.
+    setting(Interface::Spanish);
+    let mut store = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", "Ejecuta el cron", "Cada noche."))
+        .unwrap();
+    drop(store);
+
+    setting(Interface::English);
+    let mut store = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    store
+        .add_observation(observation("s1", "Runs the nightly job", "Every night."))
+        .unwrap();
+    let before = stem_rows(&store);
+    assert!(
+        before.iter().any(|row| row.contains("'es'"))
+            && before.iter().any(|row| row.contains("'en'")),
+        "the store has to hold both languages for this to prove anything: {before:?}"
+    );
+    drop(store);
+
+    // The setting changes again, and the repair path runs over the same rows.
+    setting(Interface::French);
+    let reopened = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    reopened.rebuild_full_text_indexes().unwrap();
+
+    assert_eq!(
+        before,
+        stem_rows(&reopened),
+        "a change of setting re-stemmed rows it did not write"
+    );
 }

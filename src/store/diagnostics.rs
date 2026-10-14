@@ -919,6 +919,34 @@ impl Store {
             projects,
         })
     }
+
+    /// How many live memories the store holds under each recorded stem
+    /// language, in code order.
+    ///
+    /// The language is stored on `observation_stems`, one row per memory, and it
+    /// is fixed when the memory is written: a later change of the
+    /// memory-writing setting re-stems only the rows it touches. So this answers
+    /// both halves of what such a change costs — how many memories stay behind,
+    /// and under which language.
+    ///
+    /// A memory whose `id` is not an integer has no stems row (migration 21),
+    /// which is why the sum can be short of the store's live count; those rows
+    /// have no language anything recorded, so they are absent rather than
+    /// counted under one.
+    pub fn stem_language_counts(&self) -> Result<Vec<(String, i64)>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT s.language, COUNT(*)
+               FROM observations o
+               JOIN observation_stems s ON s.observation_id = o.id
+              WHERE o.deleted_at IS NULL
+              GROUP BY s.language
+              ORDER BY s.language",
+        )?;
+        let counts = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<(String, i64)>, _>>()?;
+        Ok(counts)
+    }
 }
 
 /// Whether a relation with this identifier is already stored.

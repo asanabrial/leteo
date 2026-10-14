@@ -1527,3 +1527,68 @@ fn a_repair_folds_the_types_the_save_door_folds() {
         "a second repair is a no-op"
     );
 }
+
+/// The counts are of live memories, grouped by the language each was written
+/// under, in code order.
+#[test]
+fn the_language_counts_are_of_live_memories_under_the_language_they_were_written_in() {
+    let temp = TempDir::new().unwrap();
+    let mut spanish = StoreConfig::new(temp.path().join("leteo.db"));
+    spanish.memory_language = Some(crate::settings::Interface::Spanish);
+    let mut store = Store::open(spanish).unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", "Ejecuta el cron", "Cada noche."))
+        .unwrap();
+    store
+        .add_observation(observation("s1", "Otra nota", "Cada día."))
+        .unwrap();
+    drop(store);
+
+    let mut english = StoreConfig::new(temp.path().join("leteo.db"));
+    english.memory_language = Some(crate::settings::Interface::English);
+    let mut store = Store::open(english).unwrap();
+    store
+        .add_observation(observation("s1", "Runs the nightly job", "Every night."))
+        .unwrap();
+
+    assert_eq!(
+        store.stem_language_counts().unwrap(),
+        vec![("en".to_owned(), 1), ("es".to_owned(), 2)],
+        "a row is counted under the language it was written in, not the one in force"
+    );
+
+    store
+        .connection
+        .execute(
+            "UPDATE observations SET deleted_at = ?1 WHERE title = 'Otra nota'",
+            [crate::timestamp::now()],
+        )
+        .unwrap();
+    assert_eq!(
+        store.stem_language_counts().unwrap(),
+        vec![("en".to_owned(), 1), ("es".to_owned(), 1)],
+        "a deleted memory is not one a change of language leaves behind"
+    );
+}
+
+/// The language the connection records a new memory under is the one it was
+/// opened with, not whatever the setting says later.
+#[test]
+fn the_store_reports_the_language_it_records_a_new_memory_under() {
+    let temp = TempDir::new().unwrap();
+    let mut config = StoreConfig::new(temp.path().join("leteo.db"));
+    config.memory_language = Some(crate::settings::Interface::Spanish);
+    let spanish = Store::open(config).unwrap();
+    assert_eq!(
+        spanish.memory_language(),
+        crate::settings::Interface::Spanish
+    );
+    drop(spanish);
+
+    // No override: the setting beside the database answers, and a store with
+    // none is English.
+    let (_other, plain) = store();
+    assert_eq!(plain.memory_language(), crate::settings::Interface::English);
+    assert!(plain.stem_language_counts().unwrap().is_empty());
+}

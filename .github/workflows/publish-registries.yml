@@ -108,6 +108,49 @@ jobs:
           fi
           npm publish --access public
 
+  # The Pi package, from `plugin/pi`, held to the crate's version like the
+  # wrapper. It sits outside the `mcp-registry` job's `needs`, because
+  # `server.json` offers no Pi package and the registry asks npm nothing about
+  # it.
+  npm-pi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # npm attaches a trusted publisher to a package that already exists, so
+      # the first version of this one cannot arrive through OIDC at all — it
+      # has to be published once by hand, with the owner's second factor. Left
+      # to `npm publish`, that case reads as an authentication failure, which
+      # sends whoever is looking after the token this workflow deliberately
+      # does not have. So a package npm has never heard of fails here by name.
+      - name: Publish unless npm already has it
+        working-directory: plugin/pi
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "npm already has $name $version"
+            exit 0
+          fi
+          if ! answer="$(npm view "$name" name 2>&1)"; then
+            if grep -q E404 <<<"$answer"; then
+              echo "::error::npm has never published $name, so no trusted publisher can be attached to it yet. Publish $version once by hand from plugin/pi at this tag, add this workflow as the package's trusted publisher on npmjs.com, and later tags publish here."
+            else
+              echo "$answer"
+            fi
+            exit 1
+          fi
+          npm publish --access public
+
   mcp-registry:
     # Last, because it is the only job that reads the other two's work. The
     # registry validates every package `server.json` offers before it accepts

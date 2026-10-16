@@ -290,7 +290,8 @@ the compaction summary, appends the memory protocol to the system prompt, and
 registers `leteo mcp` as an MCP server itself, with its tools loaded on demand
 from Pi 1.2.0 on and declared on every request below it.
 An entry in `mcp.json` would override that registration by name, which is why
-setup no longer writes one.
+setup no longer writes one. The package is also on npm, for `pi install
+npm:@asanabrial/leteo-pi`; take one route or the other, not both.
 
 ## Uninstall
 

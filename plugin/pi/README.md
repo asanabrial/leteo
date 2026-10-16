@@ -18,11 +18,19 @@ default route. The files are built into the binary, so nothing is fetched, and
 setup records the path of the binary that ran it; run `leteo setup pi` again
 after an upgrade to replace them. Restart Pi, or run `/reload`.
 
-The package is also meant to be published to npm as `@asanabrial/leteo-pi`, for
-`pi install npm:@asanabrial/leteo-pi`. It is not published yet. Installed that
-way setup has recorded nothing, so the binary is `LETEO_BIN` if set and
-otherwise `leteo` on `PATH`; either route resolves it in the order `LETEO_BIN`,
-the path setup recorded, `PATH`.
+The same package is on npm as `@asanabrial/leteo-pi`, published with each
+release from 0.4.0 at the release's own version:
+
+```bash
+pi install npm:@asanabrial/leteo-pi
+```
+
+Installed that way setup has recorded nothing, so the binary is `LETEO_BIN` if
+set and otherwise `leteo` on `PATH`; either route resolves it in the order
+`LETEO_BIN`, the path setup recorded, `PATH`. Use one route, not both: `leteo
+setup pi` does not look for the npm entry, and with both listed Pi 1.1.0 loads
+the first and refuses the second at every start with `MCP server "leteo" is
+already registered by extension …`.
 
 ## What it does
 

@@ -4,6 +4,18 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-17
+
+A package for Pi, a session that opens on thirty titles instead of fifty
+previews, a quieter per-prompt hint, stemming for Catalan, Basque and Polish,
+and replies that cost fewer tokens. **`mem_search` and `mem_save` reply with
+less** — the fields removed are listed under Changed — so a client that read
+`sync_id`, `rank` or the echoed memory from them reads them no longer. The
+schema is still version 22: 0.3.0 and 0.4.0 open the same store, and going back
+needs no copy. Inside Pi, upgrade the binary with the package: the guard that
+keeps Claude Code's hooks quiet there is in this binary, and without it both
+sets of hooks fire and every prompt is stored twice.
+
 ### Added
 
 - **Pi loads Leteo's memory tools when a session looks for them, not on every

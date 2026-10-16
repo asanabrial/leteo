@@ -4,6 +4,27 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-17
+
+The Pi package is on npm, and this release keeps it from being installed twice.
+
+### Added
+
+- **The Pi package is on npm as `@asanabrial/leteo-pi`, and every tag publishes
+  it.** `pi install npm:@asanabrial/leteo-pi` is a second route beside `leteo
+  setup pi`, which stays the default. The registries workflow publishes it
+  through npm's trusted publishing at the tag's version, as it does the wrapper
+  (#273, #301).
+
+### Fixed
+
+- **`leteo setup pi` no longer adds a second Leteo beside the one from npm.**
+  With both listed, Pi 1.1.0 loads the first and refuses the second at every
+  start with `MCP server "leteo" is already registered`. Setup now refuses when
+  Pi's settings list `npm:@asanabrial/leteo-pi`, writes nothing, and names the
+  entry and `pi remove` as the way out; `doctor` reports a Pi that lists both,
+  which is how a `pi install` after a setup shows up (#304).
+
 ## [0.4.0] - 2026-10-17
 
 A package for Pi, a session that opens on thirty titles instead of fifty

@@ -1484,6 +1484,12 @@ pub struct MissingBinary {
     pub command: PathBuf,
 }
 
+/// Whether Pi lists Leteo's package both from npm and as the copy setup wrote.
+pub fn pi_package_issue(options: &SetupOptions) -> Option<String> {
+    let environment = SetupEnvironment::resolve(options).ok()?;
+    pi_package::duplicate_issue(&environment)
+}
+
 /// Every configured Leteo command, across every supported agent, whose
 /// executable is missing.
 ///

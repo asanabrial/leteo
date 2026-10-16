@@ -72,21 +72,49 @@ fn package_files(executable: &Path, tools: &str) -> Result<[(&'static str, Strin
 /// and reads an entry as either a path or an object whose `source` is one, so
 /// all of those spellings of the same directory are Leteo's.
 fn names_package(entry: &Value, agent_dir: &Path, package: &Path) -> bool {
-    let source = match entry {
-        Value::String(source) => source,
-        Value::Object(object) => match object.get("source").and_then(Value::as_str) {
-            Some(source) => source,
-            None => return false,
-        },
-        _ => return false,
+    let Some(source) = entry_source(entry) else {
+        return false;
     };
-    let source = Path::new(source.trim());
+    let source = Path::new(source);
     let resolved = if source.is_absolute() {
         source.to_path_buf()
     } else {
         agent_dir.join(source)
     };
     resolved.components().eq(package.components())
+}
+
+fn entry_source(entry: &Value) -> Option<&str> {
+    match entry {
+        Value::String(source) => Some(source.trim()),
+        Value::Object(object) => object.get("source")?.as_str().map(str::trim),
+        _ => None,
+    }
+}
+
+/// The entry that installs this package from npm, as the settings spell it.
+///
+/// Pi loads the first of two packages that register the `leteo` MCP server and
+/// refuses the second at every start — measured on Pi 1.1.0 with this one from
+/// npm beside the copy setup writes. The name is read from the manifest the
+/// package ships rather than written out again. A version range follows it after
+/// an `@`, and a name that only begins with it, `leteo-pixel`, is somebody else's.
+fn npm_entry(packages: &[Value]) -> Option<String> {
+    let manifest: Value = serde_json::from_str(PACKAGE_JSON).ok()?;
+    let name = manifest.get("name")?.as_str()?;
+    packages.iter().find_map(|entry| {
+        let source = entry_source(entry)?;
+        let rest = source.strip_prefix("npm:")?.strip_prefix(name)?;
+        (rest.is_empty() || rest.starts_with('@')).then(|| source.to_owned())
+    })
+}
+
+fn listed_npm_entry(path: &Path, existing: Option<&[u8]>) -> Result<Option<String>> {
+    let root = parse_settings(path, existing)?;
+    Ok(root
+        .get("packages")
+        .and_then(Value::as_array)
+        .and_then(|packages| npm_entry(packages)))
 }
 
 fn parse_settings(path: &Path, existing: Option<&[u8]>) -> Result<Value> {
@@ -179,6 +207,39 @@ pub(super) fn is_registered(environment: &SetupEnvironment) -> bool {
         })
 }
 
+/// Pi's settings listing both this package from npm and the copy setup wrote.
+///
+/// Setup refuses to add its copy beside the npm one, but `pi install` after a
+/// setup adds the npm one without asking, so only `doctor` sees that order.
+///
+/// Settings that cannot be read are reported as that rather than as a Pi with
+/// one copy: the question went unanswered, and `doctor` must not call it clean.
+pub(super) fn duplicate_issue(environment: &SetupEnvironment) -> Option<String> {
+    let settings = settings_path(environment);
+    let listed = read_optional(&settings).and_then(|content| match content {
+        Some(content) => listed_npm_entry(&settings, Some(&content)),
+        None => Ok(None),
+    });
+    let entry = match listed {
+        Ok(entry) => entry?,
+        Err(error) => {
+            return Some(format!(
+                "Pi's settings could not be read, so whether Pi lists Leteo twice is \
+                 unknown: {error:#}"
+            ));
+        }
+    };
+    if !is_registered(environment) {
+        return None;
+    }
+    Some(format!(
+        "Pi lists Leteo twice in {}: `{entry}` and the package `leteo setup pi` wrote, so \
+         it refuses the second at every start with `MCP server \"leteo\" is already \
+         registered`. Run `pi remove {entry}`, or `leteo setup pi --uninstall`.",
+        settings.display()
+    ))
+}
+
 /// What `leteo setup pi` does: the package, its registration, and the old entry.
 pub(super) fn setup(
     adapter: &AgentAdapter,
@@ -204,6 +265,14 @@ pub(super) fn setup(
     let directory = package_dir(environment);
     let settings = settings_path(environment);
     let existing_settings = read_optional(&settings)?;
+    if let Some(entry) = listed_npm_entry(&settings, existing_settings.as_deref())? {
+        anyhow::bail!(
+            "Pi already loads Leteo from npm (`{entry}` in {}), and a second copy would \
+             be refused at every start with `MCP server \"leteo\" is already registered`. \
+             Keep that one, or run `pi remove {entry}` and set up again.",
+            settings.display()
+        );
+    }
     let desired_settings = register(
         &settings,
         existing_settings.as_deref(),

@@ -280,6 +280,19 @@ fn doctor_names_a_pi_that_lists_leteo_twice() {
     assert!(issue.contains("already registered"), "{issue}");
     assert!(issue.contains("pi remove"), "{issue}");
 
+    // The way out the message offers works with the npm entry still there.
+    uninstall("pi", &setup_options).unwrap();
+    assert_eq!(
+        read_json(&pi_settings(&temp))["packages"],
+        json!(["npm:@asanabrial/leteo-pi"])
+    );
+    assert_eq!(pi_package_issue(&setup_options), None);
+
+    write_fixture(&pi_settings(&temp), "{ not json");
+    let issue = pi_package_issue(&setup_options).expect("unreadable is not clean");
+    assert!(issue.contains("unknown"), "{issue}");
+    assert!(issue.contains("settings.json"), "{issue}");
+
     write_fixture(
         &pi_settings(&temp),
         r#"{"packages": ["npm:@asanabrial/leteo-pi"]}"#,

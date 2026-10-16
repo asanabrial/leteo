@@ -211,10 +211,24 @@ pub(super) fn is_registered(environment: &SetupEnvironment) -> bool {
 ///
 /// Setup refuses to add its copy beside the npm one, but `pi install` after a
 /// setup adds the npm one without asking, so only `doctor` sees that order.
+///
+/// Settings that cannot be read are reported as that rather than as a Pi with
+/// one copy: the question went unanswered, and `doctor` must not call it clean.
 pub(super) fn duplicate_issue(environment: &SetupEnvironment) -> Option<String> {
     let settings = settings_path(environment);
-    let content = read_optional(&settings).ok()??;
-    let entry = listed_npm_entry(&settings, Some(&content)).ok()??;
+    let listed = read_optional(&settings).and_then(|content| match content {
+        Some(content) => listed_npm_entry(&settings, Some(&content)),
+        None => Ok(None),
+    });
+    let entry = match listed {
+        Ok(entry) => entry?,
+        Err(error) => {
+            return Some(format!(
+                "Pi's settings could not be read, so whether Pi lists Leteo twice is \
+                 unknown: {error:#}"
+            ));
+        }
+    };
     if !is_registered(environment) {
         return None;
     }

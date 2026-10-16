@@ -12,9 +12,9 @@
 //! route: the files are written under the agent directory and listed there as a
 //! local path, which Pi loads without copying (`packages.md`, "Choose a
 //! source"), and the extension is given the path of the binary that ran setup.
-//! The same package is meant to be published to npm as `@asanabrial/leteo-pi`
-//! (it is not yet); installed that way nothing has recorded a binary, and the
-//! extension falls back to `LETEO_BIN` and then `PATH`.
+//! The same package is published to npm as `@asanabrial/leteo-pi`; installed
+//! that way nothing has recorded a binary, and the extension falls back to
+//! `LETEO_BIN` and then `PATH`.
 
 use super::*;
 

@@ -233,6 +233,61 @@ fn pi_setup_keeps_the_settings_and_packages_that_are_not_leteos() {
 }
 
 #[test]
+fn pi_setup_refuses_a_second_copy_beside_the_npm_package() {
+    for spelled in [
+        json!("npm:@asanabrial/leteo-pi"),
+        json!("npm:@asanabrial/leteo-pi@0.4.0"),
+        json!({"source": " npm:@asanabrial/leteo-pi@^0.4 ", "skills": []}),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let setup_options = options(&temp);
+        let settings = json!({"packages": [spelled.clone()]}).to_string();
+        write_fixture(&pi_settings(&temp), &settings);
+
+        let error = setup("pi", &setup_options).unwrap_err().to_string();
+        assert!(error.contains("npm:@asanabrial/leteo-pi"), "{error}");
+        assert!(error.contains("already registered"), "{error}");
+        assert!(error.contains("pi remove"), "{error}");
+        assert_eq!(fs::read_to_string(pi_settings(&temp)).unwrap(), settings);
+        assert!(!pi_package_dir(&temp).exists(), "{spelled}");
+    }
+
+    // A name that only begins with the package's is somebody else's.
+    let temp = TempDir::new().unwrap();
+    write_fixture(
+        &pi_settings(&temp),
+        r#"{"packages": ["npm:@asanabrial/leteo-pixel"]}"#,
+    );
+    setup("pi", &options(&temp)).unwrap();
+    assert!(pi_package_dir(&temp).exists());
+}
+
+#[test]
+fn doctor_names_a_pi_that_lists_leteo_twice() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    assert_eq!(pi_package_issue(&setup_options), None, "nothing installed");
+
+    setup("pi", &setup_options).unwrap();
+    assert_eq!(pi_package_issue(&setup_options), None, "setup's copy alone");
+
+    let local = pi_package_dir(&temp);
+    write_fixture(
+        &pi_settings(&temp),
+        &json!({"packages": ["npm:@asanabrial/leteo-pi", local.to_str().unwrap()]}).to_string(),
+    );
+    let issue = pi_package_issue(&setup_options).expect("both listed");
+    assert!(issue.contains("already registered"), "{issue}");
+    assert!(issue.contains("pi remove"), "{issue}");
+
+    write_fixture(
+        &pi_settings(&temp),
+        r#"{"packages": ["npm:@asanabrial/leteo-pi"]}"#,
+    );
+    assert_eq!(pi_package_issue(&setup_options), None, "npm's copy alone");
+}
+
+#[test]
 fn pi_setup_recognises_its_package_however_the_settings_spell_the_path() {
     let temp = TempDir::new().unwrap();
     for spelled in [

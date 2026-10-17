@@ -4,6 +4,21 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-17
+
+Claude Code with a relocated profile gets all of Leteo in that profile.
+
+### Fixed
+
+- **`leteo setup claude-code` follows `CLAUDE_CONFIG_DIR` for the server and the
+  instructions, not only the hooks.** With the variable set, the hooks went to
+  `$CLAUDE_CONFIG_DIR/settings.json` while the server entry went to
+  `~/.claude.json` and the protocol to `~/.claude/CLAUDE.md`, files the Claude
+  Code using that profile does not read: it had hooks calling a server it was
+  never given. Both now go inside `$CLAUDE_CONFIG_DIR`, beside the hooks; unset,
+  nothing moves. An entry an earlier setup left in `~/.claude.json` stays there;
+  `leteo setup claude-code` again writes the one this profile reads (#306).
+
 ## [0.4.1] - 2026-10-17
 
 The Pi package is on npm, and this release keeps it from being installed twice.

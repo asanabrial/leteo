@@ -154,7 +154,12 @@ jobs:
   # winget takes a new version as a pull request to microsoft/winget-pkgs, from
   # a fork, so this is the one job here that holds a stored credential: no
   # registry trades a GitHub OIDC token for a pull request, and Komac needs a
-  # classic token with `public_repo` to open one. The tap and the Scoop bucket
+  # classic token with `public_repo` and `workflow` to open one. `workflow`
+  # because Komac branches the fork at winget-pkgs' head, and GitHub refuses a
+  # ref that changes workflow files without it: with `public_repo` alone, the
+  # first dispatch for v0.4.2 failed on `CreateRef` against a fork 30,435
+  # commits behind, whose workflows differed from upstream's.
+  # The tap and the Scoop bucket
   # poll for releases from their own repositories and need nothing from here;
   # winget has no such side, and without this job it stayed at 0.1.2 for four
   # releases. A missing secret fails by name rather than skipping, because a
@@ -201,7 +206,7 @@ jobs:
             *) echo "::error::Could not ask winget-pkgs whether it holds asanabrial.leteo $version (HTTP $status); dispatch this workflow for $REF again."; exit 1 ;;
           esac
           if [ -z "$GITHUB_TOKEN" ]; then
-            echo "::error::The WINGET_TOKEN secret is not set, so asanabrial.leteo $version was not submitted to winget. Add a classic token with the public_repo scope from the account that holds the winget-pkgs fork, then dispatch this workflow for $REF."
+            echo "::error::The WINGET_TOKEN secret is not set, so asanabrial.leteo $version was not submitted to winget. Add a classic token with the public_repo and workflow scopes from the account that holds the winget-pkgs fork, then dispatch this workflow for $REF."
             exit 1
           fi
           sh tools/winget/render.sh "$REF" manifests
@@ -209,7 +214,13 @@ jobs:
           # "No valid packages to submit were found" — seen on 2.17.1 against a
           # manifest set with mismatched versions and against one with an
           # invalid installer type. So success is the pull request it names.
-          ./komac submit manifests --yes 2>&1 | tee submit.log
+          # `|| true` because under pipefail a failing Komac ended the step on
+          # this line, and the lines below that say why never ran.
+          ./komac submit manifests --yes 2>&1 | tee submit.log || true
+          if grep -q 'CreateRef' submit.log; then
+            echo "::error::GitHub refused to create the branch in the winget-pkgs fork. WINGET_TOKEN needs the workflow scope as well as public_repo: the fork's workflow files differ from upstream's, and a ref that changes them needs it."
+            exit 1
+          fi
           if ! grep -q 'https://github.com/microsoft/winget-pkgs/pull/' submit.log; then
             echo "::error::Komac opened no pull request for asanabrial.leteo $version; its output is above."
             exit 1

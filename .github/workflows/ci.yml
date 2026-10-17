@@ -501,3 +501,7 @@ jobs:
       # and that a step's failure stops the run and names it. The `.ps1` runs
       # under the `pwsh` this runner image carries; without it the step fails.
       - run: sh tools/build-install/check.sh
+      # `tools/winget/render.sh` behind a stand-in `curl`: the manifests it fills
+      # for a release, and which cause it names when SHA256SUMS or the release is
+      # missing, unanswered, or lacks what it needs. No network is touched.
+      - run: sh tools/winget/tests/check.sh

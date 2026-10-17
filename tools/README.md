@@ -410,7 +410,12 @@ SHA-256 from that release's `SHA256SUMS`. The `winget` job of
 
 ```bash
 sh tools/winget/render.sh v0.4.2 /tmp/winget-manifests
+sh tools/winget/tests/check.sh
 ```
+
+`tests/check.sh` runs `render.sh` behind a stand-in `curl` and is part of CI:
+the manifests it fills, and which cause it names when a release lacks
+SHA256SUMS, names no Windows archive, has not been published, or did not answer.
 
 The package description lives here, so a change to it reaches winget with the
 next release rather than by hand.

@@ -15,12 +15,20 @@ pub(super) const ADAPTER: AgentAdapter = AgentAdapter {
     plugin_cache_root: Some(plugin_cache),
 };
 
+/// `CLAUDE_CONFIG_DIR` moves `.claude.json` into it, and Claude Code then reads
+/// its user-scope servers there and nowhere else: on a machine with the profile
+/// at `~/.claude-personal`, the working `leteo` entry was in that directory's
+/// `.claude.json` and `~/.claude.json` had none. Unset, the file sits in the home
+/// directory rather than inside `~/.claude`, so this is not `claude_config_dir`.
 fn config_path(environment: &SetupEnvironment) -> PathBuf {
-    environment.home.join(".claude.json")
+    match &environment.claude_config {
+        Some(directory) => directory.join(".claude.json"),
+        None => environment.home.join(".claude.json"),
+    }
 }
 
 fn instructions(environment: &SetupEnvironment, _config: &Path) -> PathBuf {
-    environment.home.join(".claude").join("CLAUDE.md")
+    environment.claude_config_dir().join("CLAUDE.md")
 }
 
 /// The only agent with a stable, documented hook settings file today.

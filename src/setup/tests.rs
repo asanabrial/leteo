@@ -1623,6 +1623,26 @@ fn claude_paths_follow_the_config_directory_rather_than_assuming_the_profile() {
     };
     assert_eq!(untouched.claude_config_dir(), temp.path().join(".claude"));
 
+    // The server entry, the instructions and the hooks move together: a profile
+    // given hooks that call a server it was never given has nothing to call.
+    let claude_code = find_adapter("claude-code").unwrap();
+    let paths = resolve_paths(claude_code, &moved);
+    assert_eq!(paths.mcp_config, relocated.join(".claude.json"));
+    assert_eq!(paths.instructions, Some(relocated.join("CLAUDE.md")));
+    assert_eq!(paths.hooks, Some(relocated.join("settings.json")));
+
+    // Unset, `.claude.json` stays in the home directory, not inside `~/.claude`.
+    let paths = resolve_paths(claude_code, &untouched);
+    assert_eq!(paths.mcp_config, temp.path().join(".claude.json"));
+    assert_eq!(
+        paths.instructions,
+        Some(temp.path().join(".claude").join("CLAUDE.md"))
+    );
+    assert_eq!(
+        paths.hooks,
+        Some(temp.path().join(".claude").join("settings.json"))
+    );
+
     assert_eq!(resolve_optional_root(None, Some(PathBuf::from(""))), None);
     assert_eq!(
         resolve_optional_root(None, Some(PathBuf::from("relative/claude"))),

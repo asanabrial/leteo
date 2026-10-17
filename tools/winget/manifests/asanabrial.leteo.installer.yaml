@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: asanabrial.leteo
+PackageVersion: @VERSION@
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+- RelativeFilePath: leteo-@TAG@-x86_64-pc-windows-msvc\leteo.exe
+  PortableCommandAlias: leteo
+ReleaseDate: @DATE@
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/asanabrial/leteo/releases/download/@TAG@/leteo-@TAG@-x86_64-pc-windows-msvc.zip
+  InstallerSha256: @SHA256@
+ManifestType: installer
+ManifestVersion: 1.12.0

@@ -106,6 +106,14 @@ scoop bucket add leteo https://github.com/asanabrial/scoop-leteo
 scoop install leteo
 ```
 
+```powershell
+# Windows, through winget
+winget install asanabrial.leteo
+```
+
+winget takes each release as a pull request that its maintainers review, so a
+new version can reach it a day or two after the others.
+
 ```sh
 # Anywhere with Node, if that is what you already have
 npm install -g @asanabrial/leteo
@@ -127,8 +135,8 @@ That is all of it. Nothing else to install first — not Rust, not SQLite, not a
 runtime: the archives are prebuilt binaries with SQLite compiled in, and each
 script checks its download against the published `SHA256SUMS` before installing
 anything. From the scripts the binary lands in `~/.local/bin`, or
-`%LOCALAPPDATA%\leteo\bin` on Windows — Homebrew and Scoop put it where they
-put everything else. `LETEO_INSTALL_DIR` moves that, `LETEO_VERSION` takes a
+`%LOCALAPPDATA%\leteo\bin` on Windows — Homebrew, Scoop and winget put it where
+they put everything else. `LETEO_INSTALL_DIR` moves that, `LETEO_VERSION` takes a
 tag other than the latest release, and `LETEO_BASE_URL` downloads from
 somewhere other than GitHub releases. Those three belong to the scripts rather
 than to the binary, which is why they are not in the

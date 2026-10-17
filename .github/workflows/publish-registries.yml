@@ -151,6 +151,57 @@ jobs:
           fi
           npm publish --access public
 
+  # winget takes a new version as a pull request to microsoft/winget-pkgs, from
+  # a fork, so this is the one job here that holds a stored credential: no
+  # registry trades a GitHub OIDC token for a pull request, and Komac needs a
+  # classic token with `public_repo` to open one. The tap and the Scoop bucket
+  # poll for releases from their own repositories and need nothing from here;
+  # winget has no such side, and without this job it stayed at 0.1.2 for four
+  # releases. A missing secret fails by name rather than skipping, because a
+  # quiet skip is how that happened.
+  winget:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The workflow's own commit rather than the tag: the manifests describe
+      # the package as it is now, and a tag cut before they existed has none.
+      - uses: actions/checkout@v6
+      - name: Install Komac
+        run: |
+          set -euo pipefail
+          base=https://github.com/russellbanks/Komac/releases/download/v2.17.1
+          curl -fsSLO "$base/komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz"
+          # The sums file marks each name `*`, binary mode, which `sha256sum -c` reads.
+          curl -fsSL "$base/SHA256SUMS" | grep -E ' \*?komac-2\.17\.1-x86_64-unknown-linux-gnu\.tar\.gz$' | sha256sum -c -
+          tar -xzf komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz komac
+      - name: Submit unless winget already has it
+        env:
+          REF: ${{ inputs.ref }}
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${REF#v}"
+          if curl -fsS -o /dev/null \
+               "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/asanabrial/leteo/$version"; then
+            echo "winget-pkgs already has asanabrial.leteo $version"
+            exit 0
+          fi
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "::error::The WINGET_TOKEN secret is not set, so asanabrial.leteo $version was not submitted to winget. Add a classic token with the public_repo scope from the account that holds the winget-pkgs fork, then dispatch this workflow for $REF."
+            exit 1
+          fi
+          sh tools/winget/render.sh "$REF" manifests
+          # Komac exits 0 when it finds nothing it can submit, saying only
+          # "No valid packages to submit were found" — seen on 2.17.1 against a
+          # manifest set with mismatched versions and against one with an
+          # invalid installer type. So success is the pull request it names.
+          ./komac submit manifests --yes 2>&1 | tee submit.log
+          if ! grep -q 'https://github.com/microsoft/winget-pkgs/pull/' submit.log; then
+            echo "::error::Komac opened no pull request for asanabrial.leteo $version; its output is above."
+            exit 1
+          fi
+
   mcp-registry:
     # Last, because it is the only job that reads the other two's work. The
     # registry validates every package `server.json` offers before it accepts

@@ -158,7 +158,8 @@ jobs:
   # because Komac branches the fork at winget-pkgs' head, and GitHub refuses a
   # ref that changes workflow files without it: with `public_repo` alone, the
   # first dispatch for v0.4.2 failed on `CreateRef` against a fork 30,435
-  # commits behind, whose workflows differed from upstream's. The tap and the Scoop bucket
+  # commits behind, whose workflows differed from upstream's.
+  # The tap and the Scoop bucket
   # poll for releases from their own repositories and need nothing from here;
   # winget has no such side, and without this job it stayed at 0.1.2 for four
   # releases. A missing secret fails by name rather than skipping, because a

@@ -168,13 +168,20 @@ jobs:
       # the package as it is now, and a tag cut before they existed has none.
       - uses: actions/checkout@v6
       - name: Install Komac
+        env:
+          KOMAC: "2.17.1"
         run: |
           set -euo pipefail
-          base=https://github.com/russellbanks/Komac/releases/download/v2.17.1
-          curl -fsSLO "$base/komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz"
-          # The sums file marks each name `*`, binary mode, which `sha256sum -c` reads.
-          curl -fsSL "$base/SHA256SUMS" | grep -E ' \*?komac-2\.17\.1-x86_64-unknown-linux-gnu\.tar\.gz$' | sha256sum -c -
-          tar -xzf komac-2.17.1-x86_64-unknown-linux-gnu.tar.gz komac
+          archive="komac-$KOMAC-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/russellbanks/Komac/releases/download/v$KOMAC"
+          curl -fsSLO "$base/$archive"
+          # The sums file marks each name `*`, binary mode, which `sha256sum -c`
+          # reads. awk compares the name as a string, so its dots match only dots.
+          curl -fsSL "$base/SHA256SUMS" |
+            awk -v name="$archive" '$2 == name || $2 == "*" name' > komac.sha256
+          test -s komac.sha256
+          sha256sum -c komac.sha256
+          tar -xzf "$archive" komac
       - name: Submit unless winget already has it
         env:
           REF: ${{ inputs.ref }}
@@ -182,11 +189,17 @@ jobs:
         run: |
           set -euo pipefail
           version="${REF#v}"
-          if curl -fsS -o /dev/null \
-               "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/asanabrial/leteo/$version"; then
-            echo "winget-pkgs already has asanabrial.leteo $version"
-            exit 0
-          fi
+          # 404 is the only answer that means winget lacks the version. A rate
+          # limit or an unreachable API is a question nobody answered, and
+          # submitting on it could open a second pull request for a version
+          # winget already holds.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+               "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/asanabrial/leteo/$version" || true)"
+          case "$status" in
+            200) echo "winget-pkgs already has asanabrial.leteo $version"; exit 0 ;;
+            404) ;;
+            *) echo "::error::Could not ask winget-pkgs whether it holds asanabrial.leteo $version (HTTP $status); dispatch this workflow for $REF again."; exit 1 ;;
+          esac
           if [ -z "$GITHUB_TOKEN" ]; then
             echo "::error::The WINGET_TOKEN secret is not set, so asanabrial.leteo $version was not submitted to winget. Add a classic token with the public_repo scope from the account that holds the winget-pkgs fork, then dispatch this workflow for $REF."
             exit 1

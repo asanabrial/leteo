@@ -19,19 +19,36 @@ here="$(cd "$(dirname "$0")/../.." && pwd)"
 templates="$here/tools/winget/manifests"
 archive="leteo-$tag-x86_64-pc-windows-msvc.zip"
 
-sums="$(curl -fsSL "https://github.com/asanabrial/leteo/releases/download/$tag/SHA256SUMS")" || {
-    echo "the release $tag has no SHA256SUMS to read" >&2
-    exit 1
+# Fetches a URL into a file and answers its HTTP status, so a release that lacks
+# the file (404) is told apart from a request that went unanswered.
+fetch() {
+    curl -sSL -o "$2" -w '%{http_code}' "$1" || true
 }
-sha="$(printf '%s\n' "$sums" | awk -v name="$archive" '$2 == name || $2 == "*" name { print toupper($1) }')"
+
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+status="$(fetch "https://github.com/asanabrial/leteo/releases/download/$tag/SHA256SUMS" "$scratch/sums")"
+case "$status" in
+    200) ;;
+    404) echo "the release $tag has no SHA256SUMS" >&2; exit 1 ;;
+    *) echo "SHA256SUMS of $tag could not be read (HTTP $status); try again" >&2; exit 1 ;;
+esac
+sha="$(awk -v name="$archive" '$2 == name || $2 == "*" name { print toupper($1) }' "$scratch/sums")"
 if [ -z "$sha" ]; then
     echo "SHA256SUMS of $tag names no $archive" >&2
     exit 1
 fi
-date="$(curl -fsSL "https://api.github.com/repos/asanabrial/leteo/releases/tags/$tag" |
-    sed -n 's/.*"published_at": *"\([0-9-]*\)T.*/\1/p' | head -n 1)"
+
+status="$(fetch "https://api.github.com/repos/asanabrial/leteo/releases/tags/$tag" "$scratch/release")"
+case "$status" in
+    200) ;;
+    404) echo "GitHub has no published release for $tag" >&2; exit 1 ;;
+    *) echo "the release $tag could not be read from GitHub (HTTP $status); try again" >&2; exit 1 ;;
+esac
+date="$(sed -n 's/.*"published_at": *"\([0-9-]*\)T.*/\1/p' "$scratch/release" | head -n 1)"
 if [ -z "$date" ]; then
-    echo "GitHub reports no published release for $tag" >&2
+    echo "GitHub's answer for $tag carries no publication date" >&2
     exit 1
 fi
 

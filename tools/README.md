@@ -399,3 +399,18 @@ cargo run --release --manifest-path tools/retrieval/Cargo.toml -- copy.db --pipe
   their targets' words — only that it does no harm where it has nothing to do.
 
 See [`semantic/README.md`](semantic/README.md).
+
+## `winget` — the manifests every release submits
+
+`manifests/` holds the three winget manifests for `asanabrial.leteo` with the
+version, tag, SHA-256 and release date left as `@NAME@` placeholders, and
+`render.sh <tag> <directory>` fills them for one published release, reading the
+SHA-256 from that release's `SHA256SUMS`. The `winget` job of
+`publish-registries.yml` renders them and hands the directory to `komac submit`.
+
+```bash
+sh tools/winget/render.sh v0.4.2 /tmp/winget-manifests
+```
+
+The package description lives here, so a change to it reaches winget with the
+next release rather than by hand.

@@ -4,6 +4,39 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-03
+
+A worktree is known by its repository, and a project name that is only a guess
+says so.
+
+### Added
+
+- **Every release is submitted to winget.** The manifests live in the repository
+  and are filled in for each tag from its own `SHA256SUMS`; winget's maintainers
+  review each one as a pull request, so a version can reach it later than the
+  other registries (#308, #310, #312).
+
+### Fixed
+
+- **A worktree no longer becomes a project named after its folder.** Its identity
+  depended on running git, and any failure silently produced the folder's name,
+  reported as a successful detection. It now comes from the `.git` link and the
+  repository's shared config, read from disk. A worktree with no `origin` takes
+  its main checkout's name, a link whose target was moved or pruned still names
+  the repository it points into, and a worktree inherits an uncommitted
+  `.leteo/config.json` from its main checkout. Sessions already filed under the
+  folder's name are folded into the right project when the worktree is reopened
+  (#314).
+- **A parent directory of worktrees offers projects rather than branches.**
+  Children are named and folded by that same identity, so a folder holding
+  several worktrees of one repository is that repository instead of an ambiguous
+  choice between its branches (#314).
+- **A project name that could not be established says it is a guess.** When
+  neither the repository nor the directory can be read, detection answers
+  `dir_basename` with a warning instead of passing for a finding, and a hook uses
+  the project that directory's sessions recorded before accepting the guess
+  (#314).
+
 ## [0.4.2] - 2026-10-17
 
 Claude Code with a relocated profile gets all of Leteo in that profile.

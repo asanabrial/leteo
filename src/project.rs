@@ -77,21 +77,43 @@ pub const SCAN_TRUNCATED_LIST: &str =
     "the scan for repositories here ran out of time, so this list may be missing some";
 pub const SCAN_UNFINISHED: &str = "the scan for repositories here ran out of time, so this project name is a guess from the \
      directory name and the directory may in fact hold several";
+/// A `.git` was there and nothing could say which repository it belongs to: a
+/// link into a directory that has gone, or a git that did not answer. Detection
+/// reported this as `git_root`, a success, and filed under the folder's name.
+pub const IDENTITY_UNREADABLE: &str = "the repository behind this directory could not be read, so this project name is a guess \
+     from the directory name";
+/// A hook payload can name a worktree that has since been removed.
+pub const DIRECTORY_GONE: &str =
+    "this directory no longer exists, so this project name is a guess from its name";
+
+/// The warnings that mean `project` is a folder's name standing in for an answer
+/// detection could not reach.
+const GUESSES: [&str; 3] = [SCAN_UNFINISHED, IDENTITY_UNREADABLE, DIRECTORY_GONE];
 
 impl ProjectDetection {
+    /// Whether the project named here is a guess rather than a finding.
+    ///
+    /// A guess is the one detection a directory's recorded history outranks, so
+    /// callers have to be able to tell it from a folder that really is named
+    /// after itself, which carries the same source.
+    pub fn is_guess(&self) -> bool {
+        self.warning
+            .as_deref()
+            .is_some_and(|warning| GUESSES.contains(&warning))
+    }
+
     /// The warning that says detection could not finish, if that is what this
     /// one carries.
     ///
-    /// `warning` holds three different things and only two of them are a
-    /// problem. The third — that a single child repository was promoted — is
+    /// `warning` also says that a single child repository was promoted, which is
     /// detection working, and a caller that repeated it would put a line in
     /// front of somebody at every session in such a directory, which is how a
     /// warnings list stops being read. Asked here rather than by each caller,
-    /// so the two that matter cannot be listed differently in two places.
-    pub fn scan_warning(&self) -> Option<&str> {
+    /// so the ones that matter cannot be listed differently in two places.
+    pub fn unfinished_warning(&self) -> Option<&str> {
         self.warning
             .as_deref()
-            .filter(|warning| [SCAN_TRUNCATED_LIST, SCAN_UNFINISHED].contains(warning))
+            .filter(|warning| *warning == SCAN_TRUNCATED_LIST || GUESSES.contains(warning))
     }
 }
 
@@ -228,10 +250,16 @@ pub(crate) fn detect_project_within(
     }
 
     if let Some(root) = git_root {
-        if let Some(name) = detect_git_remote(&root) {
-            return successful_detection(name, SOURCE_GIT_REMOTE, &root);
-        }
-        return successful_detection(path_basename(&root), SOURCE_GIT_ROOT, &root);
+        return match detect_git_remote(&root) {
+            RemoteAnswer::Named(name) => successful_detection(name, SOURCE_GIT_REMOTE, &root),
+            RemoteAnswer::Absent => {
+                successful_detection(repository_folder_name(&root), SOURCE_GIT_ROOT, &root)
+            }
+            RemoteAnswer::Unknown => guessed_detection(&root, IDENTITY_UNREADABLE),
+        };
+    }
+    if matches!(cwd.try_exists(), Ok(false)) {
+        return guessed_detection(&cwd, DIRECTORY_GONE);
     }
 
     let (children, timed_out) = scan_child_repositories(&cwd, budget);
@@ -255,7 +283,20 @@ fn detection_from_children(cwd: &Path, children: &[PathBuf], timed_out: bool) ->
     // filed memories under the name of the folder containing them, silently,
     // and the ambiguity protection disappeared exactly when the machine was
     // least able to spare the attention to notice.
-    match (children, timed_out) {
+    //
+    // Named the way a save from inside each one would be filed, not after its
+    // folder, and folded on that name. The list is the whitelist a replayed
+    // choice is checked against, and in a directory of worktrees the folders are
+    // branches: about seventy of them were offered as projects on a real workspace,
+    // and picking one started a project named for a branch.
+    let mut named: Vec<(String, &PathBuf)> = Vec::new();
+    for child in children {
+        let name = project_on_disk(child);
+        if !named.iter().any(|(existing, _)| *existing == name) {
+            named.push((name, child));
+        }
+    }
+    match (named.as_slice(), timed_out) {
         // Two or more is ambiguous whether or not the scan finished: reaching
         // more entries cannot turn two repositories into one. What truncation
         // costs here is the completeness of the list, not the verdict, and the
@@ -263,10 +304,7 @@ fn detection_from_children(cwd: &Path, children: &[PathBuf], timed_out: bool) ->
         // says that it may be short rather than presenting a partial whitelist
         // as the whole of it.
         ([_, _, ..], _) => {
-            let available_projects = children
-                .iter()
-                .map(|child| normalize_project_name(&path_basename(child)))
-                .collect();
+            let available_projects = named.into_iter().map(|(name, _)| name).collect();
             ProjectDetection {
                 project: String::new(),
                 source: SOURCE_AMBIGUOUS.to_owned(),
@@ -278,9 +316,12 @@ fn detection_from_children(cwd: &Path, children: &[PathBuf], timed_out: bool) ->
                 ),
             }
         }
-        ([child], false) => {
-            let project = normalize_project_name(&path_basename(child));
-            let mut result = successful_detection(&project, SOURCE_GIT_CHILD, child);
+        // Several worktrees of one repository are one project, and which of them
+        // is "the" directory is not known, so the answer stands where it was
+        // asked rather than in whichever sorted first.
+        ([(project, child)], false) => {
+            let path = if children.len() == 1 { *child } else { cwd };
+            let mut result = successful_detection(project, SOURCE_GIT_CHILD, path);
             result.warning = Some(format!("auto-promoted child repository: {project}"));
             result
         }
@@ -291,11 +332,7 @@ fn detection_from_children(cwd: &Path, children: &[PathBuf], timed_out: bool) ->
         // all — but it is offered as a guess rather than as a finding, and a
         // single child is not promoted on the strength of a scan that never saw
         // whether it had company.
-        (_, true) => {
-            let mut result = successful_detection(path_basename(cwd), SOURCE_DIR_BASENAME, cwd);
-            result.warning = Some(SCAN_UNFINISHED.to_owned());
-            result
-        }
+        (_, true) => guessed_detection(cwd, SCAN_UNFINISHED),
         ([], false) => successful_detection(path_basename(cwd), SOURCE_DIR_BASENAME, cwd),
     }
 }
@@ -370,6 +407,14 @@ fn successful_detection(project: impl AsRef<str>, source: &str, path: &Path) -> 
     }
 }
 
+/// A folder's name offered as what it is, under the source a plain directory
+/// has, and with the warning that tells the two apart.
+fn guessed_detection(path: &Path, warning: &str) -> ProjectDetection {
+    let mut result = successful_detection(path_basename(path), SOURCE_DIR_BASENAME, path);
+    result.warning = Some(warning.to_owned());
+    result
+}
+
 fn detect_from_config(cwd: &Path, git_root: Option<&Path>) -> Option<ProjectDetection> {
     let Some(root) = git_root else {
         return read_config_at(cwd);
@@ -391,7 +436,22 @@ fn detect_from_config(cwd: &Path, git_root: Option<&Path>) -> Option<ProjectDete
         }
         current = parent.to_path_buf();
     }
-    None
+    config_of_main_checkout(root)
+}
+
+/// The configuration a worktree inherits from its main checkout.
+///
+/// A `.leteo/config.json` nobody committed is in the main checkout and in none
+/// of its worktrees, so one repository answered to two names. It reports the
+/// worktree as its path, because that is the directory the answer is about.
+fn config_of_main_checkout(root: &Path) -> Option<ProjectDetection> {
+    let Checkout::Linked(shared) = checkout_of(root) else {
+        return None;
+    };
+    let main = main_checkout(&shared)?;
+    let mut detection = read_config_at(main)?;
+    detection.path = path_string(root);
+    Some(detection)
 }
 
 fn read_config_at(project_directory: &Path) -> Option<ProjectDetection> {
@@ -538,8 +598,7 @@ fn git_root_by_walking(directory: &Path) -> Option<PathBuf> {
 /// get-url origin` reads it from.
 ///
 /// Only `origin`, only `url`, and only the first one — which is what the
-/// command returns. A `.git` that is a file points elsewhere for its
-/// configuration, so that case is left to git rather than guessed at.
+/// command returns.
 /// What `.git/config` had to say about `origin`.
 ///
 /// The distinction is the whole point: a file that is readable and names no
@@ -551,7 +610,117 @@ enum OriginUrl {
     Unreadable,
 }
 
-fn detect_git_remote(git_root: &Path) -> Option<String> {
+/// Where a checkout's repository keeps what it shares.
+enum Checkout {
+    /// A `.git` directory, a submodule, or a separate git directory: its
+    /// configuration is its own, and the toplevel is what names it.
+    Own(PathBuf),
+    /// A linked worktree, and the directory it shares with its siblings.
+    Linked(PathBuf),
+    /// Nothing that can be followed from the filesystem, which includes any
+    /// checkout git has been redirected away from.
+    Unreachable,
+}
+
+/// Follows a `.git` file the way git does, without being git.
+///
+/// In a worktree `.git` is a file, so `.git/config` cannot be read and the name
+/// depended on spawning a process: git off the PATH, or slower than
+/// `GIT_TIMEOUT`, and the worktree became a project named for its folder, which
+/// is a branch. A main checkout never had that exposure. Reproduced with all of
+/// those and with a pruned administrative directory, against a repository whose
+/// main checkout resolved correctly every time.
+///
+/// `commondir` is what tells a worktree from a submodule, which also has a
+/// `.git` file. Each link is relative to the directory holding it, and git writes
+/// them relative under `worktree.useRelativePaths`.
+fn checkout_of(root: &Path) -> Checkout {
+    if git_is_redirected() {
+        return Checkout::Unreachable;
+    }
+    let dot_git = root.join(".git");
+    let Ok(link) = fs::read_to_string(&dot_git) else {
+        return Checkout::Own(dot_git);
+    };
+    let Some(target) = link
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+    else {
+        return Checkout::Unreachable;
+    };
+    let git_dir = root.join(target);
+    if git_dir.is_dir() {
+        return match fs::read_to_string(git_dir.join("commondir")) {
+            Ok(common) => Checkout::Linked(canonical_path(git_dir.join(common.trim()))),
+            Err(_) => Checkout::Own(git_dir),
+        };
+    }
+    // The administrative directory is gone, and git refuses to run here at all,
+    // but the path that named it still says whose it was. Two workspaces on the
+    // machine this was found on sit in exactly this state, beside a main checkout
+    // that is perfectly healthy.
+    let shared = git_dir
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == "worktrees"))
+        .and_then(Path::parent)
+        .filter(|shared| shared.join("config").is_file());
+    shared.map_or(Checkout::Unreachable, |shared| {
+        Checkout::Linked(canonical_path(shared))
+    })
+}
+
+/// The checkout a shared directory belongs to, when it belongs to one: a bare
+/// repository has none.
+fn main_checkout(shared: &Path) -> Option<&Path> {
+    shared
+        .file_name()
+        .is_some_and(|name| name == ".git")
+        .then(|| shared.parent())
+        .flatten()
+}
+
+/// What a repository with no origin is called: its toplevel, except that a
+/// worktree's toplevel is usually named for a branch, so it answers to the
+/// repository it belongs to.
+fn repository_folder_name(root: &Path) -> String {
+    let Checkout::Linked(shared) = checkout_of(root) else {
+        return path_basename(root);
+    };
+    if let Some(main) = main_checkout(&shared) {
+        return path_basename(main);
+    }
+    let name = path_basename(&shared);
+    name.strip_suffix(".git").map(str::to_owned).unwrap_or(name)
+}
+
+/// The project a directory holding a repository would be filed under, from files
+/// alone: this is asked of every child of a directory, inside a scan whose budget
+/// is 200 ms, so a git process per child is not on offer. Falls back to the
+/// folder's name rather than to git for the same reason.
+fn project_on_disk(child: &Path) -> String {
+    if let Some(configured) = detect_from_config(child, Some(child))
+        && !configured.project.is_empty()
+    {
+        return configured.project;
+    }
+    let remote = match read_origin_url(child) {
+        OriginUrl::Named(url) => extract_repository_name(&url),
+        OriginUrl::None | OriginUrl::Unreadable => None,
+    };
+    normalize_project_name(&remote.unwrap_or_else(|| repository_folder_name(child)))
+}
+
+/// What could be established about a repository's remote. "Has none" and "could
+/// not find out" used to be one `None`, which is how a git that did not answer
+/// came out as a repository named for its folder.
+enum RemoteAnswer {
+    Named(String),
+    Absent,
+    Unknown,
+}
+
+fn detect_git_remote(git_root: &Path) -> RemoteAnswer {
     let remote = match read_origin_url(git_root) {
         OriginUrl::Named(url) => url,
         // This repository has no origin, and the file said so. Spawning git to
@@ -559,21 +728,30 @@ fn detect_git_remote(git_root: &Path) -> Option<String> {
         // hook, which is every prompt somebody types. It was invisible because
         // the fallback is only reached when the fast path finds nothing, and
         // "found nothing" was being read as "could not look".
-        OriginUrl::None => return None,
-        OriginUrl::Unreadable => run_git(git_root, &["remote", "get-url", "origin"])?,
+        OriginUrl::None => return RemoteAnswer::Absent,
+        OriginUrl::Unreadable => match run_git(git_root, &["remote", "get-url", "origin"]) {
+            Some(url) => url,
+            // A failure here is either a repository with no origin or a git that
+            // could not do its job, and the exit code of a command that may never
+            // have started cannot tell them apart. Asking something every working
+            // repository can answer does. Only this path pays for it, and it is
+            // not the path a readable config takes.
+            None if run_git(git_root, &["rev-parse", "--git-dir"]).is_some() => {
+                return RemoteAnswer::Absent;
+            }
+            None => return RemoteAnswer::Unknown,
+        },
     };
-    extract_repository_name(&remote).map(|name| normalize_project_name(&name))
+    extract_repository_name(&remote).map_or(RemoteAnswer::Absent, |name| {
+        RemoteAnswer::Named(normalize_project_name(&name))
+    })
 }
 
 fn read_origin_url(git_root: &Path) -> OriginUrl {
-    if git_is_redirected() {
+    let (Checkout::Own(git_dir) | Checkout::Linked(git_dir)) = checkout_of(git_root) else {
         return OriginUrl::Unreadable;
-    }
-    let config = git_root.join(".git").join("config");
-    let Ok(text) = fs::read_to_string(config) else {
-        // A `.git` that is a file — a worktree or a submodule — keeps its
-        // configuration elsewhere, and that is git's business rather than a
-        // path to guess at.
+    };
+    let Ok(text) = fs::read_to_string(git_dir.join("config")) else {
         return OriginUrl::Unreadable;
     };
     let mut inside_origin = false;
@@ -1547,21 +1725,21 @@ mod detected_names {
         let promovido = detection_from_children(cwd, std::slice::from_ref(&uno), false);
         assert!(promovido.warning.is_some(), "it does carry one");
         assert_eq!(
-            promovido.scan_warning(),
+            promovido.unfinished_warning(),
             None,
             "but promoting the only repository there is is not a problem"
         );
 
         assert_eq!(
-            detection_from_children(cwd, &[uno.clone(), dos], true).scan_warning(),
+            detection_from_children(cwd, &[uno.clone(), dos], true).unfinished_warning(),
             Some(SCAN_TRUNCATED_LIST)
         );
         assert_eq!(
-            detection_from_children(cwd, std::slice::from_ref(&uno), true).scan_warning(),
+            detection_from_children(cwd, std::slice::from_ref(&uno), true).unfinished_warning(),
             Some(SCAN_UNFINISHED)
         );
         assert_eq!(
-            detection_from_children(cwd, &[], false).scan_warning(),
+            detection_from_children(cwd, &[], false).unfinished_warning(),
             None
         );
     }
@@ -1637,5 +1815,420 @@ mod detected_names {
                 detection.available_projects
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod worktree_identity {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn git(directory: &Path, arguments: &[&str]) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// A repository with one commit, or nothing on a machine with no git.
+    fn repository(parent: &Path, name: &str, origin: Option<&str>) -> Option<PathBuf> {
+        let root = parent.join(name);
+        fs::create_dir_all(&root).ok()?;
+        if !git(&root, &["init", "--quiet"]) {
+            return None;
+        }
+        assert!(git(
+            &root,
+            &["commit", "--quiet", "--allow-empty", "-m", "x"]
+        ));
+        if let Some(origin) = origin {
+            assert!(git(&root, &["remote", "add", "origin", origin]));
+        }
+        Some(canonical_path(root))
+    }
+
+    fn worktree(main: &Path, at: &Path) -> PathBuf {
+        // `~` is legal in the folder a worktree lives in and not in a branch.
+        let branch = path_basename(at).replace('~', "-");
+        assert!(git(
+            main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                &path_string(at),
+                "-b",
+                &branch
+            ]
+        ));
+        canonical_path(at)
+    }
+
+    /// The detection, and how many git processes it took to reach it.
+    fn detect_counting(directory: &Path) -> (ProjectDetection, usize) {
+        let before = GIT_SPAWNS.with(std::cell::Cell::get);
+        let detection = detect_project_within(directory, Duration::from_secs(30));
+        (detection, GIT_SPAWNS.with(std::cell::Cell::get) - before)
+    }
+
+    /// With no origin the folder was all a worktree had, and its folder is
+    /// named for a branch: `issue-42~claude-abc` beside a main checkout called
+    /// `localrepo`, one repository filed as two projects.
+    #[test]
+    fn a_worktree_with_no_origin_takes_the_name_of_its_main_checkout() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(temp.path(), "localrepo", None) else {
+            return;
+        };
+        let linked = worktree(&main, &temp.path().join("issue-42~claude-abc"));
+
+        let (detection, spawned) = detect_counting(&linked);
+
+        assert_eq!(detection.project, "localrepo", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_ROOT);
+        assert_eq!(detection.path, path_string(&linked));
+        assert_eq!(detection.warning, None);
+        assert_eq!(spawned, 0, "the shared config answered");
+    }
+
+    /// Reached through a process, this answer was only as good as the process:
+    /// git off the PATH, or slower than `GIT_TIMEOUT` on a loaded machine, and
+    /// the worktree became a project named for its folder. A main checkout
+    /// never had that exposure.
+    #[test]
+    fn a_worktree_reads_the_shared_origin_without_asking_git() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(
+            temp.path(),
+            "folder-name",
+            Some("git@github.com:someone/Real-Name.git"),
+        ) else {
+            return;
+        };
+        let linked = worktree(&main, &temp.path().join("wt"));
+
+        let (detection, spawned) = detect_counting(&linked);
+
+        assert_eq!(detection.project, "real-name", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_REMOTE);
+        assert_eq!(spawned, 0, "no process on the path every prompt takes");
+
+        let from_git = run_git(&linked, &["remote", "get-url", "origin"]).unwrap();
+        assert!(
+            matches!(read_origin_url(&linked), OriginUrl::Named(url) if url == from_git),
+            "held to git's own answer rather than to a string written here"
+        );
+    }
+
+    /// `paris` and `nuuk` on the machine this was found on: the administrative
+    /// directory was pruned, git refuses to run there at all, and the `.git`
+    /// file still names a main checkout that is perfectly healthy.
+    #[test]
+    fn a_broken_link_still_names_the_repository_it_points_into() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(
+            temp.path(),
+            "folder-name",
+            Some("https://example.com/someone/real-name.git"),
+        ) else {
+            return;
+        };
+        let linked = worktree(&main, &temp.path().join("paris"));
+        fs::remove_dir_all(main.join(".git").join("worktrees").join("paris")).unwrap();
+        assert_eq!(run_git(&linked, &["remote", "get-url", "origin"]), None);
+
+        let (detection, spawned) = detect_counting(&linked);
+
+        assert_eq!(detection.project, "real-name", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_REMOTE);
+        assert_eq!(spawned, 0);
+    }
+
+    /// This is the case that used to be reported as `git_root`, a success, and
+    /// the folder name it carried was a guess nothing marked as one.
+    #[test]
+    fn a_link_into_nothing_is_a_guess_that_says_so() {
+        let temp = TempDir::new().unwrap();
+        let orphan = temp.path().join("orphan");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(
+            orphan.join(".git"),
+            "gitdir: /nonexistent/repo/.git/worktrees/orphan\n",
+        )
+        .unwrap();
+
+        let (detection, _) = detect_counting(&orphan);
+
+        assert_eq!(detection.project, "orphan", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_DIR_BASENAME);
+        assert_eq!(detection.warning.as_deref(), Some(IDENTITY_UNREADABLE));
+        assert!(detection.is_guess());
+    }
+
+    /// A repository git can read and that simply has no origin is not a guess.
+    /// Only reached when the config cannot be read directly, so it is built
+    /// that way: telling the two apart is what keeps the warning honest.
+    #[test]
+    fn no_origin_behind_an_unreadable_config_is_not_mistaken_for_a_failure() {
+        let temp = TempDir::new().unwrap();
+        let Some(root) = repository(temp.path(), "plain", None) else {
+            return;
+        };
+        fs::remove_file(root.join(".git").join("config")).unwrap();
+        assert!(matches!(read_origin_url(&root), OriginUrl::Unreadable));
+
+        let (detection, _) = detect_counting(&root);
+        assert_eq!(detection.source, SOURCE_GIT_ROOT, "{detection:?}");
+        assert_eq!(detection.project, "plain");
+        assert_eq!(detection.warning, None);
+
+        let hollow = temp.path().join("hollow");
+        fs::create_dir_all(hollow.join(".git")).unwrap();
+        let (detection, _) = detect_counting(&hollow);
+        assert_eq!(detection.source, SOURCE_DIR_BASENAME, "{detection:?}");
+        assert_eq!(detection.warning.as_deref(), Some(IDENTITY_UNREADABLE));
+    }
+
+    /// `worktree.useRelativePaths` writes both links relative, each to a
+    /// different directory. Spelled by hand because the option needs git 2.48.
+    #[test]
+    fn relative_links_resolve_against_their_own_directories() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(
+            temp.path(),
+            "folder-name",
+            Some("https://example.com/someone/relative-name.git"),
+        ) else {
+            return;
+        };
+        let linked = worktree(&main, &temp.path().join("wt"));
+        fs::write(
+            linked.join(".git"),
+            "gitdir: ../folder-name/.git/worktrees/wt\n",
+        )
+        .unwrap();
+        fs::write(
+            main.join(".git")
+                .join("worktrees")
+                .join("wt")
+                .join("commondir"),
+            "../..\n",
+        )
+        .unwrap();
+
+        let (detection, spawned) = detect_counting(&linked);
+
+        assert_eq!(detection.project, "relative-name", "{detection:?}");
+        assert_eq!(spawned, 0);
+    }
+
+    #[test]
+    fn a_worktree_of_a_bare_repository_is_named_without_the_suffix() {
+        let temp = TempDir::new().unwrap();
+        let Some(seed) = repository(temp.path(), "seed", None) else {
+            return;
+        };
+        let bare = temp.path().join("shared.git");
+        assert!(git(
+            temp.path(),
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                &path_string(&seed),
+                &path_string(&bare)
+            ]
+        ));
+        assert!(git(&bare, &["remote", "remove", "origin"]));
+        let linked = worktree(&bare, &temp.path().join("wt"));
+
+        let (detection, _) = detect_counting(&linked);
+
+        assert_eq!(detection.project, "shared", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_ROOT);
+    }
+
+    /// A submodule also has a `.git` file, and its own configuration rather
+    /// than a shared one. Named as a worktree it would become `modules`.
+    #[test]
+    fn a_submodule_shape_keeps_its_own_config_and_its_own_name() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("vendored");
+        let git_dir = temp.path().join("super/.git/modules/vendored");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", path_string(&git_dir)),
+        )
+        .unwrap();
+        fs::write(
+            git_dir.join("config"),
+            "[remote \"origin\"]\n\turl = https://example.com/someone/its-own.git\n",
+        )
+        .unwrap();
+        assert_eq!(detect_project(&root).project, "its-own");
+
+        fs::write(git_dir.join("config"), "[core]\n\tbare = false\n").unwrap();
+        let (detection, spawned) = detect_counting(&root);
+        assert_eq!(detection.project, "vendored", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_ROOT);
+        assert_eq!(spawned, 0);
+    }
+
+    /// A removed worktree can still be named by a hook payload, and it used to
+    /// come back as `dir_basename` with nothing to tell it from a real folder.
+    #[test]
+    fn a_directory_that_no_longer_exists_is_a_guess_that_says_so() {
+        let temp = TempDir::new().unwrap();
+        let detection = detect_project(temp.path().join("wt-deleted"));
+        assert_eq!(detection.project, "wt-deleted", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_DIR_BASENAME);
+        assert_eq!(detection.warning.as_deref(), Some(DIRECTORY_GONE));
+        assert!(detection.is_guess());
+    }
+
+    /// Only an unfinished answer is a guess: a folder with no repository in it
+    /// is named after itself on purpose, and promoting a child is a finding.
+    #[test]
+    fn only_an_unfinished_answer_counts_as_a_guess() {
+        let temp = TempDir::new().unwrap();
+        let plain = temp.path().join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        assert!(!detect_project(&plain).is_guess());
+
+        let cwd = Path::new("/workspace");
+        let child = PathBuf::from("/workspace/alpha");
+        assert!(!detection_from_children(cwd, std::slice::from_ref(&child), false).is_guess());
+        assert!(detection_from_children(cwd, &[], true).is_guess());
+        assert!(
+            !detection_from_children(cwd, &[child, PathBuf::from("/workspace/beta")], true)
+                .is_guess(),
+            "ambiguous names no project, so there is no guess to replace"
+        );
+    }
+
+    #[test]
+    fn a_parent_of_one_worktree_promotes_the_repository_not_the_branch() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(
+            temp.path(),
+            "folder-name",
+            Some("https://example.com/someone/real-name.git"),
+        ) else {
+            return;
+        };
+        let parent = canonical_path(temp.path().join("one"));
+        fs::create_dir_all(&parent).unwrap();
+        let linked = worktree(&main, &parent.join("only-worktree"));
+
+        let detection = detect_project_within(&parent, Duration::from_secs(30));
+
+        assert_eq!(detection.project, "real-name", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_CHILD);
+        assert_eq!(detection.path, path_string(&linked));
+    }
+
+    /// Two worktrees of one repository are one project, so there is nothing to
+    /// ask about. And which of them is "the" directory is not known, so the
+    /// detection stands where it was asked rather than picking one.
+    #[test]
+    fn a_parent_of_two_worktrees_of_one_repository_is_not_ambiguous() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(
+            temp.path(),
+            "folder-name",
+            Some("https://example.com/someone/real-name.git"),
+        ) else {
+            return;
+        };
+        let parent = canonical_path(temp.path().join("two"));
+        fs::create_dir_all(&parent).unwrap();
+        let parent = canonical_path(parent);
+        worktree(&main, &parent.join("first-worktree"));
+        worktree(&main, &parent.join("second-worktree"));
+
+        let detection = detect_project_within(&parent, Duration::from_secs(30));
+
+        assert_eq!(detection.project, "real-name", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_GIT_CHILD);
+        assert_eq!(detection.path, path_string(&parent));
+    }
+
+    /// The list is the whitelist an agent's choice is checked against, so it
+    /// has to hold what a save from inside each one would be filed under. It
+    /// held folder names: about seventy branches offered as projects on one workspace.
+    #[test]
+    fn an_ambiguous_parent_offers_the_projects_rather_than_the_folders() {
+        let temp = TempDir::new().unwrap();
+        let parent = temp.path().join("workspace");
+        fs::create_dir_all(&parent).unwrap();
+        let Some(_) = repository(
+            &parent,
+            "folder-a",
+            Some("https://example.com/someone/project-a.git"),
+        ) else {
+            return;
+        };
+        repository(
+            &parent,
+            "folder-b",
+            Some("https://example.com/someone/project-b.git"),
+        )
+        .unwrap();
+        repository(&parent, "no-remote", None).unwrap();
+
+        let detection = detect_project_within(&parent, Duration::from_secs(30));
+
+        assert_eq!(detection.source, SOURCE_AMBIGUOUS, "{detection:?}");
+        assert_eq!(
+            detection.available_projects,
+            ["project-a", "project-b", "no-remote"]
+        );
+    }
+
+    /// A `.leteo/config.json` nobody committed is in the main checkout and in
+    /// none of its worktrees, so the same repository answered to two names.
+    #[test]
+    fn a_worktree_falls_back_to_the_config_of_its_main_checkout() {
+        let temp = TempDir::new().unwrap();
+        let Some(main) = repository(
+            temp.path(),
+            "folder-name",
+            Some("https://example.com/someone/real-name.git"),
+        ) else {
+            return;
+        };
+        let linked = worktree(&main, &temp.path().join("wt"));
+        fs::create_dir_all(main.join(CONFIG_DIRECTORY)).unwrap();
+        fs::write(
+            main.join(CONFIG_DIRECTORY).join(CONFIG_FILE),
+            r#"{"project_name":"chosen-name"}"#,
+        )
+        .unwrap();
+
+        let detection = detect_project(&linked);
+
+        assert_eq!(detection.project, "chosen-name", "{detection:?}");
+        assert_eq!(detection.source, SOURCE_CONFIG);
+        assert_eq!(detection.path, path_string(&linked));
+
+        fs::create_dir_all(linked.join(CONFIG_DIRECTORY)).unwrap();
+        fs::write(
+            linked.join(CONFIG_DIRECTORY).join(CONFIG_FILE),
+            r#"{"project_name":"its-own"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_project(&linked).project,
+            "its-own",
+            "a config in the worktree itself is nearer and still wins"
+        );
     }
 }

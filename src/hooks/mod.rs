@@ -412,6 +412,24 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     let directory = resolve_directory(&input.cwd);
     let detection = detect_project(&directory);
     let mut project = resolve_project(input, &detection);
+    let named_by_agent = !input
+        .project
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty();
+    // A guess is a folder's name, and what this directory's sessions were filed
+    // under is evidence. It has to be settled before the session exists, because
+    // the session then owns its project: a removed worktree opening one under its
+    // folder name files the whole conversation there.
+    if !named_by_agent
+        && detection.is_guess()
+        && let Ok(recorded) =
+            store.recent_projects_in_directory(&directory.to_string_lossy(), &project)
+        && let Some(newest) = recorded.into_iter().next()
+    {
+        project = newest;
+    }
     let session_id = resolve_session_id(input, &project);
 
     // An existing session owns its project, exactly as the MCP tools treat it.
@@ -452,16 +470,11 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     // against the input alone, because the session override happens between the
     // two and is the commoner of the two ways detection gets overruled.
     //
-    // And only the warnings about a scan that could not finish — see
-    // `ProjectDetection::scan_warning`, which is where that rule lives.
+    // And only the warnings about detection that could not finish — see
+    // `ProjectDetection::unfinished_warning`, which is where that rule lives.
     if project == normalize::project(&detection.project)
-        && input
-            .project
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
-        && let Some(warning) = detection.scan_warning()
+        && !named_by_agent
+        && let Some(warning) = detection.unfinished_warning()
     {
         outcome.warnings.push(warning.to_owned());
     }

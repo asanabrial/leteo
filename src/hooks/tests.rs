@@ -664,6 +664,82 @@ fn an_ambiguous_directory_warns_instead_of_writing_to_a_guessed_project() {
     assert_eq!(store.stats().unwrap().total_sessions, 0);
 }
 
+/// A guess is the one detection a directory's history should overrule: a session
+/// owns its project for the whole conversation, so a removed worktree opening a
+/// session under its folder name would file everything after it there too.
+#[test]
+fn a_guessed_project_gives_way_to_the_one_the_directory_recorded() {
+    let temp = TempDir::new().unwrap();
+    let removed = temp.path().join("wt-deleted");
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    store
+        .create_session("earlier", "real-project", &removed.to_string_lossy())
+        .unwrap();
+
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "later".to_owned(),
+            cwd: removed.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.project, "real-project", "{outcome:?}");
+    assert_eq!(store.get_session("later").unwrap().project, "real-project");
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+}
+
+/// With no history the guess stands, because dropping the session would drop
+/// what the agent captures. What it may not do is pass for a finding.
+#[test]
+fn a_guess_with_no_history_warns_rather_than_passing_for_a_finding() {
+    let temp = TempDir::new().unwrap();
+    let removed = temp.path().join("wt-deleted");
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "s".to_owned(),
+            cwd: removed.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.project, "wt-deleted", "{outcome:?}");
+    assert_eq!(outcome.warnings, [crate::project::DIRECTORY_GONE]);
+}
+
+/// A name the agent gave, and a session that already exists, were never guesses.
+#[test]
+fn a_guess_does_not_overrule_a_named_project() {
+    let temp = TempDir::new().unwrap();
+    let removed = temp.path().join("wt-deleted");
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    store
+        .create_session("earlier", "recorded", &removed.to_string_lossy())
+        .unwrap();
+
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "later".to_owned(),
+            cwd: removed.to_string_lossy().into_owned(),
+            project: Some("named".to_owned()),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.project, "named", "{outcome:?}");
+}
+
 #[test]
 fn a_renamed_project_folds_the_directory_name_into_the_detected_project() {
     let temp = TempDir::new().unwrap();

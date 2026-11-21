@@ -2492,5 +2492,17 @@
     "file": "plugin/pi/leteo.ts",
     "old": "next steps, and relevant files.`",
     "new": "next steps, and relevant files. After context compaction,\npersist the compacted summary first and then restore context with \\`mem_context\\`.`"
+  },
+  {
+    "name": "rename: an applied rename moves a project this store never shared",
+    "file": "src/store/wire.rs",
+    "old": "name != canonical && is_enrolled_tx(tx, &name)? {",
+    "new": "name != canonical {"
+  },
+  {
+    "name": "rename: a chunk drops the rename the server was asked to keep",
+    "file": "src/cloud/cloudstore/mod.rs",
+    "old": "crate::sync::ENTITY_RELATION | crate::sync::ENTITY_PROJECT_RENAME\n",
+    "new": "crate::sync::ENTITY_RELATION\n"
   }
 ]

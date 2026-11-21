@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 
 mod payload;
 
+pub(crate) use payload::ProjectRenameMutationPayload;
 pub use payload::canonicalize_for_project;
 use payload::*;
 

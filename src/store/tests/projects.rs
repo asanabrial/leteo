@@ -1602,7 +1602,7 @@ fn a_delete_filed_before_a_merge_reaches_a_peer_that_never_merged() {
     let mut memory = observation("s1", "Sent and then removed", "gone");
     memory.project = Some("old-project".to_owned());
     let saved = store.add_observation(memory).unwrap().observation;
-    let (_peer_temp, mut peer) = bare_store();
+    let (_peer_temp, mut peer) = enrolled_store(&["old-project"]);
     deliver(&mut store, &mut peer, "old-project");
     assert_eq!(
         project_of_observation(&peer, &saved.sync_id),
@@ -1633,7 +1633,7 @@ fn a_delete_filed_after_a_merge_finds_the_row_on_a_peer_that_never_merged() {
     let mut kept = observation("s1", "Kept", "stays");
     kept.project = Some("old-project".to_owned());
     let kept = store.add_observation(kept).unwrap().observation;
-    let (_peer_temp, mut peer) = bare_store();
+    let (_peer_temp, mut peer) = enrolled_store(&["old-project"]);
     deliver(&mut store, &mut peer, "old-project");
 
     store
@@ -1756,6 +1756,95 @@ fn a_store_does_not_apply_the_rename_it_sent() {
     assert_eq!(
         project_of_observation(&store, &again.sync_id).0,
         "old-project"
+    );
+}
+
+fn rename_from_peer(sources: &[&str], project: &str) -> SyncMutation {
+    SyncMutation {
+        seq: 1,
+        target_key: "cloud".to_owned(),
+        entity: crate::sync::ENTITY_PROJECT_RENAME.to_owned(),
+        entity_key: "rename-from-a-peer".to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": "rename-from-a-peer",
+            "sources": sources,
+            "project": project,
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: project.to_owned(),
+        occurred_at: String::new(),
+        acked_at: None,
+    }
+}
+
+fn memory_in(store: &mut Store, session: &str, project: &str) -> String {
+    store.create_session(session, project, "C:/any").unwrap();
+    let mut memory = observation(session, "Held here", "body");
+    memory.project = Some(project.to_owned());
+    store.add_observation(memory).unwrap().observation.sync_id
+}
+
+/// A rename a peer sent moves only the names this store replicates.
+///
+/// The names in it are the sender's word: a project that exists only on this
+/// machine, and that was never shared, would otherwise be filed under the
+/// shared one and queued to every peer from then on.
+#[test]
+fn a_rename_from_a_peer_does_not_move_a_project_this_store_never_shared() {
+    let (_temp, mut store) = enrolled_store(&["shared-old"]);
+    let shared = memory_in(&mut store, "s1", "shared-old");
+    let private = memory_in(&mut store, "s2", "private-notes");
+
+    store
+        .apply_pulled_sync_mutation(
+            "cloud",
+            &rename_from_peer(&["shared-old", "private-notes"], "shared-new"),
+        )
+        .unwrap();
+
+    assert_eq!(
+        project_of_observation(&store, &shared).0,
+        "shared-new",
+        "the name this store replicates still moves"
+    );
+    assert_eq!(
+        project_of_observation(&store, &private).0,
+        "private-notes",
+        "a project that was never shared was filed under the shared one"
+    );
+    let sessions: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE project = 'private-notes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sessions, 1);
+    assert!(
+        !store
+            .enrolled_projects()
+            .unwrap()
+            .contains(&"private-notes".to_owned())
+    );
+}
+
+/// A rename whose every source was skipped leaves the destination alone.
+#[test]
+fn a_rename_that_names_only_unshared_projects_enrols_nothing() {
+    let (_temp, mut store) = bare_store();
+    let private = memory_in(&mut store, "s1", "private-notes");
+
+    store
+        .apply_pulled_sync_mutation("cloud", &rename_from_peer(&["private-notes"], "shared-new"))
+        .unwrap();
+
+    assert_eq!(project_of_observation(&store, &private).0, "private-notes");
+    assert!(
+        store.enrolled_projects().unwrap().is_empty(),
+        "a rename that moved nothing enrolled its destination"
     );
 }
 

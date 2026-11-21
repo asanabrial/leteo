@@ -104,6 +104,11 @@ interface HookInput {
   source?: string
   /** Leave the memory directive out of a `session-start` answer. */
   without_directive?: boolean
+  /**
+   * What the call answers lives in one turn's system prompt and is gone from the
+   * next, so the hook must not record it as delivered.
+   */
+  transient_hints?: boolean
 }
 
 /** The response `leteo hook` prints. */
@@ -204,11 +209,12 @@ export const Leteo: Plugin = async (ctx) => {
   /**
    * What the per-prompt hook named for the turn in progress, by session.
    *
-   * The hook records every memory it names as shown, so its answer has to reach
-   * the agent. `chat.message` cannot carry it: adding a part there would put the
-   * hint in the user's transcript as something they said. The system prompt is
-   * rebuilt for every model call of a turn, so the hint is kept until the next
-   * prompt replaces it and every step of the turn sees it.
+   * `chat.message` cannot carry it: adding a part there would put the hint in
+   * the user's transcript as something they said. The system prompt is rebuilt
+   * for every model call of a turn, so the hint is kept until the next prompt
+   * replaces it and every step of the turn sees it, and not a turn longer. The
+   * hook is told so, because a memory it recorded as shown would be withheld
+   * from a later turn that no longer holds it.
    */
   const hints = new Map<string, string>()
 
@@ -326,6 +332,7 @@ export const Leteo: Plugin = async (ctx) => {
           session_id: sessionID,
           cwd: directory,
           prompt: content,
+          transient_hints: true,
         }),
       )
       if (hint) hints.set(sessionID, hint)
@@ -441,6 +448,33 @@ function isForeign(event: any, directory: string): boolean {
 }
 
 /**
+ * What 2.x emits when a compaction finishes. A host may emit it without the
+ * `session.compacted` the 1.x handler listens to, and one that emits both
+ * announces one compaction twice.
+ */
+const V2_COMPACTION_ENDED = "session.next.compaction.ended"
+
+/** Two compaction events of one session this close are the same compaction. */
+export const V2_COMPACTION_WINDOW_MS = 10_000
+
+/**
+ * Whether an event announcing a compaction is the first of its compaction, so
+ * that one compaction runs `post-compaction` once and not once per event name.
+ * Kept by session and arrival time: `session.compacted` carries no timestamp of
+ * its own to compare with the other event's.
+ */
+export function firstOfCompaction(
+  seen: Map<string, number>,
+  sessionID: string,
+  now: number = Date.now(),
+): boolean {
+  const last = seen.get(sessionID)
+  if (last !== undefined && now - last < V2_COMPACTION_WINDOW_MS) return false
+  seen.set(sessionID, now)
+  return true
+}
+
+/**
  * 2.x session events carry `data.sessionID`; the V1 handler reads
  * `properties.info.id`.
  */
@@ -451,15 +485,16 @@ function v1SessionEvent(event: any, directory: string): any {
     event.type !== "session.created" &&
     event.type !== "session.updated" &&
     event.type !== "session.deleted" &&
-    event.type !== "session.compacted"
+    event.type !== "session.compacted" &&
+    event.type !== V2_COMPACTION_ENDED
   ) {
     return undefined
   }
   if (isForeign(event, directory)) return undefined
   // 1.x carries the id of a compacted session in `properties.sessionID`, not in
   // an `info` object like the lifecycle events.
-  if (event.type === "session.compacted") {
-    return { type: event.type, properties: { sessionID: data.sessionID } }
+  if (event.type === "session.compacted" || event.type === V2_COMPACTION_ENDED) {
+    return { type: "session.compacted", properties: { sessionID: data.sessionID } }
   }
   if (event.type === "session.deleted") {
     return { type: event.type, properties: { info: { id: data.sessionID } } }
@@ -510,6 +545,7 @@ async function setupLeteoV2(ctx: V2Context): Promise<() => Promise<void>> {
   const abort = new AbortController()
   const registrations: V2Registration[] = []
   let listening: Promise<void> = Promise.resolve()
+  const compactions = new Map<string, number>()
   const cleanup = async () => {
     abort.abort()
     await Promise.all(registrations.map((registration) => registration.dispose()))
@@ -554,7 +590,13 @@ async function setupLeteoV2(ctx: V2Context): Promise<() => Promise<void>> {
                 )
               }
               const translated = v1SessionEvent(event, ctx.location.directory)
-              if (translated) await hooks.event({ event: translated })
+              if (translated) {
+                const sessionID: string = translated.properties?.sessionID ?? translated.properties?.info?.id
+                if (translated.type === "session.deleted") compactions.delete(sessionID)
+                if (translated.type !== "session.compacted" || firstOfCompaction(compactions, sessionID)) {
+                  await hooks.event({ event: translated })
+                }
+              }
             } catch {
               // One failing event must not stop lifecycle tracking.
             }

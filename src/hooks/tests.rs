@@ -2731,6 +2731,91 @@ fn the_second_hint_of_a_session_carries_a_shorter_header() {
     );
 }
 
+/// A host that drops the hint after its turn is not told the memory was shown.
+///
+/// Pi and OpenCode put the hint in the system prompt of one run. Recorded as
+/// shown anyway, a memory named once was withheld for the rest of the session
+/// from an agent that no longer held it.
+#[test]
+fn a_host_that_forgets_the_hint_is_offered_the_memory_again() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let answer = crowd_and_answer(&mut store, "We chose SQLite as the storage engine");
+    let named = format!("- #{}", answer.id);
+
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    let hint = |store: &mut Store, prompt: &HookInput| {
+        run(store, HookEvent::UserPromptSubmit, prompt)
+            .unwrap()
+            .additional_context
+    };
+
+    let mut transient = prompt.clone();
+    transient.transient_hints = true;
+    for turn in 0..2 {
+        let said = hint(&mut store, &transient)
+            .unwrap_or_else(|| panic!("turn {turn}: the host lost the hint, so it is said again"));
+        assert!(said.contains(&named), "{said}");
+        assert!(
+            said.contains("These are matches on the words"),
+            "turn {turn}: and so is the sentence that explains it: {said}"
+        );
+    }
+
+    let (temp, mut store) = self::store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    crowd_and_answer(&mut store, "We chose SQLite as the storage engine");
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    assert!(hint(&mut store, &prompt).is_some());
+    assert!(
+        hint(&mut store, &prompt).is_none(),
+        "a host that keeps the hint is still not told twice"
+    );
+}
+
+/// What an opening block listed is only held by a host that keeps the block.
+#[test]
+fn an_opening_block_a_host_forgets_is_not_recorded_as_held() {
+    let question = "Which storage engine did we choose?";
+    for (transient, spoken) in [(true, true), (false, false)] {
+        let (temp, mut store) = store();
+        let payload = input(temp.path());
+        run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+        let answer = crowd_and_answer(&mut store, "We chose SQLite as the storage engine");
+        let mut opening = payload.clone();
+        opening.transient_hints = transient;
+        let block = run(&mut store, HookEvent::SessionStart, &opening)
+            .unwrap()
+            .additional_context
+            .expect("a session opening carries context");
+        assert!(block.contains(&format!("#{}", answer.id)), "{block}");
+
+        let mut prompt = payload.clone();
+        prompt.prompt = question.to_owned();
+        prompt.transient_hints = transient;
+        let hint = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+            .unwrap()
+            .additional_context;
+        assert_eq!(hint.is_some(), spoken, "transient={transient}: {hint:?}");
+
+        let mut recovery = payload.clone();
+        recovery.transient_hints = transient;
+        run(&mut store, HookEvent::PostCompaction, &recovery).unwrap();
+        let again = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+            .unwrap()
+            .additional_context;
+        assert_eq!(
+            again.is_some(),
+            spoken,
+            "after a compaction, transient={transient}"
+        );
+    }
+}
+
 /// Opening a session must leave the file readable by every Leteo that wrote one.
 #[test]
 fn a_state_file_from_before_the_new_fields_still_reads() {

@@ -147,8 +147,7 @@ which project it belongs to, then retry with their choice plus
 ### Close sessions
 
 Before saying the work is done, call \`mem_session_summary\` with the goal,
-discoveries, accomplishments, next steps, and relevant files. After context compaction,
-persist the compacted summary first and then restore context with \`mem_context\`.`
+discoveries, accomplishments, next steps, and relevant files.`
 
 /**
  * Pi names an MCP server's tools `mcp__<server>__<tool>`, and the protocol
@@ -168,6 +167,11 @@ interface HookInput {
   without_directive?: boolean
   /** The host already stored the compaction summary; `post-compaction` need not ask for it. */
   summary_stored?: boolean
+  /**
+   * What the call answers lives in one run's system prompt and is gone from the
+   * next, so the hook must not record it as delivered.
+   */
+  transient_hints?: boolean
 }
 
 /** The response `leteo hook` prints. */
@@ -402,7 +406,12 @@ export default async function leteo(pi: ExtensionAPI) {
     // The protocol is appended to every turn below; the directive on top of it
     // was about 925 bytes of the same rules said again.
     const opening = additionalContext(
-      await runHook("session-start", { session_id: id, cwd: ctx.cwd, without_directive: true }),
+      await runHook("session-start", {
+        session_id: id,
+        cwd: ctx.cwd,
+        without_directive: true,
+        transient_hints: true,
+      }),
     )
     // A reload keeps the transcript, so the opening context is already in it.
     if (opening && event.reason !== "reload") pendingContext.set(id, opening)
@@ -413,13 +422,17 @@ export default async function leteo(pi: ExtensionAPI) {
     const source = lastInputSource
     lastInputSource = undefined
 
-    // Asked before the section is built because the hook records every memory it
-    // names as shown, so its answer has to reach the model: it is added to this
-    // run's system prompt, which is where Pi lets an extension speak per prompt.
+    // The hint is added to this run's system prompt, which is where Pi lets an
+    // extension speak per prompt, and the next prompt starts without it. The
+    // hook is told so and does not record what it named as shown: recorded, a
+    // memory named once was withheld for the rest of the session from an agent
+    // that no longer held it.
     const prompt = event.prompt?.trim() ?? ""
     let hint = ""
     if (id && source !== "extension" && prompt.length > MIN_PROMPT_LENGTH) {
-      hint = additionalContext(await runHook("user-prompt-submit", { session_id: id, cwd: ctx.cwd, prompt }))
+      hint = additionalContext(
+        await runHook("user-prompt-submit", { session_id: id, cwd: ctx.cwd, prompt, transient_hints: true }),
+      )
     }
 
     let section = `${MEMORY_PROTOCOL}\n\n${TOOL_NAMING}`
@@ -479,6 +492,7 @@ export default async function leteo(pi: ExtensionAPI) {
       session_id: id,
       cwd: ctx.cwd,
       summary_stored: Boolean(summary) && saved,
+      transient_hints: true,
     })
 
     // Said to the model as well as the user, because what the recovery text

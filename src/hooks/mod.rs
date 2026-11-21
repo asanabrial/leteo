@@ -257,6 +257,18 @@ pub struct HookInput {
     /// every other caller leaves it off and gets the instruction it always had.
     #[serde(default)]
     pub summary_stored: bool,
+    /// What this call hands the agent does not outlast the turn it is handed
+    /// for, so the hook must not record it as delivered.
+    ///
+    /// Pi puts the hint and the opening block into the system prompt of one run,
+    /// and the next prompt starts from a prompt without them; OpenCode does the
+    /// same with the hint. Recording the ids in the session state anyway
+    /// suppressed a memory for the rest of the session on a host that no longer
+    /// held it. A host sets this on the calls whose answer it forgets and leaves
+    /// it off on the ones it keeps: OpenCode keeps its opening block, so it sets
+    /// the flag on prompts only.
+    #[serde(default)]
+    pub transient_hints: bool,
 }
 
 impl HookInput {
@@ -576,7 +588,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                 // the state holds rather than replacing it: a session start
                 // can be a resume, and the hints named before it are still in
                 // the transcript.
-                if !listed.memories.is_empty() {
+                if !listed.memories.is_empty() && !input.transient_hints {
                     let state_path = nudge_state_path(store, &session_id);
                     let mut state = SessionState::read(state_path.as_ref());
                     state.remember_listed(&listed);
@@ -658,7 +670,9 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             match memory_context(store, &project, &settings, &mut outcome) {
                 Some((memory, listed)) => {
                     context.push_str(&memory);
-                    state.remember_listed(&listed);
+                    if !input.transient_hints {
+                        state.remember_listed(&listed);
+                    }
                     // The count is what the rebuilt context actually names, so
                     // somebody who just watched a conversation get compacted
                     // can see how much of it came back.
@@ -710,7 +724,11 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                 prompt_recall(store, &input.prompt, &project, &state)
             };
             outcome.additional_context = recall.as_ref().map(|recall| recall.context.clone());
-            if let Some(recall) = &recall {
+            // Not on a host that drops the hint after the turn: what it was
+            // told is gone by the next prompt, and the header sentence with it.
+            if let Some(recall) = &recall
+                && !input.transient_hints
+            {
                 state.remember(recall.shown.iter().copied());
                 state.remember_caveats(recall.caveats.iter().cloned());
                 state.headed = true;

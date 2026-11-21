@@ -13,7 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import plugin, { Leteo, runHook } from "./leteo.ts"
+import plugin, { firstOfCompaction, Leteo, runHook, V2_COMPACTION_WINDOW_MS } from "./leteo.ts"
 
 const HERE = fileURLToPath(new URL(".", import.meta.url))
 
@@ -211,6 +211,71 @@ test("what the per-prompt hook named reaches the model on every step of that tur
     assert.ok(!(await system()).includes("RECALL HINT"), "a prompt too short for the hook drops the old hint")
     assert.equal(calls().filter((call) => call.event === "user-prompt-submit").length, 3)
   })
+})
+
+test("the hook is told the hint lasts one turn, and the opening block it keeps is not", async () => {
+  await withFakeLeteo(async (calls) => {
+    const hooks = (await Leteo({ directory: HERE } as any)) as Record<string, any>
+    await hooks.event({ event: { type: "session.created", properties: { info: { id: "s1" } } } })
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      { parts: [{ type: "text", text: "Which storage engine did we choose?" }], message: {} },
+    )
+    const [prompt] = calls().filter((call) => call.event === "user-prompt-submit")
+    assert.equal(prompt.payload.transient_hints, true)
+    const [opening] = calls().filter((call) => call.event === "session-start")
+    assert.equal(opening.payload.transient_hints, undefined, "OpenCode keeps the opening block for the session")
+  })
+})
+
+test("a compaction announced by the 2.x session.next.compaction.ended runs the hook once, even beside session.compacted", async () => {
+  await withFakeLeteo(async (calls) => {
+    const events = [
+      { type: "session.created", data: { sessionID: "s3" } },
+      { type: "session.next.compaction.ended", data: { sessionID: "s3", timestamp: 1 } },
+      { type: "session.compacted", data: { sessionID: "s3" } },
+      { type: "session.next.compaction.ended", data: { sessionID: "s5", timestamp: 2 } },
+      { type: "session.next.compaction.ended", data: { sessionID: "s4" }, location: { directory: "/elsewhere" } },
+      { type: "session.deleted", data: { sessionID: "s3" } },
+    ]
+    let delivered = false
+    const ctx = {
+      location: { directory: HERE },
+      event: {
+        subscribe: () =>
+          (async function* () {
+            if (delivered) return
+            delivered = true
+            yield* events
+          })(),
+      },
+      session: { hook: async () => ({ dispose: async () => {} }) },
+      tool: { hook: async () => ({ dispose: async () => {} }) },
+    }
+    const cleanup = await (plugin as any).setup(ctx)
+    try {
+      for (let wait = 0; wait < 100 && !calls().some((call) => call.event === "session-stop"); wait++) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      assert.deepEqual(
+        calls()
+          .filter((call) => call.event === "post-compaction")
+          .map((call) => call.payload.session_id),
+        ["s3", "s5"],
+        "s3 announced its compaction twice and s5 only through the new event",
+      )
+    } finally {
+      await cleanup()
+    }
+  })
+})
+
+test("two compaction events of one session close together are one compaction, and a later one is another", () => {
+  const seen = new Map<string, number>()
+  assert.equal(firstOfCompaction(seen, "s1", 1_000), true)
+  assert.equal(firstOfCompaction(seen, "s1", 1_000 + V2_COMPACTION_WINDOW_MS - 1), false)
+  assert.equal(firstOfCompaction(seen, "s2", 1_001), true, "another session is its own")
+  assert.equal(firstOfCompaction(seen, "s1", 1_000 + V2_COMPACTION_WINDOW_MS), true)
 })
 
 test("a compaction runs the post-compaction hook and hands its context over on the next turn only", async () => {

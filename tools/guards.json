@@ -2336,5 +2336,23 @@
     "file": "src/mcp/serve.rs",
     "old": "tokio::time::timeout(read_timeout, read_request(&mut stream))",
     "new": "tokio::time::timeout(std::time::Duration::from_secs(3600), read_request(&mut stream))"
+  },
+  {
+    "name": "hooks: a prompt replays the spool a person is waiting behind",
+    "file": "src/hooks/mod.rs",
+    "old": "Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,\n            Self::PostCompaction | Self::UserPromptSubmit => false,",
+    "new": "Self::SessionStart | Self::SubagentStop | Self::SessionStop | Self::UserPromptSubmit => true,\n            Self::PostCompaction => false,"
+  },
+  {
+    "name": "hooks: a compaction replays the spool a person is waiting behind",
+    "file": "src/hooks/mod.rs",
+    "old": "Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,\n            Self::PostCompaction | Self::UserPromptSubmit => false,",
+    "new": "Self::SessionStart | Self::SubagentStop | Self::SessionStop | Self::PostCompaction => true,\n            Self::UserPromptSubmit => false,"
+  },
+  {
+    "name": "hooks: the end of a session no longer replays the spool",
+    "file": "src/hooks/mod.rs",
+    "old": "Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,\n            Self::PostCompaction | Self::UserPromptSubmit => false,",
+    "new": "Self::SessionStart | Self::SubagentStop => true,\n            Self::SessionStop | Self::PostCompaction | Self::UserPromptSubmit => false,"
   }
 ]

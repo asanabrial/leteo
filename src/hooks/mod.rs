@@ -142,6 +142,28 @@ impl HookEvent {
         budget * 9 / 10
     }
 
+    /// Whether this event replays what a busy store left in the spool.
+    ///
+    /// The replay used to follow every event, and it is bounded only by the
+    /// hook's own budget, so a backlog was paid for by whoever was waiting on
+    /// that hook. Measured on a debug build against a temporary store, a replay
+    /// costs about 2 ms per queued capture (100 in 0.2 s, 1,000 in 2.2 s, the
+    /// spool's cap), which on a busy day is most of the 3.6 seconds the prompt
+    /// hook may spend. So the two events a person waits behind, the prompt and
+    /// the compaction, leave the spool alone.
+    ///
+    /// Nothing is stranded by that. Only `subagent-stop` writes the spool, and
+    /// it replays on its own way out; `session-stop` and the next
+    /// `session-start` follow, and the MCP server replays when it starts.
+    /// ZCode, whose client fires neither `SubagentStop` nor `SessionEnd`, has
+    /// no spooling event of its own to strand.
+    pub fn replays_spool(self) -> bool {
+        match self {
+            Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,
+            Self::PostCompaction | Self::UserPromptSubmit => false,
+        }
+    }
+
     pub fn hook_event_name(self) -> &'static str {
         match self {
             Self::SessionStart | Self::PostCompaction => "SessionStart",
@@ -408,11 +430,12 @@ fn capture_of(input: &HookInput, session_id: &str, project: &str) -> PassiveCapt
 /// collected as warnings instead of aborting the run.
 pub fn run(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<HookOutcome> {
     let outcome = run_event(store, event, input)?;
-    // Whatever a busy store left beside the database, replayed now that this
-    // hook is finishing. Bounded by what is left of this hook's own budget, so
-    // the drain cannot outlast the agent that is waiting for the answer.
-    let deadline = store.wait_deadline();
-    spool::drain(store, deadline);
+    if event.replays_spool() {
+        // Bounded by what is left of this hook's own budget, so the drain
+        // cannot outlast the agent that is waiting for the answer.
+        let deadline = store.wait_deadline();
+        spool::drain(store, deadline);
+    }
     Ok(outcome)
 }
 

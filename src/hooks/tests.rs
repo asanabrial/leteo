@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -3525,6 +3525,73 @@ fn a_drain_with_no_budget_left_writes_nothing() {
             .len(),
         0
     );
+}
+
+/// One capture waiting in the spool of a store whose session already exists.
+fn store_with_one_spooled_capture() -> (TempDir, Store, PathBuf) {
+    let (temp, mut store) = store();
+    let directory = temp.path().to_path_buf();
+    run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "agent-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A learning that waits for an event nobody is waiting on"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "").unwrap();
+    let spool_dir = spool::directory(&data_dir);
+    (temp, store, spool_dir)
+}
+
+/// The prompt a person is waiting on does not replay old captures.
+///
+/// Replay is bounded by the hook's own budget, which for this event is most of
+/// the agent's five seconds, so a backlog turned a keystroke into a wait. The
+/// events that replay are the ones nobody is typing behind.
+#[test]
+fn a_prompt_leaves_the_spool_for_an_event_nobody_waits_behind() {
+    let (temp, mut store, spool_dir) = store_with_one_spooled_capture();
+    let directory = temp.path().to_path_buf();
+
+    let mut prompt = input(&directory);
+    prompt.prompt = "a prompt long enough to be stored and searched".to_owned();
+    run(&mut store, HookEvent::UserPromptSubmit, &prompt).unwrap();
+    assert_eq!(
+        spool::pending(&spool_dir).entries,
+        1,
+        "the prompt did not replay the spool"
+    );
+
+    run(&mut store, HookEvent::SessionStop, &input(&directory)).unwrap();
+    assert_eq!(
+        spool::pending(&spool_dir).entries,
+        0,
+        "the end of the session did"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("hook-project"), Some(10), true)
+            .unwrap()
+            .len(),
+        1,
+        "with the learning in the store"
+    );
+}
+
+/// The compaction hook does not replay either.
+///
+/// It holds the conversation at the same point a prompt does: a person has
+/// asked for something and the agent cannot continue until the hook answers.
+#[test]
+fn a_compaction_leaves_the_spool_alone() {
+    let (temp, mut store, spool_dir) = store_with_one_spooled_capture();
+
+    run(&mut store, HookEvent::PostCompaction, &input(temp.path())).unwrap();
+
+    assert_eq!(spool::pending(&spool_dir).entries, 1);
 }
 
 /// A spool write past the cap drops the oldest entries.

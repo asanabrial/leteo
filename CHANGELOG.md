@@ -222,6 +222,15 @@ All notable changes to Leteo are documented in this file.
   `LANGUAGE` in that order, the one POSIX gives, and a variable that names no
   language Leteo knows, such as `LANG=C.UTF-8`, is skipped instead of ending
   the search (#338).
+- **The local HTTP API no longer calls a busy store a bad request, and no
+  longer holds a silent connection forever.** `leteo serve` answered every tool
+  error `400`, including `store_busy` and `store_unavailable`, which are the
+  server's condition and not the request's, so a client could not tell a call
+  worth repeating from one it had got wrong. Those two now answer `503`; every
+  other refusal stays `400`. Reading a request had no limit either: a socket
+  that sent nothing, or stopped half-way through its body, stayed open for as
+  long as the client cared to keep it. A request that has not arrived in full
+  within ten seconds is now answered `408` and closed (#342).
 
 ## [0.4.3] - 2026-11-03
 

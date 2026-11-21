@@ -2318,5 +2318,23 @@
     "file": "src/citations.rs",
     "old": "            name.replace('\\\\', \"/\")\n                .rsplit('/')",
     "new": "            name.to_owned()\n                .rsplit('/')"
+  },
+  {
+    "name": "serve: a busy store is answered as a bad request",
+    "file": "src/mcp/serve.rs",
+    "old": "Some(error_code::STORE_BUSY | error_code::STORE_UNAVAILABLE) => 503,",
+    "new": "Some(error_code::STORE_UNAVAILABLE) => 503,"
+  },
+  {
+    "name": "serve: a store that cannot be reached is answered as a bad request",
+    "file": "src/mcp/serve.rs",
+    "old": "Some(error_code::STORE_BUSY | error_code::STORE_UNAVAILABLE) => 503,",
+    "new": "Some(error_code::STORE_BUSY) => 503,"
+  },
+  {
+    "name": "serve: a request that never arrives is waited for without end",
+    "file": "src/mcp/serve.rs",
+    "old": "tokio::time::timeout(read_timeout, read_request(&mut stream))",
+    "new": "tokio::time::timeout(std::time::Duration::from_secs(3600), read_request(&mut stream))"
   }
 ]

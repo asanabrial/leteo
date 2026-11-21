@@ -45,6 +45,14 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 /// rather than after.
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
+/// How long a connection has to deliver its whole request, head and body.
+///
+/// One deadline for the request rather than one per read, so a client that
+/// drips a byte at a time holds a connection no longer than one that sends
+/// nothing. Without it a socket that never sent a byte was held open for as long
+/// as the client cared to keep it, each one costing the server a task.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub async fn run(server: LeteoMcpServer, bind: &str) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind)
         .await
@@ -72,7 +80,7 @@ fn listening_message(address: SocketAddr) -> String {
 }
 
 async fn serve(listener: TcpListener, server: LeteoMcpServer) -> anyhow::Result<()> {
-    accept_forever(|| listener.accept(), api(server)).await
+    accept_forever(|| listener.accept(), api(server), READ_TIMEOUT).await
 }
 
 /// The shared state one server answers from: the handlers and the tool list
@@ -104,7 +112,11 @@ const ACCEPT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis
 /// retries, and the delay above bounds the cost of a failure that persists.
 /// `TooManyOpenFiles` is named in prose rather than matched on: its
 /// `ErrorKind` is still unstable, and retrying everything covers it.
-async fn accept_forever<F, Fut>(mut accept: F, api: Arc<Api>) -> anyhow::Result<()>
+async fn accept_forever<F, Fut>(
+    mut accept: F,
+    api: Arc<Api>,
+    read_timeout: std::time::Duration,
+) -> anyhow::Result<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::io::Result<(TcpStream, SocketAddr)>>,
@@ -120,7 +132,7 @@ where
         };
         let api = Arc::clone(&api);
         tokio::spawn(async move {
-            if let Err(error) = handle(stream, api).await {
+            if let Err(error) = handle(stream, api, read_timeout).await {
                 // A connection that failed mid-request is the client's, not
                 // the server's: the socket is already gone, and the process
                 // keeps answering the next one.
@@ -163,6 +175,18 @@ impl Reply {
         }
     }
 
+    fn request_timeout() -> Self {
+        Self {
+            status: 408,
+            body: serde_json::json!({
+                "error": {
+                    "code": "request_timeout",
+                    "message": "the request did not arrive in full in time",
+                },
+            }),
+        }
+    }
+
     fn not_found(target: &str) -> Self {
         Self {
             status: 404,
@@ -188,16 +212,22 @@ impl Reply {
     }
 }
 
-async fn handle(mut stream: TcpStream, api: Arc<Api>) -> std::io::Result<()> {
-    let reply = match read_request(&mut stream).await {
-        Ok(Some(request)) => route(&api, &request),
+async fn handle(
+    mut stream: TcpStream,
+    api: Arc<Api>,
+    read_timeout: std::time::Duration,
+) -> std::io::Result<()> {
+    let read = tokio::time::timeout(read_timeout, read_request(&mut stream)).await;
+    let reply = match read {
+        Ok(Ok(Some(request))) => route(&api, &request),
         // A connection that closed before sending a request line is a probe,
         // not an error.
-        Ok(None) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        Ok(Ok(None)) => return Ok(()),
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
             Reply::bad_request(error.to_string())
         }
-        Err(error) => return Err(error),
+        Ok(Err(error)) => return Err(error),
+        Err(_) => Reply::request_timeout(),
     };
     write_response(&mut stream, reply).await
 }
@@ -327,7 +357,8 @@ fn route(api: &Api, request: &Request) -> Reply {
 /// caller unchanged. A tool-level error keeps the MCP shape — `error.code`,
 /// `error.message`, `available_projects`, `recovery_token` — and is answered
 /// `400`, because the request was understood and refused rather than
-/// mis-addressed.
+/// mis-addressed — except the two codes `error_status` names, which are the
+/// server's own condition and answer `503`.
 fn call_tool(server: &LeteoMcpServer, name: &str, body: &[u8]) -> Reply {
     let arguments = if body.is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
@@ -408,13 +439,27 @@ where
 }
 
 fn tool_reply(result: &CallToolResult) -> Reply {
-    Reply {
-        status: if result.is_error == Some(true) {
-            400
-        } else {
-            200
-        },
-        body: result_body(result),
+    let body = result_body(result);
+    let status = if result.is_error == Some(true) {
+        error_status(body["error"]["code"].as_str())
+    } else {
+        200
+    };
+    Reply { status, body }
+}
+
+/// The status a tool error is answered with, decided from its code.
+///
+/// The two codes that name a condition of the server and not of the request
+/// are `503`, so a client can tell a call worth repeating from one it got
+/// wrong. No `Retry-After` goes with them: a busy store has already waited its
+/// whole `busy_timeout` before answering, and when the other writer lets go is
+/// not something this process knows; a store whose lock was poisoned stays that
+/// way until the process is restarted, so no delay would be true.
+fn error_status(code: Option<&str>) -> u16 {
+    match code {
+        Some(error_code::STORE_BUSY | error_code::STORE_UNAVAILABLE) => 503,
+        _ => 400,
     }
 }
 
@@ -449,6 +494,8 @@ fn reason(status: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        503 => "Service Unavailable",
         _ => "OK",
     }
 }
@@ -764,6 +811,147 @@ mod tests {
         }
     }
 
+    /// A server whose store gives up on a held write lock after `patience`,
+    /// with the session the writes below name already in it.
+    fn impatient_server(
+        patience: std::time::Duration,
+    ) -> (LeteoMcpServer, tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("http.db");
+        let mut config = StoreConfig::new(path.clone());
+        config.busy_timeout = patience;
+        let mut store = Store::open(config).unwrap();
+        store.enroll_project("http-test").unwrap();
+        store.create_session("s1", "http-test", "dir").unwrap();
+        let server = LeteoMcpServer::with_options(
+            Arc::new(Mutex::new(store)),
+            McpOptions {
+                default_project: Some("http-test".to_owned()),
+                tools: None,
+            },
+        );
+        (server, temp, path)
+    }
+
+    async fn spawn_server(server: LeteoMcpServer) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(serve(listener, server));
+        address
+    }
+
+    #[tokio::test]
+    async fn a_store_held_by_another_writer_is_service_unavailable() {
+        let (server, _temp, path) = impatient_server(std::time::Duration::from_millis(50));
+        let holder = rusqlite::Connection::open(&path).unwrap();
+        holder
+            .execute_batch("BEGIN IMMEDIATE; UPDATE sessions SET directory = 'held';")
+            .unwrap();
+        let address = spawn_server(server).await;
+
+        let refused = reqwest::Client::new()
+            .post(format!("http://{address}/tools/mem_save"))
+            .json(&serde_json::json!({
+                "session_id": "s1", "title": "While held", "content": "the body of it",
+            }))
+            .send()
+            .await
+            .unwrap();
+        let status = refused.status();
+        let body: serde_json::Value = refused.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "store_busy", "refused: {body}");
+        assert_eq!(
+            status, 503,
+            "a busy store is the server's condition: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_that_cannot_be_reached_is_service_unavailable() {
+        let (server, _temp) = test_server("http-test");
+        let store = Arc::clone(&server.store);
+        let _ = std::thread::spawn(move || {
+            let _held = store.lock().unwrap();
+            panic!("poison the store's lock");
+        })
+        .join();
+        let address = spawn_server(server).await;
+
+        let refused = reqwest::Client::new()
+            .post(format!("http://{address}/tools/mem_stats"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        let status = refused.status();
+        let body: serde_json::Value = refused.json().await.unwrap();
+        assert_eq!(
+            body["error"]["code"], "store_unavailable",
+            "refused: {body}"
+        );
+        assert_eq!(status, 503, "{body}");
+    }
+
+    /// The accept loop with a read timeout short enough to wait out.
+    async fn spawn_impatient_reader(
+        read_timeout: std::time::Duration,
+    ) -> (SocketAddr, tempfile::TempDir) {
+        let (server, temp) = test_server("http-test");
+        let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(accept_forever(
+            move || {
+                let listener = Arc::clone(&listener);
+                async move { listener.accept().await }
+            },
+            api(server),
+            read_timeout,
+        ));
+        (address, temp)
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_sends_nothing_is_closed() {
+        let (address, _temp) = spawn_impatient_reader(std::time::Duration::from_millis(200)).await;
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_end(&mut response),
+        )
+        .await
+        .expect("the server closed an idle connection")
+        .unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 408"),
+            "an idle connection is told why it was closed: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_that_stalls_part_way_is_closed_too() {
+        let (address, _temp) = spawn_impatient_reader(std::time::Duration::from_millis(200)).await;
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"POST /tools/mem_save HTTP/1.1\r\nContent-Length: 50\r\n\r\n{")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_end(&mut response),
+        )
+        .await
+        .expect("the server closed a connection that stopped mid-body")
+        .unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 408"),
+            "a stalled body is a timeout, not a short body: {response}"
+        );
+    }
+
     #[tokio::test]
     async fn the_loop_keeps_accepting_after_a_failed_accept() {
         let (server, _temp) = test_server("http-test");
@@ -789,6 +977,7 @@ mod tests {
                 }
             },
             api(server),
+            READ_TIMEOUT,
         ));
 
         // A request answered after the injected failure means the loop went on

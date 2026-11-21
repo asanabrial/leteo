@@ -136,6 +136,18 @@ All notable changes to Leteo are documented in this file.
   twenty matches in other projects said "20" where it means "20 or more", in
   the tool and in `leteo search`. And the timeline's `project` is described as
   what it does, which is refuse a mismatch, not as ignored (#334).
+- **The OpenCode and Pi plugins no longer drift from the hooks.** OpenCode
+  declared the `post-compaction` event and never ran it, so after a compaction
+  nothing was rebuilt, the list of memories the hint had named was not cleared
+  and the language directive was not repeated; it now runs the hook when
+  OpenCode reports `session.compacted` (on 2.x too) and hands the answer to the
+  agent on its next turn. Pi sent every tool result over fifty characters to
+  `subagent-stop`, so reading a file with a `## Learnings` heading stored its
+  text as memories and every tool call started a process that writes to the
+  store; it now sends only a subagent's result. And Pi, which stores the
+  compaction summary itself, was then told by the recovery text to store it
+  again: the hook input takes `summary_stored`, and the text leaves the
+  instruction out when the host says it already did (#335).
 
 ## [0.4.3] - 2026-11-03
 

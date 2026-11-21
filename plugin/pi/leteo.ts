@@ -85,6 +85,18 @@ function atLeastVersion(version: string | undefined, minimum: string): boolean {
 const MCP_SERVER = "leteo"
 const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER}__`
 
+/**
+ * The tools whose result is a subagent's report, lower-cased.
+ *
+ * Pi has no subagents of its own, and `tool_execution_end` carries nothing that
+ * marks one: a name, an error flag and a result. A subagent therefore arrives as
+ * whatever tool a package registered for it, and these are the names the other
+ * two hosts use for it: OpenCode 1.x calls it `Task` and 2.x `subagent`. A
+ * package that names its tool otherwise is not captured, which costs a memory
+ * where capturing every tool cost the text of every file the agent read.
+ */
+const SUBAGENT_TOOLS = new Set(["subagent", "task"])
+
 /** Prompts this short are not worth persisting. */
 const MIN_PROMPT_LENGTH = 10
 /** Tool output this short cannot hold a learnings section. */
@@ -154,6 +166,8 @@ interface HookInput {
   source?: string
   /** Leave the memory directive out of a `session-start` answer. */
   without_directive?: boolean
+  /** The host already stored the compaction summary; `post-compaction` need not ask for it. */
+  summary_stored?: boolean
 }
 
 /** The response `leteo hook` prints. */
@@ -434,11 +448,11 @@ export default async function leteo(pi: ExtensionAPI) {
   pi.on("tool_execution_end", (event, ctx) => {
     const id = sessionId(ctx)
     const name = event.toolName ?? ""
-    if (!id || name.toLowerCase().startsWith(MCP_TOOL_PREFIX)) return
+    if (!id || !SUBAGENT_TOOLS.has(name.toLowerCase())) return
     const text = resultText(event.result)
     if (text.length <= MIN_CAPTURE_LENGTH) return
-    // Not awaited: this fires after every tool call, and a process spawn per
-    // call must not hold the turn up. Shutdown waits for what is still running.
+    // Not awaited: a process spawn must not hold the turn up. Shutdown waits for
+    // what is still running.
     track(runHook("subagent-stop", { session_id: id, cwd: ctx.cwd, stdout: text, source: name }))
   })
 
@@ -459,7 +473,13 @@ export default async function leteo(pi: ExtensionAPI) {
         ctx.cwd,
       )
     }
-    const { ok, output } = await attemptHook("post-compaction", { session_id: id, cwd: ctx.cwd })
+    // Said so the hook does not ask for the summary it was just handed: Pi
+    // stores it above, and the recovery text told the agent to store it again.
+    const { ok, output } = await attemptHook("post-compaction", {
+      session_id: id,
+      cwd: ctx.cwd,
+      summary_stored: Boolean(summary) && saved,
+    })
 
     // Said to the model as well as the user, because what the recovery text
     // holds depends on the save: a summary that was not stored is not in it.

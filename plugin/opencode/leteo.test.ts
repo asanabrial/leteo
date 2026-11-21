@@ -212,3 +212,79 @@ test("what the per-prompt hook named reaches the model on every step of that tur
     assert.equal(calls().filter((call) => call.event === "user-prompt-submit").length, 3)
   })
 })
+
+test("a compaction runs the post-compaction hook and hands its context over on the next turn only", async () => {
+  await withFakeLeteo(async (calls) => {
+    const hooks = (await Leteo({ directory: HERE } as any)) as Record<string, any>
+    await hooks.event({ event: { type: "session.created", properties: { info: { id: "s1" } } } })
+    const system = async () => {
+      const out = ["base"]
+      await hooks["experimental.chat.system.transform"]({ sessionID: "s1" }, { system: out })
+      return out.join("\n")
+    }
+    assert.ok((await system()).includes("MEMORY BLOCK"), "the opening is handed over before the compaction")
+
+    await hooks.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } })
+    const compactions = calls().filter((call) => call.event === "post-compaction")
+    assert.equal(compactions.length, 1)
+    assert.deepEqual(compactions[0].payload, { session_id: "s1", cwd: HERE })
+
+    assert.ok(
+      (await system()).includes("Context was compacted. MEMORY BLOCK"),
+      "what the agent lost is put back in front of it",
+    )
+    assert.ok(!(await system()).includes("MEMORY BLOCK"), "and only once")
+  })
+})
+
+test("a compaction of a sub-agent session is not a memory event", async () => {
+  await withFakeLeteo(async (calls) => {
+    const hooks = (await Leteo({ directory: HERE } as any)) as Record<string, any>
+    await hooks.event({
+      event: { type: "session.created", properties: { info: { id: "child", parentID: "s1" } } },
+    })
+    await hooks.event({ event: { type: "session.compacted", properties: { sessionID: "child" } } })
+    assert.deepEqual(calls(), [])
+  })
+})
+
+test("the 2.x adapter turns its session.compacted event into the same compaction", async () => {
+  await withFakeLeteo(async (calls) => {
+    const events = [
+      { type: "session.created", data: { sessionID: "s2" } },
+      { type: "session.compacted", data: { sessionID: "s2" } },
+      { type: "session.compacted", data: { sessionID: "foreign" }, location: { directory: "/elsewhere" } },
+      // Events are handled in order, so this one's hook having run means the
+      // compactions before it have been judged.
+      { type: "session.deleted", data: { sessionID: "s2" } },
+    ]
+    let delivered = false
+    const ctx = {
+      location: { directory: HERE },
+      event: {
+        subscribe: () =>
+          (async function* () {
+            if (delivered) return
+            delivered = true
+            yield* events
+          })(),
+      },
+      session: { hook: async () => ({ dispose: async () => {} }) },
+      tool: { hook: async () => ({ dispose: async () => {} }) },
+    }
+    const cleanup = await (plugin as any).setup(ctx)
+    try {
+      for (let wait = 0; wait < 100 && !calls().some((call) => call.event === "session-stop"); wait++) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      const compactions = calls().filter((call) => call.event === "post-compaction")
+      assert.deepEqual(
+        compactions.map((call) => call.payload.session_id),
+        ["s2"],
+        "another project's compaction is not this plugin's",
+      )
+    } finally {
+      await cleanup()
+    }
+  })
+})

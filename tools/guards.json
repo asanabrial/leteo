@@ -2468,5 +2468,29 @@
     "file": "src/cli/projects.rs",
     "old": "if let Some(reason) = store.prune_blocker(&candidate.name)? {",
     "new": "if let Some(reason) = None::<String> {"
+  },
+  {
+    "name": "hint: a host that forgets the hint is still told the memory was shown",
+    "file": "src/hooks/mod.rs",
+    "old": "            if let Some(recall) = &recall\n                && !input.transient_hints\n            {",
+    "new": "            if let Some(recall) = &recall {"
+  },
+  {
+    "name": "hint: an opening block a host forgets is recorded as held at session start",
+    "file": "src/hooks/mod.rs",
+    "old": "if !listed.memories.is_empty() && !input.transient_hints {",
+    "new": "if !listed.memories.is_empty() {"
+  },
+  {
+    "name": "hint: a recovery block a host forgets is recorded as held after a compaction",
+    "file": "src/hooks/mod.rs",
+    "old": "                    if !input.transient_hints {\n                        state.remember_listed(&listed);\n                    }\n",
+    "new": "                    state.remember_listed(&listed);\n"
+  },
+  {
+    "name": "pi: the protocol tells the agent to persist a summary Pi already stored",
+    "file": "plugin/pi/leteo.ts",
+    "old": "next steps, and relevant files.`",
+    "new": "next steps, and relevant files. After context compaction,\npersist the compacted summary first and then restore context with \\`mem_context\\`.`"
   }
 ]

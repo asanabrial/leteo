@@ -203,6 +203,7 @@ test("session_start opens the session as the Pi package", async () => {
       session_id: "pi-session-1",
       cwd: "/work/project",
       without_directive: true,
+      transient_hints: true,
     })
     assert.equal(started.client, "pi", "the binary's Pi guard lets this caller through")
   } finally {
@@ -264,11 +265,19 @@ test("before_agent_start appends the protocol, the tool names, the opening conte
     assert.ok(options.appendSystemPrompt.includes("OPENING CONTEXT"))
     assert.ok(
       options.appendSystemPrompt.includes("RECALL HINT"),
-      "what the per-prompt hook named reaches the model, because the hook records it as shown",
+      "what the per-prompt hook named reaches the model",
     )
     assert.deepEqual(
       hooks(h, "user-prompt-submit").map((entry) => entry.payload),
-      [{ session_id: "pi-session-1", cwd: "/work/project", prompt: "Why did we choose SQLite?" }],
+      [
+        {
+          session_id: "pi-session-1",
+          cwd: "/work/project",
+          prompt: "Why did we choose SQLite?",
+          transient_hints: true,
+        },
+      ],
+      "the hook is told the hint lasts one turn, so it does not record the memory as shown",
     )
 
     const second = { appendSystemPrompt: "" }
@@ -469,7 +478,7 @@ test("a compaction saves the summary in the session's directory, recovers contex
     assert.equal(realpathSync(saved.cwd), realpathSync(HERE), "it runs where the session does")
     assert.deepEqual(
       hooks(h, "post-compaction").map((entry) => entry.payload),
-      [{ session_id: "pi-session-1", cwd: HERE, summary_stored: true }],
+      [{ session_id: "pi-session-1", cwd: HERE, summary_stored: true, transient_hints: true }],
       "the hook is told the summary is already stored, so it does not ask for it again",
     )
     assert.deepEqual(

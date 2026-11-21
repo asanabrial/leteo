@@ -260,6 +260,18 @@ All notable changes to Leteo are documented in this file.
   `projects prune --apply` skips a project holding soft-deleted memories and
   says so instead of aborting. An older peer or cloud server does not know the
   new mutation and refuses it until it is updated (#369).
+- **On OpenCode and Pi a memory the hint named once can be named again.** Both
+  hosts put the hint in the system prompt of one turn, but the hook recorded
+  every memory it named as shown for the whole session, so a memory the agent
+  had already lost was withheld from it for good. The plugins now say the hint
+  is transient, and the hook then records neither the memories it names nor
+  the caveats it delivers, and says the full header each time. Pi says the same
+  of its opening block and of the block after a compaction, which it also
+  delivers for one turn; OpenCode keeps its opening block and says nothing
+  there. Pi's protocol no longer tells the agent to persist the compaction
+  summary Pi has already stored, and the OpenCode 2.x adapter also runs the
+  compaction hook for `session.next.compaction.ended`, once per compaction
+  when the host emits both events (#370).
 
 ## [0.4.3] - 2026-11-03
 

@@ -605,12 +605,18 @@ fn memory_protocol_in(path: &str) -> String {
 /// OpenCode and Pi are TypeScript files that cannot import each other, so each
 /// carries the protocol it appends to the system prompt. They were one text, and
 /// the way they stop being is somebody improving one.
+///
+/// The one difference is the sentence about persisting the compaction summary:
+/// Pi stores it before the agent sees anything, and the sentence invited a second
+/// save of the same text.
 #[test]
 fn the_pi_package_appends_the_protocol_the_opencode_plugin_does() {
-    assert_eq!(
-        memory_protocol_in("plugin/pi/leteo.ts"),
-        memory_protocol_in("plugin/opencode/leteo.ts")
-    );
+    let opencode = memory_protocol_in("plugin/opencode/leteo.ts");
+    let (shared, compaction) = opencode
+        .split_once(" After context compaction,")
+        .expect("the OpenCode protocol still says what follows a compaction");
+    assert!(compaction.contains("persist the compacted summary"));
+    assert_eq!(memory_protocol_in("plugin/pi/leteo.ts"), shared);
 }
 
 /// The Pi package is the one caller the binary's Pi guard lets through, and it
@@ -724,9 +730,15 @@ fn protocol_section(protocol: &str, heading: &str) -> String {
 /// twice the size. An agent that obeyed the plugin paid that on every lookup.
 /// What is held here is the recall rule and the post-compaction sentence, the
 /// two places the copies named `mem_context`.
+///
+/// Pi is the exception to the second: it stores the compaction summary itself
+/// before the agent sees anything, so its protocol must not tell the agent to
+/// persist it again.
 #[test]
 fn the_plugin_protocols_give_the_recall_rule_the_rust_protocol_gives() {
     let rust = leteo::setup::MEMORY_PROTOCOL;
+    let compaction = "After context compaction, persist the compacted summary first and then \
+                      restore context with `mem_context`.";
     for plugin in ["plugin/opencode/leteo.ts", "plugin/pi/leteo.ts"] {
         let embedded = embedded_protocol(plugin);
         assert_eq!(
@@ -734,12 +746,15 @@ fn the_plugin_protocols_give_the_recall_rule_the_rust_protocol_gives() {
             protocol_section(rust, "Recall before acting"),
             "{plugin} gives a different recall rule than src/setup/mod.rs"
         );
-        let compaction = "After context compaction, persist the compacted summary first and then \
-                          restore context with `mem_context`.";
+        let persists = protocol_section(&embedded, "Close sessions").contains(compaction);
         assert!(
-            protocol_section(&embedded, "Close sessions").contains(compaction)
-                && protocol_section(rust, "Close sessions").contains(compaction),
-            "{plugin} and src/setup/mod.rs disagree about what follows a compaction"
+            protocol_section(rust, "Close sessions").contains(compaction),
+            "src/setup/mod.rs no longer says what follows a compaction"
+        );
+        assert_eq!(
+            persists,
+            plugin != "plugin/pi/leteo.ts",
+            "{plugin} disagrees about who stores the summary after a compaction"
         );
         assert!(
             !embedded.contains("mem_context` first"),

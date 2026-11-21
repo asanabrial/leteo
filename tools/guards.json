@@ -1596,5 +1596,17 @@
     "file": "src/store/semantic_stage.rs",
     "old": ".then_with(|| left.semantic.cmp(&right.semantic))",
     "new": ".then_with(|| right.semantic.cmp(&left.semantic))"
+  },
+  {
+    "name": "prompt hook: a message the harness wrote is stored as a prompt",
+    "file": "src/hooks/mod.rs",
+    "old": "if !harness && !input.prompt.trim().is_empty() {",
+    "new": "if !input.prompt.trim().is_empty() {"
+  },
+  {
+    "name": "recent prompts: a stored harness message takes a place",
+    "file": "src/store/prompts.rs",
+    "old": "AND NOT ({harness}) AND id IN (",
+    "new": "AND NOT (0 AND {harness}) AND id IN ("
   }
 ]

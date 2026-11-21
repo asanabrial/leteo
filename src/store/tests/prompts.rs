@@ -250,6 +250,65 @@ fn the_recent_prompts_are_the_recent_distinct_ones() {
     assert_eq!(repeated.id, *all_ids.last().unwrap());
 }
 
+/// Older versions stored what the harness wrote as if somebody had asked it:
+/// five of the ten lines of one real opening block. Left out inside the SQL, so
+/// the page is still filled with prompts somebody typed.
+#[test]
+fn a_stored_harness_message_is_not_listed_and_does_not_take_a_place() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for n in 0..3 {
+        store
+            .add_prompt(AddPrompt {
+                session_id: "s1".to_owned(),
+                content: format!("typed question {n}"),
+                project: Some("leteo".to_owned()),
+            })
+            .unwrap();
+    }
+    // Inserted directly, as the rows an older version left behind; the hook no
+    // longer writes them. They are the newest, so they would fill the page.
+    for (n, prefix) in crate::memory::normalize::HARNESS_MESSAGE_PREFIXES
+        .iter()
+        .cycle()
+        .take(9)
+        .enumerate()
+    {
+        store
+            .connection
+            .execute(
+                "INSERT INTO prompts (sync_id, session_id, content, project, created_at)
+                 VALUES (?1, 's1', ?2, 'leteo', datetime('now', '+1 minute'))",
+                rusqlite::params![format!("harness-{n}"), format!("\n  {prefix} body {n}")],
+            )
+            .unwrap();
+    }
+    store
+        .connection
+        .execute(
+            "INSERT INTO prompts (sync_id, session_id, content, project)
+             VALUES ('pasted', 's1', '<pasted_content> a log somebody pasted', 'leteo')",
+            [],
+        )
+        .unwrap();
+
+    let listed = store
+        .recent_distinct_prompts(Some("leteo"), Some(4))
+        .unwrap();
+
+    let contents: Vec<&str> = listed.iter().map(|p| p.content.as_str()).collect();
+    assert_eq!(listed.len(), 4, "{contents:?}");
+    assert!(
+        listed.iter().all(|p| !p.content.contains(" body ")),
+        "{contents:?}"
+    );
+    assert!(contents.contains(&"<pasted_content> a log somebody pasted"));
+
+    // The plain listing is for a person reading everything, and stays whole.
+    let everything = store.recent_prompts(Some("leteo"), Some(50)).unwrap();
+    assert_eq!(everything.len(), 13);
+}
+
 #[test]
 fn a_prompt_with_nothing_in_it_is_refused_like_a_memory_with_nothing_in_it() {
     // The door that refuses an empty memory did not exist for prompts, and a

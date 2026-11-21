@@ -1283,6 +1283,33 @@ pub fn prompt_core(prompt: &str) -> String {
         .to_lowercase()
 }
 
+/// What the agent harness wraps around a message it wrote itself, and which
+/// Claude Code then delivers through the same `UserPromptSubmit` event a typed
+/// prompt arrives on.
+///
+/// The one list: the hook reads it through [`is_harness_message`], the listing
+/// of recent prompts builds its SQL from it, and the tests iterate it. On a
+/// real store 7,104 of 15,158 stored prompts began with `<task-notification>`,
+/// about 39 MB of the 42 MB of prompt text. `<pasted_content` is deliberately
+/// absent: a person pasted that.
+pub const HARNESS_MESSAGE_PREFIXES: [&str; 3] = [
+    "<task-notification>",
+    "<cross-session-message",
+    "<agent-message",
+];
+
+/// Whether a prompt is a message the harness wrote rather than one a person
+/// typed.
+///
+/// Kept apart from [`prompt_core`], which decides whether two prompts are
+/// listed as one; this decides whether a prompt is a prompt at all.
+pub fn is_harness_message(prompt: &str) -> bool {
+    let trimmed = prompt.trim_start();
+    HARNESS_MESSAGE_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
 /// The words of a prompt worth searching on, in the order they were written.
 ///
 /// A prompt is a sentence, not a search, so the caller joins these with OR —

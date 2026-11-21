@@ -10,6 +10,12 @@ All notable changes to Leteo are documented in this file.
   its words.** When a search merges the two, the best of each list scored the
   same and the older memory went first, so the top result was often a guess.
   At equal score the memory the words found now leads (#320).
+- **A message the agent harness wrote is no longer kept as something you
+  asked.** Claude Code delivers its own notices through the prompt event, and
+  on one real store 7,104 of 15,158 stored prompts were `<task-notification>`
+  alone, about 39 MB of 42 MB, each one also searched for a hint. They are now
+  neither stored nor searched, and the recent prompts a session opens with
+  leave out the ones already stored, without a migration (#321).
 
 ## [0.4.3] - 2026-11-03
 

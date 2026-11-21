@@ -625,7 +625,10 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         }
         HookEvent::UserPromptSubmit => {
             ensure_session(store, &session_id, &project, &directory, &mut outcome);
-            if !input.prompt.trim().is_empty() {
+            // A message the harness wrote is not something somebody asked, so
+            // it is neither stored nor searched for a hint.
+            let harness = normalize::is_harness_message(&input.prompt);
+            if !harness && !input.prompt.trim().is_empty() {
                 match store.add_prompt(AddPrompt {
                     session_id: session_id.clone(),
                     content: input.prompt.clone(),
@@ -646,7 +649,11 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // making that true.
             let state_path = nudge_state_path(store, &session_id);
             let mut state = SessionState::read(state_path.as_ref());
-            let recall = prompt_recall(store, &input.prompt, &project, &state.shown);
+            let recall = if harness {
+                None
+            } else {
+                prompt_recall(store, &input.prompt, &project, &state.shown)
+            };
             outcome.additional_context = recall.as_ref().map(|(context, _, _)| context.clone());
             if let Some((_, _, shown)) = &recall {
                 state.remember(shown.iter().copied());

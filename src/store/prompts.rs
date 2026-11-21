@@ -352,9 +352,16 @@ impl Store {
         // been running a while already holds them — eleven on a real one — and
         // a line reading "somebody asked:" with nothing after it spends one of
         // the ten places on saying that a question happened.
+        //
+        // Nor a message the harness wrote, which older versions stored as a
+        // prompt: half of one real store's rows. It is left out inside the SQL
+        // rather than in the Rust pass below, so the over-fetch still fills the
+        // page with prompts somebody typed. The comparison is `substr` against
+        // each prefix and not LIKE, so `_`, `%` and case folding cannot matter.
+        let harness = harness_rows_clause();
         let mut statement = self.connection.prepare(&format!(
             "SELECT {PROMPT_COLUMNS}
-             FROM prompts WHERE trim(ifnull(content, '')) <> '' AND id IN (
+             FROM prompts WHERE trim(ifnull(content, '')) <> '' AND NOT ({harness}) AND id IN (
                  SELECT MAX(id) FROM prompts WHERE 1 = 1{}
                   GROUP BY content
              )
@@ -424,6 +431,27 @@ impl Store {
 /// gets. Two is enough for two hooks racing on one event and far too short for
 /// anybody to have typed the same thing again.
 const PROMPT_ECHO_SECONDS: i64 = 2;
+
+/// A SQL condition true for a row whose content begins with any of
+/// `normalize::HARNESS_MESSAGE_PREFIXES`, after the whitespace Rust's `trim`
+/// would also skip.
+///
+/// Interpolated rather than bound: the prefixes are compile-time constants, and
+/// one containing a quote would be a bug in the list that `debug_assert!`
+/// catches on the first run of any test.
+fn harness_rows_clause() -> String {
+    normalize::HARNESS_MESSAGE_PREFIXES
+        .iter()
+        .map(|prefix| {
+            debug_assert!(!prefix.contains('\''));
+            format!(
+                "substr(ltrim(content, char(32, 9, 10, 11, 12, 13)), 1, {}) = '{prefix}'",
+                prefix.chars().count()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
 
 /// The prompt this one would be a second copy of, if there is one.
 fn echoed_prompt(

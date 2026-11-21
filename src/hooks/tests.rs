@@ -324,6 +324,92 @@ fn a_prompt_surfaces_a_relevant_memory_and_stays_quiet_otherwise() {
     assert!(hit.prompt_saved && quiet.prompt_saved);
 }
 
+/// A store holding one memory the given words would surface, with the
+/// conversation already started.
+fn store_with_a_memory_to_surface() -> (TempDir, Store) {
+    let (temp, mut store) = store();
+    run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+    // Beside a handful that only share its ordinary words, because the hint
+    // speaks only for a memory that stands out among the rest.
+    let titles = [(
+        "Fixed the paginated closing verification",
+        "pagination broke the closing verification step".to_owned(),
+    )]
+    .into_iter()
+    .chain((1..=6).map(|n| {
+        (
+            "Unrelated change",
+            format!("the step was changed again for reason {n}"),
+        )
+    }));
+    for (title, content) in titles {
+        store
+            .add_observation(AddObservation {
+                session_id: "agent-session".to_owned(),
+                kind: "bugfix".to_owned(),
+                title: title.to_owned(),
+                content,
+                tool_name: None,
+                project: Some("hook-project".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap();
+    }
+    (temp, store)
+}
+
+fn stored_prompt_count(store: &Store) -> i64 {
+    rusqlite::Connection::open(store.database_path())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM prompts", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// 7,104 of 15,158 prompts on a real store began with `<task-notification>`,
+/// and the hint spoke on 31% of 150 replayed ones. The list is read here so a
+/// prefix added to it is covered without anybody writing a case for it.
+#[test]
+fn a_message_the_harness_wrote_is_neither_stored_nor_searched() {
+    for prefix in normalize::HARNESS_MESSAGE_PREFIXES {
+        let (temp, mut store) = store_with_a_memory_to_surface();
+        let mut injected = input(temp.path());
+        injected.prompt =
+            format!("  {prefix} the paginated closing verification is broken </task>");
+
+        let outcome = run(&mut store, HookEvent::UserPromptSubmit, &injected).unwrap();
+
+        assert_eq!(stored_prompt_count(&store), 0, "{prefix} was stored");
+        assert!(!outcome.prompt_saved, "{prefix} reported as saved");
+        assert!(
+            outcome.additional_context.is_none(),
+            "{prefix} was searched for a hint: {:?}",
+            outcome.additional_context
+        );
+    }
+}
+
+#[test]
+fn a_pasted_prompt_is_stored_and_searched_like_any_typed_one() {
+    let (temp, mut store) = store_with_a_memory_to_surface();
+    let mut pasted = input(temp.path());
+    pasted.prompt = "<pasted_content> the paginated closing verification is broken".to_owned();
+
+    let outcome = run(&mut store, HookEvent::UserPromptSubmit, &pasted).unwrap();
+
+    assert_eq!(stored_prompt_count(&store), 1);
+    assert!(outcome.prompt_saved);
+    assert!(
+        outcome
+            .additional_context
+            .as_deref()
+            .is_some_and(|context| context.contains("Fixed the paginated closing verification")),
+        "{:?}",
+        outcome.additional_context
+    );
+}
+
 #[test]
 fn session_start_creates_the_session_and_injects_protocol_and_memory() {
     let (temp, mut store) = store();

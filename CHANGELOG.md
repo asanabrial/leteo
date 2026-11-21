@@ -114,6 +114,13 @@ All notable changes to Leteo are documented in this file.
   hard-deleted a memory because an old revision held a secret had not removed
   it. The four paths now delete the versions in the same transaction, and a
   soft delete still keeps them (#332).
+- **A `supersedes` verdict no longer hides the memory that overtook the other.**
+  A pending pair is filed from whichever memory the scan met first, and
+  judging it found the row in either direction and rewrote only the verb, so
+  "the new memory supersedes the old one" was stored as the opposite and the
+  current memory disappeared from search and listings. A `supersedes` verdict
+  now turns the row round to the pair as given; the verbs that have no
+  direction keep the order they were filed in (#333).
 
 ## [0.4.3] - 2026-11-03
 

@@ -1922,5 +1922,17 @@
     "file": "src/store/observations.rs",
     "old": "                 WHERE id = ?2 AND deleted_at IS NULL\",\n                params![deleted_at, id],\n            )?;\n            if changed == 0 {\n                return Err(deleted_or_missing(&tx, id));\n            }\n        }\n        let project = observation.project",
     "new": "                 WHERE id = ?2 AND deleted_at IS NULL\",\n                params![deleted_at, id],\n            )?;\n            if changed == 0 {\n                return Err(deleted_or_missing(&tx, id));\n            }\n            delete_observation_versions_tx(&tx, &observation.sync_id)?;\n        }\n        let project = observation.project"
+  },
+  {
+    "name": "verdict direction: a supersedes verdict turns a reverse-filed pair round",
+    "file": "src/store/relations.rs",
+    "old": "let (stored_source, stored_target) = if relation == RELATION_SUPERSEDES {",
+    "new": "let (stored_source, stored_target) = if relation == \"\" {"
+  },
+  {
+    "name": "verdict direction: an undirected verdict keeps the order the pair was filed in",
+    "file": "src/store/relations.rs",
+    "old": "        } else {\n            (\"\", \"\")\n        };",
+    "new": "        } else {\n            (source_id, target_id)\n        };"
   }
 ]

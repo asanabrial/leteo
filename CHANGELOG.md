@@ -4,6 +4,21 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Search by meaning reads the whole of a memory, not its first 128 tokens.**
+  A memory is now kept as up to 32 vectors, one for each 128-token window of
+  its body with the title at the head of each. A question about something
+  written further down, or asked in another language, can now find the memory:
+  on one real store the median body was 548 tokens and 98% were longer than one
+  window. A memory the words already found is still ranked by its opening, so a
+  boilerplate paragraph at the end of a body cannot lift it. Migration 24
+  rebuilds the vector table, and the vectors are made again in the background
+  or by `leteo doctor --repair`. The cost is store size and search time:
+  measured on 5,000 memories of 420 words, about six times the vector bytes
+  (6,155 a memory instead of 1,024, about 30 MB instead of 5 MB) and about
+  twice the time the stage adds to a search (20 ms instead of 7 to 12) (#325).
+
 ### Fixed
 
 - **A memory found by meaning no longer takes first place from one found by

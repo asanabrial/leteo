@@ -1,5 +1,7 @@
 //! The semantic stage: found by meaning, under the same visibility as the rest.
 
+use std::collections::HashSet;
+
 use super::*;
 use crate::memory::model::{JudgeBySemanticParams, SESSION_SUMMARY};
 
@@ -13,6 +15,38 @@ const ASKED_IN_SPANISH: &str = "rotación de las claves de firma";
 
 /// Nothing in these stores is about this, whatever the model makes of it.
 const UNRELATED: &str = "quarterly marketing budget forecast";
+
+/// A title and an opening about something else, long enough that the part
+/// `ASKED_IN_SPANISH` is about begins after token 300: the shape of a memory
+/// whose one vector never read the fact a question asks about.
+const LONG_TITLE: &str = "Weekly notes from the build pipeline";
+const LONG_OPENING: &str = "The nightly build moved to the larger runners this week and the \
+    compile step dropped from eleven minutes to six. The integration suite still takes most of \
+    the wall clock, mostly in the browser tests, which start a fresh container for every file. \
+    We tried sharing one container across files and the flaky upload test failed twice as often, \
+    so that change was reverted. The artifact cache was cleaned up by hand after it reached the \
+    quota, and a scheduled job now prunes anything older than two weeks. Linting runs before the \
+    compile step now, so a formatting mistake fails in under a minute instead of after the whole \
+    build. The release branch builds were pinned to the previous compiler until the regression \
+    in incremental builds is fixed upstream. Two contributors reported that the local setup \
+    script fails on a fresh laptop because it assumes a package manager that is not installed by \
+    default; the script now checks for it and prints how to install it. The dashboard that shows \
+    queue times was moved next to the one for test durations, and both now refresh every minute. \
+    Disk usage on the shared runners is reported in the channel when it passes eighty percent. \
+    The coverage report is uploaded only from the main branch, because the copies from every pull \
+    request filled the storage bucket within a month. Next week the plan is to split the \
+    integration suite in four shards and measure whether the queue gets longer than the time it \
+    saves.";
+const LONG_LATE: &str = "Separately, a decision about authentication tokens was taken at the \
+    same meeting. Rotate JWT signing keys every 30 days with a kid header. Signing keys live in \
+    KMS and tokens carry a kid header naming the key that signed them. The verifier accepts the \
+    current and the previous key for a 48 hour overlap window, so a token signed just before a \
+    rotation keeps working. Old keys are retired from KMS after the overlap, and every rotation \
+    is logged with the kid it introduced and the kid it retired.";
+
+fn long_body() -> String {
+    format!("{LONG_OPENING} {LONG_LATE}")
+}
 
 fn on() -> SearchOptions {
     SearchOptions {
@@ -132,7 +166,7 @@ fn the_floor_is_the_published_one() {
         return;
     };
     let candidates = store
-        .semantic_candidates(ASKED_IN_SPANISH, &on(), 10, None)
+        .semantic_candidates(ASKED_IN_SPANISH, &on(), 10, None, &Default::default())
         .unwrap();
     assert!(candidates.len() > 1, "no floor, so the page fills");
     assert!(
@@ -142,7 +176,13 @@ fn the_floor_is_the_published_one() {
         "{candidates:?}"
     );
     let floored = store
-        .semantic_candidates(ASKED_IN_SPANISH, &on(), 10, Some(crate::semantic::FLOOR))
+        .semantic_candidates(
+            ASKED_IN_SPANISH,
+            &on(),
+            10,
+            Some(crate::semantic::FLOOR),
+            &Default::default(),
+        )
         .unwrap();
     assert!(
         floored
@@ -557,7 +597,13 @@ fn a_deleted_best_match_does_not_use_up_the_page() {
         .unwrap()
         .observation;
     let both = store
-        .semantic_candidates(ASKED_IN_SPANISH, &on(), 10, Some(crate::semantic::FLOOR))
+        .semantic_candidates(
+            ASKED_IN_SPANISH,
+            &on(),
+            10,
+            Some(crate::semantic::FLOOR),
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(both.len(), 2, "both memories are above the floor: {both:?}");
     let best = both[0].id;
@@ -868,7 +914,17 @@ fn the_migration_creates_the_table_and_a_store_before_it_is_carried_forward() {
     assert_eq!(schema_version(&store.connection).unwrap(), SCHEMA_VERSION);
     let columns = table_info(&store.connection, "observation_vectors").unwrap();
     let names: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
-    assert_eq!(names, ["observation_id", "model", "source_key", "vector"]);
+    assert_eq!(
+        names,
+        [
+            "observation_id",
+            "ordinal",
+            "model",
+            "windowing",
+            "source_key",
+            "vector"
+        ]
+    );
 }
 
 /// No model, no stage -- and nothing written, nothing failed, and the answer the
@@ -1025,4 +1081,255 @@ fn the_backfill_never_loads_the_model_itself() {
     );
     assert_eq!(store.backfill_vectors(16).unwrap(), 0);
     assert!(crate::semantic::is_loaded(temp.path(), Some(&copy)));
+}
+
+/// Beside a `nearest` answer, a memory the words already found is scored by
+/// its opening window, so a tail window cannot lift it over what the words
+/// ranked first. This is the ratchet's breach in a store: the long memory's
+/// tail is about the question and its opening is not; scored by its best
+/// window it entered the semantic top five, and being in both lists the
+/// fusion put it over the memory the words had first.
+#[test]
+fn beside_a_nearest_answer_a_memory_the_words_found_is_not_lifted_by_its_tail() {
+    let Some((_temp, mut store, long)) = store_with_a_long_memory() else {
+        return;
+    };
+    for (title, body) in [
+        (
+            "Renew the staging TLS certificates every quarter",
+            "The certificates for staging are renewed by hand each quarter.",
+        ),
+        (
+            "Service passwords are kept in the vault",
+            "No password lives in a repository; services read theirs from the vault.",
+        ),
+        (
+            "Session cookies expire after twelve hours",
+            "A session cookie is valid for twelve hours and is refreshed on activity.",
+        ),
+        (
+            "API tokens are revoked when someone leaves",
+            "Offboarding revokes every personal API token the same day.",
+        ),
+        (
+            "Database credentials are rotated every month",
+            "A scheduled job replaces the database password and restarts the services.",
+        ),
+        (
+            "Release tags are signed with the maintainer's key",
+            "Every tag carries a signature that the release workflow verifies.",
+        ),
+    ] {
+        store
+            .add_observation(observation("s1", title, body))
+            .unwrap();
+    }
+    let bread = store
+        .search("sourdough", SearchOptions::default())
+        .unwrap()
+        .remove(0)
+        .observation
+        .id;
+    let cosine = |found_by_words: &HashSet<i64>, id: i64| {
+        store
+            .semantic_candidates(ASKED_IN_SPANISH, &on(), 20, None, found_by_words)
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .map(|candidate| -candidate.rank)
+    };
+    // The premise, measured rather than assumed: by its best window the long
+    // memory is in the semantic top five, by its opening it is not, and the
+    // memory the words put first is in neither.
+    let best = store
+        .semantic_candidates(
+            ASKED_IN_SPANISH,
+            &on(),
+            crate::semantic::MERGE_CAP,
+            None,
+            &HashSet::new(),
+        )
+        .unwrap();
+    assert!(
+        best.iter().any(|candidate| candidate.id == long.id),
+        "{best:?}"
+    );
+    let opening: HashSet<i64> = [bread, long.id].into_iter().collect();
+    let held = store
+        .semantic_candidates(
+            ASKED_IN_SPANISH,
+            &on(),
+            crate::semantic::MERGE_CAP,
+            None,
+            &opening,
+        )
+        .unwrap();
+    assert!(
+        !held
+            .iter()
+            .any(|candidate| candidate.id == long.id || candidate.id == bread),
+        "{held:?}"
+    );
+    assert!(cosine(&opening, long.id) < cosine(&HashSet::new(), long.id));
+
+    let lexical = [bread, long.id]
+        .into_iter()
+        .map(|id| crate::store::search::Candidate {
+            id,
+            kind: "discovery".to_owned(),
+            rank: -1.0,
+            partial: true,
+            semantic: false,
+        })
+        .collect();
+    let page = store.with_semantic_stage(ASKED_IN_SPANISH, &on(), 10, lexical, true);
+    assert_eq!(page[0].id, bread, "{page:?}");
+    let place = |id: i64| page.iter().position(|candidate| candidate.id == id);
+    assert!(place(bread) < place(long.id), "{page:?}");
+}
+
+fn rows_of(store: &Store, id: i64) -> Vec<(i64, String)> {
+    store
+        .connection
+        .prepare(
+            "SELECT ordinal, source_key FROM observation_vectors
+             WHERE observation_id = ?1 ORDER BY ordinal",
+        )
+        .unwrap()
+        .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// The long memory and the short fixtures beside it, with the premise checked:
+/// the fact the question is about begins after token 300, and the words alone
+/// find nothing.
+fn store_with_a_long_memory() -> Option<(TempDir, Store, Observation)> {
+    let (temp, mut store, _) = store_with_keys()?;
+    let model = crate::semantic::load(store.data_dir(), store.model_dir()).unwrap();
+    let before = model
+        .token_ids(&[LONG_OPENING], None)
+        .unwrap()
+        .remove(0)
+        .len();
+    assert!(before > 300, "the fact starts at token {before}");
+    let long = store
+        .add_observation(observation("s1", LONG_TITLE, &long_body()))
+        .unwrap()
+        .observation;
+    Some((temp, store, long))
+}
+
+/// A memory is found by meaning for a fact well past its first 128 tokens. One
+/// vector a memory read the title and the opening, which say nothing about
+/// signing keys, and this question went unanswered.
+#[test]
+fn a_fact_late_in_a_long_memory_is_found_by_meaning() {
+    // Not `store_with_keys`: the key-rotation memory there would answer the
+    // question by its opening and hide whether the late window did.
+    let Some((_temp, mut store)) = model_store() else {
+        return;
+    };
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let model = crate::semantic::load(store.data_dir(), store.model_dir()).unwrap();
+    let before = model
+        .token_ids(&[LONG_OPENING], None)
+        .unwrap()
+        .remove(0)
+        .len();
+    assert!(before > 300, "the fact starts at token {before}");
+    let long = store
+        .add_observation(observation("s1", LONG_TITLE, &long_body()))
+        .unwrap()
+        .observation;
+    store
+        .add_observation(observation(
+            "s1",
+            "How to bake sourdough bread",
+            "Mix flour and water, let the starter ferment overnight, bake in a hot oven.",
+        ))
+        .unwrap();
+    assert!(
+        store
+            .search(ASKED_IN_SPANISH, SearchOptions::default())
+            .unwrap()
+            .is_empty(),
+        "the words alone must find nothing, or this asks the wrong stage"
+    );
+
+    let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
+    assert_eq!(ids(&found), vec![long.id], "{found:?}");
+    assert!(found[0].semantic, "{found:?}");
+    assert!(
+        rows_of(&store, long.id).len() > 3,
+        "a long memory has windows"
+    );
+}
+
+/// A memory edited shorter keeps no window of its longer text: every row it
+/// has is one the new text made.
+#[test]
+fn a_memory_edited_shorter_leaves_no_window_of_its_longer_text() {
+    let Some((_temp, mut store, long)) = store_with_a_long_memory() else {
+        return;
+    };
+    let before = rows_of(&store, long.id);
+    assert!(before.len() > 3, "{before:?}");
+
+    store
+        .update_observation(
+            long.id,
+            None,
+            UpdateObservation {
+                content: Some("The nightly build moved to the larger runners.".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let after = rows_of(&store, long.id);
+    assert_eq!(
+        after
+            .iter()
+            .map(|(ordinal, _)| *ordinal)
+            .collect::<Vec<_>>(),
+        vec![0],
+        "{after:?}"
+    );
+    assert_ne!(after[0].1, before[0].1, "made from the new text");
+    let found = store.search(ASKED_IN_SPANISH, on()).unwrap();
+    assert!(
+        !ids(&found).contains(&long.id),
+        "a window of the old text still answered: {found:?}"
+    );
+}
+
+/// Coverage counts memories, not windows: a memory of many windows is one of
+/// the memories the stage can reach, and one whose rows are gone is one
+/// missing.
+#[test]
+fn the_vector_coverage_counts_memories_and_not_windows() {
+    let Some((_temp, store, long)) = store_with_a_long_memory() else {
+        return;
+    };
+    assert!(vector_rows(&store) > 5 + 1, "more rows than memories");
+    assert_eq!(store.vector_coverage().unwrap(), (5, 5));
+    let detail = store
+        .doctor()
+        .unwrap()
+        .checks
+        .into_iter()
+        .find(|check| check.code == "semantic_vectors")
+        .and_then(|check| check.detail)
+        .unwrap();
+    assert!(detail.contains("every one of the 5"), "{detail}");
+
+    store
+        .connection
+        .execute(
+            "DELETE FROM observation_vectors WHERE observation_id = ?1",
+            [long.id],
+        )
+        .unwrap();
+    assert_eq!(store.vector_coverage().unwrap(), (4, 5));
 }

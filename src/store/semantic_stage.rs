@@ -6,7 +6,7 @@
 //! visibility every other stage keeps. When it runs, and what it does with the
 //! answer, is `search_limited`'s business.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use super::search::{Candidate, FUSION_CONSTANT, visible_observations};
@@ -26,13 +26,21 @@ use crate::semantic::{self, SemanticModel};
 /// either, so a re-wrapped paragraph keeps its vector.
 const SOURCE_KEY: &str = "ifnull(o.normalized_hash, '') || '|' || o.title";
 
-/// How much of a body is read out of the database to make a vector from.
+/// Whether the vector row `v` is current for the memory `o`, as SQL: made by
+/// this model, cut by this windowing, from the text the memory holds now.
+/// `first` is the number of the parameter bound to [`semantic::MODEL_ID`]; the
+/// next one is bound to [`semantic::WINDOWING`].
 ///
-/// The model reads 128 tokens, a few hundred characters, and the tokenizer cuts
-/// by characters before it counts tokens — so everything past this is read from
-/// SQLite, copied, and thrown away unseen. A body is capped at 50,000 characters
-/// on the way in.
-const BODY_CHARS: usize = 4096;
+/// The one rule the scan, the coverage and both stale queries read, so a row
+/// the scan would use is never one the backfill calls stale or the other way
+/// round. Every row of a memory is written together, so the rows that count
+/// memories ask it of row 0 alone and the scan asks it of every row.
+fn current(first: usize) -> String {
+    format!(
+        "v.model = ?{first} AND v.windowing = ?{} AND v.source_key = {SOURCE_KEY}",
+        first + 1
+    )
+}
 
 /// How long the write that keeps new vectors waits for the lock.
 ///
@@ -48,15 +56,15 @@ pub(super) type StageError = Box<dyn std::error::Error + Send + Sync>;
 /// How many memories are embedded and kept at a time.
 ///
 /// What bounds the first firing's memory. The store is read for the ids of what
-/// is stale -- a number and a short key each -- and then the text of this many
-/// memories at a time is read, embedded and written, so the text and the vectors
-/// held at once are this many memories whatever the store holds: at most
-/// 256 titles and 4,096-character bodies, about a megabyte, plus the vectors of
-/// the same 256 (a kilobyte each). The model's own memory is separate and is
-/// not counted here. A store that cannot be written is the
-/// exception, because the vectors made for the question are held until it is
-/// answered: a kilobyte per memory in scope, which is what the rows would have
-/// cost on disk.
+/// is stale -- a number and a short key each -- and then this many memories at
+/// a time are read, embedded and written. The text is held one memory at a
+/// time: each is read, cut into windows and pooled before the next is read, so
+/// the text held at once is one title and one body of at most 50,000
+/// characters. What the chunk holds is the vectors, at most
+/// [`semantic::MAX_WINDOWS`] kilobytes a memory: 8 MB for a chunk of the
+/// longest memories, and about 1.7 MB at the 6.6 windows a memory averaged on
+/// the measured store. The model's own memory is separate and is not counted
+/// here.
 const CHUNK: usize = 256;
 
 /// What a full pass over the store did, and what it left.
@@ -83,9 +91,10 @@ pub(crate) const BACKFILL_BUDGET: usize = 1024;
 struct Fresh {
     id: i64,
     key: String,
-    /// Empty for a memory the model has no token for. It is kept as an empty
-    /// row so that it is not found stale again on every question.
-    vector: Vec<u8>,
+    /// One per window, in order, never none. A window the model has no token
+    /// for is kept as an empty row, so a memory with none at all still has its
+    /// row 0 and is not found stale again on every question.
+    vectors: Vec<Vec<u8>>,
 }
 
 impl Store {
@@ -102,12 +111,26 @@ impl Store {
     /// backfill now ([`Store::embed_written`], [`Store::backfill_step`]); a
     /// memory with no current vector is simply absent from the answer rather
     /// than embedded here.
+    ///
+    /// `found_by_words` are the memories the lexical list beside this one
+    /// already holds; [`WindowScores`] scores those by their opening window and
+    /// every other memory by its best. On the empty-answer path it is empty.
+    ///
+    /// One linear scan over every window of every memory in scope. Measured
+    /// through the release binary on a synthetic temporary store of 5,000
+    /// memories with 420-word bodies, over `leteo mcp`, 200 searches each with
+    /// the stage on and off: 6.01 windows a memory, and the stage's share of a
+    /// search went from 7.4 and 11.6 ms (two runs at one vector a memory) to
+    /// 19.7 and 20.0 ms (two runs). The machine is noisy at that scale -- two
+    /// runs of the same lexical path differed by 10 ms -- so the ratio, about
+    /// twice, is the number to keep rather than the milliseconds.
     pub(super) fn semantic_candidates(
         &self,
         query: &str,
         options: &SearchOptions,
         limit: usize,
         floor: Option<f32>,
+        found_by_words: &HashSet<i64>,
     ) -> Result<Vec<Candidate>, StageError> {
         let model = semantic::load(self.data_dir(), self.model_dir())?;
         let question = semantic::embed(&model, &[query.to_owned()])?.remove(0);
@@ -115,13 +138,13 @@ impl Store {
             return Ok(Vec::new());
         }
         let visible = visible_observations(1, 2, 3);
+        let current = current(5);
         let mut statement = self.connection.prepare(&format!(
-            "SELECT o.id, o.type, v.vector FROM observations o
+            "SELECT o.id, o.type, v.vector, v.ordinal FROM observations o
              CROSS JOIN observation_vectors v ON v.observation_id = o.id
-             WHERE {visible} AND (?4 IS NULL OR o.type != ?4)
-               AND v.model = ?5 AND v.source_key = {SOURCE_KEY}"
+             WHERE {visible} AND (?4 IS NULL OR o.type != ?4) AND {current}"
         ))?;
-        let mut scored: Vec<(f32, i64, String)> = Vec::new();
+        let mut scores = WindowScores::new(found_by_words);
         let mut rows = statement.query(params![
             options.kind,
             options.project,
@@ -129,16 +152,19 @@ impl Store {
             super::search::excludes_summaries(options)
                 .then_some(crate::memory::model::SESSION_SUMMARY),
             semantic::MODEL_ID,
+            semantic::WINDOWING,
         ])?;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
+            let ordinal: i64 = row.get(3)?;
             let stored = row.get_ref(2)?.as_blob()?;
-            if let Some(cosine) = semantic::cosine(stored, &question) {
-                scored.push((cosine, id, row.get(1)?));
-            }
+            let Some(cosine) = semantic::cosine(stored, &question) else {
+                continue;
+            };
+            scores.offer(id, ordinal, cosine, || row.get::<_, String>(1))?;
         }
 
-        scored.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+        let mut scored = scores.ranked();
         if let Some(floor) = floor {
             scored.retain(|(cosine, ..)| *cosine >= floor);
         }
@@ -281,8 +307,10 @@ impl Store {
     /// superseded — session summaries included, because a query that names the
     /// type reads them. So the number is the fraction of
     /// the store the stage can see, not the fraction of every row that holds a
-    /// vector. `doctor` reports it, and `(covered, total)` is what lets it say
-    /// "every one" without a second query.
+    /// vector. Both counts are of memories and not of windows: `covered` reads
+    /// each memory's row 0 and nothing else. `doctor` reports it, and
+    /// `(covered, total)` is what lets it say "every one" without a second
+    /// query.
     pub(crate) fn vector_coverage(&self) -> Result<(i64, i64), rusqlite::Error> {
         let visible = visible_observations(1, 2, 3);
         let total: i64 = self.connection.query_row(
@@ -294,17 +322,19 @@ impl Store {
             ],
             |row| row.get(0),
         )?;
+        let current = current(4);
         let covered: i64 = self.connection.query_row(
             &format!(
                 "SELECT COUNT(*) FROM observations o
-                 CROSS JOIN observation_vectors v ON v.observation_id = o.id
-                 WHERE {visible} AND v.model = ?4 AND v.source_key = {SOURCE_KEY}"
+                 CROSS JOIN observation_vectors v ON v.observation_id = o.id AND v.ordinal = 0
+                 WHERE {visible} AND {current}"
             ),
             params![
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
                 semantic::MODEL_ID,
+                semantic::WINDOWING,
             ],
             |row| row.get(0),
         )?;
@@ -325,44 +355,40 @@ impl Store {
         if stale.is_empty() {
             return Ok(0);
         }
-        let mut read = self.connection.prepare(&format!(
-            "SELECT o.title, o.type, substr(o.content, 1, {BODY_CHARS})
-             FROM observations o WHERE o.id = ?1"
-        ))?;
+        // The whole body, because the windows read up to
+        // `MAX_WINDOWS * MAX_TOKENS` tokens of it and `embed_document` cuts it
+        // to those characters itself; a cut here would be a second copy of
+        // that budget, and the 4,096 characters it used to be left every window
+        // past the first few unread.
+        let mut read = self
+            .connection
+            .prepare("SELECT o.title, o.content FROM observations o WHERE o.id = ?1")?;
         let mut kept = 0;
         for chunk in stale.chunks(CHUNK) {
-            let mut rows = Vec::with_capacity(chunk.len());
-            let mut texts = Vec::with_capacity(chunk.len());
+            let mut fresh = Vec::with_capacity(chunk.len());
             for (id, key) in chunk {
                 // Gone since the ids were read: nothing to embed.
-                let Some((title, kind, content)) = read
+                let Some((title, content)) = read
                     .query_row([id], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })
                     .optional()?
                 else {
                     continue;
                 };
-                texts.push(semantic::document_text(&title, &content));
-                rows.push((*id, key.clone(), kind));
-            }
-            if rows.is_empty() {
-                continue;
-            }
-            let vectors = semantic::embed(model, &texts)?;
-            let fresh: Vec<Fresh> = rows
-                .iter()
-                .zip(vectors)
-                .map(|((id, key, _), vector)| Fresh {
+                let vectors = semantic::embed_document(model, &title, &content)?;
+                fresh.push(Fresh {
                     id: *id,
                     key: key.clone(),
-                    vector: semantic::encode(&vector),
-                })
-                .collect();
+                    vectors: vectors
+                        .iter()
+                        .map(|vector| semantic::encode(vector))
+                        .collect(),
+                });
+            }
+            if fresh.is_empty() {
+                continue;
+            }
             self.keep_vectors(&fresh)?;
             kept += fresh.len();
         }
@@ -382,13 +408,14 @@ impl Store {
     /// so a vector for one is read rather than wasted.
     fn stale_any(&self, budget: usize) -> Result<Vec<(i64, String)>, StageError> {
         let visible = visible_observations(1, 2, 3);
+        let current = current(4);
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.id, {SOURCE_KEY}
              FROM observations o
-             LEFT JOIN observation_vectors v ON v.observation_id = o.id
+             LEFT JOIN observation_vectors v ON v.observation_id = o.id AND v.ordinal = 0
              WHERE {visible}
-               AND (v.observation_id IS NULL OR v.model != ?4 OR v.source_key != {SOURCE_KEY})
-             ORDER BY o.id DESC LIMIT ?5"
+               AND (v.observation_id IS NULL OR NOT ({current}))
+             ORDER BY o.id DESC LIMIT ?6"
         ))?;
         let rows = statement.query_map(
             params![
@@ -396,6 +423,7 @@ impl Store {
                 Option::<String>::None,
                 Option::<String>::None,
                 semantic::MODEL_ID,
+                semantic::WINDOWING,
                 budget as i64,
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -416,12 +444,13 @@ impl Store {
             .map(i64::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let current = current(4);
         let mut statement = self.connection.prepare(&format!(
             "SELECT o.id, {SOURCE_KEY}
              FROM observations o
-             LEFT JOIN observation_vectors v ON v.observation_id = o.id
+             LEFT JOIN observation_vectors v ON v.observation_id = o.id AND v.ordinal = 0
              WHERE {visible} AND o.id IN ({list})
-               AND (v.observation_id IS NULL OR v.model != ?4 OR v.source_key != {SOURCE_KEY})"
+               AND (v.observation_id IS NULL OR NOT ({current}))"
         ))?;
         let rows = statement.query_map(
             params![
@@ -429,6 +458,7 @@ impl Store {
                 Option::<String>::None,
                 Option::<String>::None,
                 semantic::MODEL_ID,
+                semantic::WINDOWING,
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
@@ -437,10 +467,12 @@ impl Store {
 
     /// Writes vectors in one transaction, waiting only briefly for the lock.
     ///
-    /// `INSERT OR REPLACE` because a stale row is replaced rather than added to.
-    /// A memory hard-deleted between reading it and getting here is skipped by
-    /// the `EXISTS`: the foreign key would refuse the row, and one memory gone
-    /// must not cost every other vector in the batch.
+    /// A memory's rows are deleted before its windows are inserted, in the same
+    /// transaction, because replacing by key alone would leave the windows past
+    /// the new last one: a memory edited shorter would keep scoring by the text
+    /// it no longer holds. A memory hard-deleted between reading it and getting
+    /// here is skipped by the `EXISTS`: the foreign key would refuse the row,
+    /// and one memory gone must not cost every other vector in the batch.
     fn keep_vectors(&self, fresh: &[Fresh]) -> Result<(), rusqlite::Error> {
         let before: i64 = self
             .connection
@@ -450,14 +482,26 @@ impl Store {
             let transaction =
                 Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
             {
+                let mut clear = transaction
+                    .prepare("DELETE FROM observation_vectors WHERE observation_id = ?1")?;
                 let mut insert = transaction.prepare(
-                    "INSERT OR REPLACE INTO observation_vectors
-                       (observation_id, model, source_key, vector)
-                     SELECT ?1, ?2, ?3, ?4
+                    "INSERT INTO observation_vectors
+                       (observation_id, ordinal, model, windowing, source_key, vector)
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6
                      WHERE EXISTS (SELECT 1 FROM observations WHERE id = ?1)",
                 )?;
                 for row in fresh {
-                    insert.execute(params![row.id, semantic::MODEL_ID, row.key, row.vector])?;
+                    clear.execute([row.id])?;
+                    for (ordinal, vector) in row.vectors.iter().enumerate() {
+                        insert.execute(params![
+                            row.id,
+                            ordinal as i64,
+                            semantic::MODEL_ID,
+                            semantic::WINDOWING,
+                            row.key,
+                            vector
+                        ])?;
+                    }
                 }
             }
             transaction.commit()
@@ -466,6 +510,72 @@ impl Store {
         self.connection
             .busy_timeout(Duration::from_millis(before.max(0) as u64))?;
         written
+    }
+}
+
+/// One score a memory from the cosines of its windows, as the scan streams
+/// them: the opening window alone for a memory the words already found, the
+/// best window for any other.
+///
+/// Best window for every memory was measured first, and it broke the merge
+/// path. Through this binary, `tools/memory-bench/ratchet.py` fell below two
+/// floors (MRR over all 117 questions 0.922 to 0.915 against a floor of 0.917,
+/// paraphrases 0.871 to 0.849 against 0.856), and the whole fall was one
+/// question that went from first place to sixth: five distractors whose bodies
+/// end in a repeated boilerplate paragraph gained a later window of title plus
+/// boilerplate, those windows reached the semantic top five, and since the
+/// lexical list held the same five, `fuse` summed both places and lifted them
+/// over the answer. A memory the words found is already on the page; what the
+/// meaning adds about it is what it says it is about, which is its opening.
+/// The tail of a body is what lets a memory the words missed be found at all,
+/// so that one keeps its best window. Simulated on 420 blind questions of a
+/// real store, this keeps first place on natural questions at 78.6% where best
+/// window for every memory dropped it to 72.1%, and keeps the top-10 gain on
+/// questions about the body (50.7% to 62.1% in the memory's language, 3.6% to
+/// 25.7% in another). Do not fold the two cases back into one maximum.
+///
+/// A memory's windows arrive one after another, because `CROSS JOIN` keeps
+/// `observations` as the outer loop and reads `observation_vectors` by its key,
+/// so they fold into the last entry without a map and `extra` -- the type, a
+/// string -- is read once a memory and not once a window. Should a plan ever
+/// interleave them, [`Self::ranked`] still keeps one entry a memory, its best.
+struct WindowScores<'a, T> {
+    found_by_words: &'a HashSet<i64>,
+    scored: Vec<(f32, i64, T)>,
+}
+
+impl<'a, T> WindowScores<'a, T> {
+    fn new(found_by_words: &'a HashSet<i64>) -> Self {
+        Self {
+            found_by_words,
+            scored: Vec::new(),
+        }
+    }
+
+    fn offer<E>(
+        &mut self,
+        id: i64,
+        ordinal: i64,
+        cosine: f32,
+        extra: impl FnOnce() -> Result<T, E>,
+    ) -> Result<(), E> {
+        if ordinal != 0 && self.found_by_words.contains(&id) {
+            return Ok(());
+        }
+        match self.scored.last_mut() {
+            Some(last) if last.1 == id => last.0 = last.0.max(cosine),
+            _ => self.scored.push((cosine, id, extra()?)),
+        }
+        Ok(())
+    }
+
+    /// Best first, the lower id first at equal cosine, one entry a memory.
+    fn ranked(mut self) -> Vec<(f32, i64, T)> {
+        self.scored
+            .sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+        let mut seen = HashSet::with_capacity(self.scored.len());
+        self.scored.retain(|(_, id, _)| seen.insert(*id));
+        self.scored
     }
 }
 
@@ -531,6 +641,50 @@ pub(super) fn fuse(
     });
     merged.truncate(limit);
     merged
+}
+
+#[cfg(test)]
+mod window_score_tests {
+    use super::*;
+
+    fn ranked(rows: &[(i64, i64, f32)], found_by_words: &[i64]) -> Vec<(f32, i64)> {
+        let found: HashSet<i64> = found_by_words.iter().copied().collect();
+        let mut scores = WindowScores::new(&found);
+        for &(id, ordinal, cosine) in rows {
+            scores
+                .offer(id, ordinal, cosine, || Ok::<_, ()>(()))
+                .unwrap();
+        }
+        scores
+            .ranked()
+            .into_iter()
+            .map(|(cosine, id, ())| (cosine, id))
+            .collect()
+    }
+
+    /// The breach this rule exists for, in miniature: memory 2 has a weak
+    /// opening and a strong tail window, memory 1 a good opening. Held by the
+    /// words, 2 is scored by its opening and stays behind 1; missed by them, it
+    /// is scored by its best window and leads.
+    #[test]
+    fn a_memory_the_words_found_is_scored_by_its_opening_and_any_other_by_its_best() {
+        let rows = [(1, 0, 0.5), (2, 0, 0.2), (2, 1, 0.9), (2, 2, 0.4)];
+        assert_eq!(ranked(&rows, &[]), vec![(0.9, 2), (0.5, 1)]);
+        assert_eq!(ranked(&rows, &[2]), vec![(0.5, 1), (0.2, 2)]);
+        assert_eq!(
+            ranked(&rows, &[1, 2]),
+            vec![(0.5, 1), (0.2, 2)],
+            "a memory the words found and whose opening is its best keeps it"
+        );
+    }
+
+    /// Windows that do not arrive together still leave one entry a memory, at
+    /// its best.
+    #[test]
+    fn interleaved_windows_still_give_one_candidate_a_memory() {
+        let rows = [(1, 0, 0.3), (2, 0, 0.4), (1, 1, 0.8), (2, 1, 0.1)];
+        assert_eq!(ranked(&rows, &[]), vec![(0.8, 1), (0.4, 2)]);
+    }
 }
 
 #[cfg(test)]

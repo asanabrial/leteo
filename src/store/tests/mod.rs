@@ -176,7 +176,14 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
     ),
     (
         "observation_vectors",
-        &["observation_id", "model", "source_key", "vector"],
+        &[
+            "observation_id",
+            "ordinal",
+            "model",
+            "windowing",
+            "source_key",
+            "vector",
+        ],
     ),
 ];
 

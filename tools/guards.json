@@ -1336,26 +1336,26 @@
   {
     "name": "semantic: the scan stops asking what a search may return",
     "file": "src/store/semantic_stage.rs",
-    "old": "             WHERE {visible} AND o.type != ?4\n               AND v.model = ?5 AND v.source_key = {SOURCE_KEY}\"",
-    "new": "             WHERE 1 = 1 AND o.type != ?4\n               AND v.model = ?5 AND v.source_key = {SOURCE_KEY}\""
+    "old": "             WHERE {visible} AND (?4 IS NULL OR o.type != ?4) AND {current}\"",
+    "new": "             WHERE (?1 IS NULL OR ?2 IS NULL OR ?3 IS NULL OR 1 = 1) AND (?4 IS NULL OR o.type != ?4) AND {current}\""
   },
   {
     "name": "semantic: session summaries are scanned",
     "file": "src/store/semantic_stage.rs",
-    "old": "             WHERE {visible} AND o.type != ?4\n               AND v.model = ?5 AND v.source_key = {SOURCE_KEY}\"",
-    "new": "             WHERE {visible} AND ?4 IS NOT NULL\n               AND v.model = ?5 AND v.source_key = {SOURCE_KEY}\""
+    "old": "             WHERE {visible} AND (?4 IS NULL OR o.type != ?4) AND {current}\"",
+    "new": "             WHERE {visible} AND (?4 IS NULL OR ?4 IS NOT NULL) AND {current}\""
   },
   {
     "name": "semantic: a vector from another model is current",
     "file": "src/store/semantic_stage.rs",
-    "old": "(v.observation_id IS NULL OR v.model != ?5 OR v.source_key != {SOURCE_KEY})",
-    "new": "(v.observation_id IS NULL OR v.source_key != {SOURCE_KEY})"
+    "old": "\"v.model = ?{first} AND v.windowing = ?{} AND v.source_key = {SOURCE_KEY}\",",
+    "new": "\"?{first} IS NOT NULL AND v.windowing = ?{} AND v.source_key = {SOURCE_KEY}\","
   },
   {
     "name": "semantic: a vector made from changed text is current",
     "file": "src/store/semantic_stage.rs",
-    "old": "(v.observation_id IS NULL OR v.model != ?5 OR v.source_key != {SOURCE_KEY})",
-    "new": "(v.observation_id IS NULL OR v.model != ?5)"
+    "old": "\"v.model = ?{first} AND v.windowing = ?{} AND v.source_key = {SOURCE_KEY}\",",
+    "new": "\"v.model = ?{first} AND v.windowing = ?{} AND ({SOURCE_KEY}) IS NOT NULL\","
   },
   {
     "name": "semantic: the title is not part of what a vector was made from",
@@ -1716,5 +1716,55 @@
     "file": "src/cli/mod.rs",
     "old": ".then(|| store.restem_to_detected_language())",
     "new": ".then(|| Ok::<i64, crate::store::StoreError>(0))"
+  },
+  {
+    "name": "semantic windows: a memory is read as its first window only",
+    "file": "src/semantic/mod.rs",
+    "old": "        .take(MAX_WINDOWS)",
+    "new": "        .take(1)"
+  },
+  {
+    "name": "semantic windows: a window past the first is not headed by the title",
+    "file": "src/semantic/mod.rs",
+    "old": "        .map(|part| [head, part].concat())",
+    "new": "        .map(|part| part.to_vec())"
+  },
+  {
+    "name": "semantic windows: a memory edited shorter keeps the windows past its new end",
+    "file": "src/store/semantic_stage.rs",
+    "edits": [
+      {
+        "old": "                    clear.execute([row.id])?;",
+        "new": "                    let _ = &clear;"
+      },
+      {
+        "old": "\"INSERT INTO observation_vectors\n",
+        "new": "\"INSERT OR REPLACE INTO observation_vectors\n"
+      }
+    ]
+  },
+  {
+    "name": "semantic windows: the vector coverage counts windows as memories",
+    "file": "src/store/semantic_stage.rs",
+    "old": "CROSS JOIN observation_vectors v ON v.observation_id = o.id AND v.ordinal = 0",
+    "new": "CROSS JOIN observation_vectors v ON v.observation_id = o.id"
+  },
+  {
+    "name": "semantic windows: a memory the words found is scored by its best window",
+    "file": "src/store/semantic_stage.rs",
+    "old": "        if ordinal != 0 && self.found_by_words.contains(&id) {",
+    "new": "        if ordinal != 0 && self.found_by_words.contains(&id) && false {"
+  },
+  {
+    "name": "semantic windows: the merge path does not say which memories the words found",
+    "file": "src/store/search.rs",
+    "old": "        let found_by_words = lexical.iter().map(|candidate| candidate.id).collect();",
+    "new": "        let found_by_words = lexical.iter().map(|candidate| candidate.id).take(0).collect();"
+  },
+  {
+    "name": "semantic windows: interleaved windows give a memory two candidates",
+    "file": "src/store/semantic_stage.rs",
+    "old": "        self.scored.retain(|(_, id, _)| seen.insert(*id));",
+    "new": "        self.scored.retain(|(_, id, _)| seen.insert(*id) || true);"
   }
 ]

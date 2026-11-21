@@ -227,6 +227,14 @@ pub struct HookInput {
     /// memory, and the verdicts waiting for a ruling.
     #[serde(default)]
     pub without_directive: bool,
+    /// The host has already stored the compaction summary itself.
+    ///
+    /// Pi saves the summary before it runs `post-compaction`, and the recovery
+    /// text then told the agent to persist it with `mem_session_summary` — the
+    /// same summary written twice. Only a host that did the write can say so;
+    /// every other caller leaves it off and gets the instruction it always had.
+    #[serde(default)]
+    pub summary_stored: bool,
 }
 
 impl HookInput {
@@ -599,10 +607,13 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                     outcome.warnings.push(format!("hint state: {error}"));
                 }
             }
-            let mut context = String::from(
+            let mut context = String::from(if input.summary_stored {
+                "Context was compacted, and its summary is already stored. \
+                 Continue from the memory below.\n\n"
+            } else {
                 "Context was compacted. Persist the compacted summary with \
-                 mem_session_summary, then continue from the memory below.\n\n",
-            );
+                 mem_session_summary, then continue from the memory below.\n\n"
+            });
             // Repeated here because a compaction is precisely when the
             // session-start instruction is gone. An agent that came back
             // without it writes the rest of the conversation's memories in

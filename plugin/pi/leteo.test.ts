@@ -350,7 +350,7 @@ test("a prompt that another extension injected is not captured", async () => {
   }
 })
 
-test("tool results are captured except Leteo's own and anything of 50 characters or fewer", async () => {
+test("a subagent's result is captured unless it is 50 characters or fewer", async () => {
   const h = harness()
   try {
     const pi = fakePi()
@@ -361,8 +361,8 @@ test("tool results are captured except Leteo's own and anything of 50 characters
 
     end({ toolName: "mcp__leteo__mem_save", result: text(learnings) }, context())
     end({ toolName: "MCP__LETEO__MEM_SEARCH", result: text(learnings) }, context())
-    end({ toolName: "bash", result: text("x".repeat(50)) }, context())
-    end({ toolName: "bash", result: undefined }, context())
+    end({ toolName: "subagent", result: text("x".repeat(50)) }, context())
+    end({ toolName: "subagent", result: undefined }, context())
     end({ toolName: "subagent", result: text(learnings) }, context())
     // Capture is not awaited by the handler; shutdown is what waits for it, so
     // by the time it returns every capture has run.
@@ -378,6 +378,34 @@ test("tool results are captured except Leteo's own and anything of 50 characters
     })
     assert.equal(captured[0].client, "pi")
     assert.equal(hooks(h, "session-stop").length, 1, "and the session ends after them")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("a plain tool result is not captured, whatever it contains", async () => {
+  const h = harness()
+  try {
+    const pi = fakePi()
+    await leteo(pi as any)
+    const end = pi.handlers.get("tool_execution_end")!
+    // A file that happens to document the learnings heading is what a read of
+    // this very repository returns; capturing it would store its text as memories.
+    const file = "# Notes\n\n## Key Learnings:\n1. A heading in a file is not a subagent's report\n2. Reading is not learning"
+    const text = (value: string) => ({ content: [{ type: "text", text: value }] })
+
+    end({ toolName: "read", result: text(file) }, context())
+    end({ toolName: "bash", result: text(file) }, context())
+    end({ toolName: "grep", result: text(file) }, context())
+    end({ toolName: "SubAgent", result: text(file) }, context())
+    end({ toolName: "Task", result: text(file) }, context())
+    await pi.handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, context())
+
+    assert.deepEqual(
+      hooks(h, "subagent-stop").map((entry) => entry.payload.source).sort(),
+      ["SubAgent", "Task"],
+      "only the tools that delegate to a subagent spawn a capture",
+    )
   } finally {
     h.cleanup()
   }
@@ -439,6 +467,11 @@ test("a compaction saves the summary in the session's directory, recovers contex
       "## Goal\nShip the Pi package",
     ])
     assert.equal(realpathSync(saved.cwd), realpathSync(HERE), "it runs where the session does")
+    assert.deepEqual(
+      hooks(h, "post-compaction").map((entry) => entry.payload),
+      [{ session_id: "pi-session-1", cwd: HERE, summary_stored: true }],
+      "the hook is told the summary is already stored, so it does not ask for it again",
+    )
     assert.deepEqual(
       h.log().map((entry) => entry.kind === "save" ? "save" : entry.event),
       ["save", "post-compaction"],
@@ -564,6 +597,24 @@ test("a summary that could not be saved is not reported as saved", async () => {
     )
     assert.match(options.appendSystemPrompt, /could not store the summary/, "the model is told too")
     assert.ok(options.appendSystemPrompt.includes("RECOVERED CONTEXT"), "the recovery still follows")
+    assert.equal(
+      hooks(h, "post-compaction")[0].payload.summary_stored,
+      false,
+      "a summary that was not stored is not claimed as stored",
+    )
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("a compaction with no summary does not claim one was stored", async () => {
+  const h = harness()
+  try {
+    const pi = fakePi()
+    await leteo(pi as any)
+    await pi.handlers.get("session_compact")!({ type: "session_compact", compactionEntry: {} }, context("pi-session-1", HERE))
+    assert.equal(h.log().filter((entry) => entry.kind === "save").length, 0)
+    assert.equal(hooks(h, "post-compaction")[0].payload.summary_stored, false)
   } finally {
     h.cleanup()
   }

@@ -1976,5 +1976,11 @@
     "file": "src/mcp/tools.rs",
     "old": "                        store.effective_search_limit(limit),",
     "new": "                        limit.unwrap_or(10),"
+  },
+  {
+    "name": "post-compaction: a summary the host already stored is not asked for again",
+    "file": "src/hooks/mod.rs",
+    "old": "            let mut context = String::from(if input.summary_stored {",
+    "new": "            let mut context = String::from(if false && input.summary_stored {"
   }
 ]

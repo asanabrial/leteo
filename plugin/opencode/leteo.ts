@@ -196,7 +196,10 @@ export const Leteo: Plugin = async (ctx) => {
   const subAgentSessions = new Set<string>()
   const startedSessions = new Set<string>()
   const recoveredSessions = new Set<string>()
-  /** What `session-start` returned for a session, until its first turn takes it. */
+  /**
+   * What `session-start` returned for a session, or `post-compaction` after one,
+   * until the next system prompt takes it.
+   */
   const openings = new Map<string, string>()
   /**
    * What the per-prompt hook named for the turn in progress, by session.
@@ -233,10 +236,11 @@ export const Leteo: Plugin = async (ctx) => {
   /**
    * Returns this project's prior memory once per session.
    *
-   * It is the opening `ensureSession` already asked for. `post-compaction` used
-   * to be called here for being the hook that returns the memory without the
-   * protocol, and its text begins "Context was compacted", which a session that
-   * had only just been created was told.
+   * It is the opening `ensureSession` already asked for, or what the
+   * `session.compacted` handler recovered. `post-compaction` used to be called
+   * here for being the hook that returns the memory without the protocol, and
+   * its text begins "Context was compacted", which a session that had only just
+   * been created was told; it now runs only after OpenCode says it compacted.
    */
   async function recoverContext(sessionID: string): Promise<string> {
     if (!sessionID || subAgentSessions.has(sessionID)) return ""
@@ -262,6 +266,24 @@ export const Leteo: Plugin = async (ctx) => {
           return
         }
         await ensureSession(sessionID)
+      }
+
+      // OpenCode announces a compaction after it has happened, and the answer is
+      // held for the next system prompt rather than injected here: this event
+      // has nowhere to put text in front of the agent. The hook also clears the
+      // list of memories it has named, which is why it has to run even when
+      // the answer turns out empty.
+      if (event.type === "session.compacted") {
+        const sessionID: string | undefined = (event.properties as any)?.sessionID
+        if (!sessionID || subAgentSessions.has(sessionID)) return
+        await ensureSession(sessionID)
+        const recovered = additionalContext(
+          await runHook("post-compaction", { session_id: sessionID, cwd: directory }),
+        )
+        if (recovered) {
+          openings.set(sessionID, recovered)
+          recoveredSessions.delete(sessionID)
+        }
       }
 
       if (event.type === "session.deleted") {
@@ -428,11 +450,17 @@ function v1SessionEvent(event: any, directory: string): any {
   if (
     event.type !== "session.created" &&
     event.type !== "session.updated" &&
-    event.type !== "session.deleted"
+    event.type !== "session.deleted" &&
+    event.type !== "session.compacted"
   ) {
     return undefined
   }
   if (isForeign(event, directory)) return undefined
+  // 1.x carries the id of a compacted session in `properties.sessionID`, not in
+  // an `info` object like the lifecycle events.
+  if (event.type === "session.compacted") {
+    return { type: event.type, properties: { sessionID: data.sessionID } }
+  }
   if (event.type === "session.deleted") {
     return { type: event.type, properties: { info: { id: data.sessionID } } }
   }

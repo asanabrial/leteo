@@ -50,7 +50,8 @@ cd plugin/opencode && node --test leteo.test.ts
 | `chat.message` | `leteo hook user-prompt-submit` | Persists the user prompt and reminds the agent when the project has gone quiet |
 | `tool.execute.after` (Task) | `leteo hook subagent-stop` | Captures Key Learnings from sub-agent output |
 | `session.deleted` | `leteo hook session-stop` | Ends the session |
-| every system prompt | `leteo hook post-compaction` (once per session) | Injects the protocol and prior memory |
+| `session.compacted` | `leteo hook post-compaction` | Clears what the hint already named, and hands the rebuilt memory and the language directive to the agent on its next turn |
+| every system prompt | none | Injects the protocol, and the session's opening memory once |
 
 ## Design
 

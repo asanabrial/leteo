@@ -40,8 +40,8 @@ already registered by extension …`.
 | `session_start` | `leteo hook session-start` | Opens the session and holds the project's recent work for the first turn |
 | `before_agent_start` | `leteo hook user-prompt-submit` | Appends the protocol to the system prompt and persists the prompt. Input another extension injected is not persisted |
 | `tool_call` | none | Adds the Pi session's id to a Leteo tool call whose schema takes one |
-| `tool_execution_end` | `leteo hook subagent-stop` | Captures Key Learnings from the output of any tool but Leteo's own, when it is longer than 50 characters. Output with no learnings section stores nothing |
-| `session_compact` | `leteo save --type session_summary`, then `leteo hook post-compaction` | Saves Pi's summary, recovers context, and hands it over on the next turn |
+| `tool_execution_end` | `leteo hook subagent-stop` | Captures Key Learnings from a subagent's result (a tool named `subagent` or `task`, which are the names OpenCode uses; Pi marks no subagent itself), when it is longer than 50 characters. No other tool's output is sent, so a file that holds a learnings heading is not stored as memories |
+| `session_compact` | `leteo save --type session_summary`, then `leteo hook post-compaction` | Saves Pi's summary, recovers context without asking the agent to store the summary again, and hands it over on the next turn |
 | `session_shutdown` | `leteo hook session-stop` | Ends the session, unless Pi is only reloading |
 
 The memory tools are Leteo's MCP server, registered by the extension rather than

@@ -483,6 +483,45 @@ fn post_compaction_recovers_context_without_the_full_protocol() {
     assert!(!context.contains("### Save important work"));
 }
 
+/// Pi stores the compaction summary before it runs the hook, and was then told
+/// to persist it again. A host that says it already did gets a recovery that
+/// leaves the instruction out and keeps everything else.
+#[test]
+fn post_compaction_does_not_ask_for_a_summary_the_host_already_stored() {
+    let (temp, mut store) = store();
+    run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+    store
+        .add_observation(memory(
+            "Recovered decision",
+            "Something the project already decided",
+        ))
+        .unwrap();
+
+    let mut stored = input(temp.path());
+    stored.summary_stored = true;
+    let said = run(&mut store, HookEvent::PostCompaction, &stored)
+        .unwrap()
+        .additional_context
+        .unwrap();
+    assert!(said.starts_with("Context was compacted"), "{said}");
+    assert!(!said.contains("mem_session_summary"), "{said}");
+    assert!(said.contains("Recovered decision"), "{said}");
+
+    let asked = run(&mut store, HookEvent::PostCompaction, &input(temp.path()))
+        .unwrap()
+        .additional_context
+        .unwrap();
+    assert!(asked.contains("mem_session_summary"), "{asked}");
+}
+
+#[test]
+fn a_payload_without_summary_stored_leaves_it_off() {
+    let parsed: HookInput = serde_json::from_str(r#"{"session_id":"s"}"#).unwrap();
+    assert!(!parsed.summary_stored);
+    let said: HookInput = serde_json::from_str(r#"{"summary_stored":true}"#).unwrap();
+    assert!(said.summary_stored);
+}
+
 /// A host that carries the protocol itself asks for the opening without the
 /// directive, and gets the rest of it unchanged.
 ///

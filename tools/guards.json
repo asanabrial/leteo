@@ -1608,5 +1608,11 @@
     "file": "src/store/prompts.rs",
     "old": "AND NOT ({harness}) AND id IN (",
     "new": "AND NOT (0 AND {harness}) AND id IN ("
+  },
+  {
+    "name": "supersession: a memory is hidden by a replacement that is no longer live",
+    "file": "src/store/relations.rs",
+    "old": "WHERE src.sync_id = r.source_id AND src.deleted_at IS NULL))\"",
+    "new": "WHERE src.sync_id = r.source_id AND src.deleted_at IS NULL OR 1))\""
   }
 ]

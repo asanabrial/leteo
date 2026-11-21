@@ -73,12 +73,22 @@ const RELATION_JUDGEABLE: &str = "
 ///
 /// A pending relation hides nothing. Only a verdict does, and reversing it —
 /// `mem_judge` changing the verb, or removing the row — restores the memory.
+///
+/// Neither does a verdict whose source is gone. Consolidating two memories and
+/// then soft-deleting the result left both originals live in the table and
+/// absent from every search and listing, because the `supersedes` rows
+/// survive a soft delete. The source has to be a live observation, which is
+/// the same test `collect_caveats` applies; a source that does not exist at
+/// all fails it too. The subquery is correlated on `r.source_id` alone, so the
+/// full-text index still drives the statements this is interpolated into.
 pub(super) fn not_superseded() -> String {
     format!(
         "NOT EXISTS (SELECT 1 FROM memory_relations r \
          WHERE r.judgment_status = '{JUDGMENT_STATUS_JUDGED}' \
            AND r.relation = '{RELATION_SUPERSEDES}' \
-           AND r.target_id = o.sync_id)"
+           AND r.target_id = o.sync_id \
+           AND EXISTS (SELECT 1 FROM observations src \
+                       WHERE src.sync_id = r.source_id AND src.deleted_at IS NULL))"
     )
 }
 

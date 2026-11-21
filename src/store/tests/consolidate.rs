@@ -296,6 +296,105 @@ fn a_consolidation_hides_its_sources_and_a_reversal_restores_them() {
 }
 
 #[test]
+fn deleting_the_memory_that_replaced_two_others_brings_them_back() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let older = store
+        .add_observation(observation(
+            "s1",
+            "The pool leaked",
+            "the pool was never returned to the caller",
+        ))
+        .unwrap()
+        .observation;
+    let other = store
+        .add_observation(observation(
+            "s1",
+            "The pool was small",
+            "a small pool, sized by hand",
+        ))
+        .unwrap()
+        .observation;
+    let outcome = store
+        .consolidate_observations(a_merge(vec![older.id, other.id], "leteo"))
+        .unwrap();
+
+    let found = |store: &Store, query: &str, id: i64| {
+        store
+            .search(
+                query,
+                SearchOptions {
+                    project: Some("leteo".to_owned()),
+                    ..SearchOptions::default()
+                },
+            )
+            .unwrap()
+            .iter()
+            .any(|result| result.observation.id == id)
+    };
+    assert!(
+        !found(&store, "pool leaked", older.id) && !found(&store, "pool was small", other.id),
+        "while the replacement is live the sources stay hidden"
+    );
+
+    store
+        .delete_observation(outcome.observation.id, None, false)
+        .unwrap();
+    assert_eq!(
+        count(
+            &store,
+            "SELECT COUNT(*) FROM memory_relations WHERE judgment_status = 'judged' \
+             AND relation = 'supersedes'"
+        ),
+        2,
+        "the verdicts survive a soft delete, which is why the listing has to ask"
+    );
+    assert!(
+        found(&store, "pool leaked", older.id) && found(&store, "pool was small", other.id),
+        "a source is hidden only while the memory that replaced it is live"
+    );
+    let recent = store.recent_memories(Some("leteo"), None, 50).unwrap();
+    assert!(
+        recent.iter().any(|observation| observation.id == older.id)
+            && recent.iter().any(|observation| observation.id == other.id),
+        "the context lists them again as well: {recent:?}"
+    );
+}
+
+#[test]
+fn a_verdict_whose_source_row_is_gone_hides_nothing() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let (newer, older) = {
+        let newer = store
+            .add_observation(observation("s1", "The new way", "the new body"))
+            .unwrap()
+            .observation;
+        let older = store
+            .add_observation(observation("s1", "The old way", "the old body"))
+            .unwrap()
+            .observation;
+        (newer, older)
+    };
+    let outcome = store
+        .consolidate_observations(a_merge(vec![older.id, newer.id], "leteo"))
+        .unwrap();
+    store
+        .connection
+        .execute(
+            "DELETE FROM observations WHERE sync_id = ?1",
+            rusqlite::params![outcome.observation.sync_id],
+        )
+        .unwrap();
+
+    let recent = store.recent_memories(Some("leteo"), None, 50).unwrap();
+    assert!(
+        recent.iter().any(|observation| observation.id == older.id),
+        "a source that no longer exists cannot hide its target: {recent:?}"
+    );
+}
+
+#[test]
 fn an_unjudged_supersedes_relation_hides_nothing() {
     let (_temp, mut store) = store();
     store.create_session("s1", "leteo", "C:/repo").unwrap();

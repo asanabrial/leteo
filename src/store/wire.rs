@@ -850,10 +850,61 @@ pub(super) fn enqueue_session_delete_tx(
     )
 }
 
+/// Queues a session under the project of a row that points at it, when that is
+/// not the session's own and the session has not already gone there.
+///
+/// A session is queued under its own project, and a memory or prompt carries a
+/// project of its own that nothing forces to match: `consolidate` run from
+/// another directory files the merged memory into a `manual-save-<cwd>` session
+/// beside sources of a different project. When only the memory's project is
+/// enrolled the session's mutation is dropped, the peer receives a row whose
+/// `session_id` it has never heard of, and the foreign key fails on every pull
+/// from then on. Export selects such a session for the same reason.
+///
+/// Once per project and session, which is the same economy `create_session`
+/// keeps: a memory per save would otherwise leave a copy of the session per
+/// memory in the journal.
+pub(super) fn enqueue_session_for_member_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    member_project: &str,
+) -> Result<(), StoreError> {
+    let project = normalize::project(member_project);
+    if project.is_empty() || session_id.trim().is_empty() || !is_enrolled_tx(tx, &project)? {
+        return Ok(());
+    }
+    let session = get_session_row(tx, session_id)?;
+    if normalize::project(&session.project) == project {
+        return Ok(());
+    }
+    let already_queued: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_mutations
+          WHERE entity = 'session' AND entity_key = ?1 AND project = ?2 AND op = ?3)",
+        params![session_id, project, crate::sync::OP_UPSERT],
+        |row| row.get(0),
+    )?;
+    if already_queued {
+        return Ok(());
+    }
+    enqueue_mutation(
+        tx,
+        "session",
+        session_id,
+        crate::sync::OP_UPSERT,
+        &session,
+        &project,
+    )
+}
+
 pub(super) fn enqueue_observation(
     tx: &Transaction<'_>,
     observation: &Observation,
 ) -> Result<(), StoreError> {
+    enqueue_session_for_member_tx(
+        tx,
+        &observation.session_id,
+        observation.project.as_deref().unwrap_or_default(),
+    )?;
     // Pinning does not travel.
     //
     // It says where *this* store looks first, not what the memory is, and one
@@ -972,6 +1023,7 @@ pub(super) fn backfill_project_tx(tx: &Transaction<'_>, project: &str) -> Result
     )?;
     for id in prompts {
         let prompt = get_prompt_tx(tx, id)?;
+        enqueue_session_for_member_tx(tx, &prompt.session_id, &prompt.project)?;
         enqueue_mutation(
             tx,
             "prompt",

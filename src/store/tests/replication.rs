@@ -2390,3 +2390,112 @@ fn failures_accumulate_and_recovering_clears_every_mark_they_left() {
     assert!(store.mark_sync_failure("  ", "x", until).is_err());
     assert!(store.mark_sync_healthy("").is_err());
 }
+
+/// Applies a project's queue to a store that has never seen it, in order, and
+/// returns that store. A foreign-key failure is the point of the callers.
+fn peer_after_applying(store: &Store, project: &str) -> (TempDir, Store) {
+    let pending = store
+        .list_pending_sync_mutations("cloud", &[project.to_owned()], 100)
+        .unwrap();
+    let peer_temp = TempDir::new().unwrap();
+    let mut peer = Store::open(StoreConfig::new(peer_temp.path().join("peer.db"))).unwrap();
+    for mutation in &pending {
+        peer.apply_pulled_sync_mutation("cloud", mutation)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "seq {} ({}) could not be applied at the peer: {error}",
+                    mutation.seq, mutation.entity
+                )
+            });
+    }
+    (peer_temp, peer)
+}
+
+#[test]
+fn enrolling_a_project_sends_the_session_of_a_memory_that_sits_in_another_project() {
+    // A memory is filed under its own project and its session under the
+    // session's, and nothing makes them the same: `consolidate` run from another
+    // directory puts the merged memory in a `manual-save-<cwd>` session beside
+    // sources of a different project. The catch-up took `sessions WHERE project
+    // = ?`, so enrolling the memory's project queued the memory without the
+    // session it points at, and the peer failed the foreign key on every pull.
+    let (_temp, mut store) = bare_store();
+    store.create_session("s1", "elsewhere", "/tmp/x").unwrap();
+    store
+        .add_observation(observation("s1", "Filed away from its session", "a body"))
+        .unwrap();
+
+    assert!(store.enroll_project("leteo").unwrap());
+    let (_peer_temp, peer) = peer_after_applying(&store, "leteo");
+    assert_eq!(
+        peer.recent_observations(Some("leteo"), Some(10), true)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_memory_saved_into_another_projects_session_takes_the_session_with_it() {
+    // The live write of the same mix: the session was created under a project
+    // nobody enrolled, so its mutation was dropped then, and the memory saved
+    // into it afterwards was queued alone.
+    let (_temp, mut store) = store();
+    store.create_session("s1", "elsewhere", "/tmp/x").unwrap();
+    store
+        .add_observation(observation("s1", "Filed away from its session", "a body"))
+        .unwrap();
+    store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "asked in the other project's session".to_owned(),
+            project: Some("leteo".to_owned()),
+        })
+        .unwrap();
+
+    let (_peer_temp, peer) = peer_after_applying(&store, "leteo");
+    assert_eq!(
+        peer.recent_observations(Some("leteo"), Some(10), true)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Said once per project, not once per memory: a second memory in the same
+    // session adds no further copy of it.
+    store
+        .add_observation(observation("s1", "A second one", "another body"))
+        .unwrap();
+    let sessions = store
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap()
+        .iter()
+        .filter(|m| m.entity == "session")
+        .count();
+    assert_eq!(sessions, 1);
+}
+
+#[test]
+fn deleting_a_session_files_each_memorys_delete_under_the_memorys_project() {
+    // The delete of a memory in an enrolled project was filed under the project
+    // of the session around it, which nobody enrolled, so it was dropped and the
+    // peer kept a memory the owner had destroyed.
+    let (_temp, mut store) = store();
+    store.create_session("s1", "elsewhere", "/tmp/x").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Filed away from its session", "a body"))
+        .unwrap()
+        .observation;
+
+    store.delete_session_and_contents("s1", true).unwrap();
+
+    let pending = store
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap();
+    assert!(
+        pending.iter().any(|m| m.entity == "observation"
+            && m.op == crate::sync::OP_DELETE
+            && m.entity_key == saved.sync_id),
+        "{pending:?}"
+    );
+}

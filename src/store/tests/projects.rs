@@ -309,6 +309,35 @@ fn pruning_removes_empty_projects_and_refuses_populated_ones() {
 }
 
 #[test]
+fn pruning_leaves_a_session_that_another_projects_rows_still_use() {
+    // `delete_project --hard` already keeps such a session. Prune counted only
+    // the pruned project's own observations, so a session that held nothing of
+    // it but did hold another project's memory was deleted from underneath that
+    // memory and the whole prune failed with a bare constraint error.
+    let (_temp, mut store) = store();
+    store.create_session("shared", "empty", "C:/empty").unwrap();
+    store.create_session("alone", "empty", "C:/empty").unwrap();
+    let kept = store
+        .add_observation(observation("shared", "Kept", "kept body"))
+        .unwrap()
+        .observation;
+    store
+        .add_prompt(AddPrompt {
+            session_id: "shared".to_owned(),
+            content: "asked under the other project".to_owned(),
+            project: Some("leteo".to_owned()),
+        })
+        .unwrap();
+
+    let result = store.prune_project("empty").unwrap();
+
+    assert_eq!(result.sessions_deleted, 1);
+    assert!(store.get_session("alone").is_err());
+    assert_eq!(store.get_session("shared").unwrap().project, "empty");
+    assert_eq!(store.get_observation(kept.id).unwrap().session_id, "shared");
+}
+
+#[test]
 fn scanning_a_project_reports_candidates_and_only_inserts_when_applied() {
     let (_temp, mut store) = store();
     store.create_session("s1", "leteo", "C:/repo").unwrap();

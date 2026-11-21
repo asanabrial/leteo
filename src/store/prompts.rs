@@ -138,6 +138,7 @@ impl Store {
                 })
             },
         )?;
+        enqueue_session_for_member_tx(&tx, &prompt.session_id, &prompt.project)?;
         enqueue_mutation(
             &tx,
             "prompt",

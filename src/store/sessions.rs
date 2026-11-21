@@ -375,7 +375,11 @@ impl Store {
                     "deleted_at": deleted_at,
                     "hard_delete": hard_delete,
                 }),
-                &project,
+                // The memory's own project, which a replica applies the delete
+                // against. The session's is not it when a memory was filed into
+                // another project's session, and under that name the delete was
+                // dropped whenever the session's project was not enrolled.
+                observation.project.as_deref().unwrap_or_default(),
             )?;
             result.observations_deleted += 1;
         }

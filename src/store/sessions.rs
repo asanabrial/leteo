@@ -117,6 +117,60 @@ impl Store {
         Ok(session)
     }
 
+    /// The project's session that is still open and was last active within
+    /// `within_minutes`, most recent first, skipping any id `skip` names.
+    ///
+    /// For the saves that name no session. The MCP server never learns the
+    /// agent's own session id, so every such save used to land in the project's
+    /// stable `manual-save` session: on a copy of a real store 451 of one
+    /// project's 471 memories hung from it, and "Recent Sessions" showed one
+    /// line for four months of work. The hooks have already opened the session
+    /// the agent is in; this finds it.
+    ///
+    /// Activity is the latest of the session's start, its latest memory and its
+    /// latest prompt, because a session opened an hour ago that was just
+    /// prompted is live and one opened a minute ago that nobody touched is too.
+    /// A session that has ended is a conversation that closed, and a save filed
+    /// under it would be a misattribution, the same refusal `write_session`
+    /// makes for a named one.
+    ///
+    /// `skip` is the caller's definition of a synthetic session, passed in so
+    /// that the store holds no second copy of what the name looks like.
+    pub fn latest_active_session(
+        &self,
+        project: &str,
+        within_minutes: i64,
+        skip: impl Fn(&str) -> bool,
+    ) -> Result<Option<Session>, StoreError> {
+        let project = normalize::project(project);
+        let modifier = normalize::sqlite_datetime_modifier(within_minutes);
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM (
+                 SELECT s.id AS id, s.rowid AS position,
+                        max(
+                            ifnull(datetime(s.started_at), ''),
+                            ifnull((SELECT max(datetime(o.created_at)) FROM observations o
+                                    WHERE o.session_id = s.id), ''),
+                            ifnull((SELECT max(datetime(p.created_at)) FROM prompts p
+                                    WHERE p.session_id = s.id), '')
+                        ) AS activity
+                 FROM sessions s
+                 WHERE s.project = ?1 AND s.ended_at IS NULL
+             )
+             WHERE activity >= datetime('now', ?2)
+             ORDER BY activity DESC, position DESC",
+        )?;
+        let ids = statement
+            .query_map(params![project, modifier.as_ref()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        match ids.into_iter().find(|id| !skip(id)) {
+            Some(id) => self.get_session(&id).map(Some),
+            None => Ok(None),
+        }
+    }
+
     pub fn end_session(&mut self, id: &str, summary: Option<&str>) -> Result<Session, StoreError> {
         // The same rules the rest of the store's text gets: see
         // `normalize::session_summary`.

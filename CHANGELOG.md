@@ -180,6 +180,17 @@ All notable changes to Leteo are documented in this file.
   Leteo still reads. A prompt that is only an acknowledgement such as "continue"
   is still searched as before: a gate for those is left for a measurement on a
   hand-labelled prompt set rather than a guessed threshold (#339).
+- **A save that names no session joins the one the agent is in.** The server
+  never learns the agent's own session id, so every `mem_save`,
+  `mem_session_summary`, `mem_save_prompt` and `mem_capture_passive` without a
+  `session_id` landed in `manual-save-<project>`: on a copy of a real store 451
+  of one project's 471 memories hung from it, and "Recent Sessions" showed one
+  line for four months of work. They now go to the project's most recently
+  active open session if it did anything in the last 30 minutes, the window a
+  prompt is attributed within, and to `manual-save-<project>` otherwise. The
+  reply names the session when the caller did not. Two agents working one
+  project at once share the most recent session, which the tool description
+  says. Memories already filed are not moved (#340).
 
 ## [0.4.3] - 2026-11-03
 

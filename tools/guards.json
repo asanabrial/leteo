@@ -2090,5 +2090,53 @@
     "file": "src/recall.rs",
     "old": "                .chain(shown.listed.iter().map(|&index| &observations[index]))",
     "new": "                .chain(observations.iter())"
+  },
+  {
+    "name": "live session: a session that has ended is joined by a save",
+    "file": "src/store/sessions.rs",
+    "old": "WHERE s.project = ?1 AND s.ended_at IS NULL",
+    "new": "WHERE s.project = ?1"
+  },
+  {
+    "name": "live session: another project's session is joined by a save",
+    "file": "src/store/sessions.rs",
+    "old": "s.project = ?1 AND s.ended_at IS NULL",
+    "new": "?1 IS NOT NULL AND s.ended_at IS NULL"
+  },
+  {
+    "name": "live session: a session idle past the window is joined by a save",
+    "file": "src/store/sessions.rs",
+    "old": "WHERE activity >= datetime('now', ?2)",
+    "new": "WHERE activity >= datetime('now', ?2) OR 1 = 1"
+  },
+  {
+    "name": "live session: a prompt does not count as activity",
+    "file": "src/store/sessions.rs",
+    "old": "ifnull((SELECT max(datetime(p.created_at)) FROM prompts p",
+    "new": "ifnull((SELECT '' FROM prompts p"
+  },
+  {
+    "name": "live session: the manual session is taken for a conversation",
+    "file": "src/store/sessions.rs",
+    "old": "ids.into_iter().find(|id| !skip(id))",
+    "new": "ids.into_iter().find(|_| true)"
+  },
+  {
+    "name": "live session: a manual session id is not recognised",
+    "file": "src/mcp/mod.rs",
+    "old": ".is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))",
+    "new": ".is_some_and(|_| false)"
+  },
+  {
+    "name": "live session: the reply does not name the session it chose",
+    "file": "src/mcp/mod.rs",
+    "old": "(!self.named).then(|| self.id.clone())",
+    "new": "None"
+  },
+  {
+    "name": "live session: the reply repeats a session the caller named",
+    "file": "src/mcp/mod.rs",
+    "old": "(!self.named).then(|| self.id.clone())",
+    "new": "Some(self.id.clone())"
   }
 ]

@@ -236,7 +236,6 @@ impl LeteoMcpServer {
         let detection = detect_current_project();
         let (project, project_source) =
             self.resolve_write_project(store, project, &detection, choice)?;
-        let id = manual_session_id(&project);
         let directory = if detection.path.is_empty() {
             std::env::current_dir()
                 .map(|path| path.to_string_lossy().into_owned())
@@ -244,9 +243,28 @@ impl LeteoMcpServer {
         } else {
             detection.path
         };
-        store
-            .create_session(&id, &project, &directory)
+        // Looked up inside the resolved project only, so the session a save
+        // joins and the project it is filed under cannot disagree. The window
+        // is the one a prompt is attributed within: one definition of "just
+        // now" for both. Two agents working one project at once share the most
+        // recent session, which is accepted and stated in the tool description.
+        let live = store
+            .latest_active_session(
+                &project,
+                crate::store::PROMPT_ATTRIBUTION_MINUTES,
+                is_manual_session_id,
+            )
             .map_err(store_error)?;
+        let id = match live {
+            Some(session) => session.id,
+            None => {
+                let id = manual_session_id(&project);
+                store
+                    .create_session(&id, &project, &directory)
+                    .map_err(store_error)?;
+                id
+            }
+        };
         let envelope = ProjectEnvelope {
             project: project.clone(),
             project_source,
@@ -1009,12 +1027,34 @@ struct WriteSession {
     named: bool,
 }
 
+impl WriteSession {
+    /// The id to tell the caller, when the caller did not pass one and so has
+    /// no other way to learn which session the write joined.
+    fn chosen_id(&self) -> Option<String> {
+        (!self.named).then(|| self.id.clone())
+    }
+}
+
+const MANUAL_SESSION_PREFIX: &str = "manual-save";
+
 pub(crate) fn manual_session_id(project: &str) -> String {
     if project.is_empty() {
-        "manual-save".to_owned()
+        MANUAL_SESSION_PREFIX.to_owned()
     } else {
-        format!("manual-save-{project}")
+        format!("{MANUAL_SESSION_PREFIX}-{project}")
     }
+}
+
+/// Whether a session id is a synthetic one this server made rather than one an
+/// agent or `mem_session_start` chose.
+///
+/// The only place that knows what the name looks like. A project that was
+/// renamed or merged keeps the manual session it had under the old name, so
+/// comparing against `manual_session_id(project)` alone would take that one for
+/// a conversation.
+pub(crate) fn is_manual_session_id(id: &str) -> bool {
+    id.strip_prefix(MANUAL_SESSION_PREFIX)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
 
 fn outcome_label(kind: AddOutcomeKind) -> &'static str {

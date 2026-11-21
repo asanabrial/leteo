@@ -255,6 +255,48 @@ fn cli_saves_into_a_stable_manual_session_when_no_session_is_given() {
         .failure();
 }
 
+/// `leteo save` with no `--session` joins the session a hook opened, the way
+/// `mem_save` does, instead of filing the memory under `manual-save-<project>`
+/// beside a conversation that is still live.
+#[test]
+fn cli_save_without_a_session_joins_the_live_session_a_hook_opened() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-live.db");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+
+    run_json(
+        leteo(&database)
+            .arg("hook")
+            .arg("session-start")
+            .write_stdin(
+                json!({
+                    "session_id": "agent-live",
+                    "cwd": workspace.to_string_lossy(),
+                    "project": "live-project",
+                })
+                .to_string(),
+            ),
+    );
+
+    let saved = run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("Typed at a terminal")
+            .arg("Saved during a live conversation")
+            .arg("--project")
+            .arg("live-project"),
+    );
+    assert_eq!(
+        saved["observation"]["session_id"],
+        json!("agent-live"),
+        "{saved}"
+    );
+
+    let stats = run_json(leteo(&database).arg("stats"));
+    assert_eq!(stats["total_sessions"], json!(1), "{stats}");
+}
+
 #[test]
 fn cli_conflicts_and_projects_groups_report_and_apply_changes() {
     let temp = tempfile::tempdir().expect("create CLI test directory");

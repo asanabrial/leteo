@@ -2516,5 +2516,35 @@
     "file": "src/mcp/tests.rs",
     "old": "            store.end_session(session, None).unwrap();\n",
     "new": ""
+  },
+  {
+    "name": "save: a deduplicated or revised save names an overturned memory without saying so",
+    "file": "src/mcp/output.rs",
+    "old": "    if outcome.kind == AddOutcomeKind::Inserted {",
+    "new": "    if outcome.kind != AddOutcomeKind::Inserted {"
+  },
+  {
+    "name": "save: mem_save drops the caveats it computed",
+    "file": "src/mcp/tools.rs",
+    "old": "        saved.caveats = caveats;\n        saved.session_id = chosen_session;\n        saved.storage_truncation =\n            crate::mcp::output::storage_truncation(content_cut, stored_bytes);\n        let mut hints",
+    "new": "        let _ = caveats;\n        saved.session_id = chosen_session;\n        saved.storage_truncation =\n            crate::mcp::output::storage_truncation(content_cut, stored_bytes);\n        let mut hints"
+  },
+  {
+    "name": "save: mem_session_summary drops the caveats it computed",
+    "file": "src/mcp/tools.rs",
+    "old": "        saved.caveats = caveats;\n        saved.session_id = chosen_session;\n        saved.storage_truncation =\n            crate::mcp::output::storage_truncation(content_cut, stored_bytes);\n        if headline.is_none()",
+    "new": "        let _ = caveats;\n        saved.session_id = chosen_session;\n        saved.storage_truncation =\n            crate::mcp::output::storage_truncation(content_cut, stored_bytes);\n        if headline.is_none()"
+  },
+  {
+    "name": "save: a reply with no caveats still carries the empty field",
+    "file": "src/mcp/output.rs",
+    "old": "    #[serde(default, skip_serializing_if = \"Vec::is_empty\")]\n    pub(super) caveats: Vec<CaveatOutput>,\n}\n\n/// The caveats a save's",
+    "new": "    #[serde(default)]\n    pub(super) caveats: Vec<CaveatOutput>,\n}\n\n/// The caveats a save's"
+  },
+  {
+    "name": "cli: a save with no session files under the manual session beside a live one",
+    "file": "src/cli/projects.rs",
+    "old": "        Some(session) => session.id,\n        None => {\n            let id = crate::mcp::manual_session_id(&project);",
+    "new": "        Some(_) | None => {\n            let id = crate::mcp::manual_session_id(&project);"
   }
 ]

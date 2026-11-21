@@ -77,6 +77,34 @@ pub(super) struct SaveOutput {
     /// The session this went to, said only when no session_id was passed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) session_id: Option<String>,
+    /// What the relation graph says about the memory this save resolved to,
+    /// present only when that memory already existed. A deduplicated or
+    /// revised save names a memory some later one may have overturned, and the
+    /// reply would otherwise present it as standing; a fresh insert has no
+    /// relations yet and says nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) caveats: Vec<CaveatOutput>,
+}
+
+/// The caveats a save's reply carries: those of the memory it resolved to, and
+/// only when that memory was there before the save.
+///
+/// One function for `mem_save` and `mem_session_summary`, so the two cannot
+/// disagree about when a reply speaks for an older memory. A store that cannot
+/// answer costs the caveats rather than the save, which has already landed.
+pub(super) fn save_caveats(store: &crate::store::Store, outcome: &AddOutcome) -> Vec<CaveatOutput> {
+    if outcome.kind == AddOutcomeKind::Inserted {
+        return Vec::new();
+    }
+    let sync_id = &outcome.observation.sync_id;
+    store
+        .caveats_for(std::slice::from_ref(sync_id))
+        .unwrap_or_default()
+        .remove(sync_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 impl SaveOutput {
@@ -102,6 +130,7 @@ impl SaveOutput {
             storage_truncation: None,
             replaced_bytes: value.replaced.map(|replaced| replaced.bytes),
             session_id: None,
+            caveats: Vec::new(),
         }
     }
 }

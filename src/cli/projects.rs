@@ -277,8 +277,9 @@ pub(super) struct WriteSession {
     pub(super) named: bool,
 }
 
-/// Resolves the session a CLI write belongs to, creating the stable manual
-/// session used by `mem_save` when `--session` is omitted.
+/// Resolves the session a CLI write belongs to: the one named, else the
+/// project's live session as `mem_save` joins it, else the stable manual
+/// session.
 pub(super) fn resolve_write_session(
     store: &mut Store,
     session_id: Option<String>,
@@ -334,7 +335,6 @@ pub(super) fn resolve_write_session(
             project
         }
     };
-    let id = crate::mcp::manual_session_id(&project);
     let directory = if detection.path.is_empty() {
         // An explicit project can still be written when the working directory
         // cannot be read; the session then carries no directory, not a guess.
@@ -344,7 +344,23 @@ pub(super) fn resolve_write_session(
     } else {
         detection.path
     };
-    store.create_session(&id, &project, &directory)?;
+    // The same lookup, window and definition of a synthetic session that
+    // `write_session` in the MCP server uses, so a memory typed at a terminal
+    // lands in the conversation a hook opened rather than in a session nobody
+    // ever reads next to it.
+    let live = store.latest_active_session(
+        &project,
+        crate::store::PROMPT_ATTRIBUTION_MINUTES,
+        crate::mcp::is_manual_session_id,
+    )?;
+    let id = match live {
+        Some(session) => session.id,
+        None => {
+            let id = crate::mcp::manual_session_id(&project);
+            store.create_session(&id, &project, &directory)?;
+            id
+        }
+    };
     Ok(WriteSession {
         id,
         project,

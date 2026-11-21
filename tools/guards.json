@@ -2600,5 +2600,29 @@
     "file": "src/store/diagnostics.rs",
     "old": "Err(error) => could_not_run(\"settings_readable\", \"the settings file\", &error),",
     "new": "Err(_) => DoctorCheck::passed(\"settings_readable\"),"
+  },
+  {
+    "name": "serve: a response is written without a deadline again",
+    "file": "src/mcp/serve.rs",
+    "old": "tokio::time::timeout(deadline, write)",
+    "new": "tokio::time::timeout(deadline * 100000, write)"
+  },
+  {
+    "name": "serve: one connection more than the bound is served",
+    "file": "src/mcp/serve.rs",
+    "old": "Semaphore::new(bounds.max_connections)",
+    "new": "Semaphore::new(bounds.max_connections + 1)"
+  },
+  {
+    "name": "serve: a finished connection keeps its place for ever",
+    "file": "src/mcp/serve.rs",
+    "old": "let _permit = permit;",
+    "new": "std::mem::forget(permit);"
+  },
+  {
+    "name": "serve: a tool call is made on a runtime worker again",
+    "file": "src/mcp/serve.rs",
+    "old": "tokio::task::spawn_blocking(move || call_tool(&api.server, &name, &body))\n                .await\n                .unwrap_or_else(|_| Reply::internal())",
+    "new": "call_tool(&api.server, &name, &body)"
   }
 ]

@@ -16,6 +16,11 @@ All notable changes to Leteo are documented in this file.
   alone, about 39 MB of 42 MB, each one also searched for a hint. They are now
   neither stored nor searched, and the recent prompts a session opens with
   leave out the ones already stored, without a migration (#321).
+- **Deleting a merged memory no longer loses the ones it replaced.** After
+  `consolidate`, soft-deleting the result left both originals in the store and
+  out of every search and listing, because the verdicts saying they were
+  replaced outlived the memory that replaced them. A memory is now hidden only
+  while the one that superseded it is live (#322).
 
 ## [0.4.3] - 2026-11-03
 

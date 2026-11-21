@@ -3224,7 +3224,9 @@ fn a_capture_the_store_refuses_says_what_happened_and_what_to_do() {
         "and on the channel the agent reads, not only in the warnings"
     );
     assert_eq!(
-        spool::pending(&spool::directory(store.data_dir())).entries,
+        spool::pending(&spool::directory(store.data_dir()))
+            .unwrap()
+            .entries,
         1,
         "and the capture is beside the store for a later open"
     );
@@ -3315,7 +3317,7 @@ fn a_capture_that_meets_a_held_store_is_kept_once_it_is_free() {
     assert_eq!(refused.observations_captured, 0, "{refused:?}");
     let spool_dir = spool::directory(&data_dir);
     assert_eq!(
-        spool::pending(&spool_dir).entries,
+        spool::pending(&spool_dir).unwrap().entries,
         1,
         "the capture is kept beside the store"
     );
@@ -3325,7 +3327,7 @@ fn a_capture_that_meets_a_held_store_is_kept_once_it_is_free() {
     // The next hook replays what the busy one left, at the end of its own run.
     run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
     assert_eq!(
-        spool::pending(&spool_dir).entries,
+        spool::pending(&spool_dir).unwrap().entries,
         0,
         "and it is drained once the store can take it"
     );
@@ -3585,7 +3587,7 @@ fn a_claim_leaves_an_entry_another_drainer_has_marked() {
         "a drainer leaves an entry another drainer has marked"
     );
     assert_eq!(
-        spool::pending(&spool_dir).entries,
+        spool::pending(&spool_dir).unwrap().entries,
         1,
         "and the entry is still in the spool"
     );
@@ -3594,7 +3596,7 @@ fn a_claim_leaves_an_entry_another_drainer_has_marked() {
     let claimed = spool::claim(&entry).expect("with the marker gone the claim goes through");
     assert!(claimed.exists(), "the claim renamed the entry");
     assert_eq!(
-        spool::pending(&spool_dir).entries,
+        spool::pending(&spool_dir).unwrap().entries,
         0,
         "and it is no longer in the spool"
     );
@@ -3628,7 +3630,9 @@ fn a_drain_with_no_budget_left_writes_nothing() {
     );
     assert_eq!(report.stored, 0, "{report:?}");
     assert_eq!(
-        spool::pending(&spool::directory(&data_dir)).entries,
+        spool::pending(&spool::directory(&data_dir))
+            .unwrap()
+            .entries,
         1,
         "the entry is still there for a later drain"
     );
@@ -3674,14 +3678,14 @@ fn a_prompt_leaves_the_spool_for_an_event_nobody_waits_behind() {
     prompt.prompt = "a prompt long enough to be stored and searched".to_owned();
     run(&mut store, HookEvent::UserPromptSubmit, &prompt).unwrap();
     assert_eq!(
-        spool::pending(&spool_dir).entries,
+        spool::pending(&spool_dir).unwrap().entries,
         1,
         "the prompt did not replay the spool"
     );
 
     run(&mut store, HookEvent::SessionStop, &input(&directory)).unwrap();
     assert_eq!(
-        spool::pending(&spool_dir).entries,
+        spool::pending(&spool_dir).unwrap().entries,
         0,
         "the end of the session did"
     );
@@ -3705,7 +3709,7 @@ fn a_compaction_leaves_the_spool_alone() {
 
     run(&mut store, HookEvent::PostCompaction, &input(temp.path())).unwrap();
 
-    assert_eq!(spool::pending(&spool_dir).entries, 1);
+    assert_eq!(spool::pending(&spool_dir).unwrap().entries, 1);
 }
 
 /// A spool write past the cap drops the oldest entries.
@@ -3737,7 +3741,7 @@ fn the_spool_drops_the_oldest_past_its_cap() {
         spool::spool(&data_dir, "SubagentStop", &capture(index), "").unwrap();
     }
     assert_eq!(
-        spool::pending(&directory).entries,
+        spool::pending(&directory).unwrap().entries,
         spool::SPOOL_CAP,
         "the cap is the limit that is applied"
     );
@@ -3772,7 +3776,7 @@ fn the_spool_drops_entries_past_their_retention() {
     .to_string();
     std::fs::write(&path, &body).unwrap();
     assert_eq!(
-        spool::pending(&directory).entries,
+        spool::pending(&directory).unwrap().entries,
         1,
         "the old entry is there to begin with"
     );
@@ -3794,7 +3798,7 @@ fn the_spool_drops_entries_past_their_retention() {
     .unwrap();
     assert!(!path.exists(), "the stale entry is gone");
     assert_eq!(
-        spool::pending(&directory).entries,
+        spool::pending(&directory).unwrap().entries,
         1,
         "only the fresh one is left"
     );
@@ -3909,7 +3913,7 @@ fn a_temporary_file_is_not_a_spool_entry() {
     std::fs::write(&temporary, b"{").unwrap();
 
     assert_eq!(
-        spool::pending(&directory).entries,
+        spool::pending(&directory).unwrap().entries,
         0,
         "an in-flight temporary is not counted"
     );

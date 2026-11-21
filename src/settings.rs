@@ -845,16 +845,23 @@ pub fn load_strict(data_dir: impl AsRef<Path>) -> Result<Settings> {
 ///
 /// So the same reading is done once more, out loud, for anything that asks.
 /// A file that is not JSON at all is one entry rather than six.
-pub fn ignored(data_dir: impl AsRef<Path>) -> Vec<String> {
+///
+/// A file that is not there reads clean, because nothing is being ignored. One
+/// that is there and cannot be read is an error and not an empty list: [`load`]
+/// falls back to the defaults for it exactly as it does for a typo, and an
+/// empty answer here called that file fine.
+pub fn ignored(data_dir: impl AsRef<Path>) -> std::io::Result<Vec<String>> {
     let path = path_in(data_dir);
-    let Ok(body) = std::fs::read_to_string(&path) else {
-        return Vec::new();
+    let body = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
     let Ok(raw) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return vec!["the file is not JSON".to_owned()];
+        return Ok(vec!["the file is not JSON".to_owned()]);
     };
     let Some(fields) = raw.as_object() else {
-        return vec!["the file is not a JSON object".to_owned()];
+        return Ok(vec!["the file is not a JSON object".to_owned()]);
     };
     let mut ignored = unreadable(fields);
     // And a key that is not one of the six, which is the same typo one letter
@@ -867,7 +874,7 @@ pub fn ignored(data_dir: impl AsRef<Path>) -> Vec<String> {
             ignored.push(format!("{name} is not a setting"));
         }
     }
-    ignored
+    Ok(ignored)
 }
 
 /// The settings whose value is present and cannot be read, as `name is value`.
@@ -1012,7 +1019,7 @@ mod tests {
             let temp = TempDir::new().unwrap();
             let body = format!("{{{:?}: []}}", name);
             std::fs::write(path_in(temp.path()), &body).unwrap();
-            let said = ignored(temp.path());
+            let said = ignored(temp.path()).unwrap();
             assert!(
                 said.iter().any(|line| line.starts_with(name)),
                 "{name} was ignored in silence: {said:?}"
@@ -1031,7 +1038,7 @@ mod tests {
             r#"{"language": 7, "contextsize": "slim", "context_size": "slimm"}"#,
         )
         .unwrap();
-        let said = ignored(temp.path());
+        let said = ignored(temp.path()).unwrap();
         assert!(said.iter().any(|line| line == "language is 7"), "{said:?}");
         assert!(
             said.iter()
@@ -1044,11 +1051,25 @@ mod tests {
         );
 
         std::fs::write(path_in(temp.path()), "not json at all").unwrap();
-        assert_eq!(ignored(temp.path()), vec!["the file is not JSON"]);
+        assert_eq!(ignored(temp.path()).unwrap(), vec!["the file is not JSON"]);
         std::fs::write(path_in(temp.path()), "[1, 2]").unwrap();
-        assert_eq!(ignored(temp.path()), vec!["the file is not a JSON object"]);
+        assert_eq!(
+            ignored(temp.path()).unwrap(),
+            vec!["the file is not a JSON object"]
+        );
 
-        assert!(ignored(TempDir::new().unwrap().path()).is_empty());
+        assert!(ignored(TempDir::new().unwrap().path()).unwrap().is_empty());
+    }
+
+    /// A settings file that is there and cannot be read is not one that reads
+    /// clean. A directory in its place fails the read for every user, root
+    /// included, which a permission bit would not.
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_an_error_and_not_an_empty_list() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir(path_in(temp.path())).unwrap();
+        assert!(ignored(temp.path()).is_err());
     }
 
     #[test]

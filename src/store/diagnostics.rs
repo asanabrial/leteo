@@ -383,8 +383,13 @@ impl Store {
         // observations_fts` reads through to `observations` and agrees with it
         // even when the index holds nothing at all — which made the check
         // report a healthy store while every search came back empty.
-        let observation_fts_rows = indexed_row_count(&self.connection, "observations_fts");
-        let prompt_fts_rows = indexed_row_count(&self.connection, "prompts_fts");
+        let observation_fts_count = indexed_row_count(&self.connection, "observations_fts");
+        let prompt_fts_count = indexed_row_count(&self.connection, "prompts_fts");
+        // The report's own fields are plain numbers, and keep the `-1` they
+        // always held for an index that could not be counted. The checks below
+        // read the `Result`s and never the sentinel.
+        let observation_fts_rows = observation_fts_count.as_ref().copied().unwrap_or(-1);
+        let prompt_fts_rows = prompt_fts_count.as_ref().copied().unwrap_or(-1);
         let pending_mutations = query_count(
             &self.connection,
             "SELECT COUNT(*) FROM sync_mutations WHERE acked_at IS NULL",
@@ -508,15 +513,19 @@ impl Store {
             prompt_fts_ok = Some(detail.is_none());
         }
         if want("observation_fts_sync") {
-            record(if observations == observation_fts_rows {
-                DoctorCheck::passed("observation_fts_sync")
-            } else {
-                DoctorCheck::failed(
+            record(match &observation_fts_count {
+                Err(error) => could_not_run(
+                    "observation_fts_sync",
+                    "the observation full-text index row count",
+                    error,
+                ),
+                Ok(rows) if *rows == observations => DoctorCheck::passed("observation_fts_sync"),
+                Ok(rows) => DoctorCheck::failed(
                     "observation_fts_sync",
                     format!(
-                        "observation FTS row mismatch: table={observations}, fts={observation_fts_rows}; {REBUILD_REMEDY}"
+                        "observation FTS row mismatch: table={observations}, fts={rows}; {REBUILD_REMEDY}"
                     ),
-                )
+                ),
             });
         }
         if want("observation_exact_fts_integrity") {
@@ -530,15 +539,21 @@ impl Store {
         }
         if want("observation_exact_fts_sync") {
             let exact_fts_rows = indexed_row_count(&self.connection, "observations_exact");
-            record(if observations == exact_fts_rows {
-                DoctorCheck::passed("observation_exact_fts_sync")
-            } else {
-                DoctorCheck::failed(
+            record(match &exact_fts_rows {
+                Err(error) => could_not_run(
+                    "observation_exact_fts_sync",
+                    "the unstemmed observation full-text index row count",
+                    error,
+                ),
+                Ok(rows) if *rows == observations => {
+                    DoctorCheck::passed("observation_exact_fts_sync")
+                }
+                Ok(rows) => DoctorCheck::failed(
                     "observation_exact_fts_sync",
                     format!(
-                        "unstemmed observation FTS row mismatch: table={observations}, fts={exact_fts_rows}; {REBUILD_REMEDY}"
+                        "unstemmed observation FTS row mismatch: table={observations}, fts={rows}; {REBUILD_REMEDY}"
                     ),
-                )
+                ),
             });
         }
         if want("observation_stems_fts_integrity") {
@@ -569,13 +584,18 @@ impl Store {
                 "SELECT COUNT(*) FROM observations WHERE typeof(id) = 'integer'",
             );
             let stems_fts_rows = indexed_row_count(&self.connection, "observations_stemmed");
-            record(match (stemmable, stems_rows) {
-                (Err(error), _) | (_, Err(error)) => could_not_run(
+            record(match (stemmable, stems_rows, stems_fts_rows) {
+                (Err(error), _, _) | (_, Err(error), _) => could_not_run(
                     "observation_stems_sync",
                     "the Snowball observation index row counts",
                     &error,
                 ),
-                (Ok(stemmable), Ok(stems_rows)) => {
+                (_, _, Err(error)) => could_not_run(
+                    "observation_stems_sync",
+                    "the Snowball observation index row counts",
+                    &error,
+                ),
+                (Ok(stemmable), Ok(stems_rows), Ok(stems_fts_rows)) => {
                     if stemmable == stems_rows && stems_rows == stems_fts_rows {
                         DoctorCheck::passed("observation_stems_sync")
                     } else {
@@ -590,15 +610,19 @@ impl Store {
             });
         }
         if want("prompt_fts_sync") {
-            record(if prompts == prompt_fts_rows {
-                DoctorCheck::passed("prompt_fts_sync")
-            } else {
-                DoctorCheck::failed(
+            record(match &prompt_fts_count {
+                Err(error) => could_not_run(
+                    "prompt_fts_sync",
+                    "the prompt full-text index row count",
+                    error,
+                ),
+                Ok(rows) if *rows == prompts => DoctorCheck::passed("prompt_fts_sync"),
+                Ok(rows) => DoctorCheck::failed(
                     "prompt_fts_sync",
                     format!(
-                        "prompt FTS row mismatch: table={prompts}, fts={prompt_fts_rows}; {REBUILD_REMEDY}"
+                        "prompt FTS row mismatch: table={prompts}, fts={rows}; {REBUILD_REMEDY}"
                     ),
-                )
+                ),
             });
         }
         if want("journal_mode") {
@@ -692,17 +716,17 @@ impl Store {
                 .database_path
                 .parent()
                 .map(crate::settings::ignored)
-                .unwrap_or_default();
-            record(if ignored.is_empty() {
-                DoctorCheck::passed("settings_readable")
-            } else {
-                DoctorCheck::warned(
+                .unwrap_or_else(|| Ok(Vec::new()));
+            record(match ignored {
+                Err(error) => could_not_run("settings_readable", "the settings file", &error),
+                Ok(ignored) if ignored.is_empty() => DoctorCheck::passed("settings_readable"),
+                Ok(ignored) => DoctorCheck::warned(
                     "settings_readable",
                     format!(
                         "the settings beside this database are being read past and the default used instead, on: {}; every other answer in the file still counts",
                         ignored.join("; ")
                     ),
-                )
+                ),
             });
         }
         if want("memory_language") {
@@ -945,21 +969,24 @@ impl Store {
             // replayed. A busy store is not damage, and the check says so with
             // work waiting rather than with a fault, as a warning: the count,
             // the age of the oldest, and the flag that replays them.
-            let spool =
-                crate::hooks::spool::pending(&crate::hooks::spool::directory(self.data_dir()));
-            record(match spool.entries {
-                0 => DoctorCheck::passed("hook_spool"),
-                entries => DoctorCheck::warned(
-                    "hook_spool",
-                    format!(
-                        "{entries} hook capture(s) are waiting beside the store to be stored and the oldest is {} old; `leteo doctor --repair` replays them",
-                        spool
-                            .oldest
-                            .map(crate::hooks::spool::describe_age)
-                            .unwrap_or_else(|| "a moment".to_owned())
+            record(
+                match crate::hooks::spool::pending(&crate::hooks::spool::directory(self.data_dir()))
+                {
+                    Err(error) => could_not_run("hook_spool", "the hook capture spool", &error),
+                    Ok(spool) if spool.entries == 0 => DoctorCheck::passed("hook_spool"),
+                    Ok(spool) => DoctorCheck::warned(
+                        "hook_spool",
+                        format!(
+                            "{} hook capture(s) are waiting beside the store to be stored and the oldest is {} old; `leteo doctor --repair` replays them",
+                            spool.entries,
+                            spool
+                                .oldest
+                                .map(crate::hooks::spool::describe_age)
+                                .unwrap_or_else(|| "a moment".to_owned())
+                        ),
                     ),
-                ),
-            });
+                },
+            );
         }
         if want(DoctorCheck::STALE_CITATIONS)
             && let Some(scope) = citations
@@ -1426,7 +1453,7 @@ impl Store {
     pub fn rebuild_full_text_indexes(&self) -> Result<Vec<IndexRebuild>, StoreError> {
         let before: Vec<i64> = crate::store::schema::FULL_TEXT_INDEXES
             .iter()
-            .map(|index| indexed_row_count(&self.connection, index))
+            .map(|index| indexed_row_count(&self.connection, index).unwrap_or(-1))
             .collect();
         crate::store::schema::rebuild_present_indexes(&self.connection)?;
         Ok(crate::store::schema::FULL_TEXT_INDEXES
@@ -1435,7 +1462,7 @@ impl Store {
             .map(|(index, rows_before)| IndexRebuild {
                 index: (*index).to_owned(),
                 rows_before,
-                rows_after: indexed_row_count(&self.connection, index),
+                rows_after: indexed_row_count(&self.connection, index).unwrap_or(-1),
             })
             .collect())
     }

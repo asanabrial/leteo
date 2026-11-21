@@ -945,16 +945,19 @@ fn adopt_to_baseline(connection: &Connection) -> Result<(), rusqlite::Error> {
 /// that is the only cheap way to tell a populated index from an empty one: the
 /// virtual table itself reads through to the content table.
 ///
-/// A missing shadow table yields `-1`, which cannot equal a real row count, so
-/// the check that uses this fails loudly rather than assuming the best.
-pub(super) fn indexed_row_count(connection: &Connection, index: &str) -> i64 {
-    connection
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {index}_docsize"),
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(-1)
+/// A count that could not be taken is an error and not a number. It used to be
+/// `-1`, which the sync checks then printed as `fts=-1` in a mismatch report: a
+/// store whose shadow table could not be read was told its index was out of step
+/// with its rows.
+pub(super) fn indexed_row_count(
+    connection: &Connection,
+    index: &str,
+) -> Result<i64, rusqlite::Error> {
+    connection.query_row(
+        &format!("SELECT COUNT(*) FROM {index}_docsize"),
+        [],
+        |row| row.get(0),
+    )
 }
 
 /// Reindexes the full-text tables from the rows they cover.

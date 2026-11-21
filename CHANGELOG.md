@@ -308,6 +308,15 @@ All notable changes to Leteo are documented in this file.
   pair already held under another `sync_id` used to be inserted as a second row,
   possibly in the opposite direction, and both counted; it now updates the row
   here when it is newer and is dropped otherwise (#374).
+- **Three more `doctor` checks say they could not run instead of passing or
+  misreporting.** `hook_spool` read a spool directory it could not list as
+  nothing waiting, and `settings_readable` read a settings file it could not
+  read as nothing ignored, while `load` was using the defaults for it; the
+  three full-text sync checks printed a failed count as `fts=-1` in a
+  row-mismatch report. Each now says what could not be checked, with the
+  error, and the store is unhealthy. A missing spool or settings file is still
+  an empty one, and a hook that cannot list the spool says so on stderr and
+  replays nothing (#375).
 
 ## [0.4.3] - 2026-11-03
 

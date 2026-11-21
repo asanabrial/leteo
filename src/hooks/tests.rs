@@ -2524,17 +2524,258 @@ fn the_hint_does_not_hand_the_same_conversation_the_same_memory_twice() {
         "and the reason it is named again is the caveat: {overturned}"
     );
 
-    // Compaction takes the agent's context away, so the list starts over.
+    // Said once, though: the agent was told, and the next matching prompt is
+    // not a reason to tell it again.
+    let again = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context;
+    assert!(
+        again.is_none(),
+        "a caveat already handed over does not lift the rule a second time: {}",
+        again.unwrap_or_default()
+    );
+
+    // A different caveat is something new said against it, and lifts the rule
+    // again.
+    let latest = store
+        .add_observation(memory(
+            "We moved the storage engine to Postgres, for the second time",
+            "The storage engine decision was revisited and changed again",
+        ))
+        .unwrap()
+        .observation;
+    let second_relation = propose(&mut store, &latest.sync_id, &answer.sync_id);
+    store
+        .judge_relation(crate::memory::model::JudgeRelationParams {
+            judgment_id: second_relation,
+            relation: crate::store::RELATION_CONFLICTS_WITH.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+    let renewed = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context
+        .expect("a caveat nobody has handed over is named");
+    assert!(
+        renewed.contains(&format!("(conflicts with #{}", latest.id)),
+        "{renewed}"
+    );
+
+    // Compaction takes the agent's context away, so the list starts over — and
+    // the block it rebuilds lists the memory, which is what now keeps the hint
+    // quiet. That the list really starts over is the next test's: this memory
+    // is recent enough to be in the block.
     let mut settled = payload.clone();
     settled.prompt = String::new();
-    run(&mut store, HookEvent::PostCompaction, &settled).unwrap();
-    store.delete_observation(newer.id, None, true).unwrap();
+    let rebuilt = run(&mut store, HookEvent::PostCompaction, &settled)
+        .unwrap()
+        .additional_context
+        .expect("a compaction hands the memory back");
+    assert!(rebuilt.contains(&format!("- #{}", answer.id)), "{rebuilt}");
+    let after = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context;
+    assert!(
+        after.is_none(),
+        "the rebuilt block already carries it: {}",
+        after.unwrap_or_default()
+    );
+}
 
+/// What the opening block listed is not named again by the first prompt.
+///
+/// The block and the hint are one agent's context: a memory listed under
+/// "Also remembered" and then offered again as "Leteo may have something on
+/// this" is the same line twice, a few seconds apart.
+#[test]
+fn a_memory_the_opening_block_listed_is_not_named_by_the_hint() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let answer = crowd_and_answer(&mut store, "We chose SQLite as the storage engine");
+
+    let opening = run(&mut store, HookEvent::SessionStart, &payload)
+        .unwrap()
+        .additional_context
+        .expect("a session opening carries context");
+    assert!(
+        opening.contains(&format!("- #{} ", answer.id)),
+        "the block lists the memory the prompt is about: {opening}"
+    );
+
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    let hint = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context;
+    assert!(
+        hint.is_none(),
+        "the agent was handed it a moment ago: {}",
+        hint.unwrap_or_default()
+    );
+}
+
+/// A memory the byte budget cut from the block was not shown, so the hint may
+/// name it, and a compaction starts the list and the header over.
+///
+/// The oldest memory is the first thing the budget gives up, and thirty long
+/// titles are past the 4,000 bytes of the default size, so the answer — saved
+/// first — is cut while the count alone would have listed it.
+#[test]
+fn a_memory_the_byte_budget_cut_from_the_block_is_still_named() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let answer = store
+        .add_observation(memory(
+            "We chose SQLite as the storage engine",
+            "The storage engine question was settled: SQLite, chosen for being local-first",
+        ))
+        .unwrap()
+        .observation;
+    for index in 0..29 {
+        store
+            .add_observation(memory(
+                &overlong_title(&format!("Engine note {index}")),
+                "A passing remark about the rendering engine and nothing else",
+            ))
+            .unwrap();
+    }
+
+    let opening = run(&mut store, HookEvent::SessionStart, &payload)
+        .unwrap()
+        .additional_context
+        .expect("a session opening carries context");
+    assert!(
+        !opening.contains(&format!("- #{} ", answer.id)) && opening.contains("(cut to"),
+        "the budget cut the answer from the block: {opening}"
+    );
+
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    let first = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context
+        .expect("it was never shown, so the hint names it");
+    assert!(first.contains(&format!("- #{}", answer.id)), "{first}");
+
+    let again = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context;
+    assert!(again.is_none(), "and now it has been shown");
+
+    run(&mut store, HookEvent::PostCompaction, &payload).unwrap();
     let after = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
         .unwrap()
         .additional_context
         .expect("after a compaction the hint may speak again");
     assert!(after.contains(&format!("- #{}", answer.id)), "{after}");
+    assert!(
+        after.contains("These are matches on the words"),
+        "and the sentence that was compacted away is said again: {after}"
+    );
+}
+
+/// The full header is said once, then a short line.
+#[test]
+fn the_second_hint_of_a_session_carries_a_shorter_header() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let engine = crowd_and_answer(&mut store, "We chose SQLite as the storage engine");
+
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    let first = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context
+        .expect("the first hint speaks");
+
+    // The second hint is the one a new caveat earns, which is the way a
+    // conversation gets a second hint about the same subject.
+    let newer = store
+        .add_observation(memory(
+            "We moved the storage engine to Postgres",
+            "The storage engine decision was revisited and changed",
+        ))
+        .unwrap()
+        .observation;
+    let relation = propose(&mut store, &newer.sync_id, &engine.sync_id);
+    store
+        .judge_relation(crate::memory::model::JudgeRelationParams {
+            judgment_id: relation,
+            relation: crate::store::RELATION_CONFLICTS_WITH.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+    let second = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context
+        .expect("the second hint speaks");
+
+    assert!(first.contains(&format!("- #{}", engine.id)), "{first}");
+    assert!(second.contains(&format!("- #{}", engine.id)), "{second}");
+    let header = |hint: &str| hint.lines().next().unwrap_or_default().to_owned();
+    assert!(
+        header(&first).contains("These are matches on the words"),
+        "{first}"
+    );
+    assert!(header(&second).len() < header(&first).len() / 2, "{second}");
+    assert!(
+        header(&second).contains("ignore any that do not fit"),
+        "the hedge stays, because the hint is wrong most of the time it speaks: {second}"
+    );
+}
+
+/// Opening a session must leave the file readable by every Leteo that wrote one.
+#[test]
+fn a_state_file_from_before_the_new_fields_still_reads() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("old.nudge");
+    std::fs::write(
+        &path,
+        r#"{"last_nudge":"2026-01-01 00:00:00","shown":[4,9]}"#,
+    )
+    .unwrap();
+    let state = SessionState::read(Some(&path));
+    assert_eq!(state.shown, vec![4, 9]);
+    assert!(state.caveats.is_empty() && !state.headed);
+    assert_eq!(state.last_nudge.as_deref(), Some("2026-01-01 00:00:00"));
+
+    std::fs::write(&path, "2026-01-01 00:00:00").unwrap();
+    assert_eq!(
+        SessionState::read(Some(&path)).last_nudge.as_deref(),
+        Some("2026-01-01 00:00:00")
+    );
+    std::fs::write(&path, "").unwrap();
+    assert!(SessionState::read(Some(&path)).is_blank());
+}
+
+/// A write replaces the file whole and leaves nothing beside it.
+#[test]
+fn the_hint_state_is_written_without_leaving_a_temporary_file() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("hooks").join("session.nudge");
+    let mut state = SessionState::default();
+    state.remember([7]);
+    state.remember_caveats(["7>8>conflicts with".to_owned()]);
+    state.headed = true;
+    state.write(Some(&path)).unwrap();
+    state.write(Some(&path)).unwrap();
+
+    let read = SessionState::read(Some(&path));
+    assert_eq!(read.shown, vec![7]);
+    assert_eq!(read.caveats, vec!["7>8>conflicts with".to_owned()]);
+    assert!(read.headed);
+    let beside: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(beside.len(), 1, "{beside:?}");
 }
 
 /// The block a session opens with is the third surface to answer with silence.

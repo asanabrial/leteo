@@ -760,6 +760,18 @@ pub struct Caveat {
     pub other_title: String,
 }
 
+impl Caveat {
+    /// What identifies this caveat on `memory_id`: the memory, the other memory
+    /// it names, and the verb. The title is left out on purpose — a retitled
+    /// memory has not been said against again.
+    ///
+    /// Written into the per-session hint state, so a caveat already handed over
+    /// can be told from a new one. The format is therefore stored data.
+    pub fn key(&self, memory_id: i64) -> String {
+        format!("{memory_id}>{}>{}", self.other_id, self.verb.phrase())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaveatVerb {
     SupersededBy,

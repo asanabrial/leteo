@@ -6,8 +6,9 @@
 //! that what the agent reads and what the person is told cannot disagree.
 
 use crate::Store;
+use crate::recall::Listed;
 
-use super::HookOutcome;
+use super::{HookOutcome, nudge::SessionState};
 
 /// How many are named. Beyond three it stops being a hint and becomes a list.
 ///
@@ -52,12 +53,19 @@ pub(super) const RECALL_LIMIT: usize = 3;
 /// spend a tool call on every line the hint names, and the hint is wrong most of
 /// the time it speaks. A title is already enough to tell whether a line fits;
 /// an agent that wants the body knows the tool without being told to use it.
+///
+/// The header is the full sentence the first time a conversation is hinted and
+/// [`HINT_HEADER_SHORT`] after that, until a compaction takes the sentence out
+/// of the agent's context. It was 110 bytes on every hint, of about 350 for a
+/// hint as replayed from a real store's short prompts. The short line still
+/// carries the hedge, because the hint is wrong most of the time it speaks and a host that
+/// shows it for one turn only never shows the full sentence twice.
 pub(super) fn prompt_recall(
     store: &Store,
     prompt: &str,
     project: &str,
-    already_shown: &[i64],
-) -> Option<(String, usize, Vec<i64>)> {
+    state: &SessionState,
+) -> Option<Recall> {
     let mut matches = store.prompt_matches(prompt, project, RECALL_LIMIT).ok()?;
     // What the graph knows about the three about to be named. Leteo pays a
     // language model to judge these pairs and then read nothing back; a memory
@@ -69,8 +77,8 @@ pub(super) fn prompt_recall(
         .collect();
     let caveats = store.caveats_for(&sync_ids).unwrap_or_default();
 
-    // Not what this conversation has already been handed — unless something is
-    // said against it.
+    // Not what this conversation has already been handed — unless something new
+    // is said against it.
     //
     // A conversation stays about the same thing for a while, so the same
     // memories keep winning: over six real sessions, 134 of 273 memories named
@@ -84,25 +92,47 @@ pub(super) fn prompt_recall(
     // anything against it. Naming it again is the only way the caveat arrives,
     // and that is the whole reason caveats are carried here at all.
     //
+    // Once per caveat, though. This used to lift the rule for any memory that
+    // had a caveat, so a judged conflict was named again, with its line, on every
+    // prompt that matched it for the rest of the conversation: the agent had
+    // been told, and the repeat spent the room a new memory would have taken. A
+    // caveat is identified by the memory, the memory it names and the verb, and
+    // one already handed over — by an earlier hint or by the opening block — no
+    // longer lifts the rule. One that arrives later is a different key and lifts
+    // it again, which is the case the exception exists for.
+    //
     // Dropped rather than backfilled from further down the ranking. What is
     // below the third result did not pass the relevance test on its own merits,
     // and filling the gap with it would trade a repeat nobody needed for a
     // stranger nobody asked for.
     matches.retain(|observation| {
-        !already_shown.contains(&observation.id)
+        !state.shown.contains(&observation.id)
             || caveats
                 .get(&observation.sync_id)
-                .is_some_and(|said| !said.is_empty())
+                .into_iter()
+                .flatten()
+                .any(|caveat| !state.caveats.contains(&caveat.key(observation.id)))
     });
     if matches.is_empty() {
         return None;
     }
     let shown: Vec<i64> = matches.iter().map(|observation| observation.id).collect();
+    let delivered: Vec<String> = matches
+        .iter()
+        .flat_map(|observation| {
+            caveats
+                .get(&observation.sync_id)
+                .into_iter()
+                .flatten()
+                .map(|caveat| caveat.key(observation.id))
+        })
+        .collect();
 
-    let mut recall = String::from(
-        "Leteo may have something on this. These are matches on the words of the \
-         prompt, so ignore any that do not fit.\n",
-    );
+    let mut recall = String::from(if state.headed {
+        HINT_HEADER_SHORT
+    } else {
+        HINT_HEADER
+    });
     for observation in &matches {
         recall.push_str(&format!(
             "- #{} [{}] {}\n",
@@ -119,15 +149,40 @@ pub(super) fn prompt_recall(
             ));
         }
     }
-    Some((recall, matches.len(), shown))
+    Some(Recall {
+        context: recall,
+        count: matches.len(),
+        shown,
+        caveats: delivered,
+    })
 }
 
+/// The first hint of a conversation, and of the context after a compaction.
+const HINT_HEADER: &str = "Leteo may have something on this. These are matches on the words of the \
+     prompt, so ignore any that do not fit.\n";
+
+/// Every hint after it. It keeps the hedge in a few words rather than dropping
+/// it: a host that shows a hint for one turn has no earlier sentence to lean on.
+const HINT_HEADER_SHORT: &str = "Leteo, more on this (ignore any that do not fit):\n";
+
+/// What a hint says and what saying it used up.
+pub(super) struct Recall {
+    pub(super) context: String,
+    pub(super) count: usize,
+    /// Memories named, to be recorded as shown.
+    pub(super) shown: Vec<i64>,
+    /// Caveat lines printed, to be recorded as delivered.
+    pub(super) caveats: Vec<String>,
+}
+
+/// The opening block, and what it lists. See [`crate::recall::Listed`] for why
+/// the ids come out of the renderer rather than from asking again.
 pub(super) fn memory_context(
     store: &Store,
     project: &str,
     settings: &crate::settings::Settings,
     outcome: &mut HookOutcome,
-) -> Option<(String, usize)> {
+) -> Option<(String, Listed)> {
     // How many, from the setting rather than from a constant: the block is
     // what a session costs before anybody has asked anything, and the curve
     // that decides the sizes is in `ContextSize`.
@@ -138,7 +193,7 @@ pub(super) fn memory_context(
     // open-parse-close of a TOML file on the session-start path for an answer
     // that was already in a local variable.
     let budget = settings.context_size().memories();
-    let context = crate::recall::assemble_counted(
+    let context = crate::recall::assemble_listed(
         store,
         Some(project),
         None,
@@ -175,7 +230,7 @@ pub(super) fn memory_context(
                             "--all-projects",
                         )
                     ),
-                    0,
+                    Listed::default(),
                 )
             }),
         Ok(counted) => Some(counted),

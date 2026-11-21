@@ -164,6 +164,15 @@ pub(super) fn parse_sqlite_timestamp(value: &str) -> Option<chrono::NaiveDateTim
 ///
 /// Cleared on compaction. The agent's context is rewritten there, so a memory
 /// named before it is genuinely gone and naming it again is the right thing.
+///
+/// What the opening block listed is recorded here too, at session start and
+/// again after a compaction rebuilds it: the agent holds those memories from
+/// the first turn, and without them in the list the first matching prompt named
+/// one of them a second time.
+///
+/// Every field defaults, so a file written by an older Leteo reads as that
+/// Leteo's state plus "nothing delivered yet" — at worst one repeat on a
+/// conversation that was already running.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct SessionState {
     /// When the reminder last fired. `None` on a file written before this
@@ -173,6 +182,16 @@ pub(super) struct SessionState {
     pub(super) last_nudge: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) shown: Vec<i64>,
+    /// The caveats the agent has been handed, by [`Caveat::key`], so a caveat
+    /// lifts the already-shown rule once and not on every matching prompt.
+    ///
+    /// [`Caveat::key`]: crate::memory::model::Caveat::key
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) caveats: Vec<String>,
+    /// Whether the full header sentence of the hint is in the agent's context.
+    /// Cleared on compaction, which is what takes it away.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) headed: bool,
 }
 
 /// The longest conversation anybody has actually held, when this was last
@@ -231,28 +250,67 @@ impl SessionState {
         // The file used to be a bare timestamp and some are still on disk.
         serde_json::from_str(&contents).unwrap_or_else(|_| Self {
             last_nudge: Some(contents.trim().to_owned()).filter(|value| !value.is_empty()),
-            shown: Vec::new(),
+            ..Self::default()
         })
     }
 
+    /// Written through a temporary file and a rename, because a prompt hook and
+    /// a session hook can run at the same moment and `fs::write` truncates
+    /// before it fills: a reader in between saw an empty file, took it for "no
+    /// reminder yet, nothing shown", and handed the conversation everything
+    /// again.
     pub(super) fn write(&self, path: Option<&PathBuf>) -> Result<(), std::io::Error> {
         let Some(path) = path else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, serde_json::to_string(self).unwrap_or_default())
+        crate::files::replace(
+            path,
+            serde_json::to_string(self).unwrap_or_default().as_bytes(),
+        )
+    }
+
+    /// Nothing recorded at all, which is what a conversation with no state file
+    /// looks like.
+    pub(super) fn is_blank(&self) -> bool {
+        self.last_nudge.is_none()
+            && self.shown.is_empty()
+            && self.caveats.is_empty()
+            && !self.headed
     }
 
     pub(super) fn remember(&mut self, ids: impl IntoIterator<Item = i64>) {
-        for id in ids {
-            if !self.shown.contains(&id) {
-                self.shown.push(id);
-            }
+        remember_bounded(&mut self.shown, ids);
+    }
+
+    /// Records caveat lines the agent has now read.
+    pub(super) fn remember_caveats(&mut self, keys: impl IntoIterator<Item = String>) {
+        remember_bounded(&mut self.caveats, keys);
+    }
+
+    /// Records what an opening block listed, for a session start or a
+    /// compaction.
+    pub(super) fn remember_listed(&mut self, listed: &crate::recall::Listed) {
+        self.remember(listed.memories.iter().copied());
+        self.remember_caveats(listed.caveats.iter().cloned());
+    }
+
+    /// The agent's context was rewritten: what the hint named, said against, and
+    /// explained about itself is gone from it. The reminder's clock is about how
+    /// long somebody has been quiet, which a compaction says nothing about.
+    pub(super) fn forget_context(&mut self) {
+        self.shown.clear();
+        self.caveats.clear();
+        self.headed = false;
+    }
+}
+
+fn remember_bounded<T: PartialEq>(list: &mut Vec<T>, items: impl IntoIterator<Item = T>) {
+    for item in items {
+        if !list.contains(&item) {
+            list.push(item);
         }
-        if self.shown.len() > MAX_REMEMBERED {
-            self.shown.drain(..self.shown.len() - MAX_REMEMBERED);
-        }
+    }
+    if list.len() > MAX_REMEMBERED {
+        list.drain(..list.len() - MAX_REMEMBERED);
     }
 }

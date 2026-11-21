@@ -544,9 +544,23 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // reflects the settings file as it is now rather than as it was
             // when somebody installed.
             context.push_str(&settings.language_directive());
-            if let Some((memory, _)) = memory_context(store, &project, &settings, &mut outcome) {
+            if let Some((memory, listed)) = memory_context(store, &project, &settings, &mut outcome)
+            {
                 context.push_str("\n\n");
                 context.push_str(&memory);
+                // What the block lists is in the agent's hands from the first
+                // turn, so the hint must not name it again. Added to whatever
+                // the state holds rather than replacing it: a session start
+                // can be a resume, and the hints named before it are still in
+                // the transcript.
+                if !listed.memories.is_empty() {
+                    let state_path = nudge_state_path(store, &session_id);
+                    let mut state = SessionState::read(state_path.as_ref());
+                    state.remember_listed(&listed);
+                    if let Err(error) = state.write(state_path.as_ref()) {
+                        outcome.warnings.push(format!("hint state: {error}"));
+                    }
+                }
             }
             // The pairs themselves, not only how many there are. The line below
             // says the number to whoever is watching; this hands the agent
@@ -596,17 +610,15 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         HookEvent::PostCompaction => {
             ensure_session(store, &session_id, &project, &directory, &mut outcome);
             // Everything the hint named before this is gone from the agent's
-            // context, so it is worth naming again. Only the list is cleared;
-            // the reminder's clock is about how long somebody has been quiet,
-            // which a compaction says nothing about.
+            // context, so it is worth naming again — and so is the sentence
+            // that explained it. The state is cleared and then refilled with
+            // what the rebuilt block lists, below: the block is the first thing
+            // the agent reads again, and a hint naming one of its lines is a
+            // repeat of something a few lines up.
             let state_path = nudge_state_path(store, &session_id);
             let mut state = SessionState::read(state_path.as_ref());
-            if !state.shown.is_empty() {
-                state.shown.clear();
-                if let Err(error) = state.write(state_path.as_ref()) {
-                    outcome.warnings.push(format!("hint state: {error}"));
-                }
-            }
+            let was_blank = state.is_blank();
+            state.forget_context();
             let mut context = String::from(if input.summary_stored {
                 "Context was compacted, and its summary is already stored. \
                  Continue from the memory below.\n\n"
@@ -623,14 +635,23 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             match memory_context(store, &project, &settings, &mut outcome) {
                 Some((memory, listed)) => {
                     context.push_str(&memory);
+                    state.remember_listed(&listed);
                     // The count is what the rebuilt context actually names, so
                     // somebody who just watched a conversation get compacted
                     // can see how much of it came back.
                     if voice.reports() {
-                        outcome.system_message = crate::sardi::restored(language, listed);
+                        outcome.system_message =
+                            crate::sardi::restored(language, listed.memories.len());
                     }
                 }
                 None => context.push_str("No previous memory found for this project."),
+            }
+            // A conversation with no state file and nothing to record does not
+            // get one made for it.
+            if !(was_blank && state.is_blank())
+                && let Err(error) = state.write(state_path.as_ref())
+            {
+                outcome.warnings.push(format!("hint state: {error}"));
             }
             outcome.additional_context = Some(context);
         }
@@ -663,11 +684,13 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             let recall = if harness {
                 None
             } else {
-                prompt_recall(store, &input.prompt, &project, &state.shown)
+                prompt_recall(store, &input.prompt, &project, &state)
             };
-            outcome.additional_context = recall.as_ref().map(|(context, _, _)| context.clone());
-            if let Some((_, _, shown)) = &recall {
-                state.remember(shown.iter().copied());
+            outcome.additional_context = recall.as_ref().map(|recall| recall.context.clone());
+            if let Some(recall) = &recall {
+                state.remember(recall.shown.iter().copied());
+                state.remember_caveats(recall.caveats.iter().cloned());
+                state.headed = true;
             }
             // One line per prompt at most, and the reminder outranks the hint.
             // The reminder is an instruction with something to do about it; the
@@ -687,7 +710,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                 outcome.warnings.push(format!("hint state: {error}"));
             }
             let hint = if voice.reports() {
-                crate::sardi::recalls(language, recall.map_or(0, |(_, count, _)| count))
+                crate::sardi::recalls(language, recall.map_or(0, |recall| recall.count))
             } else {
                 None
             };

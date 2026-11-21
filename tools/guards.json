@@ -1614,5 +1614,29 @@
     "file": "src/store/relations.rs",
     "old": "WHERE src.sync_id = r.source_id AND src.deleted_at IS NULL))\"",
     "new": "WHERE src.sync_id = r.source_id AND src.deleted_at IS NULL OR 1))\""
+  },
+  {
+    "name": "opening block: a prompt is kept while memory titles are cut",
+    "file": "src/recall.rs",
+    "old": "if self.prompts > 0 {",
+    "new": "if self.prompts > 0 && self.listed.is_empty() {"
+  },
+  {
+    "name": "opening block: sessions are kept while memory titles are cut",
+    "file": "src/recall.rs",
+    "old": "if self.sessions > 1 {",
+    "new": "if self.sessions > 1 && self.listed.is_empty() {"
+  },
+  {
+    "name": "opening block: a session with no summary text is listed as a bare date",
+    "file": "src/recall.rs",
+    "old": ".is_some_and(|summary| !summary.trim().is_empty())",
+    "new": ".is_some_and(|summary| !summary.is_empty())"
+  },
+  {
+    "name": "opening block: the smallest size has a larger markdown ceiling than the middle one",
+    "file": "src/settings.rs",
+    "old": "Self::Slim => 3_000,",
+    "new": "Self::Slim => 15_000,"
   }
 ]

@@ -305,6 +305,21 @@ pub fn format_context_counted(
         project,
         budget_bytes,
     } = frame;
+    // A session with no summary is a date and nothing else: it cannot tell
+    // anybody what the work was for, and on a real store one such line was a
+    // bare `- (2026-08-01 23:14)` among five. The test comes after
+    // `fold_session_summaries`, so a session whose summary lives in a
+    // `session_summary` memory is kept. Decided here, before the count is
+    // taken, so the number of sessions shown is the number of lines printed.
+    let sessions: Vec<&SessionSummary> = sessions
+        .iter()
+        .filter(|session| {
+            session
+                .summary
+                .as_deref()
+                .is_some_and(|summary| !summary.trim().is_empty())
+        })
+        .collect();
     if sessions.is_empty() && prompts.is_empty() && pinned.is_empty() && observations.is_empty() {
         return (String::new(), 0);
     }
@@ -318,7 +333,7 @@ pub fn format_context_counted(
     // The spelling the sessions carry, which `recent_sessions` narrowed by.
     let own_project = project.map(crate::memory::normalize::project);
     let sections = Sections {
-        sessions,
+        sessions: &sessions,
         prompts,
         pinned,
         pinned_omitted,
@@ -342,11 +357,18 @@ pub fn format_context_counted(
 /// How much of each section a budgeted block still carries.
 ///
 /// The newest memories are the ones the work is likely continuing from, so a
-/// block that has to lose something loses it from the oldest end and from the
-/// least informative section first: the remembered titles go before the
-/// prompts, those before the sessions, and the pinned memories last — a pin is a deliberate
+/// block that has to lose something loses it from the oldest end, and the
+/// sections that only frame the memories give way before the memories do:
+/// prompts, then all but the newest session, then the remembered titles, then
+/// that last session, and the pinned memories last — a pin is a deliberate
 /// act, and dropping one in silence is the failure `pinned_omitted` exists to
 /// prevent.
+///
+/// The memories went first until the figure was measured: on the four largest
+/// projects of a copy of a real store, every block was cut at 4,000 bytes and
+/// left out 15, 10, 14 and 10 of thirty memories, while prompts took 1,301
+/// bytes of one block and four-month-old sessions much of another. A size that
+/// names thirty memories has to show thirty before it shows anything older.
 #[derive(Default)]
 struct Shown {
     sessions: usize,
@@ -359,11 +381,15 @@ struct Shown {
 impl Shown {
     /// Drops one item, the least important the block still carries.
     fn drop_one(&mut self) -> bool {
-        if self.listed.pop().is_some() {
-            return true;
-        }
         if self.prompts > 0 {
             self.prompts -= 1;
+            return true;
+        }
+        if self.sessions > 1 {
+            self.sessions -= 1;
+            return true;
+        }
+        if self.listed.pop().is_some() {
             return true;
         }
         if self.sessions > 0 {
@@ -380,7 +406,8 @@ impl Shown {
 
 /// The sections a context is rendered from.
 struct Sections<'a> {
-    sessions: &'a [SessionSummary],
+    /// Only sessions that carry a summary; see `format_context_counted`.
+    sessions: &'a [&'a SessionSummary],
     prompts: &'a [Prompt],
     pinned: &'a [Observation],
     pinned_omitted: usize,
@@ -801,6 +828,9 @@ mod tests {
                     content: format!("prompt of {session}"),
                     project: Some(project.to_owned()),
                 })
+                .unwrap();
+            store
+                .end_session(session, Some(&format!("work of {session}")))
                 .unwrap();
         }
 
@@ -1396,6 +1426,177 @@ And the tests could not see it, because a small store scores near zero."
                 title.chars().count()
             );
         }
+    }
+
+    fn prompt(n: usize) -> Prompt {
+        Prompt {
+            id: n as i64,
+            sync_id: format!("prompt-{n}"),
+            session_id: "s1".to_owned(),
+            content: format!("prompt {n} {}", "a long request ".repeat(40)),
+            project: "quarry".to_owned(),
+            created_at: format!("2026-08-04 10:{:02}:00", 59 - n),
+        }
+    }
+
+    /// Five dated sessions, newest first, each named `session N` in its summary.
+    fn dated_sessions(count: usize) -> Vec<SessionSummary> {
+        (0..count)
+            .map(|n| {
+                let mut session = session(
+                    &format!("s{n}"),
+                    Some(&format!("session {n} {}", "did a lot of work ".repeat(10))),
+                );
+                session.last_activity = format!("2026-08-0{} 18:20:00", 5 - n);
+                session
+            })
+            .collect()
+    }
+
+    fn thirty_memories() -> Vec<Observation> {
+        (0..30)
+            .map(|n| {
+                observation(
+                    100 - n,
+                    &format!(
+                        "A long and descriptive title that costs real bytes, memory number {n}"
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn render(
+        sessions: &[SessionSummary],
+        prompts: &[Prompt],
+        memories: &[Observation],
+        budget_bytes: usize,
+    ) -> (String, usize) {
+        format_context_counted(
+            sessions,
+            prompts,
+            &[],
+            0,
+            memories,
+            &BTreeMap::new(),
+            Frame {
+                project: Some("quarry"),
+                budget_bytes,
+            },
+        )
+    }
+
+    /// The sections that frame the memories give way before the memories do.
+    ///
+    /// Measured on a copy of a real store, the four largest projects' blocks
+    /// were all cut at 4,000 bytes and left out 15, 10, 14 and 10 of thirty
+    /// memories while prompts took 1,301 bytes of one of them. The fixture is
+    /// oversized on purpose: with every section whole it is far over the budget.
+    #[test]
+    fn prompts_are_dropped_before_any_memory_title() {
+        let sessions = dated_sessions(5);
+        let prompts: Vec<Prompt> = (0..10).map(prompt).collect();
+        let memories = thirty_memories();
+
+        let (everything, _) = render(&sessions, &prompts, &memories, usize::MAX);
+        assert!(everything.len() > 4_000, "{}", everything.len());
+
+        let (context, named) = render(&sessions, &prompts, &memories, 4_000);
+        assert!(context.len() <= 4_000, "{} bytes", context.len());
+        for n in 0..30 {
+            assert!(
+                context.contains(&format!("memory number {n}\n")),
+                "memory {n} was cut while prompts were still available: {context}"
+            );
+        }
+        assert_eq!(named, 30, "{context}");
+        assert!(
+            !context.contains("Recent User Prompts"),
+            "prompts should have given way first: {context}"
+        );
+        assert!(
+            !context.contains("memories not shown") && !context.contains("30 memories"),
+            "no memory was cut, so none may be reported as cut: {context}"
+        );
+        assert!(
+            context.contains("10 prompts not shown"),
+            "what was dropped has to be counted: {context}"
+        );
+    }
+
+    /// Sessions give way after prompts and before memories, oldest first, down
+    /// to one.
+    #[test]
+    fn sessions_are_dropped_oldest_first_down_to_one_before_any_memory_title() {
+        let sessions = dated_sessions(5);
+        let memories = thirty_memories();
+
+        let (one_session, _) = render(&sessions[..1], &[], &memories, usize::MAX);
+        // Room for the memories, one session and the line that counts the
+        // cut, and not for a second session.
+        let budget = one_session.len() + 120;
+        let (context, named) = render(&sessions, &[], &memories, budget);
+
+        assert!(context.len() <= budget, "{} > {budget}", context.len());
+        assert_eq!(named, 30, "{context}");
+        assert!(context.contains("session 0 "), "newest kept: {context}");
+        assert!(!context.contains("session 1 "), "older gone: {context}");
+        assert!(!context.contains("session 4 "), "oldest gone: {context}");
+        assert!(
+            context.contains("4 sessions not shown"),
+            "what was dropped has to be counted: {context}"
+        );
+    }
+
+    /// Memories are cut only when nothing else is left to cut, and the cut is
+    /// still counted.
+    #[test]
+    fn memories_are_cut_last_and_the_cut_is_counted() {
+        let sessions = dated_sessions(5);
+        let prompts: Vec<Prompt> = (0..10).map(prompt).collect();
+        let memories = thirty_memories();
+
+        let (context, named) = render(&sessions, &prompts, &memories, 1_200);
+        assert!(context.len() <= 1_200, "{} bytes", context.len());
+        assert!(named < 30, "{context}");
+        assert!(
+            context.contains("session 0 "),
+            "one session stays: {context}"
+        );
+        assert!(!context.contains("Recent User Prompts"), "{context}");
+        assert!(
+            context.contains(&format!("{} memories", 30 - named)),
+            "the memories that were cut have to be counted: {context}"
+        );
+        assert!(
+            context.contains("memory number 0\n"),
+            "the newest title is kept: {context}"
+        );
+    }
+
+    /// A session with nothing to say is a date and nothing else.
+    #[test]
+    fn a_session_without_summary_text_is_not_listed() {
+        let sessions = vec![
+            session("s0", Some("the one with words")),
+            session("s1", None),
+            session("s2", Some("   ")),
+        ];
+        let (context, _) = render(&sessions, &[], &thirty_memories(), usize::MAX);
+        assert_eq!(
+            context.matches("- (2026-08-04 18:20)").count(),
+            1,
+            "only the session with a summary has a line: {context}"
+        );
+        assert!(context.contains("the one with words"), "{context}");
+        assert!(
+            !context.contains("- (2026-08-04 18:20)\n"),
+            "a bare date line was printed: {context}"
+        );
+
+        let (only_bare, named) = render(&sessions[1..], &[], &[], usize::MAX);
+        assert_eq!(only_bare, "", "nothing to say means no block");
+        assert_eq!(named, 0);
     }
 
     /// A block is never larger than the budget, and says what it left out.

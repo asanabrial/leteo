@@ -133,6 +133,16 @@ fn cli_covers_timeline_context_doctor_and_export_import_round_trip() {
             .arg("parity-session"),
     );
 
+    // A session with no summary is not listed in the opening block, so this
+    // one is closed with one for the block below to have a line to show.
+    run_json(
+        leteo(&database)
+            .arg("session-end")
+            .arg("parity-session")
+            .arg("--summary")
+            .arg("Learned the parity marker"),
+    );
+
     let timeline = run_json(leteo(&database).arg("timeline").arg(saved_id.to_string()));
     assert_eq!(timeline["focus"]["id"], json!(saved_id));
     assert_eq!(

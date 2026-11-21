@@ -21,6 +21,13 @@ All notable changes to Leteo are documented in this file.
   out of every search and listing, because the verdicts saying they were
   replaced outlived the memory that replaced them. A memory is now hidden only
   while the one that superseded it is live (#322).
+- **The opening block shows the memories it promises.** When a block ran over
+  its 4,000 bytes it cut memory titles first, so on the four largest projects
+  of one real store 15, 10, 14 and 10 of the thirty were left out while old
+  prompts and sessions kept their room. Prompts now give way first, then all
+  but the newest session, and memory titles only after that. A session with no
+  summary is no longer listed as a bare date, and `slim` has a 3,000-byte
+  ceiling instead of 15,000, which was almost four times `full`'s (#323).
 
 ## [0.4.3] - 2026-11-03
 

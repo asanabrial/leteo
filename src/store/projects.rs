@@ -538,27 +538,41 @@ impl Store {
         Ok((projects, omitted))
     }
 
-    /// Removes the sessions and prompts of a project that holds no
-    /// observations. Projects with observations are refused.
-    pub fn prune_project(&mut self, project: &str) -> Result<PruneResult, StoreError> {
+    /// Why [`Self::prune_project`] would refuse `project`, or `None` when it
+    /// would not.
+    ///
+    /// Soft-deleted rows count. They still reference their sessions through a
+    /// NOT NULL foreign key, so deleting the sessions underneath them would fail
+    /// with a constraint error nobody could act on. Hard delete the observations
+    /// first, or use `delete_project --hard`.
+    ///
+    /// The one place the rule lives: `projects prune` lists its candidates by
+    /// live count, which says nothing about soft-deleted rows, and asks here
+    /// before it applies so that one such project does not abort the others.
+    pub fn prune_blocker(&self, project: &str) -> Result<Option<String>, StoreError> {
         let project = normalize::project(project);
         if project.is_empty() {
             return Err(invalid_parameter(crate::project::EMPTY_NAME));
         }
-        // Soft-deleted rows count too. They still reference their sessions
-        // through a NOT NULL foreign key, so deleting the sessions underneath
-        // them would fail with a constraint error nobody could act on. Hard
-        // delete the observations first, or use `delete_project --hard`.
         let observations = self.connection.query_row(
             "SELECT COUNT(*) FROM observations WHERE ifnull(project, '') = ?1",
             [&project],
             |row| row.get::<_, i64>(0),
         )?;
-        if observations > 0 {
-            return Err(invalid_parameter(format!(
+        Ok((observations > 0).then(|| {
+            format!(
                 "project {project:?} still has {observations} observation(s), including \
                  soft-deleted ones that still reference its sessions"
-            )));
+            )
+        }))
+    }
+
+    /// Removes the sessions and prompts of a project that holds no
+    /// observations. Projects with observations are refused.
+    pub fn prune_project(&mut self, project: &str) -> Result<PruneResult, StoreError> {
+        let project = normalize::project(project);
+        if let Some(reason) = self.prune_blocker(&project)? {
+            return Err(invalid_parameter(reason));
         }
 
         let tx = self.write_transaction()?;
@@ -720,6 +734,10 @@ impl Store {
     /// unsent mutations move to the new name, only when the move left it empty.
     /// Touching them while sessions stay behind would silence a project that
     /// still holds rows.
+    ///
+    /// No rename is queued: it moves every row of a name on the peer, and this
+    /// moves the rows of one directory. A peer that has not applied the moved
+    /// rows' upserts still files them under `source`.
     pub fn move_directory_sessions(
         &mut self,
         source: &str,
@@ -832,6 +850,7 @@ impl Store {
             let observation = get_observation_row(&tx, id)?;
             if observation.deleted_at.is_none() {
                 enqueue_observation(&tx, &observation)?;
+                enqueue_stored_versions_tx(&tx, &observation.sync_id, &canonical)?;
             }
         }
         for id in session_ids {
@@ -964,35 +983,29 @@ impl Store {
             // of it: `enqueue_observation` and the two `enqueue_mutation`
             // calls under this block ask `is_enrolled_tx` and return quietly
             // when the answer is no.
-            if is_enrolled_tx(&tx, &source)? && !is_enrolled_tx(&tx, &canonical)? {
-                tx.execute(
-                    "INSERT OR IGNORE INTO sync_enrolled_projects (project) VALUES (?1)",
-                    [&canonical],
-                )?;
+            let mut names = variants.clone();
+            names.insert(source.clone());
+            if move_enrolment_tx(&tx, &names, &canonical)? {
                 result.enrolment_moved = true;
             }
 
-            for variant in &variants {
-                result.observations_updated += tx.execute(
-                    "UPDATE observations SET project = ?1, updated_at = datetime('now')
-                     WHERE LOWER(TRIM(ifnull(project, ''))) = ?2",
-                    params![canonical, variant],
-                )? as i64;
-                result.sessions_updated += tx.execute(
-                    "UPDATE sessions SET project = ?1 WHERE LOWER(TRIM(project)) = ?2",
-                    params![canonical, variant],
-                )? as i64;
-                result.prompts_updated += tx.execute(
-                    "UPDATE prompts SET project = ?1
-                     WHERE LOWER(TRIM(ifnull(project, ''))) = ?2",
-                    params![canonical, variant],
-                )? as i64;
-            }
+            let (observations, sessions, prompts) =
+                reassign_project_rows_tx(&tx, &names, &canonical)?;
+            result.observations_updated += observations;
+            result.sessions_updated += sessions;
+            result.prompts_updated += prompts;
+
+            // Ahead of every row queued again below, and of the unsent
+            // mutations carried after them: a peer applies the queue in order,
+            // and a mutation filed under the new name finds its row only once
+            // the peer has moved it.
+            enqueue_project_rename_tx(&tx, &names, &canonical)?;
 
             for id in observation_ids {
                 let observation = get_observation_row(&tx, id)?;
                 if observation.deleted_at.is_none() {
                     enqueue_observation(&tx, &observation)?;
+                    enqueue_stored_versions_tx(&tx, &observation.sync_id, &canonical)?;
                 }
             }
             for id in session_ids {
@@ -1020,11 +1033,7 @@ impl Store {
             // And the name that is now empty stops being replicated. Its unsent
             // mutations do not go with it: see `carry_unsent_mutations_tx` for
             // what is dropped and what moves to the canonical name.
-            tx.execute(
-                "DELETE FROM sync_enrolled_projects WHERE project = ?1",
-                [&source],
-            )?;
-            carry_unsent_mutations_tx(&tx, &source, &canonical)?;
+            retire_project_names_tx(&tx, &names, &canonical)?;
             result.sources_merged.push(source);
         }
 

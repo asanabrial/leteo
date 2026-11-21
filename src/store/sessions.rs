@@ -189,14 +189,7 @@ impl Store {
             return Err(StoreError::SessionNotFound(id.to_owned()));
         }
         let session = get_session_row(&tx, id)?;
-        enqueue_mutation(
-            &tx,
-            "session",
-            id,
-            crate::sync::OP_UPSERT,
-            &session,
-            &session.project,
-        )?;
+        enqueue_session_update_tx(&tx, &session)?;
         tx.commit()?;
         Ok(session)
     }

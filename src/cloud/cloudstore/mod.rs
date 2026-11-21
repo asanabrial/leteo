@@ -1056,7 +1056,10 @@ fn materialize_chunk_mutations(
         });
     }
     for mutation in &chunk.mutations {
-        if mutation.entity == crate::sync::ENTITY_RELATION || mutation.op == crate::sync::OP_DELETE
+        if matches!(
+            mutation.entity.as_str(),
+            crate::sync::ENTITY_RELATION | crate::sync::ENTITY_PROJECT_RENAME
+        ) || mutation.op == crate::sync::OP_DELETE
         {
             entries.push(MutationEntry {
                 project: project.to_owned(),

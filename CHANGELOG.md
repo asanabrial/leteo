@@ -248,6 +248,18 @@ All notable changes to Leteo are documented in this file.
   tombstone (migration 25) that makes a replicated version for that memory a
   no-op. `leteo doctor` reports orphan version rows as `orphan_versions`, and
   `--repair` removes them (#368).
+- **A project merge now reaches a peer as a rename, so deletes and updates filed
+  under the new name find their rows.** A peer that had not merged held every
+  row under the old name and ignored a delete filed under the new one, for good.
+  A merge queues one `project_rename` mutation ahead of the rows it queues
+  again, and a peer applies it by moving the rows without queueing anything. A
+  delete that was waiting is queued again after it; unsent mutations under the
+  other spellings of the name are carried; and the versions of a moved memory
+  travel with it. A session's delete and its later updates, such as
+  `end_session`, now go to every project the session was sent to, and
+  `projects prune --apply` skips a project holding soft-deleted memories and
+  says so instead of aborting. An older peer or cloud server does not know the
+  new mutation and refuses it until it is updated (#369).
 
 ## [0.4.3] - 2026-11-03
 

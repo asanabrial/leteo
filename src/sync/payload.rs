@@ -149,6 +149,25 @@ pub(super) fn normalize_mutation_payload(
             let entity_key = body.sync_id.clone();
             encode_mutation_payload(&body).map(|payload| (payload, entity_key))
         }
+        ENTITY_PROJECT_RENAME => {
+            let mut body: ProjectRenameMutationPayload = decode_mutation_payload(payload)?;
+            body.sync_id = body.sync_id.trim().to_owned();
+            if body.sync_id.is_empty() {
+                return Err(invalid("project rename payload sync_id is required"));
+            }
+            body.sources = body
+                .sources
+                .iter()
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+                .collect();
+            if body.sources.is_empty() {
+                return Err(invalid("project rename payload sources is required"));
+            }
+            body.project = project.to_owned();
+            let entity_key = body.sync_id.clone();
+            encode_mutation_payload(&body).map(|payload| (payload, entity_key))
+        }
         "relation" => {
             let mut body: RelationMutationPayload = decode_mutation_payload(payload)?;
             body.sync_id = body.sync_id.trim().to_owned();
@@ -259,6 +278,15 @@ pub(super) struct ObservationVersionMutationPayload {
     pub(super) replaced_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) project: Option<String>,
+}
+
+/// A merge, as a peer is told of it: the names that are now called `project`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct ProjectRenameMutationPayload {
+    pub(super) sync_id: String,
+    pub(super) sources: Vec<String>,
+    pub(super) project: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

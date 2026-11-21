@@ -106,6 +106,31 @@ fn relation_mutation_is_validated_and_project_scoped() {
 }
 
 #[test]
+fn a_project_rename_is_scoped_to_the_project_it_is_filed_under() {
+    let raw = br#"{
+            "mutations":[{
+                "entity":"project_rename",
+                "entity_key":"rename-1",
+                "op":"upsert",
+                "project":"wrong",
+                "payload":"{\"sync_id\":\"rename-1\",\"sources\":[\" old project \",\"\"],\"project\":\"wrong\"}"
+            }]
+        }"#;
+
+    let canonical = canonicalize_for_project(raw, "proj-a").unwrap();
+    let value: Value = serde_json::from_slice(&canonical).unwrap();
+    let mutation = &value["mutations"][0];
+    let payload: Value = serde_json::from_str(mutation["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(mutation["project"], "proj-a");
+    assert_eq!(payload["project"], "proj-a");
+    assert_eq!(payload["sources"], serde_json::json!(["old project"]));
+
+    let nothing = br#"{"mutations":[{"entity":"project_rename","entity_key":"rename-1",
+        "op":"upsert","payload":"{\"sync_id\":\"rename-1\",\"sources\":[]}"}]}"#;
+    assert!(canonicalize_for_project(nothing, "proj-a").is_err());
+}
+
+#[test]
 fn mismatched_entity_key_is_rejected() {
     let raw = br#"{
             "mutations":[{

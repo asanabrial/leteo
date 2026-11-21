@@ -267,9 +267,10 @@ fn merge_projects_updates_all_entities_and_journals_active_rows() {
             .unwrap()
     };
     assert_eq!(before, 3, "the old project had queued its own three rows");
-    // Four, not three: the session's unsent upsert stays where it was, ahead of
-    // the memory and prompt that point at it, beside the copy the merge queued.
-    assert_eq!(journalled("canonical-project"), 4);
+    // Five, not three: the session's unsent upsert stays where it was, ahead of
+    // the memory and prompt that point at it, beside the copy the merge queued,
+    // and the merge says it was a rename.
+    assert_eq!(journalled("canonical-project"), 5);
     assert_eq!(
         journalled("old-project"),
         0,
@@ -1554,4 +1555,379 @@ fn a_merge_that_invents_the_canonical_project_says_it_did() {
         .unwrap();
     assert!(vacio.sources_merged.is_empty(), "{vacio:?}");
     assert!(!vacio.canonical_created, "{vacio:?}");
+}
+
+/// Hands everything `store` still has queued for `project` to `peer`, in order,
+/// and marks it sent, which is what a sync round does.
+fn deliver(store: &mut Store, peer: &mut Store, project: &str) {
+    let pending = store
+        .list_pending_sync_mutations("cloud", &[project.to_owned()], 100)
+        .unwrap();
+    for mutation in &pending {
+        peer.apply_pulled_sync_mutation("cloud", mutation)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "seq {} ({}) could not be applied at the peer: {error}",
+                    mutation.seq, mutation.entity
+                )
+            });
+    }
+    let sequences: Vec<i64> = pending.iter().map(|mutation| mutation.seq).collect();
+    store.ack_sync_mutation_seqs("cloud", &sequences).unwrap();
+}
+
+fn project_of_observation(store: &Store, sync_id: &str) -> (String, bool) {
+    store
+        .connection
+        .query_row(
+            "SELECT project, deleted_at IS NOT NULL FROM observations WHERE sync_id = ?1",
+            [sync_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// A delete that was filed before a merge reaches the peer that has not merged.
+///
+/// The peer holds the memory under the old name because it received it before
+/// the merge. The merge rewrites the unsent delete to the new name, and a peer
+/// applies a delete only to a row filed under the delete's project, so the
+/// delete was ignored for good and the memory outlived its owner's decision.
+/// What fixes it is the merge reaching the peer as a rename, ahead of the
+/// delete.
+#[test]
+fn a_delete_filed_before_a_merge_reaches_a_peer_that_never_merged() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Sent and then removed", "gone");
+    memory.project = Some("old-project".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    let (_peer_temp, mut peer) = bare_store();
+    deliver(&mut store, &mut peer, "old-project");
+    assert_eq!(
+        project_of_observation(&peer, &saved.sync_id),
+        ("old-project".to_owned(), false)
+    );
+
+    store.delete_observation(saved.id, None, false).unwrap();
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+    deliver(&mut store, &mut peer, "canonical-project");
+
+    assert_eq!(
+        project_of_observation(&peer, &saved.sync_id),
+        ("canonical-project".to_owned(), true),
+        "the peer files the memory under the new name and deletes it there"
+    );
+}
+
+/// A delete made after the merge finds a row the peer has not moved yet.
+#[test]
+fn a_delete_filed_after_a_merge_finds_the_row_on_a_peer_that_never_merged() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Removed later", "gone");
+    memory.project = Some("old-project".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    let mut kept = observation("s1", "Kept", "stays");
+    kept.project = Some("old-project".to_owned());
+    let kept = store.add_observation(kept).unwrap().observation;
+    let (_peer_temp, mut peer) = bare_store();
+    deliver(&mut store, &mut peer, "old-project");
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+    store.delete_observation(saved.id, None, false).unwrap();
+    // Only the rename and what follows it: a peer that took the merge's own
+    // re-queued rows would have been moved by them, and not by the rename.
+    let pending = store
+        .list_pending_sync_mutations("cloud", &["canonical-project".to_owned()], 100)
+        .unwrap();
+    let rename = pending
+        .iter()
+        .find(|mutation| mutation.entity == crate::sync::ENTITY_PROJECT_RENAME)
+        .unwrap_or_else(|| panic!("the merge did not queue a rename: {pending:?}"));
+    let delete = pending
+        .iter()
+        .find(|mutation| mutation.entity == "observation" && mutation.op == "delete")
+        .unwrap();
+    assert!(rename.seq < delete.seq);
+    peer.apply_pulled_sync_mutation("cloud", rename).unwrap();
+    peer.apply_pulled_sync_mutation("cloud", delete).unwrap();
+
+    assert_eq!(
+        project_of_observation(&peer, &saved.sync_id),
+        ("canonical-project".to_owned(), true)
+    );
+    assert_eq!(
+        project_of_observation(&peer, &kept.sync_id),
+        ("canonical-project".to_owned(), false),
+        "the rename moved what was not deleted too"
+    );
+}
+
+/// A rename moves every kind of row a project holds, and says nothing back.
+#[test]
+fn a_rename_moves_sessions_and_prompts_and_queues_nothing_at_the_peer() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "asked before the rename".to_owned(),
+            project: Some("old-project".to_owned()),
+        })
+        .unwrap();
+    let (_peer_temp, mut peer) = enrolled_store(&["old-project", "canonical-project"]);
+    deliver(&mut store, &mut peer, "old-project");
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+    let rename = store
+        .list_pending_sync_mutations("cloud", &["canonical-project".to_owned()], 100)
+        .unwrap()
+        .into_iter()
+        .find(|mutation| mutation.entity == crate::sync::ENTITY_PROJECT_RENAME)
+        .unwrap();
+    let queued_before = peer
+        .list_pending_sync_mutations("cloud", &["*".to_owned()], 100)
+        .unwrap()
+        .len();
+    peer.apply_pulled_sync_mutation("cloud", &rename).unwrap();
+
+    for table in ["sessions", "prompts"] {
+        let stale: i64 = peer
+            .connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE project = 'old-project'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale, 0, "{table} still carries the old name");
+    }
+    assert_eq!(
+        peer.list_pending_sync_mutations("cloud", &["*".to_owned()], 100)
+            .unwrap()
+            .len(),
+        queued_before,
+        "applying a rename is not a write of this store's own, and is not sent back"
+    );
+    assert!(
+        !peer
+            .enrolled_projects()
+            .unwrap()
+            .contains(&"old-project".to_owned()),
+        "a name that holds nothing is no longer replicated"
+    );
+}
+
+/// The store that sent a rename gets it back and is not moved by it again.
+#[test]
+fn a_store_does_not_apply_the_rename_it_sent() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Moved", "body");
+    memory.project = Some("old-project".to_owned());
+    store.add_observation(memory).unwrap();
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+    let rename = store
+        .list_pending_sync_mutations("cloud", &["canonical-project".to_owned()], 100)
+        .unwrap()
+        .into_iter()
+        .find(|mutation| mutation.entity == crate::sync::ENTITY_PROJECT_RENAME)
+        .unwrap();
+
+    // The old name is in use again by the time the push comes back.
+    store.create_session("s2", "old-project", "C:/old").unwrap();
+    let mut again = observation("s2", "Filed under the old name again", "body");
+    again.project = Some("old-project".to_owned());
+    let again = store.add_observation(again).unwrap().observation;
+    let mut echoed = rename.clone();
+    echoed.seq = i64::MAX / 2;
+    echoed.source = "remote".to_owned();
+    store.apply_pulled_sync_mutation("cloud", &echoed).unwrap();
+
+    assert_eq!(
+        project_of_observation(&store, &again.sync_id).0,
+        "old-project"
+    );
+}
+
+/// What was waiting under another spelling of the name is carried too.
+///
+/// The merge moves the rows of `old project` and `old_project` along with
+/// `old-project`, and it only carried the unsent mutations of the name it was
+/// asked about, so a delete waiting under a spelling stayed filed under a name
+/// that now holds nothing.
+#[test]
+fn merging_a_project_carries_what_was_waiting_under_its_other_spellings() {
+    let (_temp, mut store) = enrolled_store(&["old_project", "canonical-project"]);
+    store.create_session("s1", "old_project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Removed under a spelling", "gone");
+    memory.project = Some("old_project".to_owned());
+    let removed = store.add_observation(memory).unwrap().observation;
+    store.delete_observation(removed.id, None, false).unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    assert!(
+        unsent_under(&store, "old_project").is_empty(),
+        "nothing is left waiting under a name that holds nothing"
+    );
+    assert!(
+        unsent_under(&store, "canonical-project")
+            .iter()
+            .any(|(entity, op, _)| entity == "observation" && op == "delete"),
+        "the delete follows the memory"
+    );
+    assert!(
+        !store
+            .enrolled_projects()
+            .unwrap()
+            .contains(&"old_project".to_owned()),
+        "and the emptied spelling stops being replicated"
+    );
+}
+
+/// The versions a memory already sent travel with it to its new name.
+///
+/// A peer that starts replicating the new name reads that name's mutations and
+/// nothing else; the versions were queued under the old one, so it received the
+/// memories with none of their history. The catch-up of an enrolment queues
+/// them, and the merge is the same move.
+#[test]
+fn merging_a_project_queues_again_the_versions_a_memory_had_already_sent() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Rewritten", "the first text");
+    memory.project = Some("old-project".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    store
+        .update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                content: Some("the second text".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+    let (_peer_temp, mut peer) = bare_store();
+    deliver(&mut store, &mut peer, "old-project");
+    assert!(unsent_under(&store, "old-project").is_empty());
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let versions: Vec<_> = unsent_under(&store, "canonical-project")
+        .into_iter()
+        .filter(|(entity, _, _)| entity == "observation_version")
+        .collect();
+    assert_eq!(versions.len(), 1, "{versions:?}");
+    assert_eq!(versions[0].2["content"], "the first text");
+}
+
+/// A version still waiting is not sent twice by being carried and queued.
+#[test]
+fn merging_a_project_does_not_send_a_waiting_version_twice() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Rewritten", "the first text");
+    memory.project = Some("old-project".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    store
+        .update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                content: Some("the second text".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let versions = unsent_under(&store, "canonical-project")
+        .into_iter()
+        .filter(|(entity, _, _)| entity == "observation_version")
+        .count();
+    assert_eq!(versions, 1);
+}
+
+/// Where a session was sent is where its later changes go.
+///
+/// A session is queued under its own project, and again under the project of a
+/// memory filed into it from elsewhere. Ending it, or deleting it, only said so
+/// to the first, so the peer that follows the memory's project kept a session
+/// that had never ended, and an orphan row after the session was deleted.
+#[test]
+fn ending_a_session_tells_every_project_it_was_sent_to() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "elsewhere", "/tmp/x").unwrap();
+    store
+        .add_observation(observation("s1", "Filed away from its session", "a body"))
+        .unwrap();
+
+    store.end_session("s1", Some("what was done")).unwrap();
+
+    let sessions: Vec<_> = unsent_under(&store, "leteo")
+        .into_iter()
+        .filter(|(entity, _, _)| entity == "session")
+        .collect();
+    assert!(
+        sessions
+            .iter()
+            .any(|(_, _, payload)| payload["summary"] == "what was done"),
+        "the update never reached the project that follows the memory: {sessions:?}"
+    );
+}
+
+#[test]
+fn deleting_a_session_tells_every_project_it_was_sent_to() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "elsewhere", "/tmp/x").unwrap();
+    store
+        .add_observation(observation("s1", "Filed away from its session", "a body"))
+        .unwrap();
+
+    store.delete_session_and_contents("s1", true).unwrap();
+
+    assert!(
+        unsent_under(&store, "leteo")
+            .iter()
+            .any(|(entity, op, _)| entity == "session" && op == "delete"),
+        "the peer that follows the memory's project keeps the session row"
+    );
+}
+
+/// A project holding only soft-deleted memories is not a prune candidate.
+#[test]
+fn a_project_holding_a_soft_deleted_memory_names_why_it_cannot_be_pruned() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "soft", "C:/soft").unwrap();
+    let mut memory = observation("s1", "Removed softly", "gone");
+    memory.project = Some("soft".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    store.delete_observation(saved.id, None, false).unwrap();
+    store.create_session("s2", "empty", "C:/empty").unwrap();
+
+    let blocker = store.prune_blocker("soft").unwrap();
+    assert!(
+        blocker.as_deref().is_some_and(|text| text.contains("soft")),
+        "{blocker:?}"
+    );
+    assert!(store.prune_project("soft").is_err());
+    assert_eq!(store.prune_blocker("empty").unwrap(), None);
 }

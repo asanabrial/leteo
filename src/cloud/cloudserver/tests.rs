@@ -59,6 +59,21 @@ fn relation_validation_requires_authorship_fields() {
     assert!(validate_mutation_entries(&[invalid]).is_err());
 }
 
+/// The server stores a rename the way it stores any other mutation, or the push
+/// that carries one is refused whole and the sync never gets past it.
+#[test]
+fn a_project_rename_is_accepted_as_an_upsert_and_refused_as_a_delete() {
+    let rename = |op: &str| {
+        mutation(
+            crate::sync::ENTITY_PROJECT_RENAME,
+            op,
+            json!({ "sync_id": "rename-1", "sources": ["old"], "project": "proj-a" }),
+        )
+    };
+    assert!(validate_mutation_entries(&[rename(crate::sync::OP_UPSERT)]).is_ok());
+    assert!(validate_mutation_entries(&[rename(crate::sync::OP_DELETE)]).is_err());
+}
+
 #[test]
 fn unsupported_entities_and_relation_deletes_are_rejected() {
     assert!(

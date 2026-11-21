@@ -279,6 +279,16 @@ All notable changes to Leteo are documented in this file.
   later edit was queued to peers. A name that is not enrolled here is now
   skipped, without refusing the rest of the pull, and a rename that skips every
   name creates and enrols nothing (#381).
+- **Two tests that failed now and then no longer do.** The PostgreSQL tests
+  named their principals after the microsecond they started in, and tests run
+  as threads of one process, so two could draw the same name; revoking one
+  session then signed the other out and its request came back 303 where it
+  expected 400. Each test now draws a stamp no other can. The attribution test
+  saved a memory with no session, which joins the project's most recently
+  active session, with activity read to the second, so a clock tick between two
+  writes decided whether it landed in a session whose prompt had no window; it
+  now ends both sessions first, so the answer no longer depends on the tick
+  (#377).
 
 ## [0.4.3] - 2026-11-03
 

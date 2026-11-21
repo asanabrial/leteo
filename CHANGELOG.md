@@ -107,6 +107,13 @@ All notable changes to Leteo are documented in this file.
   empty, and for enrolling a project a second time, which dropped its unsent
   deletes. Enrolling also queues each memory's previous versions, which the
   catch-up never did (#331).
+- **A hard delete no longer leaves the earlier text of a memory behind.** The
+  version history is keyed by the memory's id with no foreign key, so deleting
+  a memory, a session, a project, or applying a delete from another machine
+  removed the row and kept every title and body it had been before; someone who
+  hard-deleted a memory because an old revision held a secret had not removed
+  it. The four paths now delete the versions in the same transaction, and a
+  soft delete still keeps them (#332).
 
 ## [0.4.3] - 2026-11-03
 

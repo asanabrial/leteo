@@ -626,6 +626,7 @@ impl Store {
             }
             if hard_delete {
                 orphan_relations_tx(&tx, &observation.sync_id)?;
+                observations::delete_observation_versions_tx(&tx, &observation.sync_id)?;
             }
             enqueue_mutation(
                 &tx,

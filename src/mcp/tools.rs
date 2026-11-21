@@ -34,7 +34,8 @@ impl LeteoMcpServer {
                        30 minutes, else a stable manual-save one, and says which. A reply carrying `candidates` means this may \
                        contradict memories already held: settle each one with mem_judge in \
                        the same turn, because a pair left unjudged is dropped rather than \
-                       deferred.",
+                       deferred. A supersedes verdict names the newer memory with \
+                       superseding_id: this save's observation.id or the candidate's id.",
         annotations(
             title = "Save Memory",
             read_only_hint = false,
@@ -1162,7 +1163,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_judge",
-        description = "Record a manual verdict on a pending relation surfaced by mem_save. Manual not_conflict verdicts are persisted. Reason and evidence each come back as a 400-byte preview marked `reason_truncated` or `evidence_truncated`.",
+        description = "Record a manual verdict on a pending relation surfaced by mem_save. Manual not_conflict verdicts are persisted. A verdict that one memory replaces the other also needs superseding_id, the id of the newer one. Reason and evidence each come back as a 400-byte preview marked `reason_truncated` or `evidence_truncated`.",
         annotations(
             title = "Judge Conflict",
             read_only_hint = false,
@@ -1208,6 +1209,7 @@ impl LeteoMcpServer {
                 marked_by_kind: "agent".to_owned(),
                 marked_by_model: None,
                 session_id: nonempty(params.session_id),
+                superseding_id: params.superseding_id,
             })
             .map_err(store_error)?;
         let reason_stored = relation.reason.as_deref().map_or(0, str::len);

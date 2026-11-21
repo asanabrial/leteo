@@ -543,6 +543,25 @@ fn the_skill_says_which_tools_are_there_and_which_need_fetching() {
     }
 }
 
+/// A `supersedes` verdict is refused without `superseding_id`, so a skill that
+/// teaches judging without saying so sends every agent through one failed call
+/// to learn it.
+#[test]
+fn every_skill_teaches_the_parameter_a_supersedes_verdict_needs() {
+    for bundle in BUNDLES {
+        let path = repository_root()
+            .join("plugin")
+            .join(bundle)
+            .join("skills/memory/SKILL.md");
+        let skill = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            skill.contains("superseding_id"),
+            "{bundle} skill does not say a supersedes verdict names which memory supersedes"
+        );
+    }
+}
+
 /// The OpenCode plugin serves both majors, and its hook path is Bun-free.
 ///
 /// The plugin is a `.ts` file the Rust build would not otherwise read, and the

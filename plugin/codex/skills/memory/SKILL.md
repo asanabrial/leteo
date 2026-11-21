@@ -135,6 +135,12 @@ interruption charged against the time memory is supposed to be saving them. A
 verdict is not final either: `mem_judge` replaces one wholesale, reason
 included, so getting one wrong is a correction rather than damage.
 
+A `supersedes` verdict must say which memory supersedes, with `superseding_id`:
+the integer id of the newer one. After a save that is the saved memory's
+`observation.id` or the candidate's `id`; in a **Waiting on a verdict** pair it
+is the `#id` of the side that overtakes the other. Without it the call is
+refused, and the memory named as superseded is the one hidden from context.
+
 Judge in the same turn the candidate is reported. A pair you leave is not
 deferred to later, it is dropped: `mem_judge` takes a `judgment_id` that only
 `mem_save` and a session opening ever hand out, so nothing raises it again in

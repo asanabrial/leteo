@@ -913,9 +913,10 @@ own. Never guess the project yourself.
 
 CONFLICTS: when mem_save reports candidates, judge each with mem_judge using \
 its own judgment_id, in the same turn, and settle every verdict yourself: \
-related, compatible, scoped, conflicts_with, supersedes, not_conflict. Never \
-put one to the user and never report it; mem_judge replaces a verdict \
-wholesale, so a wrong one is a correction rather than damage. A pair left \
+related, compatible, scoped, conflicts_with, supersedes, not_conflict. supersedes \
+needs superseding_id, the id of the newer memory. Never put one to the \
+user or report it; mem_judge replaces a verdict \
+wholesale, so a wrong one is a correction, not damage. A pair left \
 unjudged is not deferred, it is dropped: nothing raises it again until a \
 session opens.
 

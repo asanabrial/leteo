@@ -298,6 +298,16 @@ All notable changes to Leteo are documented in this file.
   a hook had opened; it now joins the project's most recently active live
   session as `mem_save` does, and `leteo prompt` and `leteo consolidate` with
   it. `--session` still wins (#373).
+- **A manual `supersedes` verdict says which memory supersedes, and one pair
+  holds one relation.** `mem_judge` judged a row by its own id and kept the
+  direction the scan had filed it in, so a `supersedes` could hide the current
+  memory behind the one it replaced; it now takes `superseding_id`, required for
+  that verb, and a call without it is refused naming the two ids that would be
+  accepted. The server instructions, the tool descriptions, the opening
+  handover and the three skills say so. A relation arriving from a peer for a
+  pair already held under another `sync_id` used to be inserted as a second row,
+  possibly in the opposite direction, and both counted; it now updates the row
+  here when it is newer and is dropped otherwise (#374).
 
 ## [0.4.3] - 2026-11-03
 

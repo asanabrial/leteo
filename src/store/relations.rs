@@ -411,6 +411,16 @@ impl Store {
         let current = get_relation_tx(&tx, &input.judgment_id)?;
         let (source_project, target_project) =
             validate_cross_project_guard(&tx, &current.source_id, &current.target_id)?;
+        // Only `supersedes` has a direction, and a pending row is filed from
+        // whichever memory the scan met first, so the verdict cannot be left to
+        // inherit it: that hid the current memory behind the one it replaced.
+        // The agent says which memory supersedes; the other verbs keep the
+        // order the row was filed in.
+        let (source_id, target_id) = if input.relation == RELATION_SUPERSEDES {
+            supersession_direction(&tx, &current, input.superseding_id)?
+        } else {
+            (current.source_id.clone(), current.target_id.clone())
+        };
         let marked_by_model = input
             .marked_by_model
             .filter(|value| !value.trim().is_empty());
@@ -420,6 +430,7 @@ impl Store {
              SET relation = ?1, reason = ?2, evidence = ?3, confidence = ?4,
                  judgment_status = 'judged', marked_by_actor = ?5,
                  marked_by_kind = ?6, marked_by_model = ?7, session_id = ?8,
+                 source_id = ?10, target_id = ?11,
                  updated_at = datetime('now')
              WHERE sync_id = ?9",
             params![
@@ -431,7 +442,9 @@ impl Store {
                 input.marked_by_kind,
                 marked_by_model,
                 session_id,
-                input.judgment_id
+                input.judgment_id,
+                source_id,
+                target_id
             ],
         )?;
         let relation = get_relation_tx(&tx, &current.sync_id)?;
@@ -753,6 +766,48 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(stats)
+    }
+}
+
+/// The source and target a `supersedes` verdict is stored under, from the id
+/// of the memory the agent says supersedes.
+///
+/// A missing or foreign id is refused with the two ids that are acceptable, so
+/// the agent's next call is the corrected one rather than a second guess. A
+/// pair whose memory is gone from the store cannot be oriented and says so.
+fn supersession_direction(
+    tx: &Transaction<'_>,
+    current: &Relation,
+    superseding_id: Option<i64>,
+) -> Result<(String, String), StoreError> {
+    let id_of = |sync_id: &str| -> Result<Option<i64>, StoreError> {
+        Ok(tx
+            .query_row(
+                "SELECT id FROM observations WHERE sync_id = ?1",
+                [sync_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?)
+    };
+    let (Some(source), Some(target)) = (id_of(&current.source_id)?, id_of(&current.target_id)?)
+    else {
+        return Err(invalid_parameter(
+            "a supersedes verdict needs both memories of the pair to exist, and one of them is gone; \
+             judge this pair not_conflict instead",
+        ));
+    };
+    match superseding_id {
+        Some(id) if id == source => Ok((current.source_id.clone(), current.target_id.clone())),
+        Some(id) if id == target => Ok((current.target_id.clone(), current.source_id.clone())),
+        Some(id) => Err(invalid_parameter(format!(
+            "superseding_id {id} is neither memory of this pair; send superseding_id={source} \
+             or superseding_id={target}, the id of the memory that supersedes the other"
+        ))),
+        None => Err(invalid_parameter(format!(
+            "a supersedes verdict must say which memory supersedes: send superseding_id={source} \
+             if memory {source} supersedes memory {target}, or superseding_id={target} if memory \
+             {target} supersedes memory {source}"
+        ))),
     }
 }
 

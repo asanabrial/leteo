@@ -392,6 +392,7 @@ fn relations_cover_candidates_all_verbs_multi_actor_annotations_and_stats() {
                 marked_by_kind: "agent".to_owned(),
                 marked_by_model: Some(format!("model-{index}")),
                 session_id: Some("s1".to_owned()),
+                superseding_id: Some(second.id),
             })
             .unwrap();
         assert_eq!(relation.relation, verb);
@@ -479,6 +480,7 @@ fn judged_pair(
             relation: verb.to_owned(),
             marked_by_actor: "agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(source.id),
             ..JudgeRelationParams::default()
         })
         .unwrap();
@@ -621,6 +623,7 @@ fn one_pair_judged_twice_is_still_one_reason_for_care() {
             relation: RELATION_SUPERSEDES.to_owned(),
             marked_by_actor: "another-agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(newer.id),
             ..JudgeRelationParams::default()
         })
         .unwrap();
@@ -796,6 +799,7 @@ fn a_pair_nobody_has_judged_yet_is_not_a_reason_for_care() {
             relation: RELATION_SUPERSEDES.to_owned(),
             marked_by_actor: "agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(newer.id),
             ..JudgeRelationParams::default()
         })
         .unwrap();
@@ -931,6 +935,7 @@ fn a_verdict_has_to_use_a_verb_the_graph_reads_and_a_confidence_that_means_somet
                 confidence: Some(0.8),
                 marked_by_actor: "agent".to_owned(),
                 marked_by_kind: "agent".to_owned(),
+                superseding_id: Some(source.id),
                 ..JudgeRelationParams::default()
             })
             .unwrap_or_else(|error| panic!("{accepted} was refused: {error}"));
@@ -1222,9 +1227,16 @@ fn a_confidence_outside_the_range_arrives_as_no_confidence() {
         .unwrap()
         .observation;
 
+    // A pair of its own for each relation: one pair holds one relation, so two
+    // `sync_id`s over the same two memories are one row.
+    let third = store
+        .add_observation(observation("s1", "The pool was resized", "to forty"))
+        .unwrap()
+        .observation;
+
     // Distinct sequence numbers: the cursor only moves forward, so a second
     // mutation at the same seq is one the puller has already seen.
-    let sent = |seq: i64, sync_id: &str, confidence: f64| SyncMutation {
+    let sent = |seq: i64, sync_id: &str, target: &str, confidence: f64| SyncMutation {
         seq,
         target_key: "cloud".to_owned(),
         entity: "relation".to_owned(),
@@ -1233,7 +1245,7 @@ fn a_confidence_outside_the_range_arrives_as_no_confidence() {
         payload: serde_json::json!({
             "sync_id": sync_id,
             "source_id": second.sync_id,
-            "target_id": first.sync_id,
+            "target_id": target,
             "relation": "supersedes",
             "judgment_status": "judged",
             "confidence": confidence,
@@ -1245,10 +1257,10 @@ fn a_confidence_outside_the_range_arrives_as_no_confidence() {
         acked_at: None,
     };
     store
-        .apply_pulled_sync_mutation("cloud", &sent(3, "rel-impossible", 5.0))
+        .apply_pulled_sync_mutation("cloud", &sent(3, "rel-impossible", &first.sync_id, 5.0))
         .unwrap();
     store
-        .apply_pulled_sync_mutation("cloud", &sent(4, "rel-ordinary", 0.75))
+        .apply_pulled_sync_mutation("cloud", &sent(4, "rel-ordinary", &third.sync_id, 0.75))
         .unwrap();
 
     let confidence_of = |sync_id: &str| -> Option<f64> {
@@ -1316,6 +1328,7 @@ fn a_judgment_is_redacted_and_bounded_on_both_paths() {
             evidence: Some("x ".repeat(store.config.max_observation_length)),
             marked_by_actor: "agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(newer.id),
             ..Default::default()
         })
         .unwrap();
@@ -1429,6 +1442,7 @@ fn a_verdict_needs_both_of_the_memories_it_is_about() {
             marked_by_kind: "agent".to_owned(),
             session_id: None,
             marked_by_model: None,
+            superseding_id: Some(kept.id),
         })
         .unwrap_err();
     assert!(
@@ -1640,6 +1654,7 @@ fn moving_a_memory_out_of_a_project_retires_only_the_pending_proposals() {
             relation: crate::store::RELATION_SUPERSEDES.to_owned(),
             marked_by_actor: "agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(juzgada.id),
             ..Default::default()
         })
         .unwrap();
@@ -1794,5 +1809,67 @@ fn an_undirected_verdict_keeps_the_direction_the_pair_was_filed_in() {
     assert_eq!(
         (stored.source_id.as_str(), stored.target_id.as_str()),
         (old.sync_id.as_str(), new.sync_id.as_str())
+    );
+}
+
+fn manual_supersedes(pending: &str, superseding_id: Option<i64>) -> JudgeRelationParams {
+    JudgeRelationParams {
+        judgment_id: pending.to_owned(),
+        relation: RELATION_SUPERSEDES.to_owned(),
+        marked_by_actor: "agent".to_owned(),
+        marked_by_kind: "agent".to_owned(),
+        superseding_id,
+        ..JudgeRelationParams::default()
+    }
+}
+
+#[test]
+fn a_manual_supersedes_verdict_hides_the_memory_it_was_told_is_older() {
+    let (_temp, mut store) = store();
+    let (old, new, pending) = pending_old_to_new(&mut store);
+
+    let judged = store
+        .judge_relation(manual_supersedes(&pending, Some(new.id)))
+        .unwrap();
+
+    assert_eq!(
+        (judged.source_id.as_str(), judged.target_id.as_str()),
+        (new.sync_id.as_str(), old.sync_id.as_str()),
+        "the row was filed old to new and the agent said new supersedes"
+    );
+    assert_eq!(
+        listed_titles(&store),
+        vec![new.title.clone()],
+        "the newer memory is the one that stays listed"
+    );
+}
+
+#[test]
+fn a_manual_supersedes_verdict_that_names_no_memory_is_refused_with_what_to_send() {
+    let (_temp, mut store) = store();
+    let (old, new, pending) = pending_old_to_new(&mut store);
+
+    let message = store
+        .judge_relation(manual_supersedes(&pending, None))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains(&format!("superseding_id={}", old.id))
+            && message.contains(&format!("superseding_id={}", new.id)),
+        "the refusal has to name both ids that would be accepted: {message}"
+    );
+
+    let message = store
+        .judge_relation(manual_supersedes(&pending, Some(new.id + old.id + 100)))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains(&format!("superseding_id={}", new.id)),
+        "{message}"
+    );
+    assert_eq!(
+        store.get_relation(&pending).unwrap().judgment_status,
+        JUDGMENT_STATUS_PENDING,
+        "a refused verdict leaves the pair waiting"
     );
 }

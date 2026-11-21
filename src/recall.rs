@@ -1189,6 +1189,7 @@ mod tests {
                 relation: crate::store::RELATION_SUPERSEDES.to_owned(),
                 marked_by_actor: "agent".to_owned(),
                 marked_by_kind: "agent".to_owned(),
+                superseding_id: Some(newer.id),
                 ..Default::default()
             })
             .unwrap();

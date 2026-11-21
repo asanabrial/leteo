@@ -2546,5 +2546,29 @@
     "file": "src/cli/projects.rs",
     "old": "        Some(session) => session.id,\n        None => {\n            let id = crate::mcp::manual_session_id(&project);",
     "new": "        Some(_) | None => {\n            let id = crate::mcp::manual_session_id(&project);"
+  },
+  {
+    "name": "judge: a manual supersedes verdict keeps the direction the pair was filed in",
+    "file": "src/store/relations.rs",
+    "old": "        let (source_id, target_id) = if input.relation == RELATION_SUPERSEDES {",
+    "new": "        let (source_id, target_id) = if input.relation == \"never-supersedes\" {"
+  },
+  {
+    "name": "judge: naming the second memory as superseding leaves the first as the source",
+    "file": "src/store/relations.rs",
+    "old": "        Some(id) if id == target => Ok((current.target_id.clone(), current.source_id.clone())),",
+    "new": "        Some(id) if id == target => Ok((current.source_id.clone(), current.target_id.clone())),"
+  },
+  {
+    "name": "replication: a reversed relation under another sync_id is inserted as a second row",
+    "file": "src/store/wire.rs",
+    "old": "    let other_row_for_pair = if same_sync_id_here {",
+    "new": "    let other_row_for_pair = if true {"
+  },
+  {
+    "name": "replication: an older relation for a pair overwrites the newer one held here",
+    "file": "src/store/wire.rs",
+    "old": "datetime(updated_at) < datetime(?4) FROM memory_relations",
+    "new": "datetime(updated_at) < datetime(?4) OR 1 FROM memory_relations"
   }
 ]

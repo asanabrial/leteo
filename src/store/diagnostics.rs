@@ -290,7 +290,7 @@ impl Store {
     }
 
     pub fn doctor(&self) -> Result<DoctorReport, StoreError> {
-        self.doctor_run(None)
+        self.doctor_run(None, None)
     }
 
     /// A diagnostic report, optionally narrowed to one check and one project.
@@ -312,6 +312,22 @@ impl Store {
         check: Option<&str>,
         project: Option<&str>,
     ) -> Result<(DoctorReport, Option<ProjectStats>), StoreError> {
+        self.doctor_scoped_citing(check, project, None)
+    }
+
+    /// [`Store::doctor_scoped`], with the means to run the opt-in checks.
+    ///
+    /// `citations` is the directory and project the check that reads the
+    /// repository is to look at. With it, an unfiltered report carries that check
+    /// as well; without it the check is not part of the report, and naming it
+    /// with `check` is an error — it has nowhere to look, and an empty report
+    /// would read as every citation resolving.
+    pub fn doctor_scoped_citing(
+        &self,
+        check: Option<&str>,
+        project: Option<&str>,
+        citations: Option<&crate::citations::Scope>,
+    ) -> Result<(DoctorReport, Option<ProjectStats>), StoreError> {
         let report = match check.map(str::trim).filter(|code| !code.is_empty()) {
             Some(code) => {
                 if !DoctorCheck::CODES.contains(&code) {
@@ -320,9 +336,14 @@ impl Store {
                         DoctorCheck::CODES.join(", ")
                     )));
                 }
-                self.doctor_run(Some(code))?
+                if DoctorCheck::OPT_IN.contains(&code) && citations.is_none() {
+                    return Err(invalid_parameter(format!(
+                        "check {code:?} reads the repository of the directory it is run from and runs git, so only `leteo doctor --check {code}` can ask for it; it is not part of an unfiltered report"
+                    )));
+                }
+                self.doctor_run(Some(code), citations)?
             }
-            None => self.doctor_run(None)?,
+            None => self.doctor_run(None, citations)?,
         };
         let stats = match project.map(normalize::project).filter(|p| !p.is_empty()) {
             Some(project) => Some(
@@ -348,7 +369,11 @@ impl Store {
     /// integrity_check` costs, and carrying them only when their own check ran
     /// would make `--check` answer a different question than `doctor` for no
     /// time saved.
-    fn doctor_run(&self, only: Option<&str>) -> Result<DoctorReport, StoreError> {
+    fn doctor_run(
+        &self,
+        only: Option<&str>,
+        citations: Option<&crate::citations::Scope>,
+    ) -> Result<DoctorReport, StoreError> {
         let want = |code: &str| only.is_none_or(|only| only == code);
 
         let observations = query_count(&self.connection, "SELECT COUNT(*) FROM observations")?;
@@ -918,6 +943,11 @@ impl Store {
                 ),
             });
         }
+        if want(DoctorCheck::STALE_CITATIONS)
+            && let Some(scope) = citations
+        {
+            record(self.stale_citations(scope));
+        }
 
         Ok(DoctorReport {
             healthy: !checks
@@ -1068,6 +1098,96 @@ impl Store {
         crate::store::schema::restem_observations(&tx)?;
         tx.commit()?;
         Ok(moved)
+    }
+}
+
+impl Store {
+    /// The `stale_citations` check: memories of one project that cite a commit
+    /// or a path which no longer resolves in that project's repository.
+    ///
+    /// A warning when it finds any, never an error. It is a statement about the
+    /// world, not about the store: the memories are intact, they are merely
+    /// about something that has moved, and `healthy` is a verdict on the store.
+    /// Nothing is hidden or marked and nothing is written; the memory text is
+    /// only read.
+    ///
+    /// Every way it cannot answer is also a warning, with the reason in the
+    /// sentence, and none is a pass: no git, no repository, a directory whose
+    /// project is not the one being checked. The last matters most. Run from
+    /// another repository this would test a project's hashes against history
+    /// that never held them and call nearly all of them dead.
+    fn stale_citations(&self, scope: &crate::citations::Scope) -> DoctorCheck {
+        let code = DoctorCheck::STALE_CITATIONS;
+        let unable = |reason: String| {
+            DoctorCheck::warned(
+                code,
+                format!("stale citations could not be checked: {reason}"),
+            )
+        };
+
+        let detection = crate::project::detect_project(&scope.directory);
+        if detection.project.is_empty() {
+            return unable(detection.error_hint.unwrap_or_else(|| {
+                format!("no project is detected for {}", scope.directory.display())
+            }));
+        }
+        if detection.is_guess() {
+            return unable(format!(
+                "the project of {} is only a guess ({}), so it is not known to be the one whose memories would be read",
+                scope.directory.display(),
+                detection.warning.as_deref().unwrap_or_default()
+            ));
+        }
+        let project = scope
+            .project
+            .as_deref()
+            .map(normalize::project)
+            .unwrap_or_else(|| detection.project.clone());
+        if project != detection.project {
+            return unable(format!(
+                "{} belongs to project {:?}, not {project:?}; run it from inside the repository of {project:?}",
+                scope.directory.display(),
+                detection.project
+            ));
+        }
+        let Some(root) = crate::project::repository_root(&scope.directory) else {
+            return unable(format!(
+                "{} is not inside a git repository",
+                scope.directory.display()
+            ));
+        };
+
+        let memories = match self.project_memory_text(&project) {
+            Ok(memories) => memories,
+            Err(error) => {
+                return could_not_run(code, "the memories of the project", &error);
+            }
+        };
+        match crate::citations::assess(&root, &memories) {
+            Err(reason) => unable(reason),
+            Ok(assessment) if assessment.stale.is_empty() => {
+                DoctorCheck::noted(code, assessment.describe(&project))
+            }
+            Ok(assessment) => DoctorCheck::warned(code, assessment.describe(&project)),
+        }
+    }
+
+    /// The live memories of one project at project scope, as the text a citation
+    /// can be in: the title and the body. Personal-scope memories are not read,
+    /// because they are not about this repository.
+    fn project_memory_text(&self, project: &str) -> Result<Vec<(i64, String)>, rusqlite::Error> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, title, content FROM observations
+              WHERE deleted_at IS NULL AND project = ?1 AND scope = 'project'
+              ORDER BY id",
+        )?;
+        let rows = statement.query_map([project], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                format!("{}\n{}", row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+            ))
+        })?;
+        rows.collect()
     }
 }
 

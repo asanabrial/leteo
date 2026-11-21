@@ -361,6 +361,7 @@ mod tests {
                 check: None,
                 project: None,
                 repair: false,
+                citations: false,
             },
         }
     }

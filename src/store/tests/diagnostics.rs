@@ -219,8 +219,8 @@ fn a_doctor_check_selects_one_diagnostic_and_refuses_a_typo() {
     let (full, stats) = store.doctor_scoped(None, None).unwrap();
     assert_eq!(
         full.checks.len(),
-        DoctorCheck::CODES.len(),
-        "the unfiltered report carries every code"
+        DoctorCheck::CODES.len() - DoctorCheck::OPT_IN.len(),
+        "the unfiltered report carries every code that is not opt-in"
     );
     assert!(stats.is_none());
 
@@ -325,14 +325,32 @@ fn every_declared_code_is_one_the_doctor_actually_reports() {
         .iter()
         .map(|check| check.code.as_str())
         .collect();
-    let declared: BTreeSet<&str> = DoctorCheck::CODES.iter().copied().collect();
+    let declared: BTreeSet<&str> = DoctorCheck::CODES
+        .iter()
+        .copied()
+        .filter(|code| !DoctorCheck::OPT_IN.contains(code))
+        .collect();
 
     assert_eq!(
         reported, declared,
         "a code the doctor reports must be one --check accepts, and the other way round"
     );
 
-    for code in DoctorCheck::CODES {
+    // An opt-in check is selectable only with what it needs to run, and asked
+    // for without it says so instead of answering with an empty report.
+    for code in DoctorCheck::OPT_IN {
+        assert!(DoctorCheck::CODES.contains(code));
+        let message = store
+            .doctor_scoped(Some(code), None)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("runs git"), "{message}");
+    }
+
+    for code in DoctorCheck::CODES
+        .iter()
+        .filter(|code| !DoctorCheck::OPT_IN.contains(code))
+    {
         let (narrowed, _) = store.doctor_scoped(Some(code), None).unwrap();
         assert_eq!(
             narrowed.checks.len(),
@@ -1781,5 +1799,275 @@ fn a_memory_with_no_hash_counts_as_stale_and_is_repaired() {
     assert_eq!(
         hash,
         crate::memory::normalize::normalized_hash(&memory.content)
+    );
+}
+
+/// Runs git in `directory` and returns what it printed. These tests need git, as
+/// the suite does everywhere it runs: a test that skipped without it would be
+/// one that checks nothing on the machine that most needs the answer.
+fn git_in(directory: &std::path::Path, arguments: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(arguments)
+        .output()
+        .expect("these tests need git on the PATH");
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// A repository holding one commit and one file, and the commit's name.
+fn repository_with_one_commit(temp: &TempDir) -> (std::path::PathBuf, String) {
+    let root = temp.path().join("cited-repo");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    git_in(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("src").join("kept.rs"), "fn main() {}\n").unwrap();
+    git_in(&root, &["add", "."]);
+    git_in(&root, &["commit", "--quiet", "-m", "first"]);
+    let commit = git_in(&root, &["rev-parse", "HEAD"]);
+    (root, commit)
+}
+
+fn save_in(store: &mut Store, project: &str, scope: &str, content: &str) -> i64 {
+    let session = format!("session-of-{project}");
+    store.create_session(&session, project, "dir").unwrap();
+    store
+        .add_observation(AddObservation {
+            project: Some(project.to_owned()),
+            scope: scope.to_owned(),
+            ..observation(&session, &format!("a note {content}"), content)
+        })
+        .unwrap()
+        .observation
+        .id
+}
+
+fn citations_check(
+    store: &Store,
+    directory: &std::path::Path,
+    project: Option<&str>,
+) -> crate::memory::model::DoctorCheck {
+    let scope = crate::citations::Scope {
+        directory: directory.to_path_buf(),
+        project: project.map(str::to_owned),
+    };
+    let (report, _) = store
+        .doctor_scoped_citing(Some(DoctorCheck::STALE_CITATIONS), None, Some(&scope))
+        .unwrap();
+    assert_eq!(report.checks.len(), 1, "{report:?}");
+    assert!(
+        report.healthy,
+        "stale citations say nothing about the store: {report:?}"
+    );
+    report.checks.into_iter().next().unwrap()
+}
+
+#[test]
+fn the_check_names_the_memory_citing_a_commit_that_resolves_to_nothing() {
+    let temp = TempDir::new().unwrap();
+    let (root, commit) = repository_with_one_commit(&temp);
+    let project = crate::project::detect_project(&root).project;
+    let (_store_dir, mut store) = store();
+
+    let live = save_in(
+        &mut store,
+        &project,
+        "project",
+        &format!("fixed in {commit}"),
+    );
+    let dead = save_in(
+        &mut store,
+        &project,
+        "project",
+        &format!("fixed in {}", "0".repeat(40)),
+    );
+
+    let check = citations_check(&store, &root, None);
+    let detail = check.detail.clone().unwrap_or_default();
+    assert!(!check.ok, "{check:?}");
+    assert_eq!(check.severity, DoctorSeverity::Warning, "{check:?}");
+    assert!(
+        detail.contains(&format!("Memory ids: {dead}.")),
+        "only the memory citing forty zeros is named: {detail}"
+    );
+    assert!(
+        detail.starts_with("1 of 2 memories") && detail.contains("1 of 2 commit(s)"),
+        "{detail}"
+    );
+    assert_ne!(live, dead);
+}
+
+#[test]
+fn a_cited_path_is_stale_once_it_is_gone_and_an_unreachable_commit_still_resolves() {
+    let temp = TempDir::new().unwrap();
+    let (root, commit) = repository_with_one_commit(&temp);
+    let tree = git_in(&root, &["rev-parse", "HEAD^{tree}"]);
+    // A commit nothing points at: in the object database, reachable from nowhere.
+    let dangling = git_in(&root, &["commit-tree", &tree, "-m", "orphan"]);
+    let project = crate::project::detect_project(&root).project;
+    let (_store_dir, mut store) = store();
+    // An abbreviation is only read when it has a digit and a letter, and a
+    // random hash starts with only digits once in a few hundred.
+    let short = (7..40)
+        .map(|length| &commit[..length])
+        .find(|prefix| {
+            prefix.bytes().any(|byte| byte.is_ascii_digit())
+                && prefix.bytes().any(|byte| byte.is_ascii_lowercase())
+        })
+        .unwrap();
+
+    save_in(
+        &mut store,
+        &project,
+        "project",
+        &format!("see `{short}` and `src/kept.rs:1-3` and commit {dangling}"),
+    );
+    let check = citations_check(&store, &root, None);
+    assert!(check.ok, "everything cited resolves: {check:?}");
+    assert!(
+        check
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("2 commit(s) and 1 path(s)")),
+        "{check:?}"
+    );
+
+    let gone = save_in(
+        &mut store,
+        &project,
+        "project",
+        "it lived in `src/removed.rs`",
+    );
+    let check = citations_check(&store, &root, None);
+    let detail = check.detail.unwrap_or_default();
+    assert!(
+        detail.contains(&format!("Memory ids: {gone}.")) && detail.contains("1 of 2 path(s)"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn only_the_project_memories_of_the_detected_project_are_read() {
+    let temp = TempDir::new().unwrap();
+    let (root, _) = repository_with_one_commit(&temp);
+    let project = crate::project::detect_project(&root).project;
+    let (_store_dir, mut store) = store();
+    let dead = format!("fixed in {}", "0".repeat(40));
+
+    save_in(&mut store, &project, "personal", &dead);
+    save_in(&mut store, "another-project", "project", &dead);
+
+    let check = citations_check(&store, &root, None);
+    assert!(check.ok, "{check:?}");
+    assert!(
+        check
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.starts_with("0 memories")),
+        "nothing of this project at project scope was there to read: {check:?}"
+    );
+}
+
+#[test]
+fn the_check_says_it_could_not_run_instead_of_passing() {
+    let temp = TempDir::new().unwrap();
+    let (root, _) = repository_with_one_commit(&temp);
+    let (_store_dir, mut store) = store();
+    let project = crate::project::detect_project(&root).project;
+    save_in(
+        &mut store,
+        &project,
+        "project",
+        &format!("x {}", "0".repeat(40)),
+    );
+
+    let outside = temp.path().join("not-a-repository");
+    std::fs::create_dir_all(&outside).unwrap();
+    let nowhere = citations_check(&store, &outside, None);
+    assert!(!nowhere.ok, "{nowhere:?}");
+    assert!(
+        nowhere
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("could not be checked")
+                && detail.contains("not inside a git repository")),
+        "{nowhere:?}"
+    );
+
+    // A `.git` that links into nothing is a repository nobody can name, so the
+    // project of the directory is a folder's name standing in for an answer.
+    let broken = temp.path().join("broken-link");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(
+        broken.join(".git"),
+        format!(
+            "gitdir: {}\n",
+            temp.path()
+                .join("gone")
+                .join("worktrees")
+                .join("x")
+                .display()
+        ),
+    )
+    .unwrap();
+    let guessed = citations_check(&store, &broken, None);
+    assert!(!guessed.ok, "{guessed:?}");
+    assert!(
+        guessed.detail.as_deref().is_some_and(
+            |detail| detail.contains("could not be checked") && detail.contains("only a guess")
+        ),
+        "{guessed:?}"
+    );
+
+    let elsewhere = citations_check(&store, &root, Some("some-other-project"));
+    assert!(!elsewhere.ok, "{elsewhere:?}");
+    assert!(
+        elsewhere
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("could not be checked")
+                && detail.contains("belongs to project")),
+        "{elsewhere:?}"
+    );
+}
+
+#[test]
+fn the_citations_check_is_in_a_report_only_when_it_is_asked_for() {
+    let temp = TempDir::new().unwrap();
+    let (root, _) = repository_with_one_commit(&temp);
+    let (_store_dir, store) = store();
+
+    let (without, _) = store.doctor_scoped(None, None).unwrap();
+    assert!(
+        without
+            .checks
+            .iter()
+            .all(|check| check.code != DoctorCheck::STALE_CITATIONS)
+    );
+
+    let scope = crate::citations::Scope {
+        directory: root,
+        project: None,
+    };
+    let (with, _) = store
+        .doctor_scoped_citing(None, None, Some(&scope))
+        .unwrap();
+    assert_eq!(with.checks.len(), DoctorCheck::CODES.len());
+    assert!(
+        with.checks
+            .iter()
+            .any(|check| check.code == DoctorCheck::STALE_CITATIONS)
     );
 }

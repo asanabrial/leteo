@@ -4686,6 +4686,7 @@ fn the_seven_tools_that_had_no_test_of_their_own_answer_what_they_promise() {
     assert_eq!(
         report.checks.len(),
         crate::memory::model::DoctorCheck::CODES.len()
+            - crate::memory::model::DoctorCheck::OPT_IN.len()
     );
     assert!(
         server

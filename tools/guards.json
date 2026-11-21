@@ -2198,5 +2198,89 @@
     "file": "src/setup/wizard/mod.rs",
     "old": "crate::settings::load_strict(data_dir).and_then(|on_disk| {",
     "new": "Ok::<_, anyhow::Error>(crate::settings::load(data_dir)).and_then(|on_disk| {"
+  },
+  {
+    "name": "citations: a forty-character hash is no longer read as a commit",
+    "file": "src/citations.rs",
+    "old": "            FULL_HASH => true,",
+    "new": "            FULL_HASH => false,"
+  },
+  {
+    "name": "citations: an MD5 digest in backticks is read as an abbreviated commit",
+    "file": "src/citations.rs",
+    "old": "            MD5_DIGEST => false,",
+    "new": "            MD5_DIGEST if false => false,"
+  },
+  {
+    "name": "citations: an abbreviation of only digits or only letters is read as a commit",
+    "file": "src/citations.rs",
+    "old": "                has_digit_and_letter(word)\n                    && (in_backticks",
+    "new": "                true && (in_backticks"
+  },
+  {
+    "name": "citations: a bare abbreviation with no backticks and no commit word is read as a commit",
+    "file": "src/citations.rs",
+    "old": "&& (in_backticks(bytes, start, index) || follows_commit_word",
+    "new": "&& (true || follows_commit_word"
+  },
+  {
+    "name": "citations: a path with a parent directory in it is checked against the checkout",
+    "file": "src/citations.rs",
+    "old": "        || span.contains(\"..\")",
+    "new": "        || span.contains(\"...........\")"
+  },
+  {
+    "name": "citations: a slash in a directory the repository does not have is called a stale path",
+    "file": "src/citations.rs",
+    "old": "            if has_source_extension(path) || known_directory {",
+    "new": "            if true || known_directory {"
+  },
+  {
+    "name": "citations: git's answer for a missing name is not read as missing",
+    "file": "src/citations.rs",
+    "old": "        .map(|line| !line.trim_end().ends_with(\" missing\"))",
+    "new": "        .map(|line| !line.trim_end().ends_with(\" ambiguous\"))"
+  },
+  {
+    "name": "citations: every hash is asked of git in a process of its own",
+    "file": "src/citations.rs",
+    "old": "    let resolved = resolving_commits(root, &hashes)?;",
+    "new": "    let resolved = hashes\n        .iter()\n        .map(|hash| resolving_commits(root, std::slice::from_ref(hash)))\n        .collect::<Result<Vec<_>, _>>()?\n        .concat();"
+  },
+  {
+    "name": "citations: the report names more ids than the published limit",
+    "file": "src/citations.rs",
+    "old": "            .take(EXAMPLE_IDS)",
+    "new": "            .take(EXAMPLE_IDS + 1)"
+  },
+  {
+    "name": "citations: a directory whose project is only a guess is checked anyway",
+    "file": "src/store/diagnostics.rs",
+    "old": "        if detection.is_guess() {",
+    "new": "        if false {"
+  },
+  {
+    "name": "citations: another project's repository is checked against this project's memories",
+    "file": "src/store/diagnostics.rs",
+    "old": "        if project != detection.project {",
+    "new": "        if false {"
+  },
+  {
+    "name": "citations: a personal-scope memory is read as a citation of the repository",
+    "file": "src/store/diagnostics.rs",
+    "old": "WHERE deleted_at IS NULL AND project = ?1 AND scope = 'project'",
+    "new": "WHERE deleted_at IS NULL AND project = ?1"
+  },
+  {
+    "name": "citations: a stale citation makes the store unhealthy",
+    "file": "src/store/diagnostics.rs",
+    "old": "            Ok(assessment) => DoctorCheck::warned(code, assessment.describe(&project)),",
+    "new": "            Ok(assessment) => DoctorCheck::failed(code, assessment.describe(&project)),"
+  },
+  {
+    "name": "citations: the check is named without a directory to look in and answers with an empty report",
+    "file": "src/store/diagnostics.rs",
+    "old": "                if DoctorCheck::OPT_IN.contains(&code) && citations.is_none() {",
+    "new": "                if false {"
   }
 ]

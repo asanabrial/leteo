@@ -1022,7 +1022,7 @@ fn an_import_leaves_the_indexes_and_the_triggers_it_found() {
     assert_eq!(result.observations_imported, 12, "{result:?}");
 
     // Every trigger the schema names, by name rather than by count.
-    let missing = crate::store::schema::missing_full_text_triggers(target.connection());
+    let missing = crate::store::schema::missing_full_text_triggers(target.connection()).unwrap();
     assert!(missing.is_empty(), "left without {missing:?}");
 
     // Every index level with its rows, which is what the rebuild is for.
@@ -1656,5 +1656,130 @@ fn a_store_whose_rows_are_all_in_the_memory_language_is_not_reported() {
     assert_eq!(
         check.detail, None,
         "nothing is said when nothing is left behind"
+    );
+}
+
+/// Makes every statement that reads `column` of `table` fail to prepare, the way
+/// a damaged page or a lost permission would, without touching a real store.
+/// The name `sqlite_master` is matched by prefix because SQLite reports it as
+/// either `sqlite_master` or `sqlite_schema`.
+fn forbid_reading(store: &Store, table: &'static str, column: &'static str) {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    store
+        .connection()
+        .authorizer(Some(move |context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name,
+                column_name,
+            } if (table_name == table || (table == "sqlite_" && table_name.starts_with(table)))
+                && (column_name == column || column.is_empty()) =>
+            {
+                Authorization::Deny
+            }
+            _ => Authorization::Allow,
+        }))
+        .unwrap();
+}
+
+/// A check whose query failed says it could not run, and does not pass.
+///
+/// Each of these used to turn its error into the answer a healthy store gives —
+/// zero shared keys, no unfiled kinds, no stale hashes, no missing triggers — so
+/// a store that could not be read was reported as one with nothing wrong. The
+/// verdict is unhealthy, as it is for an index that could not be checked, and
+/// the sentence says which of the two it was.
+#[test]
+fn a_check_whose_query_failed_says_it_could_not_run_and_does_not_pass() {
+    let cases: [(&str, &'static str, &'static str); 5] = [
+        ("topic_key_uniqueness", "observations", "topic_key"),
+        ("observation_type_searchable", "observations", "type"),
+        ("observation_hash_sync", "observations", "normalized_hash"),
+        ("full_text_triggers", "sqlite_", ""),
+        ("observation_stems_sync", "observations", "id"),
+    ];
+    for (code, table, column) in cases {
+        let (_temp, mut store) = store();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        store
+            .add_observation(observation("s1", "A memory", "with a body"))
+            .unwrap();
+        assert!(store.doctor().unwrap().healthy, "healthy to begin with");
+
+        forbid_reading(&store, table, column);
+        let (report, _) = store.doctor_scoped(Some(code), None).unwrap();
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.code == code)
+            .unwrap_or_else(|| panic!("{code} is reported"));
+        assert!(
+            !check.ok,
+            "{code} read a failed query as a pass: {report:?}"
+        );
+        assert_eq!(
+            check.severity,
+            crate::memory::model::DoctorSeverity::Error,
+            "{code}"
+        );
+        let detail = check.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("could not be checked"),
+            "{code} has to say it did not run: {detail}"
+        );
+        assert!(!report.healthy, "{code}: {report:?}");
+        assert!(report.issues.contains(&detail), "{code}: {report:?}");
+    }
+}
+
+/// A memory with no hash at all is one nothing can be deduplicated against.
+///
+/// A database adopted from an early Engram schema gets the column added
+/// nullable and never filled, and the check used to read the column as a
+/// non-null string, so those rows were dropped from the count and `--repair`
+/// skipped the same rows: a stale hash was reported as no hash problem.
+#[test]
+fn a_memory_with_no_hash_counts_as_stale_and_is_repaired() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = store
+        .add_observation(observation(
+            "s1",
+            "Never hashed",
+            "a body from before hashes",
+        ))
+        .unwrap()
+        .observation;
+    assert!(store.doctor().unwrap().healthy, "healthy to begin with");
+
+    store
+        .connection()
+        .execute(
+            "UPDATE observations SET normalized_hash = NULL WHERE id = ?1",
+            rusqlite::params![memory.id],
+        )
+        .unwrap();
+
+    let report = store.doctor().unwrap();
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.code == "observation_hash_sync" && !check.ok),
+        "{report:?}"
+    );
+
+    assert_eq!(store.recompute_stale_hashes().unwrap(), 1);
+    assert!(store.doctor().unwrap().healthy);
+    let hash: String = store
+        .connection()
+        .query_row(
+            "SELECT normalized_hash FROM observations WHERE id = ?1",
+            rusqlite::params![memory.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        hash,
+        crate::memory::normalize::normalized_hash(&memory.content)
     );
 }

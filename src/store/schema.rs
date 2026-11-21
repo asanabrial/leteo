@@ -1122,7 +1122,7 @@ pub(crate) fn full_text_trigger_sql(name: &str) -> Option<&'static str> {
 pub(super) fn restore_full_text_triggers(
     connection: &Connection,
 ) -> Result<Vec<&'static str>, rusqlite::Error> {
-    let missing = missing_full_text_triggers(connection);
+    let missing = missing_full_text_triggers(connection)?;
     for name in &missing {
         let Some(sql) = full_text_trigger_sql(name) else {
             continue;
@@ -1133,20 +1133,25 @@ pub(super) fn restore_full_text_triggers(
 }
 
 /// Which of those triggers this database is missing.
-pub(super) fn missing_full_text_triggers(connection: &Connection) -> Vec<&'static str> {
-    FULL_TEXT_TRIGGERS
-        .iter()
-        .filter(|name| {
-            !connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?1)",
-                    [*name],
-                    |row| row.get::<_, bool>(0),
-                )
-                .unwrap_or(true)
-        })
-        .copied()
-        .collect()
+///
+/// An error is not "present": a lookup that failed used to answer that the
+/// trigger was there, so a store whose schema could not be read passed the check
+/// for having lost them.
+pub(super) fn missing_full_text_triggers(
+    connection: &Connection,
+) -> Result<Vec<&'static str>, rusqlite::Error> {
+    let mut missing = Vec::new();
+    for name in FULL_TEXT_TRIGGERS {
+        let present = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?1)",
+            [*name],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !present {
+            missing.push(*name);
+        }
+    }
+    Ok(missing)
 }
 
 pub(super) fn table_info(

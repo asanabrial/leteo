@@ -342,7 +342,7 @@ fn adoption_indexes_the_memories_it_inherits() {
                 .unwrap();
     }
 
-    let store = Store::open(StoreConfig::new(path)).unwrap();
+    let mut store = Store::open(StoreConfig::new(path)).unwrap();
     assert_eq!(
         store
             .search("Postgres", SearchOptions::default())
@@ -351,6 +351,11 @@ fn adoption_indexes_the_memories_it_inherits() {
         1,
         "an inherited memory must be searchable"
     );
+    // The inherited schema had no hash column, so adoption adds it empty. A
+    // memory with no hash cannot be deduplicated against, which is what the
+    // report says until the repair takes one.
+    assert!(!store.doctor().unwrap().healthy);
+    assert_eq!(store.recompute_stale_hashes().unwrap(), 1);
     assert!(store.doctor().unwrap().healthy);
 }
 

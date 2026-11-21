@@ -529,9 +529,12 @@ impl Store {
             // Two counts for this one, because it is two things that can drift:
             // the stems table against the memories, and the index against the
             // stems.
+            //
+            // A count that failed is not a count of -1. Both sides used to fall
+            // back to that sentinel, so two failures were equal to each other and
+            // to the index's own sentinel, and the check passed.
             let stems_rows =
-                query_count(&self.connection, "SELECT COUNT(*) FROM observation_stems")
-                    .unwrap_or(-1);
+                query_count(&self.connection, "SELECT COUNT(*) FROM observation_stems");
             // Only a memory with an integer id can have stems, so only those
             // are owed any. A database that predates the baseline can carry a
             // TEXT id, which no repair can give a row here, and counting it
@@ -539,18 +542,26 @@ impl Store {
             let stemmable = query_count(
                 &self.connection,
                 "SELECT COUNT(*) FROM observations WHERE typeof(id) = 'integer'",
-            )
-            .unwrap_or(-1);
+            );
             let stems_fts_rows = indexed_row_count(&self.connection, "observations_stemmed");
-            record(if stemmable == stems_rows && stems_rows == stems_fts_rows {
-                DoctorCheck::passed("observation_stems_sync")
-            } else {
-                DoctorCheck::failed(
+            record(match (stemmable, stems_rows) {
+                (Err(error), _) | (_, Err(error)) => could_not_run(
                     "observation_stems_sync",
-                    format!(
-                        "Snowball observation index row mismatch: memories that can have stems={stemmable}, stems={stems_rows}, fts={stems_fts_rows}; {REBUILD_REMEDY}"
-                    ),
-                )
+                    "the Snowball observation index row counts",
+                    &error,
+                ),
+                (Ok(stemmable), Ok(stems_rows)) => {
+                    if stemmable == stems_rows && stems_rows == stems_fts_rows {
+                        DoctorCheck::passed("observation_stems_sync")
+                    } else {
+                        DoctorCheck::failed(
+                            "observation_stems_sync",
+                            format!(
+                                "Snowball observation index row mismatch: memories that can have stems={stemmable}, stems={stems_rows}, fts={stems_fts_rows}; {REBUILD_REMEDY}"
+                            ),
+                        )
+                    }
+                }
             });
         }
         if want("prompt_fts_sync") {
@@ -625,20 +636,22 @@ impl Store {
             });
         }
         if want("full_text_triggers") {
-            let missing_triggers =
-                crate::store::schema::missing_full_text_triggers(&self.connection);
-            record(if missing_triggers.is_empty() {
-                DoctorCheck::passed("full_text_triggers")
-            } else {
-                DoctorCheck::failed(
-                    "full_text_triggers",
-                    format!(
-                        "{} of the triggers that keep the full-text indexes level with the rows are missing ({}), so edits made since stopped reaching search; `leteo doctor --repair` puts them back and rebuilds",
-                        missing_triggers.len(),
-                        missing_triggers.join(", ")
+            record(
+                match crate::store::schema::missing_full_text_triggers(&self.connection) {
+                    Err(error) => {
+                        could_not_run("full_text_triggers", "the full-text triggers", &error)
+                    }
+                    Ok(missing) if missing.is_empty() => DoctorCheck::passed("full_text_triggers"),
+                    Ok(missing) => DoctorCheck::failed(
+                        "full_text_triggers",
+                        format!(
+                            "{} of the triggers that keep the full-text indexes level with the rows are missing ({}), so edits made since stopped reaching search; `leteo doctor --repair` puts them back and rebuilds",
+                            missing.len(),
+                            missing.join(", ")
+                        ),
                     ),
-                )
-            });
+                },
+            );
         }
         if want("settings_readable") {
             // The file a person edits by hand, and the one thing here that is
@@ -811,8 +824,9 @@ impl Store {
             // No `--repair`, deliberately. Which of the two keeps the key is a
             // question about what they say, and Leteo does not read them.
             record(match shared_topic_keys(&self.connection) {
-                0 => DoctorCheck::passed("topic_key_uniqueness"),
-                shared => DoctorCheck::failed(
+                Err(error) => could_not_run("topic_key_uniqueness", "the topic keys", &error),
+                Ok(0) => DoctorCheck::passed("topic_key_uniqueness"),
+                Ok(shared) => DoctorCheck::failed(
                     "topic_key_uniqueness",
                     format!(
                         "{shared} topic key(s) name more than one live memory in the same project and scope, so a save under one of them revises whichever comes first and leaves the rest unreachable by that key; read them with `leteo search <key>` and give one of each pair a key of its own"
@@ -832,9 +846,12 @@ impl Store {
             //
             // `doctor --repair` folds them through the same `normalize::kind`
             // the door uses, which is the one place the rule lives.
-            record(match unsearchable_kinds(&self.connection).as_slice() {
-                [] => DoctorCheck::passed("observation_type_searchable"),
-                kinds => {
+            record(match unsearchable_kinds(&self.connection).as_deref() {
+                Err(error) => {
+                    could_not_run("observation_type_searchable", "the memory types", error)
+                }
+                Ok([]) => DoctorCheck::passed("observation_type_searchable"),
+                Ok(kinds) => {
                     let total: i64 = kinds.iter().map(|(_, count)| count).sum();
                     let named = kinds
                         .iter()
@@ -870,8 +887,9 @@ impl Store {
             // Whatever wrote them is gone; what was missing was anything that
             // would notice.
             record(match stale_hash_count(&self.connection) {
-                0 => DoctorCheck::passed("observation_hash_sync"),
-                stale => DoctorCheck::failed(
+                Err(error) => could_not_run("observation_hash_sync", "the memory hashes", &error),
+                Ok(0) => DoctorCheck::passed("observation_hash_sync"),
+                Ok(stale) => DoctorCheck::failed(
                     "observation_hash_sync",
                     format!(
                         "{stale} memories carry a hash that no longer describes them, so nothing can be deduplicated against them; run `leteo doctor --repair` to take it again"
@@ -1166,15 +1184,18 @@ impl Store {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                 ))
             })?;
-            rows.filter_map(Result::ok)
-                .filter_map(|(id, content, hash)| {
-                    let taken = normalize::normalized_hash(&content);
-                    (taken != hash).then_some((id, taken))
-                })
-                .collect()
+            let mut stale = Vec::new();
+            for row in rows {
+                let (id, content, hash) = row?;
+                let taken = normalize::normalized_hash(&content);
+                if hash.as_deref() != Some(taken.as_str()) {
+                    stale.push((id, taken));
+                }
+            }
+            stale
         };
         if stale.is_empty() {
             return Ok(0);
@@ -1266,30 +1287,24 @@ impl Store {
     }
 }
 
-/// How many memories carry a hash that no longer describes their body.
-///
-/// Reads every live body, which is what makes it honest: the hash is derived
-/// from the text and the only way to know they still agree is to take it again.
 /// How many topic keys name more than one live memory in one project and scope.
 ///
 /// Seven milliseconds on a store of four thousand, served by `idx_obs_topic`,
 /// which is the index the revision lookup already uses — the check asks the
 /// same question that lookup asks, and counts the answers it should never have
 /// more than one of.
-fn shared_topic_keys(connection: &Connection) -> i64 {
-    connection
-        .query_row(
-            "SELECT COUNT(*) FROM (
+fn shared_topic_keys(connection: &Connection) -> Result<i64, rusqlite::Error> {
+    connection.query_row(
+        "SELECT COUNT(*) FROM (
                  SELECT 1 FROM observations
                   WHERE topic_key IS NOT NULL AND trim(topic_key) <> ''
                     AND deleted_at IS NULL
                   GROUP BY topic_key, project, scope
                  HAVING COUNT(*) > 1
              )",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0)
+        [],
+        |row| row.get(0),
+    )
 }
 
 /// The kinds this store holds that no filtered search can name, with how many
@@ -1300,37 +1315,55 @@ fn shared_topic_keys(connection: &Connection) -> i64 {
 /// IN` list in the SQL. The list of kinds is one list, and a second copy here is
 /// how it would come to disagree with the door that writes them — which is the
 /// mistake `REVIEW_WINDOWS` made with a third hand-written copy of three names.
-fn unsearchable_kinds(connection: &Connection) -> Vec<(String, i64)> {
-    let Ok(mut statement) = connection
-        .prepare("SELECT type, COUNT(*) FROM observations WHERE deleted_at IS NULL GROUP BY type")
-    else {
-        return Vec::new();
-    };
-    let Ok(rows) = statement.query_map([], |row| {
+fn unsearchable_kinds(connection: &Connection) -> Result<Vec<(String, i64)>, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT type, COUNT(*) FROM observations WHERE deleted_at IS NULL GROUP BY type",
+    )?;
+    let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    }) else {
-        return Vec::new();
-    };
-    let mut found: Vec<(String, i64)> = rows
-        .filter_map(Result::ok)
-        .filter(|(kind, _)| !crate::memory::rules::is_searchable_kind(kind))
-        .collect();
+    })?;
+    let mut found = Vec::new();
+    for row in rows {
+        let (kind, count) = row?;
+        if !crate::memory::rules::is_searchable_kind(&kind) {
+            found.push((kind, count));
+        }
+    }
     found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    found
+    Ok(found)
 }
 
-fn stale_hash_count(connection: &Connection) -> i64 {
-    let Ok(mut statement) = connection
-        .prepare("SELECT content, normalized_hash FROM observations WHERE deleted_at IS NULL")
-    else {
-        return 0;
-    };
-    let Ok(rows) = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    }) else {
-        return 0;
-    };
-    rows.filter_map(Result::ok)
-        .filter(|(content, hash)| &normalize::normalized_hash(content) != hash)
-        .count() as i64
+/// How many memories carry a hash that no longer describes their body.
+///
+/// Reads every live body, which is what makes it honest: the hash is derived
+/// from the text and the only way to know they still agree is to take it again.
+///
+/// A memory with no hash at all is stale: a database adopted from an early
+/// Engram schema gets the column added nullable and never filled, and reading it
+/// as a non-null string dropped exactly those rows from the count.
+fn stale_hash_count(connection: &Connection) -> Result<i64, rusqlite::Error> {
+    let mut statement = connection
+        .prepare("SELECT content, normalized_hash FROM observations WHERE deleted_at IS NULL")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut stale = 0;
+    for row in rows {
+        let (content, hash) = row?;
+        if hash.as_deref() != Some(normalize::normalized_hash(&content).as_str()) {
+            stale += 1;
+        }
+    }
+    Ok(stale)
+}
+
+/// What a check reports when its query failed, so it is not read as a pass.
+///
+/// An error is not an answer: turning one into zero is how a store that could
+/// not be read came to be reported as one with nothing wrong. The severity is an
+/// error for the reason the index checks give — a store that could not be
+/// inspected has not passed — and the sentence says it did not run, which is not
+/// the same as having found a fault.
+fn could_not_run(code: &str, what: &str, error: &dyn std::fmt::Display) -> DoctorCheck {
+    DoctorCheck::failed(code, format!("{what} could not be checked: {error}"))
 }

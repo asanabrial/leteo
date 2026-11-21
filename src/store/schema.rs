@@ -57,10 +57,11 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0021_observation_stems.sql         <- the Snowball index, one row a memory
 ///   0022_stems_keep_their_language.sql <- an identifier edit no longer re-stems
 ///   0023_stems_in_the_language_of_the_memory.sql <- each row stemmed in its own language
-///   0024_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0024_several_vectors_per_memory.sql <- one vector per window of a memory
+///   0025_something.sql                  <- add here, and bump SCHEMA_VERSION
 /// ```
 ///
-/// The next number is 24 rather than 2 because 2 through 17 are spent history
+/// The next number is 25 rather than 2 because 2 through 17 are spent history
 /// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
 /// band and says why.
 ///
@@ -88,6 +89,7 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[
     (21, Migration::Sql(OBSERVATION_STEMS)),
     (22, Migration::Sql(STEMS_KEEP_THEIR_LANGUAGE)),
     (23, Migration::Sql(STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY)),
+    (24, Migration::Sql(SEVERAL_VECTORS_PER_MEMORY)),
 ];
 
 pub(super) const REVIEW_CLOCKS_IN_CALENDAR_MONTHS: &str =
@@ -132,6 +134,14 @@ pub(super) const STEMS_KEEP_THEIR_LANGUAGE: &str =
 /// sources below lists it before the two that defined them earlier.
 pub(super) const STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY: &str =
     include_str!("../../migrations/0023_stems_in_the_language_of_the_memory.sql");
+
+/// Migration 24: the vector table rebuilt to hold one row per window of a
+/// memory, keyed by the memory and the window's place in it.
+///
+/// It drops the rows migration 20's table held rather than converting them; the
+/// file says why that costs only the time to embed again.
+pub(super) const SEVERAL_VECTORS_PER_MEMORY: &str =
+    include_str!("../../migrations/0024_several_vectors_per_memory.sql");
 
 /// How a migration is carried out.
 ///
@@ -185,7 +195,7 @@ pub(super) enum Migration {
 /// What raising it past them does *not* do is make them migratable: see
 /// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
 /// ambiguous and stay refused.
-pub(crate) const SCHEMA_VERSION: i32 = 23;
+pub(crate) const SCHEMA_VERSION: i32 = 24;
 
 /// The highest number stamped by the numbering that predates any release.
 ///

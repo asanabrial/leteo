@@ -32,9 +32,9 @@ pub use model::SemanticModel;
 
 /// What computed a stored vector, and the model this binary accepts.
 ///
-/// Written beside every vector and compared on every read: vectors from two
-/// models are not comparable, so a build that accepts a different model finds
-/// every stored row stale and embeds it again. The suffix is the start of the
+/// Written beside every vector, with [`WINDOWING`], and compared on every read:
+/// vectors from two models are not comparable, so a build that accepts a
+/// different model finds every stored row stale and embeds it again. The suffix is the start of the
 /// weights' SHA-256, so the name cannot stay the same when the bytes change;
 /// a test holds it to `tools/semantic/checksums.json`.
 pub const MODEL_ID: &str = "static-similarity-mrl-multilingual-v1/256-int8-pruned@25d1b8a5";
@@ -67,13 +67,43 @@ pub const MODEL_DIR_ENV: &str = "LETEO_MODEL_DIR";
 /// The width of a vector, and of the row the table must hold.
 pub const DIMENSIONS: usize = 256;
 
-/// How many tokens of a memory are read.
+/// How many tokens one vector is the mean of.
 ///
-/// The first 128, from the title and then the body. Measured on this model over
-/// a copy of a real store: 128 beat 64 and 256, and at 512 the semantic MRR of
-/// bodies fell from .57 to .35. A mean over more text is a mean that says less,
-/// and the start of a memory is where it says what it is about.
+/// 128, the title's and then the body's. Measured on this model over a copy of
+/// a real store: 128 beat 64 and 256, and at 512 the semantic MRR of bodies fell
+/// from .57 to .35. A mean over more text is a mean that says less, which is why
+/// a long memory is read as several windows of this size ([`windows`]) rather
+/// than as one longer mean.
 pub const MAX_TOKENS: usize = 128;
+
+/// How many of the title's tokens head every window.
+///
+/// The title says what the memory is about, and a window from the middle of a
+/// body without it is a paragraph about nothing in particular. 48 leaves at
+/// least 80 tokens of body in each window; a title longer than that is cut, so
+/// a memory whose title is all it has still has its body read.
+pub const TITLE_TOKENS: usize = 48;
+
+/// The most windows one memory is read as, and so the most rows it keeps.
+///
+/// 32 windows hold between 2,560 body tokens (under a title of 48) and 4,096
+/// (under none), between four and seven times the median body of 548
+/// tokens on the measured store, where a memory took 6.6 windows on average and
+/// 98% of bodies were longer than one window. A body is capped at 50,000
+/// characters on the way in, which is more than 32 windows hold, so what lies
+/// past the last window of the longest bodies is not read by meaning; it is
+/// still found by its words. The cap bounds a memory at 32 rows and 32 KB of
+/// vectors, and the scan's worst case at 32 rows a memory.
+pub const MAX_WINDOWS: usize = 32;
+
+/// How a memory is cut into the texts its vectors are the means of, stored
+/// beside every row and compared with [`MODEL_ID`] on every read.
+///
+/// Its own name and not a suffix on the model's, because the model's name is
+/// the weights' (a test holds it to `tools/semantic/checksums.json`) and this is
+/// not: changing either makes every stored row stale. Bump the trailing version
+/// whenever [`windows`] would cut a memory differently.
+pub const WINDOWING: &str = "windows-128-title-48-v1";
 
 /// The cosine below which a semantic answer to an empty question is not given.
 ///
@@ -86,6 +116,18 @@ pub const MAX_TOKENS: usize = 128;
 ///
 /// It costs Basque the most, which the model was not trained on: queries in
 /// Basque score .177 without the floor and .044 with it.
+///
+/// Those figures are of one vector a memory. The floor now meets the best of a
+/// memory's windows, which is higher -- on a copy of a real store the best
+/// cosine of a memory that was not the answer rose from a median .35 to .39,
+/// and on a synthetic store of random-word bodies the stage answered questions
+/// the single vector never cleared 0.30 for. Measured again through this binary
+/// with `tools/semantic/hardset/evaluate.py`, the controls it answers with the
+/// stage moved from 127 of 160 to 130 (absent questions) and from 74 of 117 to
+/// 74 (the other project's questions), which is inside the noise of 160, and
+/// the ratchet's no-answer questions stayed at 21 of 24 with none unhedged. So
+/// it stays at 0.30. 0.32 brought the controls to 126 and 70 and cost the hard
+/// set .085 to .078 of reciprocal rank and 103 more unanswered questions.
 pub const FLOOR: f32 = 0.30;
 
 /// How many semantic candidates may be merged into a `nearest` answer.
@@ -432,13 +474,65 @@ fn build(config: &[u8], weights: &[u8], tokenizer_gz: &[u8]) -> Result<SemanticM
     SemanticModel::from_parts(config, weights, &tokenizer)
 }
 
-/// The text a memory is embedded from.
+/// The token windows a memory is read as: each one the title's first
+/// [`TITLE_TOKENS`] ids and then the next run of body ids, so that every window
+/// holds at most [`MAX_TOKENS`], with no overlap and at most [`MAX_WINDOWS`] of
+/// them. A body with no token is one window of the title alone.
 ///
-/// The title and then the body, one string, so the title — the part that says
-/// what the memory is — is always inside the token budget however long the body
-/// is.
-pub fn document_text(title: &str, content: &str) -> String {
-    format!("{title}\n{content}")
+/// No overlap, because the windows were measured that way: on 140 blind
+/// questions about a fact in the second half of a body, asked of a copy of a
+/// real store, top-10 went from 50.7% to 62.1% in the memory's language and from
+/// 3.6% to 25.0% in another one, while first place on natural questions moved
+/// from 72.9% to between 69.3% and 72.1%.
+///
+/// The first window is what the single vector before it read, with two
+/// differences. A title of more than 48 tokens is cut to 48 here, where the
+/// single vector read all of it up to 128. And the single vector cut the joined
+/// text to `128 * median token length` characters before tokenizing, so a text
+/// whose first characters held fewer than 128 tokens was read short and its
+/// last word could be read as the fragment the cut left; here the title and
+/// the body are cut and tokenized separately, against the budget of all the
+/// windows. Tokenizing them apart is otherwise the same as tokenizing them
+/// joined by the newline the single vector used, because the pre-tokenizer
+/// splits on whitespace before anything else.
+pub fn windows(title: &[u32], body: &[u32]) -> Vec<Vec<u32>> {
+    let head = &title[..title.len().min(TITLE_TOKENS)];
+    let run = MAX_TOKENS - head.len();
+    if body.is_empty() {
+        return vec![head.to_vec()];
+    }
+    body.chunks(run)
+        .take(MAX_WINDOWS)
+        .map(|part| [head, part].concat())
+        .collect()
+}
+
+/// L2-normalised vectors for a memory, one per window of [`windows`], in order.
+///
+/// A window with no token the model knows has an empty vector, as [`embed`]
+/// gives a text with none. The title is cut to the characters of
+/// [`TITLE_TOKENS`] tokens and the body to those of every window's worth, the
+/// same character cut the single vector took and for the same reason: a body
+/// may hold 50,000 characters, and what no window reads need not be tokenized.
+pub fn embed_document(
+    model: &SemanticModel,
+    title: &str,
+    content: &str,
+) -> Result<Vec<Vec<f32>>, EmbedError> {
+    let pooled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let title = model.token_ids(&[title], Some(TITLE_TOKENS))?.remove(0);
+        let body = model
+            .token_ids(&[content], Some(MAX_WINDOWS * MAX_TOKENS))?
+            .remove(0);
+        Ok::<_, EmbedError>(
+            windows(&title, &body)
+                .iter()
+                .map(|ids| model.pool(ids))
+                .collect::<Vec<_>>(),
+        )
+    }))
+    .map_err(|_| EmbedError("the tokenizer failed on this text".to_owned()))??;
+    Ok(pooled.into_iter().map(normalised).collect())
 }
 
 /// L2-normalised vectors for these texts, in order.
@@ -479,9 +573,9 @@ pub fn encode(vector: &[f32]) -> Vec<u8> {
 /// not a vector of this model's width.
 ///
 /// Both sides are unit length, so the cosine is the dot product. Read from the
-/// stored bytes without building a `Vec`: the scan runs over every memory in
-/// scope, 6.6 ms over 5,336 on the measured store, and an allocation per row
-/// would be most of that.
+/// stored bytes without building a `Vec`: the scan runs over every window of
+/// every memory in scope -- what that costs is measured beside
+/// `semantic_candidates` -- and an allocation per row would be most of it.
 pub fn cosine(stored: &[u8], question: &[f32]) -> Option<f32> {
     if stored.len() != DIMENSIONS * 4 || question.len() != DIMENSIONS {
         return None;
@@ -690,6 +784,40 @@ pub(crate) mod tests {
         let Some(model) = loaded() else { return };
         let vectors = embed(&model, &texts(&["\u{200b}\u{200b}"])).unwrap();
         assert!(vectors[0].is_empty());
+    }
+
+    /// On hand-built ids, so it runs in a tree with no model: the store test of
+    /// the same behaviour needs `assets/model` and returns early without it.
+    #[test]
+    fn a_memory_is_cut_into_title_headed_windows_without_overlap() {
+        let title: Vec<u32> = (1000..1010).collect();
+        let body: Vec<u32> = (0..300).collect();
+        let cut = windows(&title, &body);
+        let run = MAX_TOKENS - title.len();
+        assert_eq!(cut.len(), body.len().div_ceil(run), "{cut:?}");
+        for window in &cut {
+            assert!(window.len() <= MAX_TOKENS, "{}", window.len());
+            assert_eq!(&window[..title.len()], &title[..]);
+        }
+        let read: Vec<u32> = cut
+            .iter()
+            .flat_map(|window| window[title.len()..].to_vec())
+            .collect();
+        assert_eq!(read, body, "every body id once, in order");
+
+        let long_title: Vec<u32> = (2000..2100).collect();
+        let cut = windows(&long_title, &body);
+        assert!(
+            cut.iter()
+                .all(|window| window[..TITLE_TOKENS] == long_title[..TITLE_TOKENS])
+        );
+        assert_eq!(cut[0].len(), MAX_TOKENS, "the title is cut, the body read");
+
+        assert_eq!(windows(&title, &[]), vec![title.clone()]);
+        assert_eq!(windows(&[], &[]), vec![Vec::<u32>::new()]);
+
+        let huge: Vec<u32> = (0..100_000).collect();
+        assert_eq!(windows(&title, &huge).len(), MAX_WINDOWS);
     }
 
     #[test]

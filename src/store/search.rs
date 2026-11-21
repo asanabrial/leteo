@@ -655,7 +655,8 @@ impl Store {
         nearest_answered: bool,
     ) -> Vec<Candidate> {
         let floor = (!nearest_answered).then_some(crate::semantic::FLOOR);
-        match self.semantic_candidates(query, options, limit, floor) {
+        let found_by_words = lexical.iter().map(|candidate| candidate.id).collect();
+        match self.semantic_candidates(query, options, limit, floor, &found_by_words) {
             Ok(found) => {
                 let semantic = cap_for_merge(found, nearest_answered);
                 if nearest_answered {

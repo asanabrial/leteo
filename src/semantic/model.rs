@@ -124,18 +124,41 @@ impl SemanticModel {
     ) -> Result<Vec<Vec<f32>>, EmbedError> {
         let mut vectors = Vec::with_capacity(texts.len());
         for batch in texts.chunks(batch_size) {
-            let truncated: Vec<&str> = batch
-                .iter()
-                .map(|text| match max_length {
-                    Some(max_tokens) => truncate(text, max_tokens, self.median_token_length),
-                    None => text.as_str(),
-                })
-                .collect();
-            let encodings = self
-                .tokenizer
-                .encode_batch_fast::<String>(truncated.into_iter().map(Into::into).collect(), false)
-                .map_err(|error| EmbedError(format!("the tokenizer failed: {error}")))?;
-            for encoding in encodings {
+            let batch: Vec<&str> = batch.iter().map(String::as_str).collect();
+            for ids in self.token_ids(&batch, max_length)? {
+                vectors.push(self.pool(&ids));
+            }
+        }
+        Ok(vectors)
+    }
+
+    /// The token ids the model would pool for each text, in order: cut by
+    /// characters, tokenized, the unknown token dropped, and at most
+    /// `max_length` kept.
+    ///
+    /// The half of [`Self::encode_with_args`] before the mean, so a memory can
+    /// be cut into windows of ids that each pool exactly as a text of those ids
+    /// would. It panics where the tokenizer does, and the caller in the parent
+    /// module catches it.
+    pub(crate) fn token_ids(
+        &self,
+        texts: &[&str],
+        max_length: Option<usize>,
+    ) -> Result<Vec<Vec<u32>>, EmbedError> {
+        let truncated: Vec<&str> = texts
+            .iter()
+            .map(|text| match max_length {
+                Some(max_tokens) => truncate(text, max_tokens, self.median_token_length),
+                None => text,
+            })
+            .collect();
+        let encodings = self
+            .tokenizer
+            .encode_batch_fast::<String>(truncated.into_iter().map(Into::into).collect(), false)
+            .map_err(|error| EmbedError(format!("the tokenizer failed: {error}")))?;
+        Ok(encodings
+            .into_iter()
+            .map(|encoding| {
                 let mut ids = encoding.get_ids().to_vec();
                 if let Some(unknown) = self.unk_token_id {
                     ids.retain(|&id| id as usize != unknown);
@@ -143,10 +166,9 @@ impl SemanticModel {
                 if let Some(max_tokens) = max_length {
                     ids.truncate(max_tokens);
                 }
-                vectors.push(self.pool(&ids));
-            }
-        }
-        Ok(vectors)
+                ids
+            })
+            .collect())
     }
 
     /// Mean-pool token ids into one vector, over the int8 table.
@@ -157,7 +179,7 @@ impl SemanticModel {
     /// for an id the table does not reach would be a defect in the tokenizer or
     /// the model rather than a text, and indexing rather than skipping keeps it
     /// a caught panic instead of a wrong vector.
-    fn pool(&self, ids: &[u32]) -> Vec<f32> {
+    pub(crate) fn pool(&self, ids: &[u32]) -> Vec<f32> {
         let mut sum = vec![0.0f32; DIMENSIONS];
         let mut count = 0usize;
         for &id in ids {

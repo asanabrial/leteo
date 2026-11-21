@@ -378,6 +378,10 @@ fn applies_tool_defaults() {
     assert_eq!((timeline.before, timeline.after), (5, 5));
     assert_eq!(capture.source, "mcp-passive");
     assert_eq!(manual_session_id("leteo"), "manual-save-leteo");
+    assert!(is_manual_session_id(&manual_session_id("leteo")));
+    assert!(is_manual_session_id(&manual_session_id("")));
+    assert!(!is_manual_session_id("manual-savings"));
+    assert!(!is_manual_session_id("0d9e7c1a-agent"));
 }
 
 /// The prompt a saved memory is linked to, read from the store: the save reply
@@ -2163,6 +2167,9 @@ fn a_memory_saved_without_a_session_still_records_the_question() {
                 project: Some("leteo".to_owned()),
             })
             .unwrap();
+        // Ended, because an open session this recent is exactly what a save
+        // with no session_id now joins instead of the manual one.
+        store.end_session("agent-conversation", None).unwrap();
     }
 
     let saved = server
@@ -8168,4 +8175,246 @@ fn an_empty_search_whose_limit_is_past_the_cap_says_the_count_is_a_floor() {
         said.contains(&format!("{cap} or more elsewhere")),
         "the store stops at {cap}, so the count is a floor: {said}"
     );
+}
+
+fn open_hook_session(
+    server: &LeteoMcpServer,
+    session: &str,
+    project: &str,
+    directory: &std::path::Path,
+) {
+    let mut store = server.lock_store().unwrap();
+    crate::hooks::run(
+        &mut store,
+        crate::hooks::HookEvent::SessionStart,
+        &crate::hooks::HookInput {
+            session_id: session.to_owned(),
+            cwd: directory.to_string_lossy().into_owned(),
+            project: Some(project.to_owned()),
+            ..crate::hooks::HookInput::default()
+        },
+    )
+    .unwrap();
+}
+
+/// Moves everything a session did, its start included, to `minutes` ago.
+fn age_session(server: &LeteoMcpServer, session: &str, minutes: i64) {
+    let store = server.lock_store().unwrap();
+    for table in [
+        "UPDATE sessions SET started_at = datetime('now', ?1) WHERE id = ?2",
+        "UPDATE observations SET created_at = datetime('now', ?1) WHERE session_id = ?2",
+        "UPDATE prompts SET created_at = datetime('now', ?1) WHERE session_id = ?2",
+    ] {
+        store
+            .connection()
+            .execute(
+                table,
+                rusqlite::params![format!("-{minutes} minutes"), session],
+            )
+            .unwrap();
+    }
+}
+
+/// Each call writes a body of its own: an identical one would come back as the
+/// memory already stored, in whatever session that one happened to be in, and
+/// the assertion would be about the first save rather than this one.
+fn save_without_session(server: &LeteoMcpServer) -> (String, Option<String>) {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "title": format!("Where this lands {call}"),
+                "content": format!("A save number {call} that names no session."),
+                "project": "leteo",
+                "capture_prompt": false,
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let session = server
+        .lock_store()
+        .unwrap()
+        .get_observation(saved.observation.id)
+        .unwrap()
+        .session_id;
+    (session, saved.session_id)
+}
+
+#[test]
+fn a_save_without_a_session_joins_the_one_the_hook_opened() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    open_hook_session(&server, "agent-session", "leteo", directory.path());
+
+    let (session, said) = save_without_session(&server);
+    assert_eq!(session, "agent-session");
+    assert_eq!(said.as_deref(), Some("agent-session"), "the reply names it");
+
+    let summary = server
+        .mem_session_summary(Parameters(
+            serde_json::from_value(json!({
+                "content": "Worked out where saves land",
+                "project": "leteo",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(summary.session_id.as_deref(), Some("agent-session"));
+    let store = server.lock_store().unwrap();
+    assert_eq!(
+        store
+            .get_observation(summary.observation.id)
+            .unwrap()
+            .session_id,
+        "agent-session"
+    );
+    assert!(
+        store
+            .get_session("agent-session")
+            .unwrap()
+            .ended_at
+            .is_none(),
+        "a summary attaches to the live session without ending it, so the \
+         conversation's later prompts still land in an open one"
+    );
+}
+
+#[test]
+fn a_save_without_a_session_falls_back_to_the_manual_one_when_nothing_is_live() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+
+    let (session, said) = save_without_session(&server);
+    assert_eq!(session, "manual-save-leteo", "no session at all");
+    assert_eq!(said.as_deref(), Some("manual-save-leteo"));
+
+    open_hook_session(&server, "stale", "leteo", directory.path());
+    age_session(
+        &server,
+        "stale",
+        crate::store::PROMPT_ATTRIBUTION_MINUTES + 1,
+    );
+    assert_eq!(
+        save_without_session(&server).0,
+        "manual-save-leteo",
+        "stale"
+    );
+
+    open_hook_session(&server, "finished", "leteo", directory.path());
+    server
+        .lock_store()
+        .unwrap()
+        .end_session("finished", None)
+        .unwrap();
+    assert_eq!(
+        save_without_session(&server).0,
+        "manual-save-leteo",
+        "ended"
+    );
+
+    open_hook_session(&server, "elsewhere", "other-project", directory.path());
+    assert_eq!(
+        save_without_session(&server).0,
+        "manual-save-leteo",
+        "another project's live session is not this project's"
+    );
+}
+
+#[test]
+fn the_session_a_save_joins_is_the_latest_active_one_and_never_a_manual_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    assert_eq!(save_without_session(&server).0, "manual-save-leteo");
+    assert_eq!(
+        save_without_session(&server).0,
+        "manual-save-leteo",
+        "the manual session is active now and is still not a conversation"
+    );
+
+    open_hook_session(&server, "older", "leteo", directory.path());
+    open_hook_session(&server, "newer", "leteo", directory.path());
+    age_session(&server, "older", 20);
+    age_session(&server, "newer", 5);
+    assert_eq!(save_without_session(&server).0, "newer");
+
+    // Activity is the latest of the start, a memory and a prompt: a session
+    // opened long ago that was just prompted is the live one.
+    age_session(&server, "older", 600);
+    server
+        .lock_store()
+        .unwrap()
+        .add_prompt(AddPrompt {
+            session_id: "older".to_owned(),
+            content: "still here".to_owned(),
+            project: Some("leteo".to_owned()),
+        })
+        .unwrap();
+    age_session(&server, "newer", 25);
+    assert_eq!(save_without_session(&server).0, "older");
+}
+
+#[test]
+fn a_save_that_names_its_session_is_not_told_the_name_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    open_hook_session(&server, "mine", "leteo", directory.path());
+    open_hook_session(&server, "live", "leteo", directory.path());
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "mine",
+                "title": "Named",
+                "content": "Names its session.",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(saved.session_id, None);
+    let store = server.lock_store().unwrap();
+    assert_eq!(
+        store
+            .get_observation(saved.observation.id)
+            .unwrap()
+            .session_id,
+        "mine"
+    );
+}
+
+#[test]
+fn every_tool_that_picks_a_session_for_the_caller_says_how() {
+    let published = format!("{} minutes", crate::store::PROMPT_ATTRIBUTION_MINUTES);
+    for name in [
+        "mem_save",
+        "mem_save_prompt",
+        "mem_session_summary",
+        "mem_capture_passive",
+    ] {
+        let tool = LeteoMcpServer::router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .unwrap();
+        let said = tool.input_schema["properties"]["session_id"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(said.contains(&published), "{name}: {said:?}");
+        assert!(said.contains("share"), "{name}: {said:?}");
+    }
 }

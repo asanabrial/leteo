@@ -25,7 +25,7 @@ use super::*;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SaveParams {
-    /// Session identifier. Defaults to manual-save-{project}.
+    /// Session identifier. Defaults to the project's open session active in the last 30 minutes, which two agents working at once share, else manual-save-{project}.
     pub(super) session_id: Option<String>,
     /// Short searchable title.
     pub(super) title: String,
@@ -287,7 +287,7 @@ pub(super) struct ContextParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SavePromptParams {
-    /// Session identifier. Defaults to manual-save-{project}.
+    /// Session identifier. Defaults to the project's open session active in the last 30 minutes, which two agents working at once share, else manual-save-{project}.
     pub(super) session_id: Option<String>,
     /// Original user prompt text.
     pub(super) content: String,
@@ -369,7 +369,7 @@ pub(super) struct TimelineParams {
 pub(super) struct SessionSummaryParams {
     /// Structured session summary content.
     pub(super) content: String,
-    /// Session identifier. Defaults to manual-save-{project}.
+    /// Session identifier. Defaults to the project's open session active in the last 30 minutes, which two agents working at once share, else manual-save-{project}.
     pub(super) session_id: Option<String>,
     /// Optional explicit project. Accepted only when backed by known context or
     /// an ambiguous-project recovery.
@@ -388,7 +388,7 @@ pub(super) struct CapturePassiveParams {
     /// Text ending in a Key Learnings section, in any of the thirteen languages
     /// Leteo writes memories in.
     pub(super) content: String,
-    /// Session identifier. Defaults to manual-save-{project}.
+    /// Session identifier. Defaults to the project's open session active in the last 30 minutes, which two agents working at once share, else manual-save-{project}.
     pub(super) session_id: Option<String>,
     /// Source identifier.
     #[serde(default = "default_passive_source")]

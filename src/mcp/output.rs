@@ -74,6 +74,9 @@ pub(super) struct SaveOutput {
     /// save, and a change that kept the same text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) replaced_bytes: Option<usize>,
+    /// The session this went to, said only when no session_id was passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) session_id: Option<String>,
 }
 
 impl SaveOutput {
@@ -98,6 +101,7 @@ impl SaveOutput {
             candidates: candidates.into_iter().map(Into::into).collect(),
             storage_truncation: None,
             replaced_bytes: value.replaced.map(|replaced| replaced.bytes),
+            session_id: None,
         }
     }
 }
@@ -540,6 +544,9 @@ pub(super) struct CapturePassiveOutput {
     /// why it came back empty since the day it was written; this had not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
+    /// The session these went to, said only when no session_id was passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) session_id: Option<String>,
 }
 
 impl CapturePassiveOutput {
@@ -558,6 +565,7 @@ impl CapturePassiveOutput {
             } else {
                 (value.extracted == 0).then(|| NOTHING_EXTRACTED_HINT.to_owned())
             },
+            session_id: None,
         }
     }
 }

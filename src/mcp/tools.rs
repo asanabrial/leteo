@@ -30,8 +30,8 @@ impl LeteoMcpServer {
         // silent. Continued with `\` rather than `\n`, for the reason written
         description = "Save an observation to persistent memory — a decision, a fix, a \
                        discovery, a convention — as it happens rather than at the end. \
-                       Without session_id, uses a stable manual-save session for the \
-                       detected project. A reply carrying `candidates` means this may \
+                       Without session_id, joins the project's session active in the last \
+                       30 minutes, else a stable manual-save one, and says which. A reply carrying `candidates` means this may \
                        contradict memories already held: settle each one with mem_judge in \
                        the same turn, because a pair left unjudged is dropped rather than \
                        deferred.",
@@ -67,6 +67,7 @@ impl LeteoMcpServer {
                 recovery_token: params.recovery_token,
             },
         )?;
+        let chosen_session = context.chosen_id();
         let asked_scope = Some(params.scope.trim())
             .filter(|value| !value.is_empty())
             .map(str::to_lowercase);
@@ -136,6 +137,7 @@ impl LeteoMcpServer {
             .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes));
         let stored_bytes = outcome.observation.content.len();
         let mut saved = SaveOutput::new(outcome, candidates, context.envelope);
+        saved.session_id = chosen_session;
         saved.storage_truncation =
             crate::mcp::output::storage_truncation(content_cut, stored_bytes);
         let mut hints = Vec::new();
@@ -950,6 +952,7 @@ impl LeteoMcpServer {
                 recovery_token: params.recovery_token,
             },
         )?;
+        let chosen_session = context.chosen_id();
         let headline = crate::memory::normalize::headline(
             &params.content,
             crate::store::SUMMARY_HEADLINE_CHARS,
@@ -973,6 +976,7 @@ impl LeteoMcpServer {
             .map_err(store_error)?;
         let stored_bytes = outcome.observation.content.len();
         let mut saved = SaveOutput::new(outcome, Vec::new(), context.envelope);
+        saved.session_id = chosen_session;
         saved.storage_truncation =
             crate::mcp::output::storage_truncation(content_cut, stored_bytes);
         if headline.is_none() {
@@ -1019,6 +1023,7 @@ impl LeteoMcpServer {
             project,
             ProjectChoice::default(),
         )?;
+        let chosen_session = context.chosen_id();
         let source = if params.source.trim().is_empty() {
             default_passive_source()
         } else {
@@ -1032,7 +1037,9 @@ impl LeteoMcpServer {
                 source,
             })
             .map_err(|failure| store_error(failure.error))?;
-        Ok(Json(CapturePassiveOutput::new(result, context.envelope)))
+        let mut captured = CapturePassiveOutput::new(result, context.envelope);
+        captured.session_id = chosen_session;
+        Ok(Json(captured))
     }
 
     #[tool(

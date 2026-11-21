@@ -589,7 +589,7 @@ fn updates_pins_and_reviews_observations() {
     store.unpin_observation(saved.id, None).unwrap();
     assert!(!store.get_observation(saved.id).unwrap().pinned);
 
-    store.mark_reviewed(saved.id).unwrap();
+    store.mark_reviewed(saved.id, None).unwrap();
     let reviewed = store.get_observation(saved.id).unwrap();
     assert_eq!(reviewed.state(), "active");
     assert!(reviewed.review_after.is_none());
@@ -1283,7 +1283,7 @@ fn every_route_to_a_review_date_agrees_with_the_others() {
         .expect("a memory that became a decision is reread");
 
     // Route three: marked reviewed.
-    store.mark_reviewed(saved.id).unwrap();
+    store.mark_reviewed(saved.id, None).unwrap();
     let on_review = store
         .get_observation(saved.id)
         .unwrap()
@@ -1360,7 +1360,7 @@ fn every_route_to_a_review_date_agrees_with_the_others() {
 
     // And `mark_reviewed` is the one route that counts from the reading rather
     // than from the memory, which is right: somebody just read it.
-    store.mark_reviewed(old.id).unwrap();
+    store.mark_reviewed(old.id, None).unwrap();
     let after_reading = store
         .get_observation(old.id)
         .unwrap()
@@ -1599,7 +1599,7 @@ fn one_order_of_operations(seed: u64, exhaustive: bool) {
             }
             60..=69 if !live.is_empty() => {
                 let index = (next() as usize) % live.len();
-                let _ = store.mark_reviewed(live[index]);
+                let _ = store.mark_reviewed(live[index], None);
             }
             70..=79 if !live.is_empty() => {
                 let index = (next() as usize) % live.len();
@@ -1891,7 +1891,7 @@ fn a_deleted_memory_is_told_apart_from_one_that_was_never_there() {
         ),
         (
             "mark_reviewed",
-            Box::new(|store: &mut Store, id| store.mark_reviewed(id)),
+            Box::new(|store: &mut Store, id| store.mark_reviewed(id, None)),
         ),
     ];
     assert!(doors.len() >= 6, "the sweep has stopped matching the doors");

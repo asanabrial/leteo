@@ -3878,9 +3878,13 @@ fn reviewing_a_memory_moves_its_date_and_answers_one_shape() {
     assert_eq!(due.count, 1, "a memory past its date is due");
     assert_eq!(due.count, due.observations.len());
 
-    let marked = review(json!({ "action": "mark_reviewed", "observation_id": saved.id }))
-        .unwrap()
-        .0;
+    let marked = review(json!({
+        "action": "mark_reviewed",
+        "observation_id": saved.id,
+        "expected_project": "leteo",
+    }))
+    .unwrap()
+    .0;
     assert_eq!(
         marked.count,
         marked.observations.len(),
@@ -3910,12 +3914,16 @@ fn reviewing_a_memory_moves_its_date_and_answers_one_shape() {
             .to_owned()
     };
     assert_eq!(
-        refused(json!({ "action": "mark_reviewed", "observation_id": 9999 })),
+        refused(json!({
+            "action": "mark_reviewed",
+            "observation_id": 9999,
+            "expected_project": "leteo",
+        })),
         "observation_not_found"
     );
     assert_eq!(refused(json!({ "action": "sharpen" })), "invalid_params");
     assert_eq!(
-        refused(json!({ "action": "mark_reviewed" })),
+        refused(json!({ "action": "mark_reviewed", "expected_project": "leteo" })),
         "invalid_params",
         "marking needs to say which memory"
     );
@@ -7091,6 +7099,7 @@ fn the_review_queue_says_how_much_of_itself_this_page_is_not() {
                 action: "list".to_owned(),
                 project: Some("leteo".to_owned()),
                 limit: asked.unwrap_or(10),
+                expected_project: None,
                 observation_id: None,
                 id: None,
             }))
@@ -7108,6 +7117,7 @@ fn the_review_queue_says_how_much_of_itself_this_page_is_not() {
             action: "list".to_owned(),
             project: Some("leteo".to_owned()),
             limit: 10,
+            expected_project: None,
             observation_id: None,
             id: None,
         }))
@@ -7831,5 +7841,331 @@ fn a_save_reply_says_when_the_memory_it_names_is_not_active() {
     assert_eq!(
         serde_json::to_value(named).unwrap()["state"],
         "needs_review"
+    );
+}
+
+fn memory_in(session: &str, project: &str, title: &str, content: &str) -> AddObservation {
+    AddObservation {
+        session_id: session.to_owned(),
+        kind: "decision".to_owned(),
+        title: title.to_owned(),
+        content: content.to_owned(),
+        tool_name: None,
+        project: Some(project.to_owned()),
+        scope: "project".to_owned(),
+        topic_key: None,
+        prompt_sync_id: None,
+    }
+}
+
+fn make_due(server: &LeteoMcpServer, id: i64) {
+    server
+        .lock_store()
+        .unwrap()
+        .connection()
+        .execute(
+            "UPDATE observations SET review_after = datetime('now', '-1 day') WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+}
+
+fn supersede(store: &mut Store, newer: &str, older: &str) {
+    let relation = store
+        .save_relation(crate::memory::model::SaveRelationParams {
+            sync_id: crate::memory::normalize::sync_id("rel"),
+            source_id: newer.to_owned(),
+            target_id: older.to_owned(),
+        })
+        .unwrap();
+    store
+        .judge_relation(crate::memory::model::JudgeRelationParams {
+            judgment_id: relation.sync_id,
+            relation: crate::store::RELATION_SUPERSEDES.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+#[test]
+fn the_review_queue_is_the_detected_projects_and_not_the_stores() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("alpha".to_owned()),
+        ..McpOptions::default()
+    });
+    let (mine, theirs) = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("sa", "alpha", "C:/alpha").unwrap();
+        store.create_session("sb", "beta", "C:/beta").unwrap();
+        let mut add = |session: &str, project: &str, title: &str| {
+            store
+                .add_observation(memory_in(session, project, title, "a body worth rereading"))
+                .unwrap()
+                .observation
+                .id
+        };
+        let mine = vec![
+            add("sa", "alpha", "First alpha decision"),
+            add("sa", "alpha", "Second alpha decision"),
+        ];
+        let theirs = vec![
+            add("sb", "beta", "First beta decision"),
+            add("sb", "beta", "Second beta decision"),
+            add("sb", "beta", "Third beta decision"),
+        ];
+        (mine, theirs)
+    };
+    for id in mine.iter().chain(&theirs) {
+        make_due(&server, *id);
+    }
+    let review = |value: serde_json::Value| {
+        server.mem_review(Parameters(serde_json::from_value(value).unwrap()))
+    };
+
+    let listed = review(json!({ "action": "list" })).unwrap().0;
+    let mut ids: Vec<i64> = listed.observations.iter().map(|o| o.id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids, mine,
+        "only the detected project's memories: {listed:?}"
+    );
+
+    let paged = review(json!({ "action": "list", "limit": 1 })).unwrap().0;
+    assert_eq!(
+        paged.due_omitted, 1,
+        "the count behind the page is this project's, as the opening block's is: {paged:?}"
+    );
+
+    let named = review(json!({ "action": "list", "project": "beta" }))
+        .unwrap()
+        .0;
+    assert_eq!(named.count, theirs.len(), "a named project still wins");
+
+    let Err(error) = review(json!({
+        "action": "mark_reviewed",
+        "observation_id": theirs[0],
+        "expected_project": "alpha",
+    })) else {
+        panic!("a memory of another project cannot be marked reviewed");
+    };
+    assert_eq!(error_payload(&error)["error"]["code"], "project_mismatch");
+    assert_eq!(
+        server
+            .lock_store()
+            .unwrap()
+            .count_review_due(Some("beta"))
+            .unwrap(),
+        3,
+        "and the refusal left it due"
+    );
+
+    let Err(error) = review(json!({ "action": "mark_reviewed", "observation_id": mine[0] })) else {
+        panic!("marking has to say which project the memory is expected in");
+    };
+    assert_eq!(error_payload(&error)["error"]["code"], "invalid_params");
+}
+
+#[test]
+fn marking_a_memory_reviewed_answers_with_a_preview_and_its_caveats() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let older = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/workspace").unwrap();
+        let older = store
+            .add_observation(memory_in(
+                "s1",
+                "leteo",
+                "Tabs everywhere",
+                &"the indentation decision ".repeat(220),
+            ))
+            .unwrap()
+            .observation;
+        let newer = store
+            .add_observation(memory_in("s1", "leteo", "Spaces everywhere", "the new one"))
+            .unwrap()
+            .observation;
+        supersede(&mut store, &newer.sync_id, &older.sync_id);
+        older
+    };
+    assert!(older.content.len() >= 5_000, "the fixture has to overrun");
+    make_due(&server, older.id);
+
+    let marked = server
+        .mem_review(Parameters(
+            serde_json::from_value(json!({
+                "action": "mark_reviewed",
+                "observation_id": older.id,
+                "expected_project": "leteo",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let observation = marked.observation.expect("the memory comes back");
+    assert!(
+        observation.content.len() <= PREVIEW_BYTES,
+        "the description promises {PREVIEW_BYTES} bytes and this was {}",
+        observation.content.len()
+    );
+    assert!(observation.content_truncated);
+    assert_eq!(
+        observation.caveats.len(),
+        1,
+        "the list action says it was overturned, so this one does: {observation:?}"
+    );
+}
+
+#[test]
+fn a_timeline_neighbour_that_was_overturned_says_so() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let (older, focus) = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/workspace").unwrap();
+        let older = store
+            .add_observation(memory_in("s1", "leteo", "Tabs everywhere", "the old rule"))
+            .unwrap()
+            .observation;
+        let focus = store
+            .add_observation(memory_in("s1", "leteo", "A later note", "the focus"))
+            .unwrap()
+            .observation;
+        let newer = store
+            .add_observation(memory_in(
+                "s1",
+                "leteo",
+                "Spaces everywhere",
+                "the new rule",
+            ))
+            .unwrap()
+            .observation;
+        supersede(&mut store, &newer.sync_id, &older.sync_id);
+        (older, focus)
+    };
+    let timeline = server
+        .mem_timeline(Parameters(
+            serde_json::from_value(json!({ "observation_id": focus.id })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let neighbour = timeline
+        .before
+        .iter()
+        .find(|entry| entry.id == older.id)
+        .expect("the older memory is the focus's neighbour");
+    assert_eq!(neighbour.caveats.len(), 1, "{neighbour:?}");
+    assert_eq!(neighbour.caveats[0].relation, "superseded_by");
+    assert!(
+        serde_json::to_value(&timeline).unwrap()["before"][0]
+            .get("caveats")
+            .is_some(),
+        "carried on the neighbour itself"
+    );
+}
+
+#[test]
+fn a_timeline_neighbour_without_a_caveat_does_not_grow() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let focus = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/workspace").unwrap();
+        store
+            .add_observation(memory_in("s1", "leteo", "One", "a note"))
+            .unwrap();
+        store
+            .add_observation(memory_in("s1", "leteo", "Two", "another note"))
+            .unwrap()
+            .observation
+    };
+    let timeline = serde_json::to_value(
+        server
+            .mem_timeline(Parameters(
+                serde_json::from_value(json!({ "observation_id": focus.id })).unwrap(),
+            ))
+            .unwrap()
+            .0,
+    )
+    .unwrap();
+    assert!(
+        timeline["before"][0].get("caveats").is_none(),
+        "omitted when empty: {timeline}"
+    );
+}
+
+#[test]
+fn a_timeline_refuses_a_project_it_does_not_belong_to_and_says_so() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let id = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/workspace").unwrap();
+        store
+            .add_observation(memory_in("s1", "leteo", "One", "a note"))
+            .unwrap()
+            .observation
+            .id
+    };
+    let timeline = |project: &str| {
+        server.mem_timeline(Parameters(
+            serde_json::from_value(json!({ "observation_id": id, "project": project })).unwrap(),
+        ))
+    };
+    assert!(timeline("leteo").is_ok());
+    let Err(error) = timeline("other") else {
+        panic!("a mismatched project is refused");
+    };
+    assert_eq!(error_payload(&error)["error"]["code"], "project_mismatch");
+
+    let published = LeteoMcpServer::router()
+        .list_all()
+        .into_iter()
+        .find(|tool| tool.name == "mem_timeline")
+        .expect("mem_timeline is exposed")
+        .input_schema["properties"]["project"]["description"]
+        .as_str()
+        .expect("the field is described")
+        .to_owned();
+    assert!(
+        published.contains("project_mismatch") && !published.contains("ignored"),
+        "the schema says what the handler does: {published}"
+    );
+}
+
+#[test]
+fn an_empty_search_whose_limit_is_past_the_cap_says_the_count_is_a_floor() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::open(crate::store::StoreConfig::new(temp.path().join("mcp.db"))).unwrap();
+    store.create_session("s1", "other", "C:/other").unwrap();
+    let cap = store.max_search_results();
+    for index in 0..cap + 5 {
+        store
+            .add_observation(memory_in(
+                "s1",
+                "other",
+                &format!("A note about zarandajas number {index}"),
+                &format!("It speaks of zarandajas and nothing else, {index}."),
+            ))
+            .unwrap();
+    }
+    store.create_session("s2", "leteo", "C:/repo").unwrap();
+    let server = LeteoMcpServer::with_options(
+        Arc::new(Mutex::new(store)),
+        McpOptions {
+            default_project: Some("leteo".to_owned()),
+            ..McpOptions::default()
+        },
+    );
+    let reply = server
+        .mem_search(Parameters(
+            serde_json::from_value(json!({ "query": "zarandajas", "limit": cap * 3 })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(reply.count, 0, "{reply:?}");
+    let said = reply.hint.unwrap_or_default();
+    assert!(
+        said.contains(&format!("{cap} or more elsewhere")),
+        "the store stops at {cap}, so the count is a floor: {said}"
     );
 }

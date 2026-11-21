@@ -1934,5 +1934,47 @@
     "file": "src/store/relations.rs",
     "old": "        } else {\n            (\"\", \"\")\n        };",
     "new": "        } else {\n            (source_id, target_id)\n        };"
+  },
+  {
+    "name": "review queue: a listing with no project is about the detected project",
+    "file": "src/mcp/tools.rs",
+    "old": "                    .or_else(|| self.read_project().map(|(detected, _source)| detected));",
+    "new": "                    .or_else(|| None::<String>);"
+  },
+  {
+    "name": "review queue: marking a memory reviewed asserts the project it is expected in",
+    "file": "src/store/observations.rs",
+    "old": "        assert_expected_project(id, observation.project.as_deref(), expected_project)?;\n        let review_after =",
+    "new": "        let _ = expected_project;\n        let review_after ="
+  },
+  {
+    "name": "review queue: a memory just marked reviewed comes back as a preview",
+    "file": "src/mcp/output.rs",
+    "old": "        let mut observation = ObservationOutput::from(value).preview();\n        observation.caveats = caveats.into_iter()",
+    "new": "        let mut observation = ObservationOutput::from(value);\n        observation.caveats = caveats.into_iter()"
+  },
+  {
+    "name": "review queue: a memory just marked reviewed carries its caveats",
+    "file": "src/mcp/output.rs",
+    "old": "        observation.caveats = caveats.into_iter().map(Into::into).collect();\n        Self {\n            action: \"mark_reviewed\"",
+    "new": "        let _ = caveats;\n        Self {\n            action: \"mark_reviewed\""
+  },
+  {
+    "name": "timeline: a neighbour carries its own caveats",
+    "file": "src/mcp/output.rs",
+    "old": "            let mut output = TimelineEntryOutput::from(entry).preview();\n            output.caveats = caveats;",
+    "new": "            let mut output = TimelineEntryOutput::from(entry).preview();\n            let _ = caveats;"
+  },
+  {
+    "name": "timeline: a project that does not own the focus is refused",
+    "file": "src/mcp/tools.rs",
+    "old": "            if timeline.focus.project.as_deref() != Some(project.as_str()) {",
+    "new": "            if false && timeline.focus.project.as_deref() != Some(project.as_str()) {"
+  },
+  {
+    "name": "search: the elsewhere count is measured against the limit the store applies",
+    "file": "src/mcp/tools.rs",
+    "old": "                        store.effective_search_limit(limit),",
+    "new": "                        limit.unwrap_or(10),"
   }
 ]

@@ -1537,7 +1537,7 @@ fn an_arriving_memory_does_not_undo_a_reread() {
     // prove nothing. It did: with the original date in the payload, removing
     // the protection this guards changed the clock by under a second.
     let created_at = store.get_observation(saved.id).unwrap().created_at;
-    store.mark_reviewed(saved.id).unwrap();
+    store.mark_reviewed(saved.id, None).unwrap();
     let after_reading = store
         .get_observation(saved.id)
         .unwrap()

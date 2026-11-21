@@ -167,7 +167,7 @@ without rewriting the rest, `mem_update` takes `find` and `replace`, and a
 A decision, a policy or a preference is saved with a date to look at it again.
 When the session's opening block says memories are due, call `mem_review` with
 `action: "list"`, read the ones that still matter, and mark each with
-`action: "mark_reviewed"` once you have — that is what winds the clock on. A
+`action: "mark_reviewed"` (with its project as `expected_project`) once you have — that is what winds the clock on. A
 memory whose answer has changed is a `mem_update` or a new save under the same
 `topic_key`, not a note to yourself.
 

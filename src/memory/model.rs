@@ -157,6 +157,10 @@ pub struct SearchResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TimelineEntry {
     pub id: i64,
+    /// What a caller asks the graph about: a neighbour that was overturned has
+    /// to be found by the same key every other surface finds it by.
+    #[serde(default)]
+    pub sync_id: String,
     pub session_id: String,
     #[serde(rename = "type")]
     pub kind: String,

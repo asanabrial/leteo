@@ -285,7 +285,7 @@ impl Store {
         let session_info = get_session_row(&self.connection, &focus.session_id).ok();
 
         let mut before_statement = self.connection.prepare(
-            "SELECT id, session_id, type, title, content, tool_name, project, scope, topic_key,
+            "SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
                     revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
              FROM observations
              WHERE session_id = ?1 AND id < ?2 AND deleted_at IS NULL
@@ -299,7 +299,7 @@ impl Store {
         before_entries.reverse();
 
         let mut after_statement = self.connection.prepare(
-            "SELECT id, session_id, type, title, content, tool_name, project, scope, topic_key,
+            "SELECT id, sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
                     revision_count, duplicate_count, last_seen_at, created_at, updated_at, deleted_at
              FROM observations
              WHERE session_id = ?1 AND id > ?2 AND deleted_at IS NULL
@@ -1380,9 +1380,14 @@ impl Store {
         self.review_due(project, limit)
     }
 
-    pub fn mark_reviewed(&mut self, id: i64) -> Result<(), StoreError> {
+    pub fn mark_reviewed(
+        &mut self,
+        id: i64,
+        expected_project: Option<&str>,
+    ) -> Result<(), StoreError> {
         let tx = self.write_transaction()?;
         let observation = get_active_observation(&tx, id)?;
+        assert_expected_project(id, observation.project.as_deref(), expected_project)?;
         let review_after =
             crate::memory::rules::review_after(&observation.kind, Utc::now().naive_utc())
                 .map(crate::timestamp::format);

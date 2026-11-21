@@ -118,8 +118,12 @@ impl UpdateParams {
 pub(super) struct ReviewParams {
     /// Action: list or mark_reviewed.
     pub(super) action: String,
-    /// Optional project filter for list.
+    /// Project to list. Defaults to the detected project, like the other reads.
     pub(super) project: Option<String>,
+    /// Required for mark_reviewed: the project the memory is expected to belong
+    /// to. A memory filed under a different one is refused with
+    /// `project_mismatch` and left untouched.
+    pub(super) expected_project: Option<String>,
     /// Maximum list results.
     ///
     /// One at least: zero is a page with nothing on it, which is not a question
@@ -355,7 +359,8 @@ pub(super) struct TimelineParams {
     #[schemars(range(min = 0, max = 20))]
     #[serde(default = "default_timeline_window")]
     pub(super) after: usize,
-    /// Accepted for upstream schema compatibility; timeline is session-scoped.
+    /// The project the focus is expected to belong to. A memory filed under a
+    /// different one is refused with `project_mismatch`.
     pub(super) project: Option<String>,
 }
 

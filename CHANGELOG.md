@@ -121,6 +121,21 @@ All notable changes to Leteo are documented in this file.
   current memory disappeared from search and listings. A `supersedes` verdict
   now turns the row round to the pair as given; the verbs that have no
   direction keep the order they were filed in (#333).
+- **The review queue and the timeline now say what they published.**
+  `mem_review` with no project listed and counted the whole store while the
+  opening block counted this project's and sent the agent to it; it now answers
+  for the detected project like the other reads. Marking a memory reviewed took
+  no expected project, unlike pin, delete and update, so it now requires
+  `expected_project` and refuses another project's memory with
+  `project_mismatch`; it also returned the whole body where the description
+  promises a 400-byte preview (5,499 bytes for one fixture) and carried no
+  caveats where the list does, and now does both. A `mem_timeline` neighbour
+  carried no caveats, so an overturned one read as current; each now carries its
+  own. The "elsewhere" count of an empty search was measured against the
+  caller's limit while the store stops at twenty, so `limit: 50` over more than
+  twenty matches in other projects said "20" where it means "20 or more", in
+  the tool and in `leteo search`. And the timeline's `project` is described as
+  what it does, which is refuse a mismatch, not as ignored (#334).
 
 ## [0.4.3] - 2026-11-03
 

@@ -2282,5 +2282,11 @@
     "file": "src/store/diagnostics.rs",
     "old": "                if DoctorCheck::OPT_IN.contains(&code) && citations.is_none() {",
     "new": "                if false {"
+  },
+  {
+    "name": "citations: the word before a hash is cut one byte after a multi-byte character",
+    "file": "src/citations.rs",
+    "old": "        .map_or(0, |(at, character)| at + character.len_utf8());",
+    "new": "        .map_or(0, |(at, _)| at + 1);"
   }
 ]

@@ -161,14 +161,20 @@ fn follows_commit_word(before: &str) -> bool {
     if without_colon.len() == before.len() {
         return false;
     }
+    // The index after the last character that is not a letter, which is that
+    // character's index plus its own width. Adding one assumed it was ASCII, and
+    // a Spanish memory ("revisión commit abc1234") puts `ó` there: the slice
+    // landed inside it and took the whole command down.
     let word_start = without_colon
-        .rfind(|character: char| !character.is_ascii_alphabetic())
-        .map_or(0, |at| at + 1);
-    let word = &without_colon[word_start..];
-    let glued = without_colon[..word_start]
+        .char_indices()
+        .rev()
+        .find(|(_, character)| !character.is_ascii_alphabetic())
+        .map_or(0, |(at, character)| at + character.len_utf8());
+    let (before_word, word) = without_colon.split_at(word_start);
+    let glued = before_word
         .chars()
         .next_back()
-        .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_');
+        .is_some_and(|character| character.is_alphanumeric() || character == '_');
     !glued
         && COMMIT_WORDS
             .iter()
@@ -376,11 +382,17 @@ pub struct Assessment {
 /// did not resolve is only a count if git answered, and one that guessed "none"
 /// would read as a clean store.
 pub fn assess(root: &Path, memories: &[(i64, String)]) -> Result<Assessment, String> {
-    let cited: Vec<(i64, Citations)> = memories
-        .iter()
-        .map(|(id, text)| (*id, extract(text)))
-        .filter(|(_, citations)| !citations.is_empty())
-        .collect();
+    // One memory's text must not be able to take the report down. Extraction is
+    // written to be panic-free by construction; this is the net under it, so a
+    // text nobody thought of makes the check say it could not run, and why.
+    let mut cited: Vec<(i64, Citations)> = Vec::new();
+    for (id, text) in memories {
+        let citations = std::panic::catch_unwind(|| extract(text))
+            .map_err(|_| format!("the text of memory {id} could not be read for citations"))?;
+        if !citations.is_empty() {
+            cited.push((*id, citations));
+        }
+    }
 
     let mut hashes: Vec<String> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
@@ -430,7 +442,7 @@ pub fn assess(root: &Path, memories: &[(i64, String)]) -> Result<Assessment, Str
         memories_read: memories.len(),
         commits: hashes.len(),
         missing_commits: missing_commits.len(),
-        paths: paths.len() - counted(PathVerdict::NotAPath),
+        paths: paths.len().saturating_sub(counted(PathVerdict::NotAPath)),
         missing_paths: counted(PathVerdict::Missing),
         unreadable_paths: counted(PathVerdict::Unreadable),
         stale: stale.into_iter().collect(),
@@ -535,6 +547,83 @@ mod tests {
         ] {
             assert!(commits_in(text).is_empty(), "{text:?} was read as a commit");
         }
+    }
+
+    /// The shape that panicked: a multi-byte letter directly before the blank
+    /// that precedes a hash, so the look-behind for the word `commit` reads
+    /// across it.
+    #[test]
+    fn a_multi_byte_character_before_a_commit_word_or_a_hash_is_read_not_cut() {
+        assert_eq!(commits_in("revisión commit a1b2c3d"), ["a1b2c3d"]);
+        assert_eq!(commits_in("el commit é1b2c3d4"), Vec::<String>::new());
+        assert_eq!(commits_in("añadió: a1b2c3d4"), Vec::<String>::new());
+        assert_eq!(commits_in("ñcommit a1b2c3d"), Vec::<String>::new());
+        assert_eq!(commits_in("éMerge a1b2c3d"), Vec::<String>::new());
+        assert_eq!(commits_in("é commit: a1b2c3d"), ["a1b2c3d"]);
+        assert_eq!(commits_in("日本語 sha a1b2c3d"), ["a1b2c3d"]);
+        assert_eq!(commits_in("🎉 commit a1b2c3d"), ["a1b2c3d"]);
+        assert_eq!(commits_in("🎉 a1b2c3d"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn multi_byte_text_around_every_kind_of_citation_leaves_it_intact() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        for (before, after) in [("é", "é"), ("🎉", "🎉"), ("日", "本"), ("", "ñ"), ("ñ", "")]
+        {
+            let full = format!("{before} {hash} {after}");
+            assert_eq!(commits_in(&full), [hash], "{full:?}");
+            let tight = format!("{before}`a1b2c3d`{after}");
+            assert_eq!(commits_in(&tight), ["a1b2c3d"], "{tight:?}");
+            let worded = format!("{before} commit a1b2c3d{after}");
+            assert_eq!(commits_in(&worded), ["a1b2c3d"], "{worded:?}");
+            let path = format!("revisión{before} `src/store/search.rs:12` añadió{after}");
+            assert_eq!(paths_in(&path), ["src/store/search.rs"], "{path:?}");
+            let inside = format!("`src/{before}x/a.rs{after}`");
+            let _ = paths_in(&inside);
+        }
+        assert_eq!(
+            paths_in("`src/ñandú/a.rs` y `日本/b.rs:3-4`"),
+            ["src/ñandú/a.rs", "日本/b.rs"]
+        );
+    }
+
+    #[test]
+    fn a_text_that_ends_at_a_citation_or_at_a_backtick_is_read() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(commits_in(&format!("é{hash}")), [hash]);
+        assert_eq!(commits_in(&format!("é {hash}")), [hash]);
+        assert_eq!(commits_in("é commit a1b2c3d"), ["a1b2c3d"]);
+        assert!(commits_in("é commit ").is_empty());
+        assert!(commits_in("é `").is_empty());
+        assert!(commits_in("commit").is_empty());
+        assert!(commits_in("").is_empty());
+        assert!(paths_in("é `").is_empty());
+        assert!(paths_in("`").is_empty());
+        assert!(paths_in("ñ`src/a.rs").is_empty());
+        assert_eq!(paths_in("é `src/a.rs`"), ["src/a.rs"]);
+    }
+
+    #[test]
+    fn an_unclosed_backtick_or_fence_followed_by_multi_byte_text_is_read() {
+        assert!(paths_in("abre `src/a.rs y sigue con añadió 日本 🎉").is_empty());
+        assert_eq!(
+            paths_in("`src/a.rs` luego `src/b.rs y revisión"),
+            ["src/a.rs"]
+        );
+        assert!(paths_in("```\n`src/a.rs` añadió\nsin cerrar 日本 🎉").is_empty());
+        assert!(
+            paths_in("```rust\nlet é = 1;\n```\n`src/ok.rs` ñ").contains(&"src/ok.rs".to_owned())
+        );
+        assert!(commits_in("```\ncommit é a1b2c3d\nsin cerrar 🎉").is_empty());
+    }
+
+    #[test]
+    fn a_text_that_cannot_be_read_says_so_instead_of_panicking() {
+        let temp = TempDir::new().unwrap();
+        let memories = vec![(1, "revisión commit a1b2c3d 🎉 `src/ñ.rs`".to_owned())];
+        // Not a repository: git is asked only if a hash is found, and it is,
+        // so the answer is an error or a count — never a panic.
+        let _ = assess(temp.path(), &memories);
     }
 
     #[test]

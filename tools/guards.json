@@ -1890,26 +1890,26 @@
   {
     "name": "hard delete: one memory keeps its versions",
     "file": "src/store/observations.rs",
-    "old": "            orphan_relations_tx(&tx, &observation.sync_id)?;\n            delete_observation_versions_tx(&tx, &observation.sync_id)?;",
+    "old": "            orphan_relations_tx(&tx, &observation.sync_id)?;\n            erase_hard_deleted_observation_tx(&tx, &observation.sync_id)?;",
     "new": "            orphan_relations_tx(&tx, &observation.sync_id)?;"
   },
   {
     "name": "hard delete: a session keeps the versions of its memories",
     "file": "src/store/sessions.rs",
-    "old": "                observations::delete_observation_versions_tx(&tx, &observation.sync_id)?;",
+    "old": "                observations::erase_hard_deleted_observation_tx(&tx, &observation.sync_id)?;",
     "new": ""
   },
   {
     "name": "hard delete: a project keeps the versions of its memories",
     "file": "src/store/projects.rs",
-    "old": "                observations::delete_observation_versions_tx(&tx, &observation.sync_id)?;",
+    "old": "                observations::erase_hard_deleted_observation_tx(&tx, &observation.sync_id)?;",
     "new": ""
   },
   {
     "name": "hard delete: an applied remote delete keeps the versions",
     "file": "src/store/wire.rs",
-    "old": "        crate::store::observations::delete_observation_versions_tx(tx, &payload.sync_id)?;",
-    "new": ""
+    "old": "        orphan_relations_tx(tx, &payload.sync_id)?;\n        crate::store::observations::erase_hard_deleted_observation_tx(tx, &payload.sync_id)?;",
+    "new": "        orphan_relations_tx(tx, &payload.sync_id)?;"
   },
   {
     "name": "hard delete: the version delete takes every memory's history",
@@ -2354,5 +2354,47 @@
     "file": "src/hooks/mod.rs",
     "old": "Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,\n            Self::PostCompaction | Self::UserPromptSubmit => false,",
     "new": "Self::SessionStart | Self::SubagentStop => true,\n            Self::SessionStop | Self::PostCompaction | Self::UserPromptSubmit => false,"
+  },
+  {
+    "name": "hard delete: the journal keeps the earlier text of a deleted memory",
+    "file": "src/store/observations.rs",
+    "old": "    redact_observation_journal_tx(tx, observation_sync_id)?;\n",
+    "new": ""
+  },
+  {
+    "name": "hard delete: the journal redaction keeps every field of a payload",
+    "file": "src/store/observations.rs",
+    "old": "            if JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE.contains(&key.as_str()) {",
+    "new": "            if !key.is_empty() {"
+  },
+  {
+    "name": "hard delete: no tombstone is left for a replicated version to meet",
+    "file": "src/store/observations.rs",
+    "old": "         VALUES (?1, datetime('now'))\n         ON CONFLICT(sync_id) DO UPDATE SET deleted_at = excluded.deleted_at\",",
+    "new": "         SELECT ?1, datetime('now') WHERE 0\n         ON CONFLICT(sync_id) DO UPDATE SET deleted_at = excluded.deleted_at\","
+  },
+  {
+    "name": "hard delete: a version arriving after the delete is applied anyway",
+    "file": "src/store/wire.rs",
+    "old": "    if deleted {\n        return Ok(());\n    }\n    let replaced_at",
+    "new": "    let _ = deleted;\n    let replaced_at"
+  },
+  {
+    "name": "hard delete: a delete for a memory this store never held leaves no tombstone",
+    "file": "src/store/wire.rs",
+    "old": "        if payload.hard_delete {\n            crate::store::observations::erase_hard_deleted_observation_tx(tx, &payload.sync_id)?;\n        }\n        return Ok(());",
+    "new": "        return Ok(());"
+  },
+  {
+    "name": "doctor: an orphan version is never counted",
+    "file": "src/store/diagnostics.rs",
+    "old": "const ORPHAN_VERSION_PREDICATE: &str = \"NOT EXISTS (SELECT 1 FROM observations WHERE observations.sync_id = observation_versions.observation_sync_id)\";",
+    "new": "const ORPHAN_VERSION_PREDICATE: &str = \"0 = 1\";"
+  },
+  {
+    "name": "doctor: --repair leaves the orphan versions in place",
+    "file": "src/cli/mod.rs",
+    "old": "repair.then(|| store.remove_orphan_versions()).transpose()?;",
+    "new": "None::<i64>;"
   }
 ]

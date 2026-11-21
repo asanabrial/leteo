@@ -418,6 +418,17 @@ fn apply_observation_version_upsert_tx(
             "observation version payload requires sync_id and a positive revision",
         ));
     }
+    // The version of a memory a hard delete already removed. The journal queues
+    // a version before its memory's own upsert, so "no memory here" cannot be
+    // the test: only a recorded delete says the text is unwanted.
+    let deleted: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM observation_deletions WHERE sync_id = ?1)",
+        [payload.sync_id.trim()],
+        |row| row.get(0),
+    )?;
+    if deleted {
+        return Ok(());
+    }
     let replaced_at = if payload.replaced_at.trim().is_empty() {
         sqlite_now()
     } else {
@@ -451,6 +462,13 @@ fn apply_observation_delete_tx(
         )
         .optional()?;
     let Some((id, current_project)) = row else {
+        // A hard delete for a memory this store never held still has to leave
+        // its tombstone: the versions the origin queued before it can arrive
+        // after it, and with no row here nothing else would say they are
+        // unwanted.
+        if payload.hard_delete {
+            crate::store::observations::erase_hard_deleted_observation_tx(tx, &payload.sync_id)?;
+        }
         return Ok(());
     };
     // A delete says "gone from the project it was filed under". Moving a memory
@@ -463,7 +481,7 @@ fn apply_observation_delete_tx(
     }
     if payload.hard_delete {
         orphan_relations_tx(tx, &payload.sync_id)?;
-        crate::store::observations::delete_observation_versions_tx(tx, &payload.sync_id)?;
+        crate::store::observations::erase_hard_deleted_observation_tx(tx, &payload.sync_id)?;
         tx.execute("DELETE FROM observations WHERE id = ?1", [id])?;
     } else {
         let deleted_at = payload

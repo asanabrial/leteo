@@ -157,6 +157,15 @@ All notable changes to Leteo are documented in this file.
   the link into the file it names, with the temporary file beside that file, and
   the file keeps its mode. A link to nothing, a loop of links and a link to a
   directory are refused with a message instead of being replaced (#336).
+- **`doctor` no longer counts a check that could not run as one that passed.**
+  Four checks turned a failed query into the answer a healthy store gives: no
+  topic key shared, no memory type unfiled, no stale hash, no full-text trigger
+  missing; and the stems row count compared two failures as equal. Each now
+  reports that it could not be checked, with the error, as a failure, so the
+  store is not called healthy over something nobody looked at. A memory with no
+  hash at all, which a database adopted from an early Engram schema carries, was
+  also dropped from the stale-hash count and skipped by `--repair`; it now counts
+  as stale and is repaired (#337).
 
 ## [0.4.3] - 2026-11-03
 

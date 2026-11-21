@@ -324,7 +324,9 @@ fn an_import_stems_what_it_brings() {
     target.import(&exported).unwrap();
     assert_eq!(strict(&target, "ejecutaron"), ["El cron ejecuta"]);
     assert!(
-        crate::store::schema::missing_full_text_triggers(target.connection()).is_empty(),
+        crate::store::schema::missing_full_text_triggers(target.connection())
+            .unwrap()
+            .is_empty(),
         "the import put every trigger back"
     );
 }

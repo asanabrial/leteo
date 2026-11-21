@@ -2012,5 +2012,47 @@
     "file": "src/files.rs",
     "old": "        (Visibility::OwnerOnly, _) => file.set_permissions(fs::Permissions::from_mode(0o600)),",
     "new": "        (Visibility::OwnerOnly, _) => Ok(()),"
+  },
+  {
+    "name": "doctor: a failed topic-key query reads as a pass",
+    "file": "src/store/diagnostics.rs",
+    "old": "                Err(error) => could_not_run(\"topic_key_uniqueness\", \"the topic keys\", &error),",
+    "new": "                Err(_) => DoctorCheck::passed(\"topic_key_uniqueness\"),"
+  },
+  {
+    "name": "doctor: a failed memory-type query reads as a pass",
+    "file": "src/store/diagnostics.rs",
+    "old": "                    could_not_run(\"observation_type_searchable\", \"the memory types\", error)",
+    "new": "                    DoctorCheck::passed(\"observation_type_searchable\")"
+  },
+  {
+    "name": "doctor: a failed hash query reads as a pass",
+    "file": "src/store/diagnostics.rs",
+    "old": "                Err(error) => could_not_run(\"observation_hash_sync\", \"the memory hashes\", &error),",
+    "new": "                Err(_) => DoctorCheck::passed(\"observation_hash_sync\"),"
+  },
+  {
+    "name": "doctor: a failed trigger lookup reads as a trigger that is there",
+    "file": "src/store/schema.rs",
+    "old": "            |row| row.get::<_, bool>(0),\n        )?;\n        if !present {",
+    "new": "            |row| row.get::<_, bool>(0),\n        )\n        .unwrap_or(true);\n        if !present {"
+  },
+  {
+    "name": "doctor: a failed stems count reads as a pass",
+    "file": "src/store/diagnostics.rs",
+    "old": "                (Err(error), _) | (_, Err(error)) => could_not_run(\n                    \"observation_stems_sync\",\n                    \"the Snowball observation index row counts\",\n                    &error,\n                ),",
+    "new": "                (Err(_), _) | (_, Err(_)) => DoctorCheck::passed(\"observation_stems_sync\"),"
+  },
+  {
+    "name": "doctor: a memory with no hash is not counted as stale",
+    "file": "src/store/diagnostics.rs",
+    "old": "        if hash.as_deref() != Some(normalize::normalized_hash(&content).as_str()) {",
+    "new": "        if hash.as_deref().is_some_and(|hash| hash != normalize::normalized_hash(&content)) {"
+  },
+  {
+    "name": "doctor: --repair skips a memory with no hash",
+    "file": "src/store/diagnostics.rs",
+    "old": "                if hash.as_deref() != Some(taken.as_str()) {",
+    "new": "                if hash.as_deref().is_some_and(|hash| hash != taken) {"
   }
 ]

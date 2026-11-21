@@ -2604,8 +2604,8 @@
   {
     "name": "serve: a response is written without a deadline again",
     "file": "src/mcp/serve.rs",
-    "old": "tokio::time::timeout(deadline, write).await.unwrap_or_else(|_| {",
-    "new": "Ok::<_, ()>(write.await).unwrap_or_else(|_| {"
+    "old": "tokio::time::timeout(deadline, write)",
+    "new": "tokio::time::timeout(deadline * 100000, write)"
   },
   {
     "name": "serve: one connection more than the bound is served",

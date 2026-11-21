@@ -574,7 +574,7 @@ fn render(reply: &Reply) -> Vec<u8> {
 }
 
 async fn write_response(
-    stream: &mut TcpStream,
+    stream: &mut (impl tokio::io::AsyncWrite + Unpin),
     reply: Reply,
     deadline: std::time::Duration,
 ) -> std::io::Result<()> {
@@ -1026,13 +1026,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_that_never_reads_is_dropped_at_the_write_deadline() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        // The peer connects and then never reads, so a response larger than
-        // both kernel buffers can only finish if the writer gives up.
-        let _never_reads = TcpStream::connect(address).await.unwrap();
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let reply = Reply::ok(serde_json::json!({ "padding": "x".repeat(64 * 1024 * 1024) }));
+        // An in-memory pipe whose far end is held and never read. A loopback
+        // socket was tried first and failed on Windows: 64 MiB written to a
+        // peer that never read was accepted whole, so the write finished and
+        // no deadline was met. The pipe's capacity is a number this test
+        // chooses, not one a kernel does.
+        let (mut stream, _never_reads) = tokio::io::duplex(64);
+        let reply = Reply::ok(serde_json::json!({ "padding": "x".repeat(4096) }));
 
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(30),

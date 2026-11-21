@@ -83,6 +83,34 @@ pub fn assemble_counted(
     memories: usize,
     budget_bytes: usize,
 ) -> Result<(String, usize), crate::StoreError> {
+    assemble_listed(store, project, scope, memories, budget_bytes)
+        .map(|(context, listed)| (context, listed.memories.len()))
+}
+
+/// What a rendered block carries, by name rather than by number.
+///
+/// The per-prompt hint has to know which memories the opening block already put
+/// in front of the agent, and which caveats it printed under them. Re-deriving
+/// that from the same queries would name the memories the byte budget *asked*
+/// for, and the budget cuts memories from the block: one that was cut was not
+/// shown and must not be recorded as shown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Listed {
+    /// Pinned memories first, then the titled ones, as the block lists them.
+    pub memories: Vec<i64>,
+    /// One key per caveat line printed, in the form [`Caveat::key`] writes.
+    pub caveats: Vec<String>,
+}
+
+/// [`assemble_counted`], with the memories and caveats the block lists in place
+/// of how many there are.
+pub fn assemble_listed(
+    store: &crate::store::Store,
+    project: Option<&str>,
+    scope: Option<&str>,
+    memories: usize,
+    budget_bytes: usize,
+) -> Result<(String, Listed), crate::StoreError> {
     let mut sessions = store.recent_sessions(project, Some(RECENT_SESSIONS))?;
     // With a ceiling of its own, the same one the recent budget takes. See
     // `pinned_observations`: without it a project with 360 pinned memories put
@@ -145,7 +173,7 @@ pub fn assemble_counted(
     // byte budget can drop memories: a count taken before the cut is a number
     // the block does not carry, and this is the surface whose caller reports
     // that number to a person (`hooks/context.rs`).
-    Ok(format_context_counted(
+    Ok(format_context_listed(
         &sessions,
         &prompts,
         &pinned,
@@ -301,6 +329,30 @@ pub fn format_context_counted(
     caveats: &BTreeMap<String, Vec<Caveat>>,
     frame: Frame,
 ) -> (String, usize) {
+    let (context, listed) = format_context_listed(
+        sessions,
+        prompts,
+        pinned,
+        pinned_omitted,
+        observations,
+        caveats,
+        frame,
+    );
+    (context, listed.memories.len())
+}
+
+/// [`format_context_counted`], naming the memories instead of counting them.
+///
+/// The count is the length of the list, so the two cannot disagree.
+pub fn format_context_listed(
+    sessions: &[SessionSummary],
+    prompts: &[Prompt],
+    pinned: &[Observation],
+    pinned_omitted: usize,
+    observations: &[Observation],
+    caveats: &BTreeMap<String, Vec<Caveat>>,
+    frame: Frame,
+) -> (String, Listed) {
     let Frame {
         project,
         budget_bytes,
@@ -321,7 +373,7 @@ pub fn format_context_counted(
         })
         .collect();
     if sessions.is_empty() && prompts.is_empty() && pinned.is_empty() && observations.is_empty() {
-        return (String::new(), 0);
+        return (String::new(), Listed::default());
     }
 
     let mut shown = Shown {
@@ -348,8 +400,24 @@ pub fn format_context_counted(
     loop {
         let rendered = render_context(&sections, &shown, budget_bytes);
         if rendered.len() <= budget_bytes || !shown.drop_one() {
-            let named = shown.pinned + shown.listed.len();
-            return (rendered, named);
+            let named: Vec<&Observation> = pinned[..shown.pinned]
+                .iter()
+                .chain(shown.listed.iter().map(|&index| &observations[index]))
+                .collect();
+            let listed = Listed {
+                memories: named.iter().map(|observation| observation.id).collect(),
+                caveats: named
+                    .iter()
+                    .flat_map(|observation| {
+                        caveats
+                            .get(&observation.sync_id)
+                            .into_iter()
+                            .flatten()
+                            .map(|caveat| caveat.key(observation.id))
+                    })
+                    .collect(),
+            };
+            return (rendered, listed);
         }
     }
 }

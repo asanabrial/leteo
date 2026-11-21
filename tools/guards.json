@@ -2054,5 +2054,41 @@
     "file": "src/store/diagnostics.rs",
     "old": "                if hash.as_deref() != Some(taken.as_str()) {",
     "new": "                if hash.as_deref().is_some_and(|hash| hash != taken) {"
+  },
+  {
+    "name": "hint: a caveat already handed over lifts the already-shown rule again",
+    "file": "src/hooks/context.rs",
+    "old": "                .any(|caveat| !state.caveats.contains(&caveat.key(observation.id)))",
+    "new": "                .any(|_| true)"
+  },
+  {
+    "name": "hint: a session start does not record what the opening block listed",
+    "file": "src/hooks/mod.rs",
+    "old": "                if !listed.memories.is_empty() {",
+    "new": "                if false {"
+  },
+  {
+    "name": "hint: a compaction keeps what the hint named before it",
+    "file": "src/hooks/mod.rs",
+    "old": "            state.forget_context();\n",
+    "new": "\n"
+  },
+  {
+    "name": "hint: a compaction does not record what the rebuilt block lists",
+    "file": "src/hooks/mod.rs",
+    "old": "                    state.remember_listed(&listed);\n                    // The count is what",
+    "new": "                    let _ = &listed;\n                    // The count is what"
+  },
+  {
+    "name": "hint: the full header is said on every hint",
+    "file": "src/hooks/mod.rs",
+    "old": "                state.headed = true;",
+    "new": "                state.headed = false;"
+  },
+  {
+    "name": "hint: a memory the byte budget cut is recorded as listed",
+    "file": "src/recall.rs",
+    "old": "                .chain(shown.listed.iter().map(|&index| &observations[index]))",
+    "new": "                .chain(observations.iter())"
   }
 ]

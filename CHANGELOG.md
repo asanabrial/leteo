@@ -166,6 +166,20 @@ All notable changes to Leteo are documented in this file.
   hash at all, which a database adopted from an early Engram schema carries, was
   also dropped from the stale-hash count and skipped by `--repair`; it now counts
   as stale and is repaired (#337).
+- **The prompt hint no longer repeats itself.** It named memories the opening
+  block had just listed, because neither a session start nor a compaction
+  recorded what the block carried as already shown; both now do, from the
+  memories the byte budget actually left in the block rather than the ones it was
+  asked for. A memory with a judged conflict was named again, with its caveat,
+  on every matching prompt, because any caveat lifted the already-shown rule; a
+  caveat now lifts it once, and a new one lifts it again. The 110-byte header
+  sentence was repeated on every hint; it is now said once per conversation and
+  again after a compaction, with a short line in between that keeps the hedge.
+  The hint state is also written through a temporary file and a rename, so a
+  concurrent hook no longer reads an empty file, and a state file from an older
+  Leteo still reads. A prompt that is only an acknowledgement such as "continue"
+  is still searched as before: a gate for those is left for a measurement on a
+  hand-labelled prompt set rather than a guessed threshold (#339).
 
 ## [0.4.3] - 2026-11-03
 

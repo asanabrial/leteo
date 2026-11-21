@@ -68,7 +68,7 @@ Pick the single verb that fits best. Use exactly one of these, spelled exactly
 as written:
 
   conflicts_with  B asserts something that cannot be true if A is true.
-  supersedes      B is the later word on the same point: A is now out of date.
+  supersedes      A is the later word on the same point: B is now out of date.
   scoped          One covers a special case of what the other covers generally.
   related         Same subject, but neither corrects nor narrows the other.
   compatible      Both hold at once and add to each other.
@@ -385,13 +385,34 @@ pub fn build_prompt(
     b_title: &str,
     b_content: &str,
 ) -> String {
-    PROMPT_TEMPLATE
-        .replace("{a_id}", a_id)
-        .replace("{a_title}", a_title)
-        .replace("{a_content}", a_content)
-        .replace("{b_id}", b_id)
-        .replace("{b_title}", b_title)
-        .replace("{b_content}", b_content)
+    // One pass over the template, never over what was substituted. Six
+    // chained `replace` calls rescanned the growing string, so a note that
+    // quoted this prompt and held `{b_content}` had the other note's body
+    // pasted into its own section.
+    let fields = [
+        ("{a_id}", a_id),
+        ("{a_title}", a_title),
+        ("{a_content}", a_content),
+        ("{b_id}", b_id),
+        ("{b_title}", b_title),
+        ("{b_content}", b_content),
+    ];
+    let mut prompt =
+        String::with_capacity(PROMPT_TEMPLATE.len() + a_content.len() + b_content.len());
+    let mut rest = PROMPT_TEMPLATE;
+    while let Some((at, placeholder, value)) = fields
+        .iter()
+        .filter_map(|(placeholder, value)| {
+            rest.find(placeholder).map(|at| (at, *placeholder, *value))
+        })
+        .min_by_key(|(at, _, _)| *at)
+    {
+        prompt.push_str(&rest[..at]);
+        prompt.push_str(value);
+        rest = &rest[at + placeholder.len()..];
+    }
+    prompt.push_str(rest);
+    prompt
 }
 
 /// Parses `claude --output-format json`, whose result field holds the model's
@@ -1030,6 +1051,38 @@ mod tests {
                 "the store accepts {verb} and the model is never told it exists"
             );
         }
+    }
+
+    #[test]
+    fn a_placeholder_inside_a_note_is_not_filled_in() {
+        let prompt = build_prompt(
+            "a",
+            "Title A",
+            "{b_content}",
+            "b",
+            "Title B",
+            "UNIQUE-B-BODY",
+        );
+
+        assert!(
+            prompt.contains("body: {b_content}\n"),
+            "A's body was rewritten: {prompt}"
+        );
+        assert_eq!(prompt.matches("UNIQUE-B-BODY").count(), 1, "{prompt}");
+    }
+
+    #[test]
+    fn the_prompt_defines_supersedes_in_the_direction_the_scan_stores_it() {
+        // The scan stores A as the source and B as the target, and the store
+        // hides the target of a supersedes.
+        let line = PROMPT_TEMPLATE
+            .lines()
+            .find(|line| line.trim_start().starts_with(RELATION_SUPERSEDES))
+            .expect("the template defines supersedes");
+        assert!(
+            line.contains("A is the later word") && line.contains("B is now out of date"),
+            "{line}"
+        );
     }
 
     #[test]

@@ -367,39 +367,42 @@ mod tests {
 
     #[test]
     fn a_flag_names_the_store_before_the_environment_does() {
-        let flag_dir = PathBuf::from("/flag/dir");
-        let env_database = Some(PathBuf::from("/env/store.db"));
-        let env_dir = Some(PathBuf::from("/env/dir"));
-        let cli = |data_dir: Option<&str>, database: Option<&str>| Cli {
-            data_dir: data_dir.map(PathBuf::from),
-            database: database.map(PathBuf::from),
-            ..cli_for(Path::new("/unused"))
+        // Under a temporary directory rather than `/flag/dir`: a path with no
+        // drive is not absolute on Windows, where it came back as
+        // `D:/flag/dir` and the comparison failed on the drive alone.
+        let temp = tempfile::tempdir().unwrap();
+        let flag_dir = temp.path().join("flag");
+        let flag_database = temp.path().join("flag-store.db");
+        let env_database = temp.path().join("env-store.db");
+        let env_dir = temp.path().join("env");
+        let cli = |data_dir: Option<&Path>, database: Option<&Path>| Cli {
+            data_dir: data_dir.map(Path::to_path_buf),
+            database: database.map(Path::to_path_buf),
+            ..cli_for(Path::new("unused"))
         };
-        let path = |cli: &Cli| {
-            store_config_from(cli, env_database.clone(), env_dir.clone())
+        let path = |cli: &Cli, database: Option<&Path>| {
+            store_config_from(cli, database.map(Path::to_path_buf), Some(env_dir.clone()))
                 .unwrap()
                 .database_path
         };
 
         assert_eq!(
-            path(&cli(Some("/flag/dir"), None)),
+            path(&cli(Some(&flag_dir), None), Some(&env_database)),
             flag_dir.join("leteo.db")
         );
         assert_eq!(
-            path(&cli(Some("/flag/dir"), Some("/flag/store.db"))),
-            PathBuf::from("/flag/store.db")
+            path(
+                &cli(Some(&flag_dir), Some(&flag_database)),
+                Some(&env_database)
+            ),
+            flag_database
         );
         assert_eq!(
-            path(&cli(None, None)),
-            PathBuf::from("/env/store.db"),
+            path(&cli(None, None), Some(&env_database)),
+            env_database,
             "no flag: the more specific variable wins"
         );
-        assert_eq!(
-            store_config_from(&cli(None, None), None, env_dir.clone())
-                .unwrap()
-                .database_path,
-            PathBuf::from("/env/dir/leteo.db")
-        );
+        assert_eq!(path(&cli(None, None), None), env_dir.join("leteo.db"));
     }
 
     /// A store nobody can read is not an empty store.

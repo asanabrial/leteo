@@ -231,6 +231,13 @@ All notable changes to Leteo are documented in this file.
   that sent nothing, or stopped half-way through its body, stayed open for as
   long as the client cared to keep it. A request that has not arrived in full
   within ten seconds is now answered `408` and closed (#342).
+- **A backlog of queued captures no longer delays the next prompt.** Every hook
+  replayed the captures a busy store had left beside it before it answered, the
+  prompt hook included, and the replay was bounded only by the hook's own
+  budget, so after a busy period the message a person typed waited on old
+  captures (about 2 ms each, measured: a full spool of 1,000 took 2.2 s). The
+  replay now happens on `session-start`, `subagent-stop` and `session-stop`;
+  `user-prompt-submit` and `post-compaction` leave the queue alone (#343).
 
 ## [0.4.3] - 2026-11-03
 

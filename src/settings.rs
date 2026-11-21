@@ -447,13 +447,16 @@ impl ContextSize {
     /// `Full` was measured again when the block lost its previews and the
     /// default dropped to thirty memories: on a copy of a real store of 1,045
     /// memories, the thirty-memory block for its main project is 3,425 bytes,
-    /// rounded up the same way. `Slim` and `Deep` rendered 2,479 and 8,395 bytes
-    /// there, far under the ceilings they still carry from the sizes above, and
-    /// were left as they were because their ceilings were not measured again.
+    /// rounded up the same way. `Slim` rendered 2,479 bytes there and now has
+    /// 3,000, so that a smaller size never carries a larger ceiling than a
+    /// bigger one: it fell through to `tool_bytes` and had 15,000, almost four
+    /// times `Full`'s. `Deep` rendered 8,395 bytes and still carries the
+    /// ceiling from the sizes above, because it was not measured again.
     pub fn bytes(self) -> usize {
         match self {
+            Self::Slim => 3_000,
             Self::Full => 4_000,
-            other => other.tool_bytes(),
+            Self::Deep => self.tool_bytes(),
         }
     }
 
@@ -1240,6 +1243,16 @@ mod context_size_tests {
         assert_eq!(ContextSize::Deep.memories(), 80);
         assert_eq!(ContextSize::default(), ContextSize::Full);
         assert_eq!(Settings::default().context_size().memories(), 30);
+    }
+
+    /// A smaller size never carries a larger ceiling than a bigger one.
+    ///
+    /// `Slim` fell through to the tool's ceiling and had 15,000 bytes beside
+    /// `Full`'s 4,000, so choosing the small opening bought the big one.
+    #[test]
+    fn a_smaller_size_never_has_a_larger_markdown_ceiling() {
+        assert!(ContextSize::Slim.bytes() <= ContextSize::Full.bytes());
+        assert!(ContextSize::Full.bytes() <= ContextSize::Deep.bytes());
     }
 
     #[test]

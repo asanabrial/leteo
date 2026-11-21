@@ -3,8 +3,22 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
-fn leteo(database: &Path) -> Command {
+/// The one place a test builds a `leteo` command, so the environment it runs
+/// in is the same everywhere.
+///
+/// The two variables that name a store are removed: a developer who exports
+/// `LETEO_DATABASE` or `LETEO_DATA_DIR` would otherwise have every test that
+/// forgets to name a store of its own, or that names one through the other
+/// option, read and write the store they actually use.
+fn bare_leteo() -> Command {
     let mut command = Command::cargo_bin("leteo").expect("find leteo test binary");
+    command.env_remove("LETEO_DATABASE");
+    command.env_remove("LETEO_DATA_DIR");
+    command
+}
+
+fn leteo(database: &Path) -> Command {
+    let mut command = bare_leteo();
     command.arg("--database").arg(database);
     // Hermetic about the semantic model: none is found unless a test names one,
     // and a command that would download it (`setup`) is pointed at a port nothing
@@ -559,7 +573,7 @@ fn cli_cloud_configuration_enrollment_and_status_round_trip() {
     let data_dir = temp.path().join("data");
     let cloud_config = data_dir.join("cloud.json");
     let leteo_with_data = || {
-        let mut command = Command::cargo_bin("leteo").expect("find leteo test binary");
+        let mut command = bare_leteo();
         command.arg("--data-dir").arg(&data_dir);
         // The persisted file must win over a stale environment.
         command.env_remove("LETEO_CLOUD_SERVER");
@@ -699,13 +713,70 @@ fn cli_cloud_configuration_enrollment_and_status_round_trip() {
     assert_eq!(status["enrolled_projects"], json!(["something-else"]));
 }
 
+/// Both variables are set on the child only, and name temporary directories.
+#[test]
+fn an_explicit_store_flag_beats_the_environment_that_names_another_store() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let from_env = temp.path().join("from-env");
+    let from_flag = temp.path().join("from-flag");
+    std::fs::create_dir_all(&from_env).expect("create the environment's directory");
+    std::fs::create_dir_all(&from_flag).expect("create the flag's directory");
+    let env_database = from_env.join("named-by-variable.db");
+
+    run_json(
+        leteo(&env_database)
+            .arg("save")
+            .arg("In the variable's store")
+            .arg("Only the store the environment names holds this"),
+    );
+    assert!(env_database.is_file());
+
+    let stats = run_json(
+        bare_leteo()
+            .env("LETEO_DATABASE", &env_database)
+            .arg("--data-dir")
+            .arg(&from_flag)
+            .arg("stats"),
+    );
+    assert_eq!(
+        stats["total_observations"],
+        json!(0),
+        "`--data-dir` must not be overruled by LETEO_DATABASE"
+    );
+    assert!(from_flag.join("leteo.db").is_file());
+
+    let stats = run_json(
+        bare_leteo()
+            .env("LETEO_DATA_DIR", &from_env)
+            .env("LETEO_DATABASE", &env_database)
+            .arg("stats")
+            .arg("--data-dir")
+            .arg(&from_flag),
+    );
+    assert_eq!(
+        stats["total_observations"],
+        json!(0),
+        "the flag also wins when it follows the subcommand"
+    );
+
+    let stats = run_json(
+        bare_leteo()
+            .env("LETEO_DATABASE", &env_database)
+            .arg("stats"),
+    );
+    assert_eq!(
+        stats["total_observations"],
+        json!(1),
+        "with no flag the environment still names the store"
+    );
+}
+
 #[test]
 fn stateless_commands_do_not_create_a_local_database() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let data_dir = temp.path().join("unused-data");
 
-    Command::cargo_bin("leteo")
-        .expect("find leteo test binary")
+    bare_leteo()
         .arg("--data-dir")
         .arg(&data_dir)
         .arg("setup")

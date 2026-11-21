@@ -68,6 +68,13 @@ All notable changes to Leteo are documented in this file.
   moved into. A delete now applies only to a memory still in the project it was
   filed under. One cost: a delete from a peer that has not seen this machine
   merge or rename a project is filed under the old name and is ignored (#329).
+- **`--data-dir` and `--database` now beat the environment.** With
+  `LETEO_DATABASE` naming one store, `leteo --data-dir B stats` reported that
+  store's contents and created nothing in B, because the variable was read as
+  though it had been typed. A flag now wins over either variable, and the
+  variables apply only when no flag names a store. The test suite no longer
+  inherits either variable from the developer's shell, so a test that passes a
+  flag cannot end up in a real store (#326).
 
 ## [0.4.3] - 2026-11-03
 

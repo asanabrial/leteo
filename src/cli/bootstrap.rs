@@ -294,10 +294,41 @@ pub(super) fn data_directory(cli: &Cli) -> Result<PathBuf> {
 }
 
 pub(super) fn store_config(cli: &Cli) -> Result<StoreConfig> {
+    let environment = |name: &str| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    store_config_from(
+        cli,
+        environment("LETEO_DATABASE"),
+        environment("LETEO_DATA_DIR"),
+    )
+}
+
+/// Where the store lives: anything typed on the command line beats anything
+/// inherited from the environment.
+///
+/// Clap used to fill `cli.database` from `LETEO_DATABASE` itself, which made an
+/// inherited variable indistinguishable from a flag, so `--data-dir B` was
+/// silently overruled and `leteo --data-dir B stats` reported the contents of
+/// the store the variable named, creating nothing in B. The environment is read
+/// here instead, after both flags have had their say.
+fn store_config_from(
+    cli: &Cli,
+    env_database: Option<PathBuf>,
+    env_data_dir: Option<PathBuf>,
+) -> Result<StoreConfig> {
     if let Some(database) = &cli.database {
         return Ok(StoreConfig::new(absolutize(database)?));
     }
-    let data_dir = match &cli.data_dir {
+    if let Some(data_dir) = &cli.data_dir {
+        return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?));
+    }
+    if let Some(database) = &env_database {
+        return Ok(StoreConfig::new(absolutize(database)?));
+    }
+    let data_dir = match &env_data_dir {
         Some(path) => absolutize(path)?,
         None => crate::paths::home_dir()
             .context("resolve home directory")?
@@ -332,6 +363,43 @@ mod tests {
                 repair: false,
             },
         }
+    }
+
+    #[test]
+    fn a_flag_names_the_store_before_the_environment_does() {
+        let flag_dir = PathBuf::from("/flag/dir");
+        let env_database = Some(PathBuf::from("/env/store.db"));
+        let env_dir = Some(PathBuf::from("/env/dir"));
+        let cli = |data_dir: Option<&str>, database: Option<&str>| Cli {
+            data_dir: data_dir.map(PathBuf::from),
+            database: database.map(PathBuf::from),
+            ..cli_for(Path::new("/unused"))
+        };
+        let path = |cli: &Cli| {
+            store_config_from(cli, env_database.clone(), env_dir.clone())
+                .unwrap()
+                .database_path
+        };
+
+        assert_eq!(
+            path(&cli(Some("/flag/dir"), None)),
+            flag_dir.join("leteo.db")
+        );
+        assert_eq!(
+            path(&cli(Some("/flag/dir"), Some("/flag/store.db"))),
+            PathBuf::from("/flag/store.db")
+        );
+        assert_eq!(
+            path(&cli(None, None)),
+            PathBuf::from("/env/store.db"),
+            "no flag: the more specific variable wins"
+        );
+        assert_eq!(
+            store_config_from(&cli(None, None), None, env_dir.clone())
+                .unwrap()
+                .database_path,
+            PathBuf::from("/env/dir/leteo.db")
+        );
     }
 
     /// A store nobody can read is not an empty store.

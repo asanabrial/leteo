@@ -34,6 +34,9 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 /// the whole of the old file or the whole of the new one, never a prefix of
 /// either.
 ///
+/// A symbolic link is written through, so the link stays a link, and the file
+/// keeps the permissions it had.
+///
 /// Errors name the target rather than the temporary file: which of the two the
 /// operating system refused is Leteo's business, and the path the person cares
 /// about is the one they asked for.
@@ -69,6 +72,8 @@ enum Visibility {
 }
 
 fn write_then_rename(path: &Path, data: &[u8], visibility: Visibility) -> io::Result<()> {
+    let resolved = resolve_links(path)?;
+    let path = resolved.as_path();
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -77,8 +82,14 @@ fn write_then_rename(path: &Path, data: &[u8], visibility: Visibility) -> io::Re
     })?;
     fs::create_dir_all(parent)?;
 
+    let previous = match fs::metadata(path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+
     let (temporary_path, mut temporary_file) = create_temporary_file(path)?;
-    let written = restrict(&temporary_file, visibility)
+    let written = restrict(&temporary_file, visibility, previous.as_ref())
         .and_then(|()| temporary_file.write_all(data))
         .and_then(|()| temporary_file.sync_all());
     drop(temporary_file);
@@ -143,18 +154,78 @@ fn create_temporary_file(target: &Path) -> io::Result<(PathBuf, File)> {
     ))
 }
 
+/// The file a write has to land in when `path` is a symbolic link.
+///
+/// A rename onto a link replaces the link, so a `CLAUDE.md` that points into a
+/// dotfiles repository was detached from it by the first `leteo setup`, and the
+/// repository never saw the change. The temporary file has to go beside the
+/// file that is actually written, not beside the link: a rename only stays
+/// atomic within one filesystem, and the link and its target need not share
+/// one.
+///
+/// A link that cannot be followed is refused rather than written through or
+/// replaced. A dangling one names a file that is not there to keep, and
+/// replacing it would throw away where the person meant it to go; a loop and a
+/// link to a directory have no file at their end at all.
+fn resolve_links(path: &Path) -> io::Result<PathBuf> {
+    let is_link =
+        fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink());
+    if !is_link {
+        return Ok(path.to_owned());
+    }
+
+    let resolved = fs::canonicalize(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "{} is a symbolic link that cannot be followed to a file ({error}); \
+                 it was left as it was",
+                path.display()
+            ),
+        )
+    })?;
+    if resolved.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} is a symbolic link to a directory ({}); it was left as it was",
+                path.display(),
+                resolved.display()
+            ),
+        ));
+    }
+    Ok(resolved)
+}
+
+/// An owner-only write is 0600 whatever was there; any other write keeps the
+/// mode of the file it replaces. The new file would otherwise take the umask
+/// default, which made a settings file its owner had restricted to 0600
+/// readable by the group and by everyone else.
 #[cfg(unix)]
-fn restrict(file: &File, visibility: Visibility) -> io::Result<()> {
+fn restrict(
+    file: &File,
+    visibility: Visibility,
+    previous: Option<&fs::Metadata>,
+) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    if visibility == Visibility::OwnerOnly {
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    match (visibility, previous) {
+        (Visibility::OwnerOnly, _) => file.set_permissions(fs::Permissions::from_mode(0o600)),
+        // The file-type bits in `st_mode` are not permissions and are not
+        // meant to be handed back to `fchmod`.
+        (Visibility::Inherited, Some(previous)) => file.set_permissions(
+            fs::Permissions::from_mode(previous.permissions().mode() & 0o7777),
+        ),
+        (Visibility::Inherited, None) => Ok(()),
     }
-    Ok(())
 }
 
 #[cfg(not(unix))]
-fn restrict(_file: &File, _visibility: Visibility) -> io::Result<()> {
+fn restrict(
+    _file: &File,
+    _visibility: Visibility,
+    _previous: Option<&fs::Metadata>,
+) -> io::Result<()> {
     Ok(())
 }
 
@@ -286,6 +357,168 @@ mod tests {
             seen, "notes somebody wrote by hand",
             "the reader was shown a file being emptied underneath it"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_write_through_a_symbolic_link_lands_in_the_file_it_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let dotfiles = temp.path().join("dotfiles");
+        fs::create_dir(&dotfiles).unwrap();
+        let real = dotfiles.join("CLAUDE.md");
+        fs::write(&real, "mine").unwrap();
+        let link = temp.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        replace(&link, b"mine and Leteo's").unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link was replaced by a plain file"
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "mine and Leteo's");
+        let beside_link: Vec<_> = fs::read_dir(temp.path()).unwrap().flatten().collect();
+        assert_eq!(
+            beside_link.len(),
+            2,
+            "left beside the link: {beside_link:?}"
+        );
+        let beside_file: Vec<_> = fs::read_dir(&dotfiles).unwrap().flatten().collect();
+        assert_eq!(
+            beside_file.len(),
+            1,
+            "left beside the file: {beside_file:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_of_links_is_followed_to_the_file_at_its_end() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real.md");
+        fs::write(&real, "old").unwrap();
+        let middle = temp.path().join("middle.md");
+        std::os::unix::fs::symlink(&real, &middle).unwrap();
+        let outer = temp.path().join("outer.md");
+        std::os::unix::fs::symlink(&middle, &outer).unwrap();
+
+        replace(&outer, b"new").unwrap();
+
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
+        assert!(
+            fs::symlink_metadata(&outer)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            fs::symlink_metadata(&middle)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_keeps_the_mode_its_owner_gave_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        replace(&path, b"{\"a\":1}").unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600, "the new file took the umask default");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_keeps_the_mode_of_the_file_it_names() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real.md");
+        fs::write(&real, "old").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = temp.path().join("link.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        replace(&link, b"new").unwrap();
+
+        let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_write_stays_owner_only_whatever_the_file_was() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cloud.json");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        replace_private(&path, b"{\"token\":1}").unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_nothing_is_refused_and_left_as_it_was() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("CLAUDE.md");
+        let missing = temp.path().join("not-there.md");
+        std::os::unix::fs::symlink(&missing, &link).unwrap();
+
+        let error = replace(&link, b"data").unwrap_err();
+
+        assert!(error.to_string().contains("cannot be followed"), "{error}");
+        assert_eq!(fs::read_link(&link).unwrap(), missing);
+        assert!(!missing.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_loop_of_links_is_refused_and_left_as_it_was() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("a.md");
+        let second = temp.path().join("b.md");
+        std::os::unix::fs::symlink(&second, &first).unwrap();
+        std::os::unix::fs::symlink(&first, &second).unwrap();
+
+        let error = replace(&first, b"data").unwrap_err();
+
+        assert!(error.to_string().contains("cannot be followed"), "{error}");
+        assert_eq!(fs::read_link(&first).unwrap(), second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_directory_is_refused_and_left_as_it_was() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("dir");
+        fs::create_dir(&directory).unwrap();
+        let link = temp.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+
+        let error = replace(&link, b"data").unwrap_err();
+
+        assert!(
+            error.to_string().contains("symbolic link to a directory"),
+            "{error}"
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), directory);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
     }
 
     #[test]

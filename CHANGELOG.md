@@ -148,6 +148,15 @@ All notable changes to Leteo are documented in this file.
   compaction summary itself, was then told by the recovery text to store it
   again: the hook input takes `summary_stored`, and the text leaves the
   instruction out when the host says it already did (#335).
+- **Setup no longer detaches a symlinked config or loosens its permissions.**
+  Every file Leteo edits in place was written by renaming a temporary file over
+  it, and a rename onto a symbolic link replaces the link: a `CLAUDE.md` kept in
+  a dotfiles repository became a plain file and the repository never saw the
+  change, and the new file took the umask default, so one restricted to `0600`
+  became readable by the group and by everyone else. The write now goes through
+  the link into the file it names, with the temporary file beside that file, and
+  the file keeps its mode. A link to nothing, a loop of links and a link to a
+  directory are refused with a message instead of being replaced (#336).
 
 ## [0.4.3] - 2026-11-03
 

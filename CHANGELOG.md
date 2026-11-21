@@ -61,6 +61,13 @@ All notable changes to Leteo are documented in this file.
   with them, without asking or saying so. It now moves only the sessions
   recorded from this directory, with their memories and prompts, leaves the
   spellings alone, and warns with the number of sessions it left behind (#328).
+- **Moving a memory out of a synced project no longer deletes it here.** The
+  move queues a delete under the old project so the peer drops its copy, the
+  pull hands this machine its own push back, and the delete was applied by
+  identifier alone, so the memory vanished from the project it had just been
+  moved into. A delete now applies only to a memory still in the project it was
+  filed under. One cost: a delete from a peer that has not seen this machine
+  merge or rename a project is filed under the old name and is ignored (#329).
 
 ## [0.4.3] - 2026-11-03
 

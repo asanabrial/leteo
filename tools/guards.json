@@ -1790,5 +1790,11 @@
     "file": "src/hooks/session.rs",
     "old": "        Ok((_, 0)) => {}",
     "new": "        Ok((_, _)) => {}"
+  },
+  {
+    "name": "observation delete: a tombstone filed under another project does not reach a moved memory",
+    "file": "src/store/wire.rs",
+    "old": "    if filed_under != normalize::project(current_project.as_deref().unwrap_or_default()) {",
+    "new": "    if false && filed_under != normalize::project(current_project.as_deref().unwrap_or_default()) {"
   }
 ]

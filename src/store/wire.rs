@@ -443,16 +443,24 @@ fn apply_observation_delete_tx(
     if payload.sync_id.trim().is_empty() {
         return Ok(());
     }
-    let id = tx
+    let row = tx
         .query_row(
-            "SELECT id FROM observations WHERE sync_id = ?1 ORDER BY id DESC LIMIT 1",
+            "SELECT id, project FROM observations WHERE sync_id = ?1 ORDER BY id DESC LIMIT 1",
             [&payload.sync_id],
-            |row| row.get::<_, i64>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .optional()?;
-    let Some(id) = id else {
+    let Some((id, current_project)) = row else {
         return Ok(());
     };
+    // A delete says "gone from the project it was filed under". Moving a memory
+    // out of an enrolled project queues exactly that, the pull hands this
+    // machine its own pushes back, and applying it by `sync_id` alone deleted
+    // the memory from the project it had just been moved into.
+    let filed_under = normalize::project(payload.project.as_deref().unwrap_or_default());
+    if filed_under != normalize::project(current_project.as_deref().unwrap_or_default()) {
+        return Ok(());
+    }
     if payload.hard_delete {
         orphan_relations_tx(tx, &payload.sync_id)?;
         tx.execute("DELETE FROM observations WHERE id = ?1", [id])?;

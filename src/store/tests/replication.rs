@@ -1820,6 +1820,80 @@ fn the_tombstone_a_move_queues_is_one_a_peer_can_apply() {
     );
 }
 
+/// A pull returns this machine's own pushes, so the tombstone a move queues
+/// comes back to the machine that only meant to move the memory.
+///
+/// The tombstone says "gone from `leteo`". Applied by `sync_id` alone, it took
+/// the row out of `otro` as well, where the memory had just been put on
+/// purpose, and the only machine that lost it was the one that moved it.
+#[test]
+fn a_tombstone_that_returns_to_its_origin_does_not_delete_the_moved_memory() {
+    let (_temp, mut store) = super::store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store.create_session("s2", "otro", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "A memory that moves out", "a body"))
+        .unwrap()
+        .observation;
+    store
+        .update_observation(
+            saved.id,
+            None,
+            crate::memory::model::UpdateObservation {
+                project: Some("otro".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let queued: Vec<crate::memory::model::SyncMutation> = store
+        .connection()
+        .prepare(
+            "SELECT seq, target_key, entity, entity_key, op, payload, source,
+                    ifnull(project, '') AS project, occurred_at, acked_at
+               FROM sync_mutations WHERE entity = 'observation' AND op = 'delete'
+              ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], crate::store::rows::map_sync_mutation)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(queued.len(), 1, "the move queued its tombstone");
+
+    assert!(
+        store
+            .apply_pulled_sync_mutation("cloud", &queued[0])
+            .unwrap()
+    );
+    let kept = store.get_observation(saved.id).unwrap();
+    assert!(
+        kept.deleted_at.is_none(),
+        "a delete filed under leteo reached a memory that lives in otro"
+    );
+    assert_eq!(kept.project.as_deref(), Some("otro"));
+
+    // The same tombstone at a peer that still holds the memory where it was
+    // filed is the case it exists for.
+    let (_peer_temp, mut peer) = super::store();
+    peer.create_session("s1", "leteo", "C:/repo").unwrap();
+    let held = peer
+        .add_observation(observation("s1", "A memory that moves out", "a body"))
+        .unwrap()
+        .observation;
+    let mut tombstone = queued[0].clone();
+    tombstone.entity_key = held.sync_id.clone();
+    tombstone.payload = tombstone.payload.replace(&saved.sync_id, &held.sync_id);
+    assert!(
+        peer.apply_pulled_sync_mutation("cloud", &tombstone)
+            .unwrap()
+    );
+    assert!(
+        peer.get_observation(held.id).unwrap().deleted_at.is_some(),
+        "a delete for a row still in the project it was filed under is applied"
+    );
+}
+
 /// The journal's own vocabulary: what is asked for, what is enrolled, and what
 /// a queued mutation infers.
 ///

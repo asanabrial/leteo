@@ -2624,5 +2624,107 @@
     "file": "src/mcp/serve.rs",
     "old": "tokio::task::spawn_blocking(move || call_tool(&api.server, &name, &body))\n                .await\n                .unwrap_or_else(|_| Reply::internal())",
     "new": "call_tool(&api.server, &name, &body)"
+  },
+  {
+    "name": "directory: a new memory is written without the directory it came from",
+    "file": "src/store/observations.rs",
+    "old": "    let sync_id = normalize::sync_id(\"obs\");\n    let directory = normalize::directory(directory);",
+    "new": "    let sync_id = normalize::sync_id(\"obs\");\n    let directory: Option<String> = None;"
+  },
+  {
+    "name": "directory: a revision no longer takes the directory of the write that made it",
+    "file": "src/store/observations.rs",
+    "old": "directory = coalesce(?8, directory),",
+    "new": "directory = coalesce(directory, ?8),"
+  },
+  {
+    "name": "directory: a repeat inside the dedupe window moves the memory",
+    "file": "src/store/observations.rs",
+    "old": "\"UPDATE observations SET duplicate_count = duplicate_count + 1,\n                 last_seen_at",
+    "new": "\"UPDATE observations SET duplicate_count = duplicate_count + 1, directory = 'moved',\n                 last_seen_at"
+  },
+  {
+    "name": "directory: a merge forgets where it ran",
+    "file": "src/store/observations.rs",
+    "old": "            None,\n            directory,\n            fields,",
+    "new": "            None,\n            None,\n            fields,"
+  },
+  {
+    "name": "directory: a passive capture forgets where it ran",
+    "file": "src/store/observations.rs",
+    "old": "                directory,\n            ) {",
+    "new": "                None,\n            ) {"
+  },
+  {
+    "name": "directory: a relative one is recorded as though it meant something",
+    "file": "src/memory/normalize.rs",
+    "old": "(!recordable.is_empty()).then(|| recordable.to_owned())",
+    "new": "Some(value.to_owned()).filter(|value| !value.is_empty())"
+  },
+  {
+    "name": "directory: a replicated memory arrives without its directory",
+    "file": "src/store/wire.rs",
+    "old": "let directory = normalize::directory(payload.directory.as_deref());",
+    "new": "let directory: Option<String> = None;"
+  },
+  {
+    "name": "directory: a peer's silence erases the directory a memory has",
+    "file": "src/store/wire.rs",
+    "old": "directory = coalesce(?17, directory)",
+    "new": "directory = ?17"
+  },
+  {
+    "name": "directory: the cloud codec drops a memory's directory",
+    "file": "src/sync/payload.rs",
+    "old": "    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub(super) directory: Option<String>,",
+    "new": "    #[serde(skip)]\n    pub(super) directory: Option<String>,"
+  },
+  {
+    "name": "directory: an import restores a memory without its directory",
+    "file": "src/store/diagnostics.rs",
+    "old": "normalize::directory(observation.directory.as_deref())",
+    "new": "None::<String>"
+  },
+  {
+    "name": "directory: a hard delete leaves the directory in the journal",
+    "file": "src/store/observations.rs",
+    "old": "    \"revision\",\n    \"replaced_at\",",
+    "new": "    \"revision\",\n    \"directory\",\n    \"replaced_at\","
+  },
+  {
+    "name": "directory: a save into a session the agent did not name records none",
+    "file": "src/mcp/mod.rs",
+    "old": "            directory: envelope.project_path.clone(),\n            envelope,\n            named: false,",
+    "new": "            directory: None,\n            envelope,\n            named: false,"
+  },
+  {
+    "name": "directory: a save into a named session records none",
+    "file": "src/mcp/mod.rs",
+    "old": "                directory: envelope.project_path.clone(),\n                envelope,\n                named: true,",
+    "new": "                directory: None,\n                envelope,\n                named: true,"
+  },
+  {
+    "name": "directory: mem_get_observation stops naming where a memory came from",
+    "file": "src/mcp/tools.rs",
+    "old": "let directory = observation.directory.clone();",
+    "new": "let directory: Option<String> = None;"
+  },
+  {
+    "name": "directory: leteo save forgets the directory it ran in",
+    "file": "src/cli/projects.rs",
+    "old": "        directory: Some(directory).filter(|path| !path.is_empty()),\n    })",
+    "new": "        directory: None,\n    })"
+  },
+  {
+    "name": "directory: the subagent-stop hook forgets where the subagent stopped",
+    "file": "src/hooks/mod.rs",
+    "old": "store.passive_capture_from(capture.clone(), directory.to_str())",
+    "new": "store.passive_capture_from(capture.clone(), None)"
+  },
+  {
+    "name": "directory: a replayed spool entry forgets where it was captured",
+    "file": "src/hooks/spool.rs",
+    "old": "store.passive_capture_from(entry.capture(), Some(&entry.directory))",
+    "new": "store.passive_capture_from(entry.capture(), None)"
   }
 ]

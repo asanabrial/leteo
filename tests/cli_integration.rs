@@ -255,6 +255,60 @@ fn cli_saves_into_a_stable_manual_session_when_no_session_is_given() {
         .failure();
 }
 
+/// Two checkouts of one project share one manual session, and each memory says
+/// which checkout it was typed in. The session keeps the first.
+#[test]
+fn cli_save_records_the_directory_it_ran_in_and_the_session_keeps_its_first() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-directory.db");
+    let first = temp.path().join("checkout-a");
+    let second = temp.path().join("checkout-b");
+    std::fs::create_dir_all(&first).expect("first checkout");
+    std::fs::create_dir_all(&second).expect("second checkout");
+
+    let mut recorded = Vec::new();
+    for (directory, title) in [(&first, "From the first"), (&second, "From the second")] {
+        let saved = run_json(
+            leteo(&database)
+                .current_dir(directory)
+                .arg("save")
+                .arg(title)
+                .arg("typed in a checkout")
+                .arg("--project")
+                .arg("shared-project"),
+        );
+        assert_eq!(
+            saved["observation"]["session_id"],
+            json!("manual-save-shared-project")
+        );
+        let directory = saved["observation"]["directory"]
+            .as_str()
+            .expect("the memory names the directory it was saved from")
+            .to_owned();
+        recorded.push(
+            Path::new(&directory)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        );
+    }
+    assert_eq!(
+        recorded,
+        vec![Some("checkout-a".to_owned()), Some("checkout-b".to_owned())]
+    );
+
+    let sessions = run_json(leteo(&database).arg("export"));
+    let opened = sessions["sessions"][0]["directory"]
+        .as_str()
+        .expect("the session has a directory");
+    assert_eq!(
+        Path::new(opened)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+        Some("checkout-a".to_owned()),
+        "the session records where it opened, whatever was saved into it since"
+    );
+}
+
 /// `leteo save` with no `--session` joins the session a hook opened, the way
 /// `mem_save` does, instead of filing the memory under `manual-save-<project>`
 /// beside a conversation that is still live.

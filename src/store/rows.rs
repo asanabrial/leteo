@@ -104,6 +104,7 @@ pub(super) fn map_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Obser
         last_seen_at: row.get("last_seen_at")?,
         review_after: row.get("review_after")?,
         prompt_sync_id: row.get("prompt_sync_id")?,
+        directory: row.get("directory")?,
         pinned: row.get("pinned")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,

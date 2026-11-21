@@ -66,6 +66,15 @@ pub struct Observation {
     /// that happens while a prompt is known records that link.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_sync_id: Option<String>,
+    /// The directory the memory was written from, when the write knew one.
+    ///
+    /// A memory joins whichever session is live in its project, and a session
+    /// keeps the directory of whoever opened it, so `sessions.directory` says
+    /// nothing about where a given memory came from: on a real store one manual
+    /// session recorded a deleted worktree for 585 memories. Absent for every
+    /// memory written before this existed, whose origin cannot be recovered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
     /// Whether this store shows the memory first.
     ///
     /// Written down, but not sent. The two are different questions and this

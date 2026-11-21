@@ -228,6 +228,7 @@ impl LeteoMcpServer {
             return Ok(WriteSession {
                 id,
                 project: session_project,
+                directory: envelope.project_path.clone(),
                 envelope,
                 named: true,
             });
@@ -273,6 +274,7 @@ impl LeteoMcpServer {
         Ok(WriteSession {
             id,
             project,
+            directory: envelope.project_path.clone(),
             envelope,
             named: false,
         })
@@ -1024,6 +1026,11 @@ fn nonempty(value: Option<String>) -> Option<String> {
 struct WriteSession {
     id: String,
     project: String,
+    /// The directory the memory is recorded as written from: the very one the
+    /// reply's envelope reports as `project_path`, so what an agent is told and
+    /// what the row keeps cannot be two places. For a session the caller named
+    /// that is the session's own directory, because no detection runs for it.
+    directory: Option<String>,
     envelope: ProjectEnvelope,
     named: bool,
 }

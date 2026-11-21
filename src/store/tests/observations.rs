@@ -300,6 +300,7 @@ fn the_joined_observation_columns_expose_the_same_names() {
         "last_seen_at",
         "review_after",
         "prompt_sync_id",
+        "directory",
         "pinned",
         "created_at",
         "updated_at",
@@ -2554,4 +2555,213 @@ fn only_marking_something_reviewed_reads_the_clock_for_a_review_date() {
         from_the_clock.len(),
         from_the_clock
     );
+}
+
+/// A directory that is absolute on whichever machine runs the test.
+fn directory_under(root: &TempDir, name: &str) -> String {
+    root.path().join(name).to_string_lossy().into_owned()
+}
+
+#[test]
+fn a_memory_keeps_the_directory_it_was_written_from_and_its_session_keeps_its_own() {
+    let root = TempDir::new().unwrap();
+    let opened = directory_under(&root, "worktree-that-was-deleted");
+    let other = directory_under(&root, "the-checkout-in-use");
+    let (_temp, mut store) = store();
+    store.create_session("manual", "leteo", &opened).unwrap();
+
+    let first = store
+        .add_observation_from(observation("manual", "First", "one"), Some(&opened))
+        .unwrap()
+        .observation;
+    let second = store
+        .add_observation_from(observation("manual", "Second", "two"), Some(&other))
+        .unwrap()
+        .observation;
+    let unknown = store
+        .add_observation(observation("manual", "Third", "three"))
+        .unwrap()
+        .observation;
+
+    assert_eq!(
+        store
+            .get_observation(first.id)
+            .unwrap()
+            .directory
+            .as_deref(),
+        Some(opened.as_str())
+    );
+    assert_eq!(
+        store
+            .get_observation(second.id)
+            .unwrap()
+            .directory
+            .as_deref(),
+        Some(other.as_str()),
+        "a memory saved from another directory into the same session says so"
+    );
+    assert_eq!(
+        store.get_observation(unknown.id).unwrap().directory,
+        None,
+        "a write that knew no directory records none, not its session's"
+    );
+    assert_eq!(
+        store.get_session("manual").unwrap().directory,
+        opened,
+        "the session is where it opened, whatever was saved into it since"
+    );
+}
+
+#[test]
+fn a_directory_that_means_nothing_on_another_machine_is_not_recorded() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for (title, directory) in [("Dot", "."), ("Relative", "foo/bar"), ("Blank", "  ")] {
+        let saved = store
+            .add_observation_from(observation("s1", title, title), Some(directory))
+            .unwrap()
+            .observation;
+        assert_eq!(saved.directory, None, "{directory:?}");
+    }
+}
+
+#[test]
+fn a_revision_takes_the_directory_of_the_write_that_made_it_and_never_loses_one() {
+    let root = TempDir::new().unwrap();
+    let first = directory_under(&root, "first");
+    let second = directory_under(&root, "second");
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", &first).unwrap();
+    let mut keyed = observation("s1", "Keyed", "version one");
+    keyed.topic_key = Some("decision/keyed".to_owned());
+
+    let saved = store
+        .add_observation_from(keyed.clone(), Some(&first))
+        .unwrap()
+        .observation;
+    keyed.content = "version two".to_owned();
+    let revised = store
+        .add_observation_from(keyed.clone(), Some(&second))
+        .unwrap();
+    assert_eq!(revised.kind, AddOutcomeKind::Revised);
+    assert_eq!(revised.observation.id, saved.id);
+    assert_eq!(
+        revised.observation.directory.as_deref(),
+        Some(second.as_str())
+    );
+
+    keyed.content = "version three".to_owned();
+    let silent = store.add_observation(keyed).unwrap().observation;
+    assert_eq!(
+        silent.directory.as_deref(),
+        Some(second.as_str()),
+        "a write that knows no directory does not erase the one already there"
+    );
+}
+
+#[test]
+fn a_repeat_inside_the_dedupe_window_does_not_move_the_memory() {
+    let root = TempDir::new().unwrap();
+    let first = directory_under(&root, "first");
+    let second = directory_under(&root, "second");
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", &first).unwrap();
+
+    let saved = store
+        .add_observation_from(observation("s1", "Once", "same words"), Some(&first))
+        .unwrap()
+        .observation;
+    let again = store
+        .add_observation_from(observation("s1", "Once", "same words"), Some(&second))
+        .unwrap();
+    assert_eq!(again.kind, AddOutcomeKind::Deduplicated);
+    assert_eq!(again.observation.id, saved.id);
+    assert_eq!(again.observation.directory.as_deref(), Some(first.as_str()));
+}
+
+#[test]
+fn a_merge_and_a_passive_capture_record_where_they_ran() {
+    let root = TempDir::new().unwrap();
+    let here = directory_under(&root, "here");
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", &here).unwrap();
+    let source = store
+        .add_observation(observation("s1", "Source", "to be merged"))
+        .unwrap()
+        .observation;
+
+    let merged = store
+        .consolidate_observations_from(
+            ConsolidateObservations {
+                session_id: "s1".to_owned(),
+                kind: "discovery".to_owned(),
+                title: "Merged".to_owned(),
+                content: "the merge".to_owned(),
+                tool_name: None,
+                project: Some("leteo".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                source_ids: vec![source.id],
+                expected_project: None,
+            },
+            Some(&here),
+        )
+        .unwrap();
+    assert_eq!(merged.observation.directory.as_deref(), Some(here.as_str()));
+    assert_eq!(
+        store.get_observation(source.id).unwrap().directory,
+        None,
+        "the source keeps what it had"
+    );
+
+    store
+        .passive_capture_from(
+            PassiveCapture {
+                session_id: "s1".to_owned(),
+                content: "## Key Learnings:\n- The first learning of the turn\n".to_owned(),
+                project: "leteo".to_owned(),
+                source: "subagent".to_owned(),
+            },
+            Some(&here),
+        )
+        .unwrap();
+    let captured = store
+        .search("learning", SearchOptions::default())
+        .unwrap()
+        .into_iter()
+        .map(|result| result.observation)
+        .find(|observation| observation.tool_name.as_deref() == Some("subagent"))
+        .expect("the learning was stored");
+    assert_eq!(captured.directory.as_deref(), Some(here.as_str()));
+}
+
+#[test]
+fn an_export_carries_the_directory_and_an_import_restores_it() {
+    let root = TempDir::new().unwrap();
+    let here = directory_under(&root, "here");
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", &here).unwrap();
+    store
+        .add_observation_from(observation("s1", "Placed", "has a directory"), Some(&here))
+        .unwrap();
+    store
+        .add_observation(observation("s1", "Unplaced", "has none"))
+        .unwrap();
+
+    let json = store.export_json(None).unwrap();
+    let (_other_temp, mut other) = super::store();
+    other.import_json(&json).unwrap();
+
+    let directory_of = |title: &str| {
+        other
+            .search(title, SearchOptions::default())
+            .unwrap()
+            .into_iter()
+            .map(|result| result.observation)
+            .find(|observation| observation.title == title)
+            .unwrap_or_else(|| panic!("{title} did not import"))
+            .directory
+    };
+    assert_eq!(directory_of("Placed").as_deref(), Some(here.as_str()));
+    assert_eq!(directory_of("Unplaced"), None);
 }

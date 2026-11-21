@@ -330,6 +330,7 @@ fn observation(id: i64, title: &str) -> Observation {
         last_seen_at: None,
         review_after: None,
         prompt_sync_id: None,
+        directory: None,
         pinned: false,
         created_at: "2026-07-27 10:00:00".to_owned(),
         updated_at: "2026-07-27 10:00:00".to_owned(),

@@ -116,9 +116,9 @@ impl Store {
                 "INSERT INTO observations
                  (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
                   normalized_hash, revision_count, duplicate_count, last_seen_at, review_after,
-                  prompt_sync_id, pinned, created_at, updated_at, deleted_at)
+                  prompt_sync_id, directory, pinned, created_at, updated_at, deleted_at)
                  SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                        ?19, ?15, ?16, ?17, ?18
+                        ?19, ?20, ?15, ?16, ?17, ?18
                  WHERE NOT EXISTS (SELECT 1 FROM observations WHERE sync_id = ?1)",
                 params![
                     sync_id,
@@ -139,7 +139,8 @@ impl Store {
                     created_at,
                     updated_at,
                     observation.deleted_at,
-                    observation.prompt_sync_id
+                    observation.prompt_sync_id,
+                    normalize::directory(observation.directory.as_deref())
                 ],
             )? as i64;
         }

@@ -249,6 +249,11 @@ pub(super) struct ObservationMutationPayload {
     /// so an older peer reading a newer chunk simply ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) prompt_sync_id: Option<String>,
+    /// Where the memory was written from. Named here because this struct
+    /// re-encodes the payload on its way to the cloud: a field it does not list
+    /// is dropped, which is what a peer pulling from the cloud would then see.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) directory: Option<String>,
     #[serde(skip_serializing_if = "is_zero")]
     pub(super) revision_count: i64,
     #[serde(skip_serializing_if = "is_zero")]

@@ -124,6 +124,7 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "embedding_model",
             "embedding_created_at",
             "prompt_sync_id",
+            "directory",
         ],
     ),
     (

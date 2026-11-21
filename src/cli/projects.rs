@@ -275,6 +275,10 @@ pub(super) struct WriteSession {
     /// Whether the caller chose the session, which decides how far a save may
     /// reach for the question behind it. See `Store::prompt_behind_a_save`.
     pub(super) named: bool,
+    /// The directory the memory is recorded as written from: this process's for
+    /// a save that joins a session itself, the session's own for one the caller
+    /// named — the rule `mem_save` follows, so the two doors agree.
+    pub(super) directory: Option<String>,
 }
 
 /// Resolves the session a CLI write belongs to: the one named, else the
@@ -309,6 +313,7 @@ pub(super) fn resolve_write_session(
             id,
             project: session_project,
             named: true,
+            directory: Some(session.directory).filter(|path| !path.is_empty()),
         });
     }
 
@@ -365,6 +370,7 @@ pub(super) fn resolve_write_session(
         id,
         project,
         named: false,
+        directory: Some(directory).filter(|path| !path.is_empty()),
     })
 }
 

@@ -1,0 +1,27 @@
+-- The directory a memory was written from.
+--
+-- Carried out in Rust, and this file is the prose: the step is one
+-- `add_column_if_missing`, because SQLite cannot add a column only when it is
+-- absent. A migration is stamped after it runs, so a process that died between
+-- the two would retry the plain statement and fail with "duplicate column name"
+-- on every later open. The helper looks first.
+--
+-- What was wrong. A memory saved without a session joins whichever session is
+-- live in its project, falling back to `manual-save-<project>`, and a session
+-- keeps the directory of whoever opened it. On a real store 612 of 756 memories
+-- written in five weeks hung from manual sessions, one of which still recorded a
+-- worktree deleted months earlier and another `H:\REPO` for 585 memories. The
+-- project was right and the directory said nothing about where a memory came
+-- from, while the reply to the save reported the directory of the call.
+--
+-- What this adds. `observations.directory`, nullable, written at save time and
+-- carried with the memory when it replicates or is exported. `sessions.directory`
+-- is left alone: it is where a session opened, which is what
+-- `recent_projects_in_directory` and the drift gate read, and overwriting it on
+-- every save would erase that history.
+--
+-- No backfill. A memory written before this has an origin nobody recorded, and
+-- the session's directory is exactly the guess the column exists to stop
+-- presenting as a fact. NULL means "not known".
+--
+-- No full-text index carries the column, so nothing is rebuilt.

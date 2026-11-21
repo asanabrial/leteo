@@ -282,9 +282,16 @@ fn every_column_has_a_writer_or_is_named_as_having_none() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Read from the baseline rather than from an open store, so this needs no
-    // new public function on `Store` to exist only for a test. No migration
-    // adds a column — checked below — so the baseline is the whole list.
+    // Columns a migration after the baseline adds from Rust, which no SQL file
+    // shows. Named here because the baseline is read below instead of an open
+    // store, so this needs no new public function on `Store` to exist only for
+    // a test; `the_migrated_schema_is_exactly_what_the_queries_expect` is what
+    // keeps the list true against a real database.
+    const ADDED_AFTER_THE_BASELINE: &[(&str, &str)] = &[("observations", "directory")];
+
+    // Read from the baseline rather than from an open store. No migration
+    // file adds a column in SQL — checked below — so the baseline and the list
+    // above are the whole of it.
     let migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
     let mut later = String::new();
     for entry in std::fs::read_dir(&migrations)
@@ -295,15 +302,22 @@ fn every_column_has_a_writer_or_is_named_as_having_none() {
     }
     assert!(
         !later.to_uppercase().contains("ADD COLUMN"),
-        "a migration adds a column, so the baseline is no longer the whole list"
+        "a migration adds a column in SQL, which the list of what was added after the \
+         baseline does not see: do it from Rust and name it there"
     );
     let baseline = std::fs::read_to_string(migrations.join("0001_baseline_tables.sql"))
         .expect("read baseline");
 
     let mut unwritten = Vec::new();
     for table in ["observations", "memory_relations", "sessions", "prompts"] {
-        let columns = columns_of(&baseline, table);
+        let mut columns = columns_of(&baseline, table);
         assert!(columns.len() > 5, "{table} has {} columns", columns.len());
+        columns.extend(
+            ADDED_AFTER_THE_BASELINE
+                .iter()
+                .filter(|(owner, _)| *owner == table)
+                .map(|(_, column)| (*column).to_owned()),
+        );
         for column in columns {
             if !elsewhere.contains(&column) {
                 unwritten.push((table, column));

@@ -1510,6 +1510,19 @@ pub fn optional(value: Option<&str>) -> Option<String> {
     }
 }
 
+/// The directory a memory may record as where it was written, or nothing.
+///
+/// The same rule a session's directory goes through: only an absolute spelling
+/// is kept, because a relative one means a different place on every machine that
+/// reads it. Every door that stores a memory's directory — the local write, the
+/// replicated one, the import — passes through here, so a value one of them
+/// would refuse is not stored by another.
+pub fn directory(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    let recordable = crate::project::recordable_directory(value);
+    (!recordable.is_empty()).then(|| recordable.to_owned())
+}
+
 fn truncate_bytes(value: &mut String, max_bytes: usize) {
     if value.len() <= max_bytes {
         return;

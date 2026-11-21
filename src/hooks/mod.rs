@@ -763,7 +763,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             if !output.trim().is_empty() {
                 ensure_session(store, &session_id, &project, &directory, &mut outcome);
                 let capture = capture_of(input, &session_id, &project);
-                match store.passive_capture(capture.clone()) {
+                match store.passive_capture_from(capture.clone(), directory.to_str()) {
                     Ok(result) => {
                         outcome.observations_captured = result.saved;
                         outcome.observations_extracted = Some(result.extracted);

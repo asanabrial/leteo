@@ -3364,6 +3364,78 @@ fn a_replayed_spool_entry_does_not_record_a_relative_directory() {
     assert_eq!(store.get_session("late-session").unwrap().directory, "");
 }
 
+fn captured_directories(store: &Store) -> Vec<Option<String>> {
+    let mut statement = store
+        .connection()
+        .prepare("SELECT directory FROM observations WHERE tool_name = 'subagent-stop' ORDER BY id")
+        .unwrap();
+    statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// A subagent that stops in another checkout of the project leaves its learnings
+/// under the session the conversation opened, and says where they came from.
+#[test]
+fn a_captured_learning_records_the_directory_the_subagent_stopped_in() {
+    let (temp, mut store) = store();
+    let first = temp.path().join("first-checkout");
+    let second = temp.path().join("second-checkout");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    run(&mut store, HookEvent::SessionStart, &input(&first)).unwrap();
+
+    let mut stop = input(&second);
+    stop.stdout =
+        "## Key Learnings:\n1. A learning written in the second checkout of the project\n"
+            .to_owned();
+    let captured = run(&mut store, HookEvent::SubagentStop, &stop).unwrap();
+    assert_eq!(captured.observations_captured, 1);
+
+    let recorded = captured_directories(&store);
+    assert_eq!(recorded.len(), 1);
+    let recorded = recorded[0].clone().expect("a directory was recorded");
+    assert!(crate::project::same_directory(&recorded, &second));
+    assert!(
+        !crate::project::same_directory(&recorded, &first),
+        "the session opened in the first one and says so: {recorded}"
+    );
+}
+
+/// A learning spooled while the store was busy is stored with the directory the
+/// entry carries, not with none.
+#[test]
+fn a_replayed_spool_entry_records_the_directory_it_was_captured_in() {
+    let (temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let directory = temp.path().join("captured-here");
+    let capture = PassiveCapture {
+        session_id: "late-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A replayed learning remembers where it came from"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(
+        &data_dir,
+        "SubagentStop",
+        &capture,
+        &directory.to_string_lossy(),
+    )
+    .unwrap();
+
+    let drained = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(drained.stored, 1, "{drained:?}");
+    assert_eq!(
+        captured_directories(&store),
+        vec![Some(directory.to_string_lossy().into_owned())]
+    );
+}
+
 /// A capture drained twice is stored once.
 ///
 /// The drain removes an entry it replayed, so a second drain of the same text

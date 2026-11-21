@@ -672,21 +672,37 @@ impl Store {
             // under, and which language that is is a different question from the
             // one the setting answers. It is the question somebody is asking
             // when they change the setting and wonder what became of their
-            // history: a store whose setting is `auto` records its memories as
-            // English, so a later change to a named language leaves the older
-            // half stemmed for search in a language nothing now says.
+            // history: a later change to a named language leaves the older half
+            // stemmed for search in a language nothing now says.
             //
             // Information and not a fault. A store in two languages works, and
-            // `--repair` deliberately does not re-stem it: a row recorded as
-            // `en` cannot be told apart from one really written in English, so
-            // there is no repair this check could name.
+            // `--repair` deliberately does not re-stem it while a language is
+            // named: the row was recorded under a language somebody chose, and
+            // there is no other answer this check could name.
+            //
+            // With no language set the question is a different one: each row
+            // is recorded under the language its words are in, so a row that is
+            // not is one the triggers did not write that way (it predates
+            // migration 23, or was imported), and `--repair` can say what the
+            // answer is by reading it again.
             let effective = self.memory_language();
-            let outside: Vec<(String, i64)> = self
-                .stem_language_counts()?
-                .into_iter()
-                .filter(|(code, _)| code != effective.code())
-                .collect();
-            record(if outside.is_empty() {
+            let misrecorded = self.rows_in_another_language()?;
+            let outside: Vec<(String, i64)> = if self.detects_language() {
+                Vec::new()
+            } else {
+                self.stem_language_counts()?
+                    .into_iter()
+                    .filter(|(code, _)| code != effective.code())
+                    .collect()
+            };
+            record(if misrecorded > 0 {
+                DoctorCheck::noted(
+                    "memory_language",
+                    format!(
+                        "{misrecorded} memories are recorded under a language other than the one their words are in, so search stems them wrongly; `leteo doctor --repair` re-stems them"
+                    ),
+                )
+            } else if outside.is_empty() {
                 DoctorCheck::passed("memory_language")
             } else {
                 let held = outside
@@ -982,6 +998,58 @@ impl Store {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<(String, i64)>, _>>()?;
         Ok(counts)
+    }
+
+    /// How many rows are recorded under a language other than the one their
+    /// words are in.
+    ///
+    /// Zero when the setting names a language: a named language is what every
+    /// row is meant to be recorded under, detection is not consulted, and a row
+    /// kept from an earlier setting is reported by the check that counts
+    /// languages instead. Otherwise every row is compared, deleted ones too,
+    /// because [`Store::restem_to_detected_language`] repairs every row and the
+    /// two must be counting the same set.
+    pub fn rows_in_another_language(&self) -> Result<i64, StoreError> {
+        if !self.detects_language() {
+            return Ok(0);
+        }
+        Ok(self.connection.query_row(
+            "SELECT COUNT(*)
+               FROM observation_stems s
+               JOIN observations o ON o.id = s.observation_id
+              WHERE s.language IS NOT leteo_memory_language(o.title, o.content)",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Records every row under the language its words are in and stems it there.
+    ///
+    /// The recorded language is moved first and the stems are then taken by the
+    /// path every repair of them uses, which keeps a row's language and rewrites
+    /// what differs from it, so there is one place that knows how a stems row is
+    /// built. A row whose language was already right is not written.
+    ///
+    /// Does nothing when the setting names a language, and answers zero: the
+    /// registered function would then answer that language for every row, and
+    /// moving all of them onto it is a different act that no one asked for.
+    /// Returns how many rows changed language.
+    pub fn restem_to_detected_language(&mut self) -> Result<i64, StoreError> {
+        if !self.detects_language() {
+            return Ok(0);
+        }
+        let tx = self.write_transaction()?;
+        let moved = tx.execute(
+            "UPDATE observation_stems SET language = detected.code
+               FROM (SELECT o.id AS id, leteo_memory_language(o.title, o.content) AS code
+                       FROM observations o WHERE typeof(o.id) = 'integer') AS detected
+              WHERE detected.id = observation_stems.observation_id
+                AND observation_stems.language IS NOT detected.code",
+            [],
+        )? as i64;
+        crate::store::schema::restem_observations(&tx)?;
+        tx.commit()?;
+        Ok(moved)
     }
 }
 

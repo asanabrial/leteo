@@ -28,6 +28,17 @@ All notable changes to Leteo are documented in this file.
   but the newest session, and memory titles only after that. A session with no
   summary is no longer listed as a bare date, and `slim` has a 3,000-byte
   ceiling instead of 15,000, which was almost four times `full`'s (#323).
+- **A memory is stemmed in the language it is written in, without setting
+  anything.** With the `language` setting unset, which is the default, every
+  memory was recorded and stemmed as English: on one real store all 7,274 rows
+  were `en` while about 1,500 of the memories were in Spanish, so a question with
+  another ending than the memory's (`migraciones` for `migración`) found
+  nothing. Each memory is now read when it is saved, by counting the commonest
+  function words of the twelve languages Leteo can stem, and recorded under the
+  language that clearly leads; short or mixed text stays English. A named
+  `language` still wins. Migration 23 changes the triggers only, so memories
+  already saved keep what they have until `leteo doctor --repair` re-stems them,
+  and `leteo doctor` says how many are waiting (#324).
 
 ## [0.4.3] - 2026-11-03
 

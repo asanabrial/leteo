@@ -1673,6 +1673,45 @@ fn doctor_repairs_a_full_text_index_that_has_gone_empty() {
     }
 }
 
+/// `doctor --repair` re-stems a memory recorded under a language other than the
+/// one its words are in, which is every Spanish memory a store saved before
+/// migration 23 recorded them.
+#[test]
+fn doctor_repair_re_stems_a_memory_recorded_under_the_wrong_language() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("language.db");
+
+    leteo(&database)
+        .arg("save")
+        .arg("Las migraciones ejecutan la conciliación")
+        .arg("Los cambios también fallan sin permisos, pero el problema es muy sencillo.")
+        .arg("--project")
+        .arg("alpha")
+        .assert()
+        .success();
+    let language = |database: &Path| -> String {
+        rusqlite::Connection::open(database)
+            .expect("open the store directly")
+            .query_row("SELECT language FROM observation_stems", [], |row| {
+                row.get(0)
+            })
+            .expect("the memory has a stems row")
+    };
+    assert_eq!(language(&database), "es");
+
+    rusqlite::Connection::open(&database)
+        .expect("open the store directly")
+        .execute(
+            "UPDATE observation_stems SET language = 'en', title = '', content = ''",
+            [],
+        )
+        .expect("record the memory as an older build did");
+
+    let repaired = run_json(leteo(&database).arg("doctor").arg("--repair"));
+    assert_eq!(repaired["restemmed"], json!(1), "{repaired}");
+    assert_eq!(language(&database), "es");
+}
+
 /// `doctor --check` runs only the check it was asked for.
 ///
 /// The whole point is the time: `PRAGMA integrity_check` over a 96 MB store is

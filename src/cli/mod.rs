@@ -777,6 +777,11 @@ pub async fn run(cli: Cli) -> Result<()> {
             let restored = repair
                 .then(|| store.restore_full_text_triggers())
                 .transpose()?;
+            // Before the rebuild, so the index it builds is of the stems the
+            // rows should have and not of the ones they were recorded with.
+            let restemmed = repair
+                .then(|| store.restem_to_detected_language())
+                .transpose()?;
             let rebuilt = repair
                 .then(|| store.rebuild_full_text_indexes())
                 .transpose()?;
@@ -807,6 +812,9 @@ pub async fn run(cli: Cli) -> Result<()> {
                 }
                 if let Some(rebuilt) = rebuilt {
                     object.insert("rebuilt".to_owned(), serde_json::to_value(&rebuilt)?);
+                }
+                if let Some(restemmed) = restemmed {
+                    object.insert("restemmed".to_owned(), serde_json::to_value(restemmed)?);
                 }
                 if let Some(rehashed) = rehashed {
                     object.insert("rehashed".to_owned(), serde_json::to_value(rehashed)?);

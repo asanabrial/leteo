@@ -690,6 +690,9 @@ fn a_repair_of_a_store_that_is_level_writes_no_stems() {
 fn the_restore_reads_the_newest_definition_of_a_trigger() {
     let sql = crate::store::schema::full_text_trigger_sql("obs_stems_update").unwrap();
     assert!(sql.contains("WHEN new.title IS NOT old.title"), "{sql}");
+    assert!(sql.contains("leteo_memory_language"), "{sql}");
+    let sql = crate::store::schema::full_text_trigger_sql("obs_stems_insert").unwrap();
+    assert!(sql.contains("leteo_memory_language"), "{sql}");
     assert!(crate::store::schema::full_text_trigger_sql("obs_stems_identifiers").is_some());
 }
 
@@ -747,4 +750,235 @@ fn a_change_of_the_memory_language_setting_moves_no_row_that_is_already_stored()
         stem_rows(&reopened),
         "a change of setting re-stemmed rows it did not write"
     );
+}
+
+const SPANISH_TITLE: &str = "Las migraciones ejecutan la conciliación";
+/// Another inflection of `ejecutan`, past what `porter` or the typo stage can
+/// reach, so only the Spanish stemmer finds the memory by it.
+const SPANISH_QUESTION: &str = "ejecutaremos";
+const SPANISH_BODY: &str = "Los cambios también fallan sin permisos, pero el problema es muy sencillo de resolver con `cargo test` y el README.";
+
+/// A store whose settings file names no language, which is the default.
+fn store_with_no_language() -> (TempDir, Store) {
+    let temp = TempDir::new().unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    (temp, store)
+}
+
+/// The default configuration: nothing says what language the memories are in,
+/// and the words do. A question with another ending than the memory's finds it
+/// only if the memory was stemmed as Spanish, which is also what the control
+/// shows by writing the same memory under a named English.
+#[test]
+fn a_spanish_memory_is_stemmed_in_spanish_when_no_language_is_set() {
+    let (_temp, mut store) = store_with_no_language();
+    store
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "es");
+    assert_eq!(strict(&store, SPANISH_QUESTION), [SPANISH_TITLE]);
+
+    let (_other, mut english) = store_in(Interface::English);
+    english
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    assert!(strict(&english, SPANISH_QUESTION).is_empty());
+}
+
+#[test]
+fn an_english_memory_and_one_too_short_to_tell_are_recorded_in_english() {
+    let (_temp, mut store) = store_with_no_language();
+    store
+        .add_observation(observation(
+            "s1",
+            "The stems migration",
+            "It runs when the store opens, and it will not touch rows that have already been written.",
+        ))
+        .unwrap();
+    store
+        .add_observation(observation("s1", "Ejecuta el cron", "Cada noche."))
+        .unwrap();
+    assert_eq!(
+        languages(&store),
+        [
+            ("The stems migration".to_owned(), "en".to_owned()),
+            ("Ejecuta el cron".to_owned(), "en".to_owned()),
+        ]
+    );
+}
+
+/// The setting is the person's word and detection is a guess, so a language
+/// that is named is never second-guessed: Spanish words under a named English
+/// are English, and the other way round.
+#[test]
+fn a_named_language_is_not_second_guessed_by_the_words() {
+    let temp = TempDir::new().unwrap();
+    let setting = |language: Interface| {
+        crate::settings::save(
+            temp.path(),
+            &crate::settings::Settings {
+                language: Some(language.as_str().to_owned()),
+                ..crate::settings::Settings::default()
+            },
+        )
+        .unwrap();
+    };
+    setting(Interface::English);
+    let mut store = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    assert!(!store.detects_language());
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "en");
+    drop(store);
+
+    setting(Interface::Spanish);
+    let mut store = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "The stems migration",
+            "It runs when the store opens, and it will not touch rows that have already been written.",
+        ))
+        .unwrap();
+    assert_eq!(language_of(&store, "The stems migration"), "es");
+}
+
+/// A text edit is a new memory as far as stemming goes, so it is read again.
+#[test]
+fn an_edit_that_changes_the_language_of_the_words_is_recorded_under_the_new_one() {
+    let (_temp, mut store) = store_with_no_language();
+    let saved = store
+        .add_observation(observation(
+            "s1",
+            "The stems migration",
+            "It runs when the store opens, and it will not touch rows that have already been written.",
+        ))
+        .unwrap()
+        .observation;
+    assert_eq!(language_of(&store, "The stems migration"), "en");
+    store
+        .update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                title: Some(SPANISH_TITLE.to_owned()),
+                content: Some(SPANISH_BODY.to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "es");
+    assert_eq!(strict(&store, SPANISH_QUESTION), [SPANISH_TITLE]);
+}
+
+/// The sibling of the triggers: a row the triggers never saw, as an import
+/// leaves one, is given the language its words are in and not English.
+#[test]
+fn a_repair_gives_a_row_with_no_stems_the_language_of_its_words() {
+    let (_temp, mut store) = store_with_no_language();
+    store
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    store
+        .connection
+        .execute("DELETE FROM observation_stems", [])
+        .unwrap();
+    store.rebuild_full_text_indexes().unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "es");
+    assert_eq!(strict(&store, SPANISH_QUESTION), [SPANISH_TITLE]);
+}
+
+/// What every row looked like before migration 23: recorded as English with no
+/// stems, whatever the words were.
+fn record_as_english_with_no_stems(store: &Store) {
+    store
+        .connection
+        .execute(
+            "UPDATE observation_stems SET language = 'en', title = '', content = '', topic_key = ''",
+            [],
+        )
+        .unwrap();
+}
+
+fn memory_language_check(store: &Store) -> crate::memory::model::DoctorCheck {
+    store
+        .doctor()
+        .unwrap()
+        .checks
+        .into_iter()
+        .find(|check| check.code == "memory_language")
+        .expect("the language check is part of the report")
+}
+
+#[test]
+fn doctor_repair_re_stems_a_row_recorded_under_the_wrong_language() {
+    let (_temp, mut store) = store_with_no_language();
+    store
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "The stems migration",
+            "It runs when the store opens, and it will not touch rows that have already been written.",
+        ))
+        .unwrap();
+    record_as_english_with_no_stems(&store);
+    store.rebuild_full_text_indexes().unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "en");
+    assert!(strict(&store, SPANISH_QUESTION).is_empty());
+
+    assert_eq!(store.rows_in_another_language().unwrap(), 1);
+    let check = memory_language_check(&store);
+    let detail = check.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("1 memories") && detail.contains("--repair"),
+        "{detail}"
+    );
+
+    assert_eq!(store.restem_to_detected_language().unwrap(), 1);
+    store.rebuild_full_text_indexes().unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "es");
+    assert_eq!(language_of(&store, "The stems migration"), "en");
+    assert_eq!(strict(&store, SPANISH_QUESTION), [SPANISH_TITLE]);
+    assert_eq!(store.rows_in_another_language().unwrap(), 0);
+    assert_eq!(memory_language_check(&store).detail, None);
+    assert_eq!(
+        store.restem_to_detected_language().unwrap(),
+        0,
+        "a second repair moves nothing"
+    );
+}
+
+/// With a language named the setting is the answer for every row, so detection
+/// is neither reported against nor repaired toward.
+#[test]
+fn a_named_language_is_not_reported_or_repaired_by_detection() {
+    let (_temp, mut store) = store_in(Interface::English);
+    store
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    // A row kept from an earlier setting, which detection would agree with and
+    // the setting does not.
+    store
+        .connection
+        .execute("UPDATE observation_stems SET language = 'es'", [])
+        .unwrap();
+    let before = stem_rows(&store);
+
+    assert_eq!(store.rows_in_another_language().unwrap(), 0);
+    let check = memory_language_check(&store);
+    assert!(
+        !check
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("--repair"),
+        "{check:?}"
+    );
+    assert_eq!(store.restem_to_detected_language().unwrap(), 0);
+    assert_eq!(before, stem_rows(&store));
 }

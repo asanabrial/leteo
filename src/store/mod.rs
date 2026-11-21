@@ -672,6 +672,10 @@ pub struct Store {
     /// [`crate::stemming`] function, and that function answers this value and
     /// not whatever the settings file says later.
     memory_language: crate::settings::Interface,
+    /// Whether the setting named no language, so each memory is recorded under
+    /// the one its words are in. English in `memory_language` is then only the
+    /// fallback, not a choice.
+    detects_language: bool,
     /// What `open` had left of its budget once the schema pass was done. See
     /// [`Store::budget_left_after_opening`].
     budget_left_after_opening: Duration,
@@ -712,12 +716,18 @@ impl Store {
     /// The language this connection records a new memory under.
     ///
     /// What [`crate::stemming`] registers on the connection, and so what
-    /// `leteo_stem_language()` answers: a row written now is recorded under
-    /// this, whatever language it is actually written in. A store whose setting
-    /// is `auto` opens as English, which is why a change of setting can leave
-    /// the rows already there under a language the setting no longer names.
+    /// `leteo_stem_language()` answers: when the setting names a language, a row
+    /// written now is recorded under this, whatever language it is actually
+    /// written in. When it names none this is English and says nothing about a
+    /// row: see [`Store::detects_language`].
     pub fn memory_language(&self) -> crate::settings::Interface {
         self.memory_language
+    }
+
+    /// Whether a new memory is recorded under the language its words are in
+    /// because the setting named none.
+    pub fn detects_language(&self) -> bool {
+        self.detects_language
     }
 
     pub fn open(config: StoreConfig) -> Result<Self, StoreError> {
@@ -740,20 +750,21 @@ impl Store {
         connection.busy_timeout(config.busy_timeout)?;
         // Before the schema is prepared, not after: migration 21 stems the rows
         // that exist, and every trigger on `observations` calls these.
-        let language = config.memory_language.unwrap_or_else(|| {
-            crate::stemming::memory_language(
+        let named = config.memory_language.or_else(|| {
+            crate::stemming::named_language(
                 crate::settings::load_beside(&config.database_path)
                     .language
                     .as_deref(),
             )
         });
-        crate::stemming::register(&connection, language)?;
+        crate::stemming::register(&connection, named)?;
         prepare(&connection, config.busy_timeout, &config.database_path)?;
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         connection.busy_timeout(left)?;
         Ok(Self {
             connection,
-            memory_language: language,
+            memory_language: named.unwrap_or_default(),
+            detects_language: named.is_none(),
             process_deadline: config.single_busy_budget.then_some(deadline),
             config,
             budget_left_after_opening: left,

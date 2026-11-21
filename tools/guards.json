@@ -1638,5 +1638,83 @@
     "file": "src/settings.rs",
     "old": "Self::Slim => 3_000,",
     "new": "Self::Slim => 15_000,"
+  },
+  {
+    "name": "memory language: detection never believes a count",
+    "file": "src/stemming.rs",
+    "old": "if count >= MINIMUM_HITS && count * LEAD_DENOMINATOR >= runner_up * LEAD_NUMERATOR {",
+    "new": "if false {"
+  },
+  {
+    "name": "memory language: the leader needs no lead over the runner-up by half again",
+    "file": "src/stemming.rs",
+    "old": "&& count * LEAD_DENOMINATOR >= runner_up * LEAD_NUMERATOR {",
+    "new": "&& count > runner_up {"
+  },
+  {
+    "name": "memory language: one stop word is enough to name a language",
+    "file": "src/stemming.rs",
+    "old": "if count >= MINIMUM_HITS &&",
+    "new": "if count >= 1 &&"
+  },
+  {
+    "name": "memory language: a word two languages share decides for the first",
+    "file": "src/stemming.rs",
+    "old": "[only] => Some((word, only)),",
+    "new": "[first, ..] => Some((word, first)),"
+  },
+  {
+    "name": "memory language: a named language is second-guessed by the words",
+    "file": "src/stemming.rs",
+    "old": "if let Some(language) = named {",
+    "new": "if let Some(language) = named.filter(|_| false) {"
+  },
+  {
+    "name": "memory language: the insert trigger records the connection's language, not the memory's",
+    "file": "migrations/0023_stems_in_the_language_of_the_memory.sql",
+    "old": "AFTER INSERT ON observations BEGIN\n    INSERT INTO observation_stems(observation_id, language, title, content, tool_name, type, project, topic_key)\n    SELECT new.id, chosen.code,",
+    "new": "AFTER INSERT ON observations BEGIN\n    INSERT INTO observation_stems(observation_id, language, title, content, tool_name, type, project, topic_key)\n    SELECT new.id, leteo_stem_language(),"
+  },
+  {
+    "name": "memory language: the text-update trigger records the connection's language, not the memory's",
+    "file": "migrations/0023_stems_in_the_language_of_the_memory.sql",
+    "old": "OR new.topic_key IS NOT old.topic_key BEGIN\n    INSERT INTO observation_stems(observation_id, language, title, content, tool_name, type, project, topic_key)\n    SELECT new.id, chosen.code,",
+    "new": "OR new.topic_key IS NOT old.topic_key BEGIN\n    INSERT INTO observation_stems(observation_id, language, title, content, tool_name, type, project, topic_key)\n    SELECT new.id, leteo_stem_language(),"
+  },
+  {
+    "name": "memory language: a restored trigger reads the definition migration 23 replaced",
+    "file": "src/store/schema.rs",
+    "old": "const FULL_TEXT_TRIGGER_SOURCES: &[&str] = &[\n    STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY,\n",
+    "new": "const FULL_TEXT_TRIGGER_SOURCES: &[&str] = &[\n"
+  },
+  {
+    "name": "memory language: a row with no stems is given the connection's language, not its words'",
+    "file": "src/store/schema.rs",
+    "old": "ifnull(s.language, leteo_memory_language(o.title, o.content)) AS language,",
+    "new": "ifnull(s.language, leteo_stem_language()) AS language,"
+  },
+  {
+    "name": "memory language: the repair leaves a row under the wrong language",
+    "file": "src/store/diagnostics.rs",
+    "old": "AND observation_stems.language IS NOT detected.code\"",
+    "new": "AND 0\""
+  },
+  {
+    "name": "memory language: the repair moves rows onto a named language",
+    "file": "src/store/diagnostics.rs",
+    "old": "pub fn restem_to_detected_language(&mut self) -> Result<i64, StoreError> {\n        if !self.detects_language() {",
+    "new": "pub fn restem_to_detected_language(&mut self) -> Result<i64, StoreError> {\n        if false {"
+  },
+  {
+    "name": "memory language: doctor counts rows against detection when a language is named",
+    "file": "src/store/diagnostics.rs",
+    "old": "pub fn rows_in_another_language(&self) -> Result<i64, StoreError> {\n        if !self.detects_language() {",
+    "new": "pub fn rows_in_another_language(&self) -> Result<i64, StoreError> {\n        if false {"
+  },
+  {
+    "name": "memory language: doctor --repair does not re-stem by detection",
+    "file": "src/cli/mod.rs",
+    "old": ".then(|| store.restem_to_detected_language())",
+    "new": ".then(|| Ok::<i64, crate::store::StoreError>(0))"
   }
 ]

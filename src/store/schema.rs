@@ -56,10 +56,11 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0020_observation_vectors.sql       <- the vectors the semantic stage reads
 ///   0021_observation_stems.sql         <- the Snowball index, one row a memory
 ///   0022_stems_keep_their_language.sql <- an identifier edit no longer re-stems
-///   0023_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0023_stems_in_the_language_of_the_memory.sql <- each row stemmed in its own language
+///   0024_something.sql                  <- add here, and bump SCHEMA_VERSION
 /// ```
 ///
-/// The next number is 23 rather than 2 because 2 through 17 are spent history
+/// The next number is 24 rather than 2 because 2 through 17 are spent history
 /// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
 /// band and says why.
 ///
@@ -86,6 +87,7 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[
     (20, Migration::Sql(OBSERVATION_VECTORS)),
     (21, Migration::Sql(OBSERVATION_STEMS)),
     (22, Migration::Sql(STEMS_KEEP_THEIR_LANGUAGE)),
+    (23, Migration::Sql(STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY)),
 ];
 
 pub(super) const REVIEW_CLOCKS_IN_CALENDAR_MONTHS: &str =
@@ -122,6 +124,14 @@ pub(super) const OBSERVATION_STEMS: &str =
 /// definition.
 pub(super) const STEMS_KEEP_THEIR_LANGUAGE: &str =
     include_str!("../../migrations/0022_stems_keep_their_language.sql");
+
+/// Migration 23: the stems insert and text-update triggers record a row under
+/// the language of its words, where the setting names none.
+///
+/// It replaces `obs_stems_insert` and `obs_stems_update`, so the roll of trigger
+/// sources below lists it before the two that defined them earlier.
+pub(super) const STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY: &str =
+    include_str!("../../migrations/0023_stems_in_the_language_of_the_memory.sql");
 
 /// How a migration is carried out.
 ///
@@ -175,7 +185,7 @@ pub(super) enum Migration {
 /// What raising it past them does *not* do is make them migratable: see
 /// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
 /// ambiguous and stay refused.
-pub(crate) const SCHEMA_VERSION: i32 = 22;
+pub(crate) const SCHEMA_VERSION: i32 = 23;
 
 /// The highest number stamped by the numbering that predates any release.
 ///
@@ -975,8 +985,10 @@ pub(crate) fn rebuild_present_indexes(connection: &Connection) -> Result<(), rus
 /// there because one went missing — would stay unfindable by its stems however
 /// often the index were rebuilt. A row keeps the language it was stemmed in,
 /// including one with no stemmer, which is what makes the stems of a row a
-/// function of the row; one that has none yet takes the language this
-/// connection writes.
+/// function of the row; one that has none yet takes the language a row written
+/// now would, which is the setting's or else the one its words are in.
+/// `ifnull` evaluates its second argument only for such a row, so a level store
+/// does not pay for detection.
 ///
 /// Only a row whose stems differ from what they should be is written. On a
 /// store that is level that is nothing, so a repair does not fire the index
@@ -985,17 +997,17 @@ pub(crate) fn rebuild_present_indexes(connection: &Connection) -> Result<(), rus
 /// A stems row whose memory is gone is deleted. Foreign keys are on for every
 /// connection of this crate, so the cascade normally prevents one; a tool that
 /// wrote to the file with them off can leave one, and nothing else removes it.
-fn restem_observations(connection: &Connection) -> Result<(), rusqlite::Error> {
+pub(crate) fn restem_observations(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.execute_batch(
         "DELETE FROM observation_stems
          WHERE NOT EXISTS (SELECT 1 FROM observations o WHERE o.id = observation_id);
          WITH wanted AS (
              SELECT o.id AS id,
-                    ifnull(s.language, leteo_stem_language()) AS language,
-                    leteo_stem(o.title, ifnull(s.language, leteo_stem_language())) AS title,
-                    leteo_stem(o.content, ifnull(s.language, leteo_stem_language())) AS content,
+                    ifnull(s.language, leteo_memory_language(o.title, o.content)) AS language,
+                    leteo_stem(o.title, ifnull(s.language, leteo_memory_language(o.title, o.content))) AS title,
+                    leteo_stem(o.content, ifnull(s.language, leteo_memory_language(o.title, o.content))) AS content,
                     o.tool_name AS tool_name, o.type AS type, o.project AS project,
-                    leteo_stem(o.topic_key, ifnull(s.language, leteo_stem_language())) AS topic_key
+                    leteo_stem(o.topic_key, ifnull(s.language, leteo_memory_language(o.title, o.content))) AS topic_key
              FROM observations o LEFT JOIN observation_stems s ON s.observation_id = o.id
              WHERE typeof(o.id) = 'integer'
          )
@@ -1069,6 +1081,7 @@ pub(crate) const FULL_TEXT_TRIGGERS: &[&str] = &[
 /// migration — a second copy in Rust would be right on the day it was written
 /// and drift the first time either index gains a column.
 const FULL_TEXT_TRIGGER_SOURCES: &[&str] = &[
+    STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY,
     BASELINE_FINALIZE_SQL,
     include_str!("../../migrations/0001_baseline_after_the_tables.sql"),
     STEMS_KEEP_THEIR_LANGUAGE,

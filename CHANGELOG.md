@@ -272,6 +272,13 @@ All notable changes to Leteo are documented in this file.
   summary Pi has already stored, and the OpenCode 2.x adapter also runs the
   compaction hook for `session.next.compaction.ended`, once per compaction
   when the host emits both events (#370).
+- **A rename a peer sends moves only the projects this store replicates.** The
+  apply side trusted every name the rename listed, so a pulled rename of a
+  shared project could name a project that exists on this machine alone and file
+  its memories, sessions and prompts under the shared one, from where every
+  later edit was queued to peers. A name that is not enrolled here is now
+  skipped, without refusing the rest of the pull, and a rename that skips every
+  name creates and enrols nothing (#381).
 
 ## [0.4.3] - 2026-11-03
 

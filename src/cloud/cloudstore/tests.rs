@@ -14,6 +14,45 @@ fn mutation_validation_enforces_real_batch_limit() {
     assert!(validate_mutation_batch(&vec![entry; 101]).is_err());
 }
 
+/// A rename inside a chunk becomes a rename mutation, filed under the chunk's
+/// project, and a mutation the server does not materialise is left out.
+#[test]
+fn a_rename_in_a_chunk_is_materialised_under_the_chunks_project() {
+    let rename = |entity_key: &str| SyncMutation {
+        entity: crate::sync::ENTITY_PROJECT_RENAME.to_owned(),
+        entity_key: entity_key.to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": entity_key,
+            "sources": ["old-project"],
+            "project": "new-project",
+        })
+        .to_string(),
+        ..SyncMutation::default()
+    };
+    let chunk = ChunkData {
+        mutations: vec![
+            rename(" rename-1 "),
+            SyncMutation {
+                entity: "session".to_owned(),
+                entity_key: "s1".to_owned(),
+                op: crate::sync::OP_UPSERT.to_owned(),
+                payload: "{}".to_owned(),
+                ..SyncMutation::default()
+            },
+        ],
+        ..ChunkData::default()
+    };
+
+    let entries = materialize_chunk_mutations("new-project", &chunk).unwrap();
+
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].entity, crate::sync::ENTITY_PROJECT_RENAME);
+    assert_eq!(entries[0].entity_key, "rename-1");
+    assert_eq!(entries[0].project, "new-project");
+    assert_eq!(entries[0].payload["sources"][0], "old-project");
+}
+
 /// The migrations, applied, create the tables the cloud entities need.
 ///
 /// This used to assert the names appeared as substrings of the migration SQL,

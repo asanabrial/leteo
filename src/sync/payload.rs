@@ -283,10 +283,10 @@ pub(super) struct ObservationVersionMutationPayload {
 /// A merge, as a peer is told of it: the names that are now called `project`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub(super) struct ProjectRenameMutationPayload {
-    pub(super) sync_id: String,
-    pub(super) sources: Vec<String>,
-    pub(super) project: String,
+pub(crate) struct ProjectRenameMutationPayload {
+    pub(crate) sync_id: String,
+    pub(crate) sources: Vec<String>,
+    pub(crate) project: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

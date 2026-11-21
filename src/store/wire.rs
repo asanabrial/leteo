@@ -191,7 +191,8 @@ pub(super) fn apply_sync_mutation_tx(
             apply_relation_upsert_tx(tx, mutation, max_content_bytes)
         }
         crate::sync::ENTITY_PROJECT_RENAME if operation == crate::sync::OP_UPSERT => {
-            let mut payload: SyncProjectRenamePayload = decode_sync_payload(&mutation.payload)?;
+            let mut payload: crate::sync::ProjectRenameMutationPayload =
+                decode_sync_payload(&mutation.payload)?;
             if payload.sync_id.trim().is_empty() {
                 payload.sync_id = mutation.entity_key.trim().to_owned();
             }
@@ -1514,14 +1515,6 @@ pub(super) fn enqueue_project_rename_tx(
     )
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct SyncProjectRenamePayload {
-    sync_id: String,
-    sources: Vec<String>,
-    project: String,
-}
-
 /// Applies a rename a peer sent: the merge, without the queueing.
 ///
 /// The rows move and the emptied names stop being replicated; nothing is
@@ -1531,9 +1524,17 @@ struct SyncProjectRenamePayload {
 /// A store skips the rename it sent itself, which the pull hands back: by then
 /// the old name may be in use again, and moving its rows into the new one would
 /// undo what its owner did since. The journal is what says whose it is.
+///
+/// The names are the sender's word, and only the ones this store replicates are
+/// moved: a project that exists on this machine alone, never shared, would
+/// otherwise be filed under the shared one and queued to every peer from then
+/// on. Enrolment is the table and nothing else (an empty table replicates
+/// nothing), the same test the applied delete and every queueing path use. A
+/// name that is not enrolled is skipped, not refused, so the rest of the pull
+/// goes on; a rename that skips every source creates and enrols nothing.
 fn apply_project_rename_tx(
     tx: &Transaction<'_>,
-    payload: SyncProjectRenamePayload,
+    payload: crate::sync::ProjectRenameMutationPayload,
 ) -> Result<(), StoreError> {
     let canonical = normalize::project(&payload.project);
     let key = payload.sync_id.trim();
@@ -1551,12 +1552,13 @@ fn apply_project_rename_tx(
     if sent_here {
         return Ok(());
     }
-    let names = payload
-        .sources
-        .iter()
-        .map(|name| name.trim().to_lowercase())
-        .filter(|name| !name.is_empty() && *name != canonical)
-        .collect::<BTreeSet<_>>();
+    let mut names = BTreeSet::new();
+    for name in &payload.sources {
+        let name = name.trim().to_lowercase();
+        if !name.is_empty() && name != canonical && is_enrolled_tx(tx, &name)? {
+            names.insert(name);
+        }
+    }
     if names.is_empty() {
         return Ok(());
     }

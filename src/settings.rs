@@ -10,6 +10,10 @@
 //! and never an error — a preference that cannot be read is a preference nobody
 //! set, and refusing to run a hook over it would trade a cosmetic setting for
 //! the memory itself.
+//!
+//! That holds for reading. A caller that reads in order to write back goes
+//! through [`load_strict`] instead, because defaults that were never answers
+//! must not be saved over the answers that were.
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// every session, for everybody who kept the default. The reminder is the one
 /// line that does work, and it stays. A settings file that names a voice keeps
 /// it, so nobody who chose `all` loses it.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Voice {
     /// Everything: what the project holds, what might fit, what was captured,
@@ -84,6 +88,21 @@ impl Voice {
             Self::Reminders => say.voice_reminders,
             Self::Quiet => say.voice_quiet,
         }
+    }
+}
+
+/// Read through [`Voice::parse`], for the reason [`Interface`] is read through
+/// its own: the derived reading was case-strict and `parse` is not, so
+/// `"voice": "Quiet"` was accepted by the command line and the setup screen and
+/// read as the default by every hook, then written back as the default.
+impl<'de> Deserialize<'de> for Voice {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "{raw:?} is not a voice; the voices are all, reminders and quiet"
+            ))
+        })
     }
 }
 
@@ -330,15 +349,35 @@ pub fn language_choices(system: Option<&str>) -> Vec<Option<String>> {
 ///
 /// Unknown stays `None`, which costs one menu entry and never a wrong one.
 pub fn system_language() -> Option<String> {
-    let raw = std::env::var("LETEO_SYSTEM_LANGUAGE")
-        .ok()
-        .or_else(|| {
-            ["LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE"]
-                .iter()
-                .find_map(|name| std::env::var(name).ok())
-        })
-        .or_else(platform_locale)?;
-    language_for_locale(&raw)
+    if let Ok(forced) = std::env::var("LETEO_SYSTEM_LANGUAGE") {
+        return language_for_locale(&forced);
+    }
+    language_from_environment(|name| std::env::var(name).ok())
+        .or_else(|| platform_locale().and_then(|raw| language_for_locale(&raw)))
+}
+
+/// The locale variables, in the order POSIX gives them authority.
+///
+/// `LC_ALL` overrides everything, `LC_MESSAGES` is the category this is a
+/// question about, `LANG` is the default beneath both, and `LANGUAGE` is a GNU
+/// preference list that only applies where the locale is not `C`. Read in the
+/// order `LANG`, `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, a machine with
+/// `LANG=en_US.UTF-8` and `LC_ALL=es_ES.UTF-8` was offered English by the one
+/// variable the standard ranks last.
+const LOCALE_VARIABLES: [&str; 4] = ["LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"];
+
+/// The first locale variable that names a language Leteo knows.
+///
+/// A variable that is set and names nothing usable — `LANG=C.UTF-8`, `LANG=` or
+/// `LANG=ja_JP` — is skipped rather than ending the search: containers set
+/// `LANG=C.UTF-8` as a matter of course, and every variable behind it was then
+/// unread. Takes the lookup as an argument so a test can answer for the
+/// environment without writing to it, which the tests running beside it would
+/// race.
+fn language_from_environment(get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    LOCALE_VARIABLES
+        .iter()
+        .find_map(|name| get(name).and_then(|raw| language_for_locale(&raw)))
 }
 
 /// The language a locale string names, or `None` for one this does not know.
@@ -410,7 +449,7 @@ fn platform_locale() -> Option<String> {
 ///
 /// Three named sizes rather than a number, because the number that matters is
 /// what it buys, and that is what the names are for.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContextSize {
     /// Twenty: 44.5% for 5 KB, for a small context window or a long session.
@@ -491,6 +530,18 @@ impl ContextSize {
             "deep" => Some(Self::Deep),
             _ => None,
         }
+    }
+}
+
+/// Read through [`ContextSize::parse`], for the reason [`Voice`] is.
+impl<'de> Deserialize<'de> for ContextSize {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "{raw:?} is not a context size; the sizes are slim, full and deep"
+            ))
+        })
     }
 }
 
@@ -738,6 +789,51 @@ pub fn load(data_dir: impl AsRef<Path>) -> Settings {
         .unwrap_or_default()
 }
 
+/// The settings for a data directory, for a caller that is about to write them
+/// back.
+///
+/// [`load`] answers every problem with the defaults, which is right for a hook
+/// and wrong for a read-modify-write: the defaults are then saved over whatever
+/// else the file held, and one trailing comma cost somebody the language their
+/// memories are written in. A file that is absent or empty holds nothing to
+/// lose and is the defaults; one that cannot be parsed, is not an object, or
+/// holds an answer that cannot be read is refused, naming the file and the
+/// reason, and nothing is written.
+pub fn load_strict(data_dir: impl AsRef<Path>) -> Result<Settings> {
+    let path = path_in(data_dir);
+    let body = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Settings::default());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("read {}", path.display()));
+        }
+    };
+    if body.trim().is_empty() {
+        return Ok(Settings::default());
+    }
+    let refuse = |reason: String| {
+        anyhow::anyhow!(
+            "{} was left as it is: {reason}. Fix it, or delete it to start over.",
+            path.display()
+        )
+    };
+    let raw: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|error| refuse(format!("it is not valid JSON ({error})")))?;
+    let Some(fields) = raw.as_object() else {
+        return Err(refuse("it is not a JSON object".to_owned()));
+    };
+    let unreadable = unreadable(fields);
+    if !unreadable.is_empty() {
+        return Err(refuse(format!(
+            "these answers cannot be read: {}",
+            unreadable.join(", ")
+        )));
+    }
+    serde_json::from_value(raw).map_err(|error| refuse(error.to_string()))
+}
+
 /// Which answers in the settings file are being ignored, and why.
 ///
 /// Each field falls back to its own default when it cannot be read — see the
@@ -760,12 +856,31 @@ pub fn ignored(data_dir: impl AsRef<Path>) -> Vec<String> {
     let Some(fields) = raw.as_object() else {
         return vec!["the file is not a JSON object".to_owned()];
     };
-    let mut ignored = Vec::new();
+    let mut ignored = unreadable(fields);
+    // And a key that is not one of the six, which is the same typo one letter
+    // earlier: `contextsize` without its underscore is read past exactly as
+    // quietly as `slimm` was. It may also be a setting a newer Leteo wrote,
+    // which is why [`save`] keeps it rather than dropping it.
+    let known = setting_names();
+    for name in fields.keys() {
+        if !known.iter().any(|known| known == name) {
+            ignored.push(format!("{name} is not a setting"));
+        }
+    }
+    ignored
+}
+
+/// The settings whose value is present and cannot be read, as `name is value`.
+///
+/// Shared by [`ignored`], which reports them, and [`load_strict`], which refuses
+/// to go on over them: the two have to agree about what an unreadable answer is.
+fn unreadable(fields: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut unreadable = Vec::new();
     let mut check = |name: &str, parses: bool| {
         if let Some(value) = fields.get(name).filter(|value| !value.is_null())
             && !parses
         {
-            ignored.push(format!("{name} is {value}"));
+            unreadable.push(format!("{name} is {value}"));
         }
     };
     check(
@@ -802,17 +917,7 @@ pub fn ignored(data_dir: impl AsRef<Path>) -> Vec<String> {
         "language",
         fields.get("language").is_none_or(|value| value.is_string()),
     );
-    // And a key that is not one of the six, which is the same typo one letter
-    // earlier: `contextsize` without its underscore is read past exactly as
-    // quietly as `slimm` was. `save` writes only these names, so anything else
-    // in the file was typed by a person.
-    let known = setting_names();
-    for name in fields.keys() {
-        if !known.iter().any(|known| known == name) {
-            ignored.push(format!("{name} is not a setting"));
-        }
-    }
-    ignored
+    unreadable
 }
 
 /// The names `save` writes, taken from the struct rather than typed again.
@@ -854,7 +959,26 @@ pub fn load_beside(database_path: &Path) -> Settings {
 /// the disk is full.
 pub fn save(data_dir: impl AsRef<Path>, settings: &Settings) -> Result<()> {
     let path = path_in(&data_dir);
-    let mut body = serde_json::to_string_pretty(settings).context("serialize settings")?;
+    let mut written = serde_json::to_value(settings).context("serialize settings")?;
+    // A key this version does not know may be a setting a newer Leteo wrote,
+    // and the struct has nowhere to keep it, so a rewrite by an older binary
+    // used to delete it. Carried over from whatever is on disk now; a file that
+    // cannot be parsed has nothing to carry, and callers that must not replace
+    // one go through [`load_strict`] first.
+    if let Some(fields) = written.as_object_mut()
+        && let Some(on_disk) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        && let Some(on_disk) = on_disk.as_object()
+    {
+        let known = setting_names();
+        for (name, value) in on_disk {
+            if !known.contains(name) {
+                fields.insert(name.clone(), value.clone());
+            }
+        }
+    }
+    let mut body = serde_json::to_string_pretty(&written).context("serialize settings")?;
     body.push('\n');
     // A hook reads this file on every event, so a half-written one would be
     // read while it is half written. `load` treats unreadable settings as the
@@ -974,6 +1098,60 @@ mod tests {
             std::fs::write(path_in(temp.path()), broken).unwrap();
             assert_eq!(load(temp.path()), Settings::default(), "{broken:?}");
         }
+    }
+
+    #[test]
+    fn a_strict_read_refuses_what_a_rewrite_would_destroy_and_names_the_file() {
+        let temp = TempDir::new().unwrap();
+        let path = path_in(temp.path());
+        assert_eq!(load_strict(temp.path()).unwrap(), Settings::default());
+        for nothing_to_lose in ["", "  \n", "{}"] {
+            std::fs::write(&path, nothing_to_lose).unwrap();
+            assert_eq!(load_strict(temp.path()).unwrap(), Settings::default());
+        }
+        for (broken, said) in [
+            ("{\"voice\": \"quiet\",}", "not valid JSON"),
+            ("{", "not valid JSON"),
+            ("[1]", "not a JSON object"),
+            ("null", "not a JSON object"),
+            ("{\"voice\": 7}", "voice is 7"),
+            ("{\"context_size\": \"enorme\"}", "context_size is"),
+            ("{\"semantic_search\": \"yes\"}", "semantic_search is"),
+            ("{\"language\": 3}", "language is 3"),
+        ] {
+            std::fs::write(&path, broken).unwrap();
+            let error = load_strict(temp.path()).unwrap_err().to_string();
+            assert!(error.contains(&path.display().to_string()), "{error}");
+            assert!(error.contains(said), "{broken}: {error}");
+        }
+        std::fs::write(&path, "{\"voice\": \"Quiet\", \"made_up\": 1}").unwrap();
+        assert_eq!(load_strict(temp.path()).unwrap().voice, Voice::Quiet);
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_keys_this_version_does_not_know() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            path_in(temp.path()),
+            "{\"voice\": \"all\", \"language\": \"español\", \"newer\": [1, {\"a\": null}]}",
+        )
+        .unwrap();
+        save(
+            temp.path(),
+            &Settings {
+                language: None,
+                ..load_strict(temp.path()).unwrap()
+            },
+        )
+        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path_in(temp.path())).unwrap()).unwrap();
+        assert_eq!(written["newer"], serde_json::json!([1, {"a": null}]));
+        assert_eq!(written["voice"], "all");
+        assert!(
+            written.get("language").is_none(),
+            "a setting that was cleared must stay cleared: {written}"
+        );
     }
 
     #[test]
@@ -1142,6 +1320,62 @@ mod language_tests {
         assert_eq!(language_for_locale("ja_JP"), None);
         assert_eq!(language_for_locale(""), None);
         assert_eq!(language_for_locale("C"), None);
+    }
+
+    fn environment<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(set, _)| *set == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn lc_all_outranks_lang_and_a_lang_with_no_language_does_not_end_the_search() {
+        assert_eq!(
+            language_from_environment(environment(&[
+                ("LANG", "C.UTF-8"),
+                ("LC_ALL", "es_ES.UTF-8"),
+            ]))
+            .as_deref(),
+            Some("español")
+        );
+        assert_eq!(
+            language_from_environment(environment(&[
+                ("LANG", "fr_FR.UTF-8"),
+                ("LC_ALL", "de_DE.UTF-8"),
+                ("LC_MESSAGES", "it_IT.UTF-8"),
+            ]))
+            .as_deref(),
+            Some("Deutsch"),
+            "LC_ALL is the highest priority in POSIX and LANG the lowest"
+        );
+        assert_eq!(
+            language_from_environment(environment(&[
+                ("LC_MESSAGES", "it_IT.UTF-8"),
+                ("LANG", "fr_FR.UTF-8"),
+            ]))
+            .as_deref(),
+            Some("italiano")
+        );
+    }
+
+    #[test]
+    fn a_variable_that_names_no_known_language_is_skipped_not_final() {
+        for unusable in ["C.UTF-8", "", "POSIX", "ja_JP.UTF-8"] {
+            assert_eq!(
+                language_from_environment(environment(&[
+                    ("LC_ALL", unusable),
+                    ("LANG", unusable),
+                    ("LANGUAGE", "pt_BR"),
+                ]))
+                .as_deref(),
+                Some("português"),
+                "{unusable:?} ended the search"
+            );
+        }
+        assert_eq!(language_from_environment(environment(&[])), None);
     }
 
     /// Windows answers, where the environment never does.

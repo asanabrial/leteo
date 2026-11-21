@@ -115,7 +115,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 let data_dir = data_directory(&cli)?;
                 let settings = crate::settings::Settings {
                     language: Some(language.trim().to_owned()).filter(|l| !l.is_empty()),
-                    ..crate::settings::load(&data_dir)
+                    ..crate::settings::load_strict(&data_dir)?
                 };
                 crate::settings::save(&data_dir, &settings)?;
             }
@@ -130,7 +130,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 let data_dir = data_directory(&cli)?;
                 let settings = crate::settings::Settings {
                     context_size: Some(size),
-                    ..crate::settings::load(&data_dir)
+                    ..crate::settings::load_strict(&data_dir)?
                 };
                 crate::settings::save(&data_dir, &settings)?;
             }

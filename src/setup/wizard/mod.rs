@@ -682,20 +682,31 @@ impl Wizard {
             // The two the wizard has no screen for are carried over as they
             // are on disk. Dropping one would turn a setting somebody made by
             // hand back into its default the next time they walk the wizard.
-            let on_disk = crate::settings::load(data_dir);
-            let settings = crate::settings::Settings {
-                voice: self.voice,
-                language: self.language.clone(),
-                interface: self.interface_setting,
-                // Unresolved for the same reason, one setting along: `None`
-                // here means "whatever Leteo speaks", which goes on being true
-                // as that changes. Writing what it resolves to today would pin
-                // the voice to a language nobody chose for it.
-                voice_language: self.voice_language,
-                context_size: on_disk.context_size,
-                semantic_search: on_disk.semantic_search,
-            };
-            match crate::settings::save(data_dir, &settings) {
+            //
+            // Read strictly: a file that cannot be parsed would come back as
+            // the defaults, and the two answers carried over here would be
+            // overwritten with them along with whatever the wizard has no
+            // screen for at all. The answers given on screen are lost with the
+            // refusal, and that is the cheaper loss — the file says why.
+            let saved_over = crate::settings::load_strict(data_dir).and_then(|on_disk| {
+                crate::settings::save(
+                    data_dir,
+                    &crate::settings::Settings {
+                        voice: self.voice,
+                        language: self.language.clone(),
+                        interface: self.interface_setting,
+                        // Unresolved for the same reason, one setting along:
+                        // `None` here means "whatever Leteo speaks", which
+                        // goes on being true as that changes. Writing what it
+                        // resolves to today would pin the voice to a language
+                        // nobody chose for it.
+                        voice_language: self.voice_language,
+                        context_size: on_disk.context_size,
+                        semantic_search: on_disk.semantic_search,
+                    },
+                )
+            });
+            match saved_over {
                 Ok(()) => {
                     outcome.voice = self.voice;
                     saved = true;

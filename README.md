@@ -376,7 +376,9 @@ A call the tool refused answers `400` with the same `error.code` MCP returns,
 except `store_busy` and `store_unavailable`, which are the server's condition
 and not the request's and answer `503`: `store_busy` is worth repeating,
 `store_unavailable` is not until the server is restarted. A request that does
-not arrive in full within ten seconds is answered `408` and closed.
+not arrive in full within ten seconds is answered `408` and closed, and a
+client that does not read its response within ten seconds is dropped. At most
+128 connections are served at once; the next is answered `503` and closed.
 
 ```powershell
 curl -s http://127.0.0.1:7437/tools/mem_save -d '{"title":"A decision","content":"what and why","type":"decision"}'

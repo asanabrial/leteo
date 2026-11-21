@@ -53,6 +53,43 @@ const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// as the client cared to keep it, each one costing the server a task.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long a connection has to take its whole response once it has been
+/// written to the socket.
+///
+/// The same ten seconds as the request, deliberately: a client that stops
+/// draining holds the connection exactly as long as one that stops sending. A
+/// plain `write_all` waited on a reader that never read for as long as that
+/// reader cared to keep the socket open, once the response outgrew the kernel's
+/// send buffer.
+const WRITE_TIMEOUT: std::time::Duration = READ_TIMEOUT;
+
+/// How many connections are served at once; the next one is answered `503` and
+/// closed without a task.
+///
+/// Each connection is a task, a buffer of up to `MAX_HEADER_BYTES` plus
+/// `MAX_BODY_BYTES`, and possibly a blocking-pool thread, so without a bound a
+/// loop of idle sockets costs memory in proportion to how many the client
+/// cares to open. The loopback API serves one agent and its scripts; a
+/// hundred and twenty-eight is far past what they run at once.
+const MAX_CONNECTIONS: usize = 128;
+
+/// The three bounds one connection lives under, gathered so a test can shrink
+/// them without a second copy of the code that applies them.
+#[derive(Clone, Copy)]
+struct Bounds {
+    read_timeout: std::time::Duration,
+    write_timeout: std::time::Duration,
+    max_connections: usize,
+}
+
+impl Bounds {
+    const PUBLISHED: Self = Self {
+        read_timeout: READ_TIMEOUT,
+        write_timeout: WRITE_TIMEOUT,
+        max_connections: MAX_CONNECTIONS,
+    };
+}
+
 pub async fn run(server: LeteoMcpServer, bind: &str) -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind)
         .await
@@ -80,7 +117,7 @@ fn listening_message(address: SocketAddr) -> String {
 }
 
 async fn serve(listener: TcpListener, server: LeteoMcpServer) -> anyhow::Result<()> {
-    accept_forever(|| listener.accept(), api(server), READ_TIMEOUT).await
+    accept_forever(|| listener.accept(), api(server), Bounds::PUBLISHED).await
 }
 
 /// The shared state one server answers from: the handlers and the tool list
@@ -112,15 +149,12 @@ const ACCEPT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis
 /// retries, and the delay above bounds the cost of a failure that persists.
 /// `TooManyOpenFiles` is named in prose rather than matched on: its
 /// `ErrorKind` is still unstable, and retrying everything covers it.
-async fn accept_forever<F, Fut>(
-    mut accept: F,
-    api: Arc<Api>,
-    read_timeout: std::time::Duration,
-) -> anyhow::Result<()>
+async fn accept_forever<F, Fut>(mut accept: F, api: Arc<Api>, bounds: Bounds) -> anyhow::Result<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::io::Result<(TcpStream, SocketAddr)>>,
 {
+    let permits = Arc::new(tokio::sync::Semaphore::new(bounds.max_connections));
     loop {
         let (stream, _peer) = match accept().await {
             Ok(accepted) => accepted,
@@ -130,9 +164,14 @@ where
                 continue;
             }
         };
+        let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+            refuse_connection(stream);
+            continue;
+        };
         let api = Arc::clone(&api);
         tokio::spawn(async move {
-            if let Err(error) = handle(stream, api, read_timeout).await {
+            let _permit = permit;
+            if let Err(error) = handle(stream, api, bounds).await {
                 // A connection that failed mid-request is the client's, not
                 // the server's: the socket is already gone, and the process
                 // keeps answering the next one.
@@ -140,6 +179,25 @@ where
             }
         });
     }
+}
+
+/// Answer a connection past `MAX_CONNECTIONS` `503` and close it, without
+/// awaiting anything.
+///
+/// The answer is a single non-blocking write on the accept loop's own thread,
+/// not a task: a task per refused connection would be the unbounded spawn the
+/// bound exists to prevent, and awaiting the write here would let one reader
+/// that never reads hold up every accept behind it. A fresh socket's send
+/// buffer takes a hundred bytes, and one that does not is simply dropped. What
+/// the client already sent is drained first, because closing a socket with
+/// unread data resets the connection and a reset can discard the answer.
+fn refuse_connection(stream: TcpStream) {
+    let Ok(mut socket) = stream.into_std() else {
+        return;
+    };
+    let mut unread = [0_u8; 4096];
+    let _ = std::io::Read::read(&mut socket, &mut unread);
+    let _ = std::io::Write::write(&mut socket, &render(&Reply::too_many_connections()));
 }
 
 struct Api {
@@ -187,6 +245,30 @@ impl Reply {
         }
     }
 
+    fn too_many_connections() -> Self {
+        Self {
+            status: 503,
+            body: serde_json::json!({
+                "error": {
+                    "code": "too_many_connections",
+                    "message": "the server is serving as many connections as it allows; retry",
+                },
+            }),
+        }
+    }
+
+    fn internal() -> Self {
+        Self {
+            status: 500,
+            body: serde_json::json!({
+                "error": {
+                    "code": "internal_error",
+                    "message": "the tool call did not finish",
+                },
+            }),
+        }
+    }
+
     fn not_found(target: &str) -> Self {
         Self {
             status: 404,
@@ -212,14 +294,10 @@ impl Reply {
     }
 }
 
-async fn handle(
-    mut stream: TcpStream,
-    api: Arc<Api>,
-    read_timeout: std::time::Duration,
-) -> std::io::Result<()> {
-    let read = tokio::time::timeout(read_timeout, read_request(&mut stream)).await;
+async fn handle(mut stream: TcpStream, api: Arc<Api>, bounds: Bounds) -> std::io::Result<()> {
+    let read = tokio::time::timeout(bounds.read_timeout, read_request(&mut stream)).await;
     let reply = match read {
-        Ok(Ok(Some(request))) => route(&api, &request),
+        Ok(Ok(Some(request))) => route(api, request).await,
         // A connection that closed before sending a request line is a probe,
         // not an error.
         Ok(Ok(None)) => return Ok(()),
@@ -229,7 +307,7 @@ async fn handle(
         Ok(Err(error)) => return Err(error),
         Err(_) => Reply::request_timeout(),
     };
-    write_response(&mut stream, reply).await
+    write_response(&mut stream, reply, bounds.write_timeout).await
 }
 
 async fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
@@ -325,7 +403,7 @@ fn invalid(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
 }
 
-fn route(api: &Api, request: &Request) -> Reply {
+async fn route(api: Arc<Api>, request: Request) -> Reply {
     let path = request
         .target
         .split_once('?')
@@ -339,11 +417,18 @@ fn route(api: &Api, request: &Request) -> Reply {
             "tools": api.tools.iter().cloned().collect::<Vec<_>>(),
         })),
         ("POST", path) if path.starts_with("/tools/") => {
-            let name = &path["/tools/".len()..];
-            if !api.tools.contains(name) {
-                return Reply::not_found(name);
+            let name = path["/tools/".len()..].to_owned();
+            if !api.tools.contains(&name) {
+                return Reply::not_found(&name);
             }
-            call_tool(&api.server, name, &request.body)
+            // The handlers are synchronous and wait on the store's lock and on
+            // SQLite's busy timeout, so a call made on a runtime worker held
+            // that worker for the whole wait and every connection scheduled on
+            // it stood still behind one busy store.
+            let body = request.body;
+            tokio::task::spawn_blocking(move || call_tool(&api.server, &name, &body))
+                .await
+                .unwrap_or_else(|_| Reply::internal())
         }
         ("GET" | "POST", _) => Reply::not_found(path),
         _ => Reply::method_not_allowed(),
@@ -475,17 +560,37 @@ fn result_body(result: &CallToolResult) -> serde_json::Value {
     serde_json::json!({})
 }
 
-async fn write_response(stream: &mut TcpStream, reply: Reply) -> std::io::Result<()> {
+fn render(reply: &Reply) -> Vec<u8> {
     let body = serde_json::to_vec(&reply.body).unwrap_or_else(|_| b"{}".to_vec());
-    let head = format!(
+    let mut bytes = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         reply.status,
         reason(reply.status),
         body.len(),
-    );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(&body).await?;
-    stream.flush().await
+    )
+    .into_bytes();
+    bytes.extend_from_slice(&body);
+    bytes
+}
+
+async fn write_response(
+    stream: &mut TcpStream,
+    reply: Reply,
+    deadline: std::time::Duration,
+) -> std::io::Result<()> {
+    let bytes = render(&reply);
+    let write = async {
+        stream.write_all(&bytes).await?;
+        stream.flush().await
+    };
+    tokio::time::timeout(deadline, write)
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the client did not read the response in time",
+            ))
+        })
 }
 
 fn reason(status: u16) -> &'static str {
@@ -495,6 +600,7 @@ fn reason(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "OK",
     }
@@ -892,10 +998,8 @@ mod tests {
         assert_eq!(status, 503, "{body}");
     }
 
-    /// The accept loop with a read timeout short enough to wait out.
-    async fn spawn_impatient_reader(
-        read_timeout: std::time::Duration,
-    ) -> (SocketAddr, tempfile::TempDir) {
+    /// The accept loop under bounds small enough to reach.
+    async fn spawn_bounded(bounds: Bounds) -> (SocketAddr, tempfile::TempDir) {
         let (server, temp) = test_server("http-test");
         let listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
         let address = listener.local_addr().unwrap();
@@ -905,9 +1009,143 @@ mod tests {
                 async move { listener.accept().await }
             },
             api(server),
-            read_timeout,
+            bounds,
         ));
         (address, temp)
+    }
+
+    async fn spawn_impatient_reader(
+        read_timeout: std::time::Duration,
+    ) -> (SocketAddr, tempfile::TempDir) {
+        spawn_bounded(Bounds {
+            read_timeout,
+            ..Bounds::PUBLISHED
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_reads_is_dropped_at_the_write_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // The peer connects and then never reads, so a response larger than
+        // both kernel buffers can only finish if the writer gives up.
+        let _never_reads = TcpStream::connect(address).await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let reply = Reply::ok(serde_json::json!({ "padding": "x".repeat(64 * 1024 * 1024) }));
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            write_response(&mut stream, reply, std::time::Duration::from_millis(100)),
+        )
+        .await
+        .expect("the write gave up instead of waiting for the reader");
+        assert_eq!(
+            outcome
+                .expect_err("the response cannot fit in the buffers")
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_past_the_bound_is_answered_service_unavailable() {
+        let bounds = Bounds {
+            max_connections: 2,
+            ..Bounds::PUBLISHED
+        };
+        let (address, _temp) = spawn_bounded(bounds).await;
+        // Connections are accepted in the order they were made, so these two
+        // hold both permits before the third exists.
+        let mut held = Vec::new();
+        for _ in 0..bounds.max_connections {
+            held.push(TcpStream::connect(address).await.unwrap());
+        }
+
+        let mut extra = TcpStream::connect(address).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            extra.read_to_end(&mut response),
+        )
+        .await
+        .expect("the connection past the bound was answered")
+        .unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(
+            response.starts_with("HTTP/1.1 503"),
+            "a connection past the bound is the server's condition: {response}"
+        );
+        assert!(response.contains("too_many_connections"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_finished_connection_gives_its_place_back() {
+        let bounds = Bounds {
+            read_timeout: std::time::Duration::from_millis(50),
+            max_connections: 1,
+            ..Bounds::PUBLISHED
+        };
+        let (address, _temp) = spawn_bounded(bounds).await;
+        let mut idle = TcpStream::connect(address).await.unwrap();
+        let mut response = Vec::new();
+        idle.read_to_end(&mut response).await.unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 408"));
+
+        // The place is returned a moment after the socket closes, so a 503
+        // here is retried; the loop ends only on an answer that is not one,
+        // and a leaked place would answer 503 for ever.
+        let client = reqwest::Client::new();
+        let mut status = 503;
+        for _ in 0..200 {
+            // A refused connection can be reset under a client that was still
+            // writing its request, which reads as an error here, not a 503.
+            status = match client.get(format!("http://{address}/health")).send().await {
+                Ok(response) => response.status().as_u16(),
+                Err(_) => 503,
+            };
+            if status != 503 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(status, 200, "the place was never given back");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_tool_waiting_on_the_store_does_not_hold_a_runtime_worker() {
+        let (server, _temp) = test_server("http-test");
+        let store = Arc::clone(&server.store);
+        let address = spawn_server(server).await;
+        let held = store.lock().unwrap();
+
+        // The call blocks on the store's lock until `held` is dropped below.
+        // On a runtime with one worker, a call made on that worker would leave
+        // nothing to answer the health check with.
+        let mut waiting = std::net::TcpStream::connect(address).unwrap();
+        std::io::Write::write_all(
+            &mut waiting,
+            b"POST /tools/mem_stats HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}",
+        )
+        .unwrap();
+        // Blocking sleep and client below: when the worker is held the
+        // runtime's own timers stop with it, so a tokio sleep or timeout here
+        // would hang the test instead of failing it.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut probe = std::net::TcpStream::connect(address).unwrap();
+        probe
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        std::io::Write::write_all(&mut probe, b"GET /health HTTP/1.1\r\n\r\n").unwrap();
+        let mut answer = Vec::new();
+        let read = std::io::Read::read_to_end(&mut probe, &mut answer);
+        drop(held);
+        read.expect("the health check was answered while a tool waited on the store");
+        assert!(
+            String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 200"),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
     }
 
     #[tokio::test]
@@ -977,7 +1215,7 @@ mod tests {
                 }
             },
             api(server),
-            READ_TIMEOUT,
+            Bounds::PUBLISHED,
         ));
 
         // A request answered after the injected failure means the loop went on

@@ -317,6 +317,15 @@ All notable changes to Leteo are documented in this file.
   error, and the store is unhealthy. A missing spool or settings file is still
   an empty one, and a hook that cannot list the spool says so on stderr and
   replays nothing (#375).
+- **`leteo serve` drops a client that does not read, bounds its connections,
+  and no longer parks a runtime worker behind a busy store.** A response was
+  written with no deadline, so a reader that never drained held its task once
+  the answer outgrew the socket buffer; every accepted connection got a task
+  with no limit; and a tool call waited on the store's lock and SQLite's busy
+  timeout on the worker that was serving other connections. A response now has
+  the same ten seconds as a request, at most 128 connections are served at
+  once and the next is answered `503` and closed, and tool calls run on the
+  blocking pool (#376).
 
 ## [0.4.3] - 2026-11-03
 

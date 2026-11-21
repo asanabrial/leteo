@@ -1814,5 +1814,29 @@
     "file": "src/llm.rs",
     "old": "    prompt.push_str(rest);\n    prompt\n}",
     "new": "    prompt.push_str(rest);\n    prompt.replace(\"{b_content}\", b_content)\n}"
+  },
+  {
+    "name": "replication: a memory in another project's session is queued without the session",
+    "file": "src/store/wire.rs",
+    "old": "    if normalize::project(&session.project) == project {\n        return Ok(());\n    }\n    let already_queued",
+    "new": "    if true {\n        return Ok(());\n    }\n    let already_queued"
+  },
+  {
+    "name": "replication: the session of a mixed-project memory is queued again for every memory",
+    "file": "src/store/wire.rs",
+    "old": "    if already_queued {",
+    "new": "    if false && already_queued {"
+  },
+  {
+    "name": "session delete: each memory's delete is filed under the session's project",
+    "file": "src/store/sessions.rs",
+    "old": "                observation.project.as_deref().unwrap_or_default(),\n            )?;\n            result.observations_deleted += 1;",
+    "new": "                &project,\n            )?;\n            result.observations_deleted += 1;"
+  },
+  {
+    "name": "prune: every session of the project is deleted, whatever still references it",
+    "file": "src/store/projects.rs",
+    "old": "into.\n        let emptied = sessions_holding_nothing_tx(&tx, &project)?;",
+    "new": "into.\n        let emptied = collect_sessions_tx(&tx, &project)?;"
   }
 ]

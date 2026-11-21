@@ -557,7 +557,6 @@ impl Store {
 
         let tx = self.write_transaction()?;
         let prompts = collect_prompts_tx(&tx, &project)?;
-        let sessions = collect_sessions_tx(&tx, &project)?;
         let mut result = PruneResult {
             project: project.clone(),
             ..PruneResult::default()
@@ -569,11 +568,19 @@ impl Store {
             "DELETE FROM prompts WHERE ifnull(project, '') = ?1",
             [&project],
         )? as i64;
-        for session in &sessions {
+        // After the prompts above are gone, so what still references a session
+        // is another project's. Deleting those sessions regardless failed the
+        // whole prune with a bare foreign-key error, for a project whose only
+        // fault was having been the name on a session that another project's
+        // memory was saved into.
+        let emptied = sessions_holding_nothing_tx(&tx, &project)?;
+        for session in &emptied {
             enqueue_session_delete_tx(&tx, session, &project)?;
         }
-        result.sessions_deleted =
-            tx.execute("DELETE FROM sessions WHERE project = ?1", [&project])? as i64;
+        for session in &emptied {
+            tx.execute("DELETE FROM sessions WHERE id = ?1", [session])?;
+        }
+        result.sessions_deleted = emptied.len() as i64;
         tx.commit()?;
         Ok(result)
     }
@@ -661,13 +668,7 @@ impl Store {
             // delete, so a project with any such row could not be removed at
             // all. Those sessions stay, holding the rows that are not ours to
             // destroy.
-            let emptied = query_column::<String>(
-                &tx,
-                "SELECT id FROM sessions s WHERE s.project = ?1
-                   AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.session_id = s.id)
-                   AND NOT EXISTS (SELECT 1 FROM prompts p WHERE p.session_id = s.id)",
-                &project,
-            )?;
+            let emptied = sessions_holding_nothing_tx(&tx, &project)?;
             for session in &emptied {
                 enqueue_session_delete_tx(&tx, session, &project)?;
             }

@@ -1151,6 +1151,25 @@ fn collect_sessions_tx(tx: &Transaction<'_>, project: &str) -> Result<Vec<String
     query_column(tx, "SELECT id FROM sessions WHERE project = ?1", project)
 }
 
+/// The sessions of a project that no observation or prompt references any more.
+///
+/// A session belongs to one project but the rows inside it carry their own, so
+/// deleting every session of a project breaks the foreign key of whatever
+/// another project filed into one. Both ways of removing a project's sessions
+/// ask here, which is how they stay agreed about what is not theirs to destroy.
+fn sessions_holding_nothing_tx(
+    tx: &Transaction<'_>,
+    project: &str,
+) -> Result<Vec<String>, StoreError> {
+    query_column(
+        tx,
+        "SELECT id FROM sessions s WHERE s.project = ?1
+           AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.session_id = s.id)
+           AND NOT EXISTS (SELECT 1 FROM prompts p WHERE p.session_id = s.id)",
+        project,
+    )
+}
+
 /// Whether this project replicates anywhere.
 ///
 /// An empty project name means the row could not be attributed to one, and

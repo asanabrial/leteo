@@ -85,6 +85,17 @@ All notable changes to Leteo are documented in this file.
   prompt is also filled in one pass, so a memory that quotes the template, such
   as `{b_content}`, no longer has the other note's body pasted into its own
   section (#327).
+- **A memory filed into another project's session no longer stalls replication
+  or breaks a prune.** A session was queued only under its own project, so
+  when the memory's project was the one enrolled the memory reached the peer
+  without it and failed the foreign key on every pull, with no way out short of
+  editing the store. The session now travels under the project of each memory
+  or prompt that points at it, once. Deleting a session filed each memory's
+  delete under the session's project, where it was dropped when only the
+  memory's was enrolled; it now uses the memory's own. And `leteo projects prune` on a
+  project whose session another project's rows still use aborted with a bare
+  `FOREIGN KEY constraint failed`; it now leaves that session, as
+  `delete_project --hard` already did (#330).
 
 ## [0.4.3] - 2026-11-03
 

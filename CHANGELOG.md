@@ -4,6 +4,13 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A memory found by meaning no longer takes first place from one found by
+  its words.** When a search merges the two, the best of each list scored the
+  same and the older memory went first, so the top result was often a guess.
+  At equal score the memory the words found now leads (#320).
+
 ## [0.4.3] - 2026-11-03
 
 A worktree is known by its repository, and a project name that is only a guess

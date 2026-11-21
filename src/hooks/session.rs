@@ -77,8 +77,12 @@ pub(super) fn migrate_directory_project(
 
     // Matching names are not enough. A project called "api" may belong to a
     // completely different checkout, and merging it into whatever this
-    // directory resolves to would destroy both. Only fold in memories that
-    // were actually recorded from *this* directory.
+    // directory resolves to would destroy both. Only the sessions recorded
+    // from *this* directory move, with their memories and prompts; a name that
+    // was recorded here and also elsewhere used to be folded whole, taking the
+    // other checkout's memories along, and its spelling variants (`my_api` for
+    // `my-api`) with them.
+    //
     // Asked of the one project, not of every project.
     //
     // This used to read `list_projects_with_stats`, which aggregates the whole
@@ -96,10 +100,16 @@ pub(super) fn migrate_directory_project(
     if !recorded_here {
         return;
     }
-    if let Err(error) = store.merge_project(&basename, project) {
-        outcome
+    match store.move_directory_sessions(&basename, project, directory) {
+        Ok((_, 0)) => {}
+        Ok((_, left_behind)) => outcome.warnings.push(format!(
+            "left {left_behind} session{} under \"{basename}\" behind: recorded from another directory, \
+             so not moved into \"{project}\"; `leteo projects merge` moves them if they belong there",
+            if left_behind == 1 { "" } else { "s" }
+        )),
+        Err(error) => outcome
             .warnings
-            .push(super::said("migrate project", &error));
+            .push(super::said("migrate project", &error)),
     }
 }
 

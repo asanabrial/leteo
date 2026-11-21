@@ -772,6 +772,76 @@ fn merging_into_an_unenrolled_name_does_not_quietly_stop_replicating() {
     );
 }
 
+/// Moving one directory's sessions queues the rows it moved and leaves the rest
+/// of the name replicating.
+///
+/// The narrower move does the replication arrangement of `merge_projects` for
+/// only the rows it touches: each kind is queued again under the new name, and
+/// the old name keeps its enrolment and its unsent mutations while another
+/// checkout's sessions still hold it.
+#[test]
+fn moving_one_directorys_sessions_queues_what_moved_and_keeps_the_rest_replicating() {
+    let (_temp, mut store) = store();
+    store.enroll_project("api").unwrap();
+    for (session, directory) in [("here", "/work/api"), ("there", "/other/api")] {
+        store.create_session(session, "api", directory).unwrap();
+        let mut memory = observation(session, session, "a memory");
+        memory.project = Some("api".to_owned());
+        store.add_observation(memory).unwrap();
+        store
+            .add_prompt(crate::memory::model::AddPrompt {
+                session_id: session.to_owned(),
+                content: format!("a prompt typed in {session}"),
+                project: Some("api".to_owned()),
+            })
+            .unwrap();
+    }
+    let queued = |store: &Store, project: &str, entity: &str| -> i64 {
+        store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_mutations
+                  WHERE project = ?1 AND entity = ?2 AND acked_at IS NULL",
+                [project, entity],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let unsent_before = queued(&store, "api", "observation");
+
+    let (result, left_behind) = store
+        .move_directory_sessions("api", "backend", std::path::Path::new("/work/api"))
+        .unwrap();
+
+    assert_eq!(left_behind, 1);
+    assert_eq!(
+        (
+            result.observations_updated,
+            result.sessions_updated,
+            result.prompts_updated
+        ),
+        (1, 1, 1)
+    );
+    assert!(result.enrolment_moved);
+    for entity in ["observation", "session", "prompt"] {
+        assert_eq!(
+            queued(&store, "backend", entity),
+            1,
+            "the moved {entity} is queued under the name it now has"
+        );
+    }
+    let enrolled = store.enrolled_projects().unwrap();
+    assert!(
+        enrolled.contains(&"api".to_owned()),
+        "the other checkout's rows are still replicated: {enrolled:?}"
+    );
+    assert_eq!(
+        queued(&store, "api", "observation"),
+        unsent_before,
+        "and what was waiting to be sent for them is not thrown away"
+    );
+}
+
 /// Enrolling a project does not teach a peer about a memory it will never get.
 ///
 /// The backfill queues the graph as well as the memories, and its own comment

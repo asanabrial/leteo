@@ -707,6 +707,112 @@ fn a_project_recorded_elsewhere_is_never_folded_into_this_one() {
     );
 }
 
+fn remember_from(store: &mut Store, session: &str, directory: &Path, project: &str, title: &str) {
+    store
+        .create_session(session, project, &directory.to_string_lossy())
+        .unwrap();
+    store
+        .add_observation(AddObservation {
+            session_id: session.to_owned(),
+            kind: "decision".to_owned(),
+            title: title.to_owned(),
+            content: format!("{title}, recorded in {session}"),
+            tool_name: None,
+            project: Some(project.to_owned()),
+            scope: "project".to_owned(),
+            topic_key: None,
+            prompt_sync_id: None,
+        })
+        .unwrap();
+}
+
+fn titles_under(store: &Store, project: &str) -> Vec<String> {
+    let mut titles = store
+        .recent_observations(Some(project), Some(10), true)
+        .unwrap()
+        .into_iter()
+        .map(|observation| observation.title)
+        .collect::<Vec<_>>();
+    titles.sort();
+    titles
+}
+
+#[test]
+fn a_name_recorded_here_and_elsewhere_folds_only_what_was_recorded_here() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("api");
+    let elsewhere = temp.path().join("other-checkout");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    remember_from(&mut store, "here", &workspace, "api", "Recorded here");
+    remember_from(&mut store, "there", &elsewhere, "api", "Recorded there");
+    store
+        .add_prompt(crate::memory::model::AddPrompt {
+            session_id: "there".to_owned(),
+            content: "a prompt typed in the other checkout".to_owned(),
+            project: Some("api".to_owned()),
+        })
+        .unwrap();
+
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "new-session".to_owned(),
+            cwd: workspace.to_string_lossy().into_owned(),
+            project: Some("backend".to_owned()),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(titles_under(&store, "backend"), ["Recorded here"]);
+    assert_eq!(titles_under(&store, "api"), ["Recorded there"]);
+    assert_eq!(store.get_session("here").unwrap().project, "backend");
+    assert_eq!(store.get_session("there").unwrap().project, "api");
+    assert_eq!(
+        store.recent_prompts(Some("api"), Some(10)).unwrap().len(),
+        1,
+        "the other checkout's prompt stays with it"
+    );
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("1 session") && warning.contains("api")),
+        "the sessions left behind are counted: {:?}",
+        outcome.warnings
+    );
+}
+
+#[test]
+fn a_project_spelled_with_an_underscore_is_not_folded_into_a_hyphenated_directory_name() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("my-api");
+    let elsewhere = temp.path().join("other-checkout");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    remember_from(&mut store, "here", &workspace, "my-api", "Recorded here");
+    remember_from(&mut store, "there", &elsewhere, "my_api", "Spelled apart");
+
+    run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "new-session".to_owned(),
+            cwd: workspace.to_string_lossy().into_owned(),
+            project: Some("backend".to_owned()),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(titles_under(&store, "backend"), ["Recorded here"]);
+    assert_eq!(titles_under(&store, "my_api"), ["Spelled apart"]);
+}
+
 #[test]
 fn an_ambiguous_directory_warns_instead_of_writing_to_a_guessed_project() {
     let temp = TempDir::new().unwrap();

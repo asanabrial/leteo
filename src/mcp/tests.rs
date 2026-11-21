@@ -5727,6 +5727,23 @@ fn a_memory_is_attributed_to_a_question_or_to_none() {
         None,
         "a memory in another conversation must not borrow its question"
     );
+    // A save that names no session joins the most recently active live session
+    // of the project, and activity is read to the second, so which of "a" and
+    // "b" that is used to depend on whether a clock tick fell between their
+    // writes. Landing in "a" attributes the save to its in-memory prompt with
+    // no window at all, which failed the last assertion now and then. Making
+    // "b" the older one here is the unlucky ordering, every time; ending both
+    // sessions below is what makes it irrelevant.
+    {
+        let store = server.store.lock().unwrap();
+        for statement in [
+            "UPDATE observations SET created_at = datetime('now', '-1 minute')
+             WHERE session_id = 'b'",
+            "UPDATE sessions SET started_at = datetime('now', '-1 minute') WHERE id = 'b'",
+        ] {
+            store.connection().execute(statement, []).unwrap();
+        }
+    }
 
     let unattributed = save(json!({
         "session_id": "a", "title": "Automatica", "content": "sin pregunta detras",
@@ -5735,6 +5752,12 @@ fn a_memory_is_attributed_to_a_question_or_to_none() {
     assert_eq!(stored_prompt(&server, unattributed), None);
 
     let asked_loose = ask("a", "una pregunta reciente del proyecto");
+    {
+        let mut store = server.store.lock().unwrap();
+        for session in ["a", "b"] {
+            store.end_session(session, None).unwrap();
+        }
+    }
     let bucketed = save(json!({
         "title": "Sin sesion", "content": "guardada en el cubo del proyecto", "type": "discovery",
     }));

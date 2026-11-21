@@ -15,6 +15,8 @@ pub mod cloudserver;
 pub mod cloudstore;
 pub mod config;
 pub mod remote;
+#[cfg(all(test, feature = "cloud-server"))]
+mod test_support;
 
 #[cfg(feature = "cloud-server")]
 pub use auth::{AuthService, ManagedToken, ManagedTokenHasher, Principal};

@@ -3,6 +3,7 @@ use serde_json::json;
 
 use super::*;
 use crate::cloud::cloudstore::{BrowseMemory, BrowseProject, BrowseSession, Limited};
+use crate::cloud::test_support::unique_stamp;
 
 fn mutation(entity: &str, operation: &str, payload: Value) -> MutationEntry {
     let field = if entity == crate::sync::ENTITY_SESSION {
@@ -114,7 +115,7 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
     use tower::ServiceExt;
 
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
-    let stamp = Utc::now().timestamp_micros();
+    let stamp = unique_stamp();
     let (project_a, project_b) = (format!("tenant-a-{stamp}"), format!("tenant-b-{stamp}"));
 
     let config = CloudConfig {
@@ -555,7 +556,7 @@ async fn a_dashboard_user_browses_only_the_projects_they_hold_a_grant_on() {
     use tower::ServiceExt;
 
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
-    let stamp = Utc::now().timestamp_micros();
+    let stamp = unique_stamp();
     let (project_a, project_b) = (format!("browse-a-{stamp}"), format!("browse-b-{stamp}"));
     let (word_a, word_b) = (format!("alphaword{stamp}"), format!("betaword{stamp}"));
 
@@ -745,7 +746,7 @@ impl SignedInAdmin {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let stamp = Utc::now().timestamp_micros();
+        let stamp = unique_stamp();
         let project = format!("browse-input-{stamp}");
         let name = format!("viewer-input-{stamp}");
         let config = CloudConfig {

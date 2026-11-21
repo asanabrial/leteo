@@ -1,4 +1,5 @@
 use super::*;
+use crate::cloud::test_support::unique_stamp;
 
 #[test]
 fn mutation_validation_enforces_real_batch_limit() {
@@ -128,7 +129,7 @@ async fn test_store() -> (CloudStore, String) {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let store = CloudStore::connect(&database_url, 4).await.unwrap();
     store.migrate().await.unwrap();
-    (store, format!("{}", Utc::now().timestamp_micros()))
+    (store, unique_stamp())
 }
 
 #[tokio::test]
@@ -401,7 +402,7 @@ async fn a_principal_is_found_by_name_and_its_token_resolves_once_stored() {
 async fn postgres_chunk_and_mutation_round_trip() {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let store = CloudStore::connect(&database_url, 2).await.unwrap();
-    let project = format!("pg-roundtrip-{}", Utc::now().timestamp_micros());
+    let project = format!("pg-roundtrip-{}", unique_stamp());
     let chunk = ChunkData {
         sessions: vec![crate::memory::model::Session {
             id: "pg-session".to_owned(),
@@ -472,7 +473,7 @@ async fn dashboard_session_rechecks_role_and_token_revocation() {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let store = CloudStore::connect(&database_url, 2).await.unwrap();
     store.migrate().await.unwrap();
-    let suffix = Utc::now().timestamp_micros();
+    let suffix = unique_stamp();
     let principal_id = store
         .create_principal("human", &format!("dashboard-{suffix}"), "admin")
         .await
@@ -672,7 +673,7 @@ async fn browsing_reads_the_current_state_of_one_project_at_a_time() {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let store = CloudStore::connect(&database_url, 2).await.unwrap();
     store.migrate().await.unwrap();
-    let stamp = Utc::now().timestamp_micros();
+    let stamp = unique_stamp();
     let (a, b) = (format!("browse-a-{stamp}"), format!("browse-b-{stamp}"));
 
     store
@@ -773,7 +774,7 @@ async fn a_list_cut_at_its_limit_says_so() {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let store = CloudStore::connect(&database_url, 2).await.unwrap();
     store.migrate().await.unwrap();
-    let project = format!("browse-limit-{}", Utc::now().timestamp_micros());
+    let project = format!("browse-limit-{}", unique_stamp());
     store
         .insert_mutations(&[
             observation(&project, "one", "one", "x"),

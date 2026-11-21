@@ -2504,5 +2504,17 @@
     "file": "src/cloud/cloudstore/mod.rs",
     "old": "crate::sync::ENTITY_RELATION | crate::sync::ENTITY_PROJECT_RENAME\n",
     "new": "crate::sync::ENTITY_RELATION\n"
+  },
+  {
+    "name": "flaky: two cloud tests draw the same name suffix",
+    "file": "src/cloud/test_support.rs",
+    "old": "NEXT.fetch_add(1, Ordering::Relaxed)",
+    "new": "0 * NEXT.fetch_add(1, Ordering::Relaxed)"
+  },
+  {
+    "name": "flaky: a session-less save lands in a live session by the tick of a clock",
+    "file": "src/mcp/tests.rs",
+    "old": "            store.end_session(session, None).unwrap();\n",
+    "new": ""
   }
 ]

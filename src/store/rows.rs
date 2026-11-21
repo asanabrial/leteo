@@ -301,6 +301,7 @@ pub(super) fn map_sync_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncSt
 pub(super) fn map_timeline_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<TimelineEntry> {
     Ok(TimelineEntry {
         id: row.get("id")?,
+        sync_id: row.get("sync_id")?,
         session_id: row.get("session_id")?,
         kind: row.get("type")?,
         title: row.get("title")?,

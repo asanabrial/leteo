@@ -340,6 +340,7 @@ fn observation(id: i64, title: &str) -> Observation {
 fn timeline(focus: Observation) -> TimelineResult {
     let entry = TimelineEntry {
         id: focus.id + 1,
+        sync_id: "obs-following".to_owned(),
         session_id: focus.session_id.clone(),
         kind: "discovery".to_owned(),
         title: "Following memory".to_owned(),

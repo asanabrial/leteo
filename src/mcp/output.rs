@@ -313,7 +313,13 @@ impl ReviewOutput {
         }
     }
 
-    pub(super) fn marked(value: Observation) -> Self {
+    pub(super) fn marked(value: Observation, caveats: Vec<crate::memory::model::Caveat>) -> Self {
+        // Previewed and carrying its caveats exactly as the listing above does:
+        // the description publishes a 400-byte preview for this tool, and
+        // marking a memory reviewed handed back the whole body, 5,499 bytes for
+        // one that had been overturned, with nothing saying so.
+        let mut observation = ObservationOutput::from(value).preview();
+        observation.caveats = caveats.into_iter().map(Into::into).collect();
         Self {
             action: "mark_reviewed".to_owned(),
             count: 0,
@@ -322,7 +328,7 @@ impl ReviewOutput {
             // is for, and a number here would be the same mistake `count` made.
             due_omitted: 0,
             observations: Vec::new(),
-            observation: Some(value.into()),
+            observation: Some(observation),
         }
     }
 }
@@ -370,8 +376,29 @@ pub(super) struct TimelineOutput {
     pub(super) after_total: i64,
 }
 
-impl From<TimelineResult> for TimelineOutput {
-    fn from(value: TimelineResult) -> Self {
+impl TimelineOutput {
+    pub(super) fn new(
+        value: TimelineResult,
+        caveats: &std::collections::BTreeMap<String, Vec<crate::memory::model::Caveat>>,
+    ) -> Self {
+        let said = |sync_id: &str| -> Vec<CaveatOutput> {
+            caveats
+                .get(sync_id)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        };
+        let entry = |entry: TimelineEntry| {
+            let caveats = said(&entry.sync_id);
+            let mut output = TimelineEntryOutput::from(entry).preview();
+            output.caveats = caveats;
+            output
+        };
+        let focus_caveats = said(&value.focus.sync_id);
+        let mut focus = ObservationOutput::from(value.focus).preview();
+        focus.caveats = focus_caveats;
         Self {
             // Previewed like its neighbours, and this used to be the one
             // exception.
@@ -390,17 +417,9 @@ impl From<TimelineResult> for TimelineOutput {
             // which is the whole memory plus its neighbours' previews. It was
             // found by a guard that gives every surface something huge and
             // requires a small answer, rather than by reading this line.
-            focus: ObservationOutput::from(value.focus).preview(),
-            before: value
-                .before
-                .into_iter()
-                .map(|entry| TimelineEntryOutput::from(entry).preview())
-                .collect(),
-            after: value
-                .after
-                .into_iter()
-                .map(|entry| TimelineEntryOutput::from(entry).preview())
-                .collect(),
+            focus,
+            before: value.before.into_iter().map(entry).collect(),
+            after: value.after.into_iter().map(entry).collect(),
             session_info: value.session_info.map(Into::into),
             before_total: value.before_total,
             after_total: value.after_total,
@@ -444,6 +463,10 @@ pub(super) struct TimelineEntryOutput {
     // memory. Read it in full with `mem_get_observation`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) content_truncated: bool,
+    /// What the graph says about this memory, when anything does. Omitted when
+    /// empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) caveats: Vec<CaveatOutput>,
 }
 
 impl TimelineEntryOutput {
@@ -479,6 +502,7 @@ impl From<TimelineEntry> for TimelineEntryOutput {
             deleted_at: value.deleted_at,
             is_focus: value.is_focus,
             content_truncated: false,
+            caveats: Vec::new(),
         }
     }
 }

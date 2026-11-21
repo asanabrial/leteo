@@ -254,10 +254,18 @@ impl LeteoMcpServer {
     ) -> Result<Json<ReviewOutput>, CallToolResult> {
         match params.action.trim() {
             "list" => {
+                // The opening block counts this project's due memories and
+                // names this tool as the way to read them, so a listing that
+                // answered about the whole store disagreed with the sentence
+                // that sent the agent here.
+                let project = params
+                    .project
+                    .clone()
+                    .or_else(|| self.read_project().map(|(detected, _source)| detected));
                 let store = self.lock_store()?;
                 let observations = store
                     .observations_needing_review(
-                        params.project.as_deref(),
+                        project.as_deref(),
                         Some(params.limit.min(store.max_context_results())),
                     )
                     .map_err(store_error)?;
@@ -267,7 +275,7 @@ impl LeteoMcpServer {
                     .collect();
                 let caveats = store.caveats_for(&named).unwrap_or_default();
                 let due = store
-                    .count_review_due(params.project.as_deref())
+                    .count_review_due(project.as_deref())
                     .unwrap_or_default()
                     .max(0) as usize;
                 Ok(Json(ReviewOutput::listing(observations, &caveats, due)))
@@ -279,10 +287,23 @@ impl LeteoMcpServer {
                         "observation_id is required for mark_reviewed",
                     )
                 })?;
+                let expected_project = params.expected_project.ok_or_else(|| {
+                    structured_error(
+                        error_code::INVALID_PARAMS,
+                        "expected_project is required for mark_reviewed",
+                    )
+                })?;
                 let mut store = self.lock_store()?;
-                store.mark_reviewed(id).map_err(store_error)?;
+                store
+                    .mark_reviewed(id, Some(expected_project.as_str()))
+                    .map_err(store_error)?;
                 let observation = store.get_observation(id).map_err(store_error)?;
-                Ok(Json(ReviewOutput::marked(observation)))
+                let caveats = store
+                    .caveats_for(std::slice::from_ref(&observation.sync_id))
+                    .unwrap_or_default()
+                    .remove(&observation.sync_id)
+                    .unwrap_or_default();
+                Ok(Json(ReviewOutput::marked(observation, caveats)))
             }
             _ => Err(structured_error(
                 error_code::INVALID_PARAMS,
@@ -488,7 +509,7 @@ impl LeteoMcpServer {
                     (
                         project.clone(),
                         found.len(),
-                        limit.unwrap_or(crate::store::DEFAULT_SEARCH_LIMIT),
+                        store.effective_search_limit(limit),
                     )
                 }),
             _ => None,
@@ -882,16 +903,20 @@ impl LeteoMcpServer {
                 ));
             }
         }
-        let named: Vec<String> = std::iter::once(timeline.focus.sync_id.clone()).collect();
-        let caveats = self
-            .lock_store()?
-            .caveats_for(&named)
-            .unwrap_or_default()
-            .remove(&timeline.focus.sync_id)
-            .unwrap_or_default();
-        let mut output: TimelineOutput = timeline.into();
-        output.focus.caveats = caveats.into_iter().map(Into::into).collect();
-        Ok(Json(output))
+        // The neighbours are the memories an agent reads to decide what held at
+        // the time, so a superseded one has to say so on its own line: only the
+        // focus did, and a neighbour that had been overturned read as current.
+        let named: Vec<String> = std::iter::once(timeline.focus.sync_id.clone())
+            .chain(
+                timeline
+                    .before
+                    .iter()
+                    .chain(&timeline.after)
+                    .map(|entry| entry.sync_id.clone()),
+            )
+            .collect();
+        let caveats = self.lock_store()?.caveats_for(&named).unwrap_or_default();
+        Ok(Json(TimelineOutput::new(timeline, &caveats)))
     }
 
     #[tool(

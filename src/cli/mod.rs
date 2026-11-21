@@ -581,6 +581,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 semantic: crate::settings::load_beside(store.database_path()).semantic_search(),
             };
             let cap = store.max_search_results();
+            let cap_asked = store.effective_search_limit(options.limit);
             let (found, more, corrections) =
                 store.search_with_more_and_corrections(&query, options.clone())?;
             // The same sentence the MCP tool answers with, on the channel a
@@ -631,7 +632,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                         crate::mcp::no_match_here_hint(
                             project,
                             elsewhere.len(),
-                            options.limit.unwrap_or(crate::store::DEFAULT_SEARCH_LIMIT),
+                            cap_asked,
                             "--all-projects",
                         )
                     ),

@@ -375,10 +375,7 @@ impl Store {
         query: &str,
         options: SearchOptions,
     ) -> Result<(Vec<SearchResult>, bool, Vec<Correction>), StoreError> {
-        let asked = options
-            .limit
-            .unwrap_or(DEFAULT_SEARCH_LIMIT)
-            .clamp(1, self.config.max_search_results);
+        let asked = self.effective_search_limit(options.limit);
         // The probe row has to be allowed past the published cap, or it stops
         // existing exactly where it is needed most.
         //
@@ -397,15 +394,24 @@ impl Store {
         Ok((found, more, outcome.corrections))
     }
 
+    /// How many rows a search asked for `limit` actually returns at most.
+    ///
+    /// One answer for the store and for the surfaces that word a count against
+    /// it. The "elsewhere" sentence was measured against the caller's own limit
+    /// while the store clamped to its maximum, so `limit: 50` over a hundred
+    /// matches in other projects said a bare "20" where twenty was a floor.
+    pub fn effective_search_limit(&self, limit: Option<usize>) -> usize {
+        limit
+            .unwrap_or(DEFAULT_SEARCH_LIMIT)
+            .clamp(1, self.config.max_search_results)
+    }
+
     pub fn search(
         &self,
         query: &str,
         options: SearchOptions,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        let limit = options
-            .limit
-            .unwrap_or(DEFAULT_SEARCH_LIMIT)
-            .clamp(1, self.config.max_search_results);
+        let limit = self.effective_search_limit(options.limit);
         Ok(self.search_limited(query, options, limit)?.results)
     }
 

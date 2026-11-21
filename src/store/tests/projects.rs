@@ -1270,7 +1270,7 @@ fn a_round_trip_brings_back_every_field_a_memory_carries() {
     source.add_observation(input.clone()).unwrap();
     source.add_observation(input).unwrap();
     source.pin_observation(saved.id, None).unwrap();
-    source.mark_reviewed(saved.id).unwrap();
+    source.mark_reviewed(saved.id, None).unwrap();
     // And one deleted memory, because an export carries those too and a backup
     // that forgets a deletion resurrects it on the next import.
     let removed = source

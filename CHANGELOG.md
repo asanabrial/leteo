@@ -289,6 +289,15 @@ All notable changes to Leteo are documented in this file.
   writes decided whether it landed in a session whose prompt had no window; it
   now ends both sessions first, so the answer no longer depends on the tick
   (#377).
+- **A save that lands on a memory already stored says when a later one has
+  overturned it, and `leteo save` joins the live session.** `mem_save` and
+  `mem_session_summary` named the existing memory of a duplicate or a revision
+  with no caveats, so a reply could present a superseded decision as standing;
+  they now carry `caveats` in that case and say nothing on a fresh save. `leteo
+  save` with no `--session` filed under `manual-save-<project>` beside a session
+  a hook had opened; it now joins the project's most recently active live
+  session as `mem_save` does, and `leteo prompt` and `leteo consolidate` with
+  it. `--session` still wins (#373).
 
 ## [0.4.3] - 2026-11-03
 

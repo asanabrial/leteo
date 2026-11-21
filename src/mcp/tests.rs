@@ -3241,6 +3241,129 @@ fn a_superseded_memory_is_left_out_of_search_results() {
     assert_eq!(fetched.observation.caveats[0].other_id, new.id);
 }
 
+/// Stores `old` and a memory that supersedes it in one live session of
+/// `leteo`, and returns both. One session only: a session-less save joins the
+/// most recently active live one, so two would make the target depend on a
+/// clock tick.
+fn an_overturned_memory(
+    server: &LeteoMcpServer,
+    kind: &str,
+    title: &str,
+    content: &str,
+) -> (Observation, Observation) {
+    let mut store = server.lock_store().unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = |kind: &str, title: &str, content: &str| AddObservation {
+        session_id: "s1".to_owned(),
+        kind: kind.to_owned(),
+        title: title.to_owned(),
+        content: content.to_owned(),
+        tool_name: None,
+        project: Some("leteo".to_owned()),
+        scope: "project".to_owned(),
+        topic_key: None,
+        prompt_sync_id: None,
+    };
+    let old = store
+        .add_observation(memory(kind, title, content))
+        .unwrap()
+        .observation;
+    let new = store
+        .add_observation(memory("decision", "The newer decision", "Changed course."))
+        .unwrap()
+        .observation;
+    let proposed = store
+        .save_relation(crate::memory::model::SaveRelationParams {
+            sync_id: "rel-overturn".to_owned(),
+            source_id: new.sync_id.clone(),
+            target_id: old.sync_id.clone(),
+        })
+        .unwrap();
+    store
+        .judge_relation(crate::memory::model::JudgeRelationParams {
+            judgment_id: proposed.sync_id,
+            relation: "supersedes".to_owned(),
+            reason: None,
+            ..Default::default()
+        })
+        .unwrap();
+    (old, new)
+}
+
+#[test]
+fn saving_a_duplicate_of_an_overturned_memory_says_it_was_overturned() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    let (old, new) = an_overturned_memory(
+        &server,
+        "decision",
+        "The method we used before",
+        "We used the old method.",
+    );
+
+    let Json(saved) = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "title": "The method we used before",
+                "content": "We used the old method.",
+                "type": "decision",
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(saved.status, "deduplicated", "{saved:?}");
+    assert_eq!(saved.observation.id, old.id);
+    assert_eq!(saved.caveats.len(), 1, "{saved:?}");
+    assert_eq!(saved.caveats[0].relation, "superseded_by");
+    assert_eq!(saved.caveats[0].other_id, new.id);
+
+    let rendered = serde_json::to_value(&saved).unwrap();
+    assert!(rendered.get("caveats").is_some(), "{rendered}");
+}
+
+#[test]
+fn a_fresh_save_carries_no_caveats_field() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    let Json(saved) = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "title": "Something new",
+                "content": "Nothing has overturned this.",
+                "type": "decision",
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(saved.status, "inserted", "{saved:?}");
+    assert!(saved.caveats.is_empty());
+    let rendered = serde_json::to_value(&saved).unwrap();
+    assert!(rendered.get("caveats").is_none(), "{rendered}");
+}
+
+#[test]
+fn a_repeated_session_summary_of_an_overturned_one_says_it_was_overturned() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    let summary = "Worked out the old method";
+    let (old, new) = an_overturned_memory(&server, "session_summary", summary, summary);
+
+    let Json(saved) = server
+        .mem_session_summary(Parameters(
+            serde_json::from_value(json!({ "content": summary })).unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(saved.observation.id, old.id, "{saved:?}");
+    assert_eq!(saved.caveats.len(), 1, "{saved:?}");
+    assert_eq!(saved.caveats[0].other_id, new.id);
+}
+
 #[test]
 fn an_untouched_memory_does_not_repeat_itself() {
     let (_temp, server) = test_server(McpOptions::default());

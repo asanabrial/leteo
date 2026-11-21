@@ -136,7 +136,9 @@ impl LeteoMcpServer {
             .filter(|replaced| replaced.shrunk)
             .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes));
         let stored_bytes = outcome.observation.content.len();
+        let caveats = crate::mcp::output::save_caveats(&store, &outcome);
         let mut saved = SaveOutput::new(outcome, candidates, context.envelope);
+        saved.caveats = caveats;
         saved.session_id = chosen_session;
         saved.storage_truncation =
             crate::mcp::output::storage_truncation(content_cut, stored_bytes);
@@ -975,7 +977,9 @@ impl LeteoMcpServer {
             })
             .map_err(store_error)?;
         let stored_bytes = outcome.observation.content.len();
+        let caveats = crate::mcp::output::save_caveats(&store, &outcome);
         let mut saved = SaveOutput::new(outcome, Vec::new(), context.envelope);
+        saved.caveats = caveats;
         saved.session_id = chosen_session;
         saved.storage_truncation =
             crate::mcp::output::storage_truncation(content_cut, stored_bytes);

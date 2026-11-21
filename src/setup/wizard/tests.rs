@@ -462,6 +462,34 @@ fn the_options_page_shows_the_three_settings_side_by_side_and_opens_the_one_chos
 }
 
 #[test]
+fn the_options_page_does_not_write_over_a_settings_file_it_cannot_parse() {
+    // The page carries two answers over from disk because it has no screen for
+    // them. Read as defaults from a file with a typo, they were saved as
+    // defaults, along with the three it did ask.
+    let temp = TempDir::new().unwrap();
+    let body = "{\"voice\": \"all\", \"context_size\": \"deep\",}";
+    std::fs::write(settings::path_in(temp.path()), body).unwrap();
+    let mut wizard = Wizard::preferences(offer_in(temp.path()));
+    open_option(&mut wizard, Step::SardiVoice);
+    wizard.down();
+    wizard.advance();
+    wizard.back();
+
+    let mut report = Vec::new();
+    let outcome = wizard.apply(&mut report).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(settings::path_in(temp.path())).unwrap(),
+        body
+    );
+    let said = String::from_utf8_lossy(&report);
+    assert!(said.contains("could not save preferences"), "{said}");
+    assert!(said.contains("settings.json"), "{said}");
+    assert!(!said.contains("Preferences saved"), "{said}");
+    assert_ne!(outcome.voice, Voice::Quiet, "{outcome:?}");
+}
+
+#[test]
 fn the_language_menus_mark_romanian_as_a_machine_translation() {
     // Romanian was added machine-translated and the menu said nothing, which
     // reads as a native translation. The mark is on the two menus that choose

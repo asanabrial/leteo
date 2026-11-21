@@ -191,6 +191,20 @@ All notable changes to Leteo are documented in this file.
   reply names the session when the caller did not. Two agents working one
   project at once share the most recent session, which the tool description
   says. Memories already filed are not moved (#340).
+- **A settings file with a typo is no longer rewritten as defaults.**
+  `leteo setup --language` and `--context`, and the setup wizard's save, read
+  the file, changed one answer and wrote all of them back. A file that was not
+  valid JSON (one trailing comma) read as every default, so the write replaced
+  the voice, the interface and the rest; a field of the wrong type was saved as
+  its default. They now stop with the file's path and the reason and leave it
+  as it was. A key this version does not know is kept when the file is
+  rewritten, so a newer Leteo's setting survives an older one. `"voice":
+  "Quiet"` and `"context_size": "DEEP"` were read as the defaults by every hook
+  while the command line accepted them in any case; they are read in any case
+  now. The system language is read from `LC_ALL`, `LC_MESSAGES`, `LANG` and
+  `LANGUAGE` in that order, the one POSIX gives, and a variable that names no
+  language Leteo knows, such as `LANG=C.UTF-8`, is skipped instead of ending
+  the search (#338).
 
 ## [0.4.3] - 2026-11-03
 

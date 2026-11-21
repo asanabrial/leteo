@@ -2138,5 +2138,65 @@
     "file": "src/mcp/mod.rs",
     "old": "(!self.named).then(|| self.id.clone())",
     "new": "Some(self.id.clone())"
+  },
+  {
+    "name": "locale: LANG outranks LC_ALL",
+    "file": "src/settings.rs",
+    "old": "const LOCALE_VARIABLES: [&str; 4] = [\"LC_ALL\", \"LC_MESSAGES\", \"LANG\", \"LANGUAGE\"];",
+    "new": "const LOCALE_VARIABLES: [&str; 4] = [\"LANG\", \"LC_ALL\", \"LC_MESSAGES\", \"LANGUAGE\"];"
+  },
+  {
+    "name": "locale: a variable naming no known language ends the search",
+    "file": "src/settings.rs",
+    "old": ".find_map(|name| get(name).and_then(|raw| language_for_locale(&raw)))",
+    "new": ".find_map(|name| get(name)).and_then(|raw| language_for_locale(&raw))"
+  },
+  {
+    "name": "settings: setup --language rewrites a file it could not parse",
+    "file": "src/cli/mod.rs",
+    "old": "language: Some(language.trim().to_owned()).filter(|l| !l.is_empty()),\n                    ..crate::settings::load_strict(&data_dir)?",
+    "new": "language: Some(language.trim().to_owned()).filter(|l| !l.is_empty()),\n                    ..crate::settings::load(&data_dir)"
+  },
+  {
+    "name": "settings: setup --context rewrites a file it could not parse",
+    "file": "src/cli/mod.rs",
+    "old": "context_size: Some(size),\n                    ..crate::settings::load_strict(&data_dir)?",
+    "new": "context_size: Some(size),\n                    ..crate::settings::load(&data_dir)"
+  },
+  {
+    "name": "settings: a strict read accepts a file that is not JSON",
+    "file": "src/settings.rs",
+    "old": "    if body.trim().is_empty() {",
+    "new": "    if serde_json::from_str::<serde_json::Value>(&body).is_err() {"
+  },
+  {
+    "name": "settings: a strict read accepts an answer it cannot read",
+    "file": "src/settings.rs",
+    "old": "    if !unreadable.is_empty() {",
+    "new": "    if false {"
+  },
+  {
+    "name": "settings: a rewrite drops a key this version does not know",
+    "file": "src/settings.rs",
+    "old": "            if !known.contains(name) {",
+    "new": "            if false {"
+  },
+  {
+    "name": "settings: a voice written in another case is read as the default",
+    "file": "src/settings.rs",
+    "old": "Self::parse(&raw).ok_or_else(|| {\n            serde::de::Error::custom(format!(\n                \"{raw:?} is not a voice",
+    "new": "Self::parse(&raw).filter(|_| raw == raw.to_lowercase()).ok_or_else(|| {\n            serde::de::Error::custom(format!(\n                \"{raw:?} is not a voice"
+  },
+  {
+    "name": "settings: a context size written in another case is read as the default",
+    "file": "src/settings.rs",
+    "old": "Self::parse(&raw).ok_or_else(|| {\n            serde::de::Error::custom(format!(\n                \"{raw:?} is not a context size",
+    "new": "Self::parse(&raw).filter(|_| raw == raw.to_lowercase()).ok_or_else(|| {\n            serde::de::Error::custom(format!(\n                \"{raw:?} is not a context size"
+  },
+  {
+    "name": "wizard: the options page saves over a settings file it could not parse",
+    "file": "src/setup/wizard/mod.rs",
+    "old": "crate::settings::load_strict(data_dir).and_then(|on_disk| {",
+    "new": "Ok::<_, anyhow::Error>(crate::settings::load(data_dir)).and_then(|on_disk| {"
   }
 ]

@@ -2742,3 +2742,83 @@ fn save_takes_a_title_and_content_that_start_like_options_after_a_separator() {
         .assert()
         .failure();
 }
+
+/// Runs `leteo setup` with the given flags over a data directory whose
+/// `settings.json` holds `body`, and hands back the command's output, the
+/// file's path and what the file holds afterwards.
+fn setup_over_settings(body: &str, flags: &[&str]) -> (std::process::Output, PathBuf, String) {
+    let temp = tempfile::tempdir().expect("create setup test directory");
+    let settings = temp.path().join("settings.json");
+    std::fs::write(&settings, body).expect("write the settings file");
+    let output = leteo(&temp.path().join("leteo.db"))
+        .arg("setup")
+        .args(flags)
+        .output()
+        .expect("run leteo setup");
+    let after = std::fs::read_to_string(&settings).expect("read the settings file back");
+    (output, settings, after)
+}
+
+/// A settings file that is not JSON used to read as every default, and the save
+/// that followed wrote those defaults over whatever else the person had
+/// answered. One trailing comma cost the voice, the interface and the size.
+#[test]
+fn a_setup_flag_refuses_a_settings_file_it_cannot_parse_and_leaves_it_alone() {
+    let body = "{\"voice\": \"quiet\", \"context_size\": \"deep\",}";
+    for flags in [["--language", "español"], ["--context", "slim"]] {
+        let (output, path, after) = setup_over_settings(body, &flags);
+        assert!(!output.status.success(), "{flags:?} wrote over a bad file");
+        assert_eq!(after, body, "{flags:?} changed the file it refused");
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            said.contains(&path.display().to_string()),
+            "the error must name the file: {said}"
+        );
+        assert!(
+            said.contains("trailing comma"),
+            "the error must carry the parse error: {said}"
+        );
+    }
+}
+
+/// A field of the wrong type is read as its default by every hook, which is
+/// right for a hook. Written back by a setup flag it stops being a default and
+/// becomes the person's answer.
+#[test]
+fn a_setup_flag_refuses_a_settings_file_with_a_field_it_cannot_read() {
+    let body = "{\"voice\": 7, \"context_size\": \"deeep\", \"language\": \"español\"}";
+    let (output, path, after) = setup_over_settings(body, &["--language", "English"]);
+    assert!(!output.status.success());
+    assert_eq!(after, body);
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains(&path.display().to_string()), "{said}");
+    assert!(said.contains("voice"), "{said}");
+    assert!(said.contains("context_size"), "{said}");
+}
+
+/// A key this version does not know is one a newer Leteo may have written. The
+/// settings struct has no place to keep it, so rewriting the file dropped it.
+#[test]
+fn a_setup_flag_keeps_a_key_it_does_not_know() {
+    let body = "{\"voice\": \"quiet\", \"future_setting\": {\"depth\": [1, 2]}}";
+    let (output, _, after) = setup_over_settings(body, &["--language", "español"]);
+    assert!(output.status.success(), "{output:?}");
+    let written: Value = serde_json::from_str(&after).expect("the file is still JSON");
+    assert_eq!(written["future_setting"], json!({"depth": [1, 2]}));
+    assert_eq!(written["voice"], json!("quiet"));
+    assert_eq!(written["language"], json!("español"));
+}
+
+/// `Voice::parse` and `ContextSize::parse` forgive case and the file did not, so
+/// `"Quiet"` was read as the default and then written back as one.
+#[test]
+fn a_setup_flag_keeps_a_level_written_in_another_case() {
+    let (output, _, after) = setup_over_settings(
+        "{\"voice\": \"Quiet\", \"context_size\": \"DEEP\"}",
+        &["--language", "español"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let written: Value = serde_json::from_str(&after).expect("the file is still JSON");
+    assert_eq!(written["voice"], json!("quiet"));
+    assert_eq!(written["context_size"], json!("deep"));
+}

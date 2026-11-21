@@ -54,6 +54,13 @@ All notable changes to Leteo are documented in this file.
   `language` still wins. Migration 23 changes the triggers only, so memories
   already saved keep what they have until `leteo doctor --repair` re-stems them,
   and `leteo doctor` says how many are waiting (#324).
+- **Opening a session no longer moves another checkout's memories into this
+  project.** When a directory's name was also the name of a project recorded
+  from somewhere else, the hook merged the whole project, taking the other
+  checkout's memories and prompts and the `_` and space spellings of the name
+  with them, without asking or saying so. It now moves only the sessions
+  recorded from this directory, with their memories and prompts, leaves the
+  spellings alone, and warns with the number of sessions it left behind (#328).
 
 ## [0.4.3] - 2026-11-03
 

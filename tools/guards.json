@@ -1766,5 +1766,29 @@
     "file": "src/store/semantic_stage.rs",
     "old": "        self.scored.retain(|(_, id, _)| seen.insert(*id));",
     "new": "        self.scored.retain(|(_, id, _)| seen.insert(*id) || true);"
+  },
+  {
+    "name": "session fold: a session recorded from another directory moves too",
+    "file": "src/store/projects.rs",
+    "old": ".is_some_and(|recorded| crate::project::same_directory(recorded, directory))",
+    "new": ".is_some_and(|recorded| crate::project::same_directory(recorded, directory) || true)"
+  },
+  {
+    "name": "session fold: the prompts of a moved session stay behind",
+    "file": "src/store/projects.rs",
+    "old": "\"UPDATE prompts SET project = ?1 WHERE id = ?2\",",
+    "new": "\"UPDATE prompts SET project = ?1 WHERE id = ?2 AND 0\","
+  },
+  {
+    "name": "session fold: the old name stops replicating while another checkout still holds it",
+    "file": "src/store/projects.rs",
+    "old": "        if source_is_empty {",
+    "new": "        if true {"
+  },
+  {
+    "name": "session fold: the sessions left behind are not mentioned",
+    "file": "src/hooks/session.rs",
+    "old": "        Ok((_, 0)) => {}",
+    "new": "        Ok((_, _)) => {}"
   }
 ]

@@ -690,6 +690,202 @@ impl Store {
         self.merge_projects(&[source.to_owned()], canonical)
     }
 
+    /// Moves the sessions of `source` that were recorded from `directory`, with
+    /// the memories and prompts filed under `source` by those sessions, and
+    /// nothing else.
+    ///
+    /// What a hook may do on its own. [`Self::merge_project`] moves every row
+    /// under a name, wherever it was recorded, and adds the spellings joined by
+    /// space, hyphen and underscore; a project called `api` recorded from two
+    /// checkouts lost the other one's memories to whichever opened a session
+    /// first, with no prompt and no report. Neither the rest of the name nor its
+    /// variants are touched here.
+    ///
+    /// Returns the result of the move and how many sessions under `source` were
+    /// recorded elsewhere and stayed. The directory comparison is
+    /// [`same_directory`](crate::project::same_directory)'s, in Rust, for the
+    /// reason `session_directories` gives.
+    ///
+    /// Replication follows the rows exactly as `merge_projects` arranges it:
+    /// the canonical project takes over the enrolment, every moved row is
+    /// queued again under the new name, and the source's enrolment and unsent
+    /// mutations are dropped only when the move left it empty. Dropping them
+    /// while sessions stay behind would silence a project that still holds
+    /// rows.
+    pub fn move_directory_sessions(
+        &mut self,
+        source: &str,
+        canonical: &str,
+        directory: &Path,
+    ) -> Result<(MergeResult, i64), StoreError> {
+        let source = normalize::project(source);
+        let canonical = normalize::project(canonical);
+        if canonical.is_empty() {
+            return Err(invalid_parameter(crate::project::EMPTY_NAME));
+        }
+        let mut result = MergeResult {
+            canonical: canonical.clone(),
+            ..MergeResult::default()
+        };
+        if source.is_empty() || source == canonical {
+            return Ok((result, 0));
+        }
+
+        let tx = self.write_transaction()?;
+        let canonical_existed: bool = tx.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
+                 UNION ALL
+                 SELECT 1 FROM observations
+                 WHERE LOWER(TRIM(ifnull(project, ''))) = ?1 AND deleted_at IS NULL
+                 UNION ALL
+                 SELECT 1 FROM prompts WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
+             )",
+            [&canonical],
+            |row| row.get(0),
+        )?;
+
+        let mut session_ids = Vec::new();
+        let mut left_behind = 0_i64;
+        {
+            let mut statement =
+                tx.prepare("SELECT id, directory FROM sessions WHERE LOWER(TRIM(project)) = ?1")?;
+            let rows = statement.query_map([&source], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?;
+            for row in rows {
+                let (id, recorded) = row?;
+                if recorded
+                    .as_deref()
+                    .is_some_and(|recorded| crate::project::same_directory(recorded, directory))
+                {
+                    session_ids.push(id);
+                } else {
+                    left_behind += 1;
+                }
+            }
+        }
+        if session_ids.is_empty() {
+            return Ok((result, left_behind));
+        }
+
+        let mut observation_ids = Vec::new();
+        let mut prompt_ids = Vec::new();
+        {
+            let mut observations = tx.prepare(
+                "SELECT id FROM observations
+                 WHERE session_id = ?1 AND LOWER(TRIM(ifnull(project, ''))) = ?2",
+            )?;
+            let mut prompts = tx.prepare(
+                "SELECT id FROM prompts
+                 WHERE session_id = ?1 AND LOWER(TRIM(ifnull(project, ''))) = ?2",
+            )?;
+            for session in &session_ids {
+                for id in
+                    observations.query_map(params![session, source], |row| row.get::<_, i64>(0))?
+                {
+                    observation_ids.push(id?);
+                }
+                for id in prompts.query_map(params![session, source], |row| row.get::<_, i64>(0))? {
+                    prompt_ids.push(id?);
+                }
+            }
+        }
+
+        if is_enrolled_tx(&tx, &source)? && !is_enrolled_tx(&tx, &canonical)? {
+            tx.execute(
+                "INSERT OR IGNORE INTO sync_enrolled_projects (project) VALUES (?1)",
+                [&canonical],
+            )?;
+            result.enrolment_moved = true;
+        }
+
+        for id in &observation_ids {
+            result.observations_updated += tx.execute(
+                "UPDATE observations SET project = ?1, updated_at = datetime('now')
+                 WHERE id = ?2",
+                params![canonical, id],
+            )? as i64;
+        }
+        for id in &prompt_ids {
+            result.prompts_updated += tx.execute(
+                "UPDATE prompts SET project = ?1 WHERE id = ?2",
+                params![canonical, id],
+            )? as i64;
+        }
+        for id in &session_ids {
+            result.sessions_updated += tx.execute(
+                "UPDATE sessions SET project = ?1 WHERE id = ?2",
+                params![canonical, id],
+            )? as i64;
+        }
+
+        for id in observation_ids {
+            let observation = get_observation_row(&tx, id)?;
+            if observation.deleted_at.is_none() {
+                enqueue_observation(&tx, &observation)?;
+            }
+        }
+        for id in session_ids {
+            let session = get_session_row(&tx, &id)?;
+            enqueue_mutation(
+                &tx,
+                "session",
+                &id,
+                crate::sync::OP_UPSERT,
+                &session,
+                &canonical,
+            )?;
+        }
+        for id in prompt_ids {
+            let prompt = get_prompt_tx(&tx, id)?;
+            enqueue_mutation(
+                &tx,
+                "prompt",
+                &prompt.sync_id,
+                crate::sync::OP_UPSERT,
+                &prompt,
+                &canonical,
+            )?;
+        }
+
+        let source_is_empty: bool = tx.query_row(
+            "SELECT NOT EXISTS(
+                 SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
+                 UNION ALL
+                 SELECT 1 FROM observations WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
+                 UNION ALL
+                 SELECT 1 FROM prompts WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
+             )",
+            [&source],
+            |row| row.get(0),
+        )?;
+        if source_is_empty {
+            tx.execute(
+                "DELETE FROM sync_enrolled_projects WHERE project = ?1",
+                [&source],
+            )?;
+            tx.execute(
+                "DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL",
+                [&source],
+            )?;
+        }
+        result.sources_merged.push(source);
+
+        result.topic_key_collisions = tx.query_row(
+            "SELECT COUNT(*) FROM (
+                 SELECT topic_key FROM observations
+                  WHERE deleted_at IS NULL AND topic_key IS NOT NULL
+                    AND ifnull(project, '') = ?1
+                  GROUP BY topic_key, scope HAVING COUNT(*) > 1)",
+            [&canonical],
+            |row| row.get(0),
+        )?;
+        result.canonical_created = !canonical_existed;
+        tx.commit()?;
+        Ok((result, left_behind))
+    }
+
     pub fn merge_projects(
         &mut self,
         sources: &[String],

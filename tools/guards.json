@@ -1838,5 +1838,53 @@
     "file": "src/store/projects.rs",
     "old": "into.\n        let emptied = sessions_holding_nothing_tx(&tx, &project)?;",
     "new": "into.\n        let emptied = collect_sessions_tx(&tx, &project)?;"
+  },
+  {
+    "name": "merge: an unsent delete moves to the canonical project instead of staying under the emptied name",
+    "file": "src/store/wire.rs",
+    "old": "          WHERE project = ?1 AND acked_at IS NULL\",\n        params![source, canonical],\n    )?;\n    if moved > 0 {",
+    "new": "          WHERE project = ?1 AND acked_at IS NULL AND op != 'delete'\",\n        params![source, canonical],\n    )?;\n    if moved > 0 {"
+  },
+  {
+    "name": "merge: a moved mutation's payload names the canonical project, which is the one a peer's delete check reads",
+    "file": "src/store/wire.rs",
+    "old": "                    THEN json_set(payload, '$.project', ?2)",
+    "new": "                    THEN payload"
+  },
+  {
+    "name": "merge: a session upsert stays ahead of the carried rows that point at it",
+    "file": "src/store/wire.rs",
+    "old": "            AND entity IN ('observation', 'prompt')",
+    "new": "            AND entity IN ('observation', 'session', 'prompt')"
+  },
+  {
+    "name": "merge: the unsent mutations of an emptied name are not thrown away with it",
+    "file": "src/store/projects.rs",
+    "old": "            carry_unsent_mutations_tx(&tx, &source, &canonical)?;\n            result.sources_merged.push(source);",
+    "new": "            tx.execute(\n                \"DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL\",\n                [&source],\n            )?;\n            result.sources_merged.push(source);"
+  },
+  {
+    "name": "directory move: the unsent mutations of a name the move emptied are not thrown away with it",
+    "file": "src/store/projects.rs",
+    "old": "            carry_unsent_mutations_tx(&tx, &source, &canonical)?;\n        }\n        result.sources_merged.push(source);",
+    "new": "            tx.execute(\n                \"DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL\",\n                [&source],\n            )?;\n        }\n        result.sources_merged.push(source);"
+  },
+  {
+    "name": "enrol: an unsent delete survives the catch-up",
+    "file": "src/store/projects.rs",
+    "old": "WHERE project = ?1 AND acked_at IS NULL AND op != ?2\",\n                params![project, crate::sync::OP_DELETE],",
+    "new": "WHERE project = ?1 AND acked_at IS NULL AND ?2 != ''\",\n                params![project, crate::sync::OP_DELETE],"
+  },
+  {
+    "name": "catch-up: the versions of a memory are queued after it",
+    "file": "src/store/wire.rs",
+    "old": "        for (revision, title, content, replaced_at) in versions {",
+    "new": "        for (revision, title, content, replaced_at) in versions.into_iter().take(0) {"
+  },
+  {
+    "name": "merge: a live memory's old unsent upsert is dropped because the merge queued it again",
+    "file": "src/store/wire.rs",
+    "old": "AND newer.op = ?3 AND newer.seq > sync_mutations.seq)",
+    "new": "AND newer.op = ?3 AND newer.seq < sync_mutations.seq)"
   }
 ]

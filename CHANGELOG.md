@@ -96,6 +96,17 @@ All notable changes to Leteo are documented in this file.
   project whose session another project's rows still use aborted with a bare
   `FOREIGN KEY constraint failed`; it now leaves that session, as
   `delete_project --hard` already did (#330).
+- **Merging a project no longer discards what had not been sent.** The merge
+  queued the live memories again and then deleted everything still waiting under
+  the old name, so a memory deleted before the next sync stayed alive on the
+  other machine, and the judged relations and the previous versions of a memory
+  waiting there were lost with it. What was waiting now moves to the new name,
+  and the delete says it is filed under it; a peer that has not merged yet still
+  holds the memory under the old name and ignores that delete until it does. The
+  same went for moving a directory's sessions out of a project that was left
+  empty, and for enrolling a project a second time, which dropped its unsent
+  deletes. Enrolling also queues each memory's previous versions, which the
+  catch-up never did (#331).
 
 ## [0.4.3] - 2026-11-03
 

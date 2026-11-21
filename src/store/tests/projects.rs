@@ -267,7 +267,9 @@ fn merge_projects_updates_all_entities_and_journals_active_rows() {
             .unwrap()
     };
     assert_eq!(before, 3, "the old project had queued its own three rows");
-    assert_eq!(journalled("canonical-project"), 3);
+    // Four, not three: the session's unsent upsert stays where it was, ahead of
+    // the memory and prompt that point at it, beside the copy the merge queued.
+    assert_eq!(journalled("canonical-project"), 4);
     assert_eq!(
         journalled("old-project"),
         0,
@@ -869,6 +871,282 @@ fn moving_one_directorys_sessions_queues_what_moved_and_keeps_the_rest_replicati
         unsent_before,
         "and what was waiting to be sent for them is not thrown away"
     );
+}
+
+/// Every unsent mutation of `project`, oldest first, as `(entity, op, payload)`.
+fn unsent_under(store: &Store, project: &str) -> Vec<(String, String, serde_json::Value)> {
+    store
+        .connection
+        .prepare(
+            "SELECT entity, op, payload FROM sync_mutations
+              WHERE project = ?1 AND acked_at IS NULL ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([project], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| {
+            let (entity, op, payload) = row.unwrap();
+            (entity, op, serde_json::from_str(&payload).unwrap())
+        })
+        .collect()
+}
+
+fn enrolled_store(projects: &[&str]) -> (TempDir, Store) {
+    let (temp, mut store) = store();
+    for project in projects {
+        store.enroll_project(project).unwrap();
+    }
+    (temp, store)
+}
+
+/// A delete that had not been sent when its project was merged away still goes.
+///
+/// The merge dropped every unsent mutation of the emptied name because it had
+/// queued the live rows again, and a deleted memory is not a live row: the peer
+/// went on holding a memory its owner had removed, and nothing reported it.
+///
+/// The second half is what a peer does with the rewritten delete. It applies it
+/// only to a row filed under the delete's project, so the delete has to name the
+/// project the peer holds the row under once it has merged too.
+#[test]
+fn merging_a_project_keeps_the_delete_that_was_waiting_for_a_peer() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Removed before sending", "gone");
+    memory.project = Some("old-project".to_owned());
+    let removed = store.add_observation(memory).unwrap().observation;
+    store.delete_observation(removed.id, None, false).unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let waiting = unsent_under(&store, "canonical-project");
+    let delete = waiting
+        .iter()
+        .find(|(entity, op, _)| entity == "observation" && op == "delete")
+        .unwrap_or_else(|| panic!("the delete was dropped: {waiting:?}"));
+    assert_eq!(delete.2["sync_id"], removed.sync_id);
+    assert_eq!(
+        delete.2["project"], "canonical-project",
+        "a peer applies a delete only to the project it holds the row under"
+    );
+    assert!(
+        unsent_under(&store, "old-project").is_empty(),
+        "nothing is left waiting under a name that holds nothing"
+    );
+
+    let (_peer_temp, mut peer) = bare_store();
+    let pending = store
+        .list_pending_sync_mutations("cloud", &["canonical-project".to_owned()], 100)
+        .unwrap();
+    for mutation in &pending {
+        peer.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+    }
+    let deleted_at: Option<String> = peer
+        .connection
+        .query_row(
+            "SELECT deleted_at FROM observations WHERE sync_id = ?1",
+            [&removed.sync_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        deleted_at.is_some(),
+        "the peer that took the whole queue ends with the memory deleted"
+    );
+}
+
+/// A verdict that had not been sent follows the memories it names.
+#[test]
+fn merging_a_project_keeps_the_verdict_that_was_waiting_for_a_peer() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut saved = Vec::new();
+    for title in ["First decision", "Second decision"] {
+        let mut memory = observation("s1", title, title);
+        memory.project = Some("old-project".to_owned());
+        saved.push(store.add_observation(memory).unwrap().observation);
+    }
+    let relation = store
+        .judge_by_semantic(JudgeBySemanticParams {
+            source_id: saved[0].sync_id.clone(),
+            target_id: saved[1].sync_id.clone(),
+            relation: "supersedes".to_owned(),
+            confidence: None,
+            reasoning: None,
+            model: None,
+        })
+        .unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let waiting = unsent_under(&store, "canonical-project");
+    let verdict = waiting
+        .iter()
+        .find(|(entity, _, _)| entity == "relation")
+        .unwrap_or_else(|| panic!("the verdict was dropped: {waiting:?}"));
+    assert_eq!(verdict.2["sync_id"], relation);
+    assert_eq!(verdict.2["project"], "canonical-project");
+}
+
+/// So does the version a content change had replaced.
+#[test]
+fn merging_a_project_keeps_the_version_that_was_waiting_for_a_peer() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Rewritten", "the first text");
+    memory.project = Some("old-project".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    store
+        .update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                content: Some("the second text".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let waiting = unsent_under(&store, "canonical-project");
+    let version = waiting
+        .iter()
+        .find(|(entity, _, _)| entity == "observation_version")
+        .unwrap_or_else(|| panic!("the version was dropped: {waiting:?}"));
+    assert_eq!(version.2["content"], "the first text");
+}
+
+/// A memory that is still live is queued once, not twice.
+///
+/// The unsent upsert of a row the merge has just queued again is the one thing
+/// that is dropped: carrying it too would send every moved memory twice.
+#[test]
+fn merging_a_project_does_not_send_a_live_memory_twice() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Still here", "body");
+    memory.project = Some("old-project".to_owned());
+    store.add_observation(memory).unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let observations = unsent_under(&store, "canonical-project")
+        .into_iter()
+        .filter(|(entity, _, _)| entity == "observation")
+        .count();
+    assert_eq!(observations, 1);
+}
+
+/// Moving a directory's sessions out of a name that is left empty carries the
+/// delete the same way, because it is the same arrangement for fewer rows.
+#[test]
+fn moving_the_last_directory_of_a_project_keeps_its_unsent_delete() {
+    let (_temp, mut store) = enrolled_store(&["api"]);
+    store.create_session("here", "api", "/work/api").unwrap();
+    let mut memory = observation("here", "Removed", "gone");
+    memory.project = Some("api".to_owned());
+    let removed = store.add_observation(memory).unwrap().observation;
+    store.delete_observation(removed.id, None, false).unwrap();
+
+    store
+        .move_directory_sessions("api", "backend", std::path::Path::new("/work/api"))
+        .unwrap();
+
+    let waiting = unsent_under(&store, "backend");
+    assert!(
+        waiting
+            .iter()
+            .any(|(entity, op, payload)| entity == "observation"
+                && op == "delete"
+                && payload["project"] == "backend"),
+        "the delete was dropped: {waiting:?}"
+    );
+    assert!(unsent_under(&store, "api").is_empty());
+}
+
+/// Enrolling again does not discard a delete that nobody has been told about.
+///
+/// The catch-up queues what the project holds now, which says nothing about a
+/// row that is gone, so the unsent delete was the only record of it.
+#[test]
+fn enrolling_a_project_again_keeps_the_delete_it_had_not_sent() {
+    let (_temp, mut store) = store();
+    store.enroll_project("again").unwrap();
+    store.create_session("s1", "again", "C:/again").unwrap();
+    let mut memory = observation("s1", "Removed", "gone");
+    memory.project = Some("again".to_owned());
+    let removed = store.add_observation(memory).unwrap().observation;
+    store.delete_observation(removed.id, None, false).unwrap();
+    store.unenroll_project("again").unwrap();
+
+    assert!(store.enroll_project("again").unwrap());
+
+    let waiting = unsent_under(&store, "again");
+    assert!(
+        waiting
+            .iter()
+            .any(|(entity, op, _)| entity == "observation" && op == "delete"),
+        "the delete was dropped: {waiting:?}"
+    );
+}
+
+/// The catch-up carries a memory's history with it.
+///
+/// A memory edited before its project was enrolled reached the peer with its
+/// current text and none of the versions the live journal queues beside each
+/// edit.
+#[test]
+fn enrolling_a_project_queues_the_versions_of_what_it_holds() {
+    let (_temp, mut store) = bare_store();
+    store.create_session("s1", "late", "C:/late").unwrap();
+    let mut memory = observation("s1", "Edited early", "the first text");
+    memory.project = Some("late".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    store
+        .update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                content: Some("the second text".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+
+    store.enroll_project("late").unwrap();
+
+    let waiting = unsent_under(&store, "late");
+    let positions: Vec<usize> = ["observation", "observation_version"]
+        .iter()
+        .map(|wanted| {
+            waiting
+                .iter()
+                .position(|(entity, _, _)| entity == wanted)
+                .unwrap_or_else(|| panic!("no {wanted} was queued: {waiting:?}"))
+        })
+        .collect();
+    assert!(
+        positions[0] < positions[1],
+        "the memory goes first: a peer applies the queue in order"
+    );
+    let version = &waiting[positions[1]].2;
+    assert_eq!(version["content"], "the first text");
+    assert_eq!(version["sync_id"], saved.sync_id);
 }
 
 /// Enrolling a project does not teach a peer about a memory it will never get.

@@ -123,6 +123,7 @@ fn the_binary_prints_the_marker_when_it_removes_and_not_when_it_previews() {
         // test must not edit the ones this machine is using.
         command.env("HOME", &home);
         command.env("LETEO_DATA_DIR", &data);
+        command.env_remove("LETEO_DATABASE");
         command.env_remove("LETEO_MODEL_DIR");
         command.env_remove("XDG_CONFIG_HOME");
         command.env_remove("CLAUDE_CONFIG_DIR");

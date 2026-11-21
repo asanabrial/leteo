@@ -1796,5 +1796,11 @@
     "file": "src/store/wire.rs",
     "old": "    if filed_under != normalize::project(current_project.as_deref().unwrap_or_default()) {",
     "new": "    if false && filed_under != normalize::project(current_project.as_deref().unwrap_or_default()) {"
+  },
+  {
+    "name": "store path: an environment database is consulted before the --data-dir flag",
+    "file": "src/cli/bootstrap.rs",
+    "old": "    if let Some(data_dir) = &cli.data_dir {\n        return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?));\n    }\n    if let Some(database) = &env_database {",
+    "new": "    if let Some(database) = &env_database {\n        return Ok(StoreConfig::new(absolutize(database)?));\n    }\n    if let Some(data_dir) = &cli.data_dir {\n        return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?));\n    }\n    if let Some(database) = &env_database {"
   }
 ]

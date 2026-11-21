@@ -7,9 +7,11 @@ use super::*;
     about = "Persistent memory for AI coding agents"
 )]
 pub struct Cli {
-    #[arg(long, global = true, env = "LETEO_DATA_DIR")]
+    /// Directory holding the store. Falls back to $LETEO_DATA_DIR.
+    #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
-    #[arg(long, global = true, env = "LETEO_DATABASE")]
+    /// Path of the database file. Falls back to $LETEO_DATABASE.
+    #[arg(long, global = true)]
     pub database: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Command,

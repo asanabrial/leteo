@@ -1590,5 +1590,11 @@
     "file": "src/setup/removal/mod.rs",
     "old": "        (Some(parent), Some(name)) => resolved(parent).join(name),",
     "new": "        (Some(_), Some(_)) => path.to_path_buf(),"
+  },
+  {
+    "name": "semantic fuse: a tie goes to the semantic-only row",
+    "file": "src/store/semantic_stage.rs",
+    "old": ".then_with(|| left.semantic.cmp(&right.semantic))",
+    "new": ".then_with(|| right.semantic.cmp(&left.semantic))"
   }
 ]

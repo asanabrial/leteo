@@ -159,6 +159,15 @@ pub enum Command {
         /// search with nothing.
         #[arg(long)]
         repair: bool,
+        /// Also list memories whose cited commits or paths no longer resolve.
+        ///
+        /// Opt-in because it runs `git` and reads the working tree of the
+        /// repository this directory is in, and reports only the project that
+        /// repository is. It is a warning and never makes the store unhealthy;
+        /// nothing is hidden, marked or written. `--check stale_citations`
+        /// asks for it alone.
+        #[arg(long, conflicts_with = "check")]
+        citations: bool,
     },
     /// Find and judge conflicting memories.
     Conflicts {

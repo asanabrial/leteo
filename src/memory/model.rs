@@ -1179,7 +1179,21 @@ impl DoctorCheck {
         "journal_mode",
         "busy_timeout",
         "hook_spool",
+        Self::STALE_CITATIONS,
     ];
+
+    /// The check that reads the project's repository, so it runs `git` and the
+    /// filesystem, and is therefore carried out only when asked for.
+    pub const STALE_CITATIONS: &'static str = "stale_citations";
+
+    /// The codes in [`Self::CODES`] that an unfiltered report leaves out.
+    ///
+    /// A check that costs a process and reads a directory outside the store is
+    /// not one every `doctor` should pay, and not one the MCP tool can answer at
+    /// all, since it has no repository to look in. Naming it with `--check`
+    /// without the means to run it is refused rather than answered with an empty
+    /// report that reads as all clear.
+    pub const OPT_IN: &'static [&'static str] = &[Self::STALE_CITATIONS];
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

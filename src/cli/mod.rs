@@ -767,6 +767,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             check,
             project,
             repair,
+            citations,
         } => {
             // Before the report, so what comes back describes the store as it
             // is now rather than as it was when somebody asked for help.
@@ -800,7 +801,23 @@ pub async fn run(cli: Cli) -> Result<()> {
             // after the repair rather than as it was when somebody asked.
             let spool_deadline = store.wait_deadline();
             let _ = repair.then(|| crate::hooks::spool::drain(&mut store, spool_deadline));
-            let (report, stats) = store.doctor_scoped(check.as_deref(), project.as_deref())?;
+            // Naming the check is asking for it, so the flag and `--check` are
+            // the same opt-in. It is the only check that needs to know where
+            // the command was run, and the store has no working directory.
+            let asked_for_citations = citations
+                || check.as_deref().map(str::trim)
+                    == Some(crate::memory::model::DoctorCheck::STALE_CITATIONS);
+            let scope = if asked_for_citations {
+                Some(crate::citations::Scope {
+                    directory: std::env::current_dir()
+                        .context("read the working directory the citations are checked from")?,
+                    project: project.clone(),
+                })
+            } else {
+                None
+            };
+            let (report, stats) =
+                store.doctor_scoped_citing(check.as_deref(), project.as_deref(), scope.as_ref())?;
             // The report stays at the top level so existing readers keep
             // working; the scoping fields are additions beside it.
             let mut output = serde_json::to_value(&report)?;

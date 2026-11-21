@@ -787,10 +787,12 @@ fn read_origin_url(git_root: &Path) -> OriginUrl {
 // happened to be running beside it.
 #[cfg(test)]
 thread_local! {
-    static GIT_SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static GIT_SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn run_git(directory: &Path, arguments: &[&str]) -> Option<String> {
+/// The one way this crate starts git: no prompt, no optional lock, no console
+/// window on Windows. What the process reads and writes is the caller's to set.
+fn git_command(directory: &Path, arguments: &[&str]) -> Command {
     #[cfg(test)]
     GIT_SPAWNS.with(|count| count.set(count.get() + 1));
 
@@ -801,8 +803,6 @@ fn run_git(directory: &Path, arguments: &[&str]) -> Option<String> {
         .args(arguments)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
     #[cfg(windows)]
@@ -812,6 +812,103 @@ fn run_git(directory: &Path, arguments: &[&str]) -> Option<String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
+    command
+}
+
+/// The repository root a directory belongs to, by the same walk detection uses.
+///
+/// Public to the crate so that a caller who needs the working tree does not
+/// grow a second way to find it, which is how two answers to "which repository
+/// is this" would come to disagree about a worktree or a redirected `GIT_DIR`.
+pub(crate) fn repository_root(directory: &Path) -> Option<PathBuf> {
+    detect_git_root(&canonical_path(directory))
+}
+
+/// Runs git with `input` on its standard input and returns what it printed, or
+/// the reason it could not be asked.
+///
+/// For the one question that is a list: `git cat-file --batch-check` answers a
+/// thousand names in one process, where [`run_git`] would be a process each. The
+/// input is written from its own thread while the output is read from another,
+/// because a process that is answering as it reads fills its output pipe before
+/// the input is finished, and neither side would then ever move again.
+///
+/// Unlike [`run_git`] this says why it failed, since the caller reports a check
+/// that could not run and "git said no" is not a reason. It never asks git to
+/// fetch what a partial clone left out: a diagnostic that turns into a download
+/// has stopped being one.
+pub(crate) fn run_git_with_input(
+    directory: &Path,
+    arguments: &[&str],
+    input: String,
+    timeout: Duration,
+    accepted_codes: &[i32],
+) -> Result<String, String> {
+    use std::io::Write;
+
+    let mut command = git_command(directory, arguments);
+    command
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "git is not installed or is not on the PATH".to_owned()
+        } else {
+            format!("git could not be started: {error}")
+        }
+    })?;
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("git could not be given its input".to_owned());
+    };
+    let writer = thread::spawn(move || {
+        let _ = stdin.write_all(input.as_bytes());
+    });
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+
+    let deadline = Instant::now() + timeout;
+    let mut nap = Duration::from_millis(1);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(nap);
+                nap = (nap * 2).min(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                let _ = reader.join();
+                return Err(format!(
+                    "git did not answer within {} seconds",
+                    timeout.as_secs()
+                ));
+            }
+        }
+    };
+    let _ = writer.join();
+    let bytes = reader.join().unwrap_or_default();
+    // `accepted_codes` because a question can have a "no" that is an exit
+    // status: `check-ignore` exits 1 when none of the paths is ignored.
+    if !status
+        .code()
+        .is_some_and(|code| accepted_codes.contains(&code))
+    {
+        return Err(format!("git exited with {status}"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn run_git(directory: &Path, arguments: &[&str]) -> Option<String> {
+    let mut command = git_command(directory, arguments);
+    command.stdin(Stdio::null()).stdout(Stdio::piped());
 
     let mut child = command.spawn().ok()?;
     let deadline = Instant::now() + GIT_TIMEOUT;

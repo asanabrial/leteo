@@ -50,7 +50,14 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
                     "sessions": candidate.session_count,
                     "prompts": candidate.prompt_count,
                 });
-                if apply {
+                // Listed by live count, which a soft-deleted memory does not
+                // appear in, so the list can name a project the prune would
+                // refuse and abort on, leaving the ones after it untouched.
+                // Said in the preview as well, so what it shows is what the
+                // apply does.
+                if let Some(reason) = store.prune_blocker(&candidate.name)? {
+                    entry["skipped"] = serde_json::Value::String(reason);
+                } else if apply {
                     entry["result"] = serde_json::to_value(store.prune_project(&candidate.name)?)?;
                 }
                 pruned.push(entry);

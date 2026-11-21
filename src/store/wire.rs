@@ -190,6 +190,16 @@ pub(super) fn apply_sync_mutation_tx(
         "relation" if operation == crate::sync::OP_UPSERT => {
             apply_relation_upsert_tx(tx, mutation, max_content_bytes)
         }
+        crate::sync::ENTITY_PROJECT_RENAME if operation == crate::sync::OP_UPSERT => {
+            let mut payload: SyncProjectRenamePayload = decode_sync_payload(&mutation.payload)?;
+            if payload.sync_id.trim().is_empty() {
+                payload.sync_id = mutation.entity_key.trim().to_owned();
+            }
+            if payload.project.trim().is_empty() {
+                payload.project.clone_from(&mutation.project);
+            }
+            apply_project_rename_tx(tx, payload)
+        }
         _ => Err(invalid_parameter(format!(
             "unsupported sync mutation {entity:?}/{operation:?}"
         ))),
@@ -849,24 +859,104 @@ pub(super) fn enqueue_prompt_delete_tx(
     )
 }
 
+/// Every project the journal shows a session was queued under, besides the one
+/// it is filed in.
+///
+/// Where `enqueue_session_for_member_tx` sent it. That function decides by
+/// reading the journal, and so does this: a session has no record of the
+/// memories that took it to another project beyond the mutation that did.
+fn session_member_projects_tx(
+    tx: &Transaction<'_>,
+    session_id: &str,
+    own_project: &str,
+) -> Result<Vec<String>, StoreError> {
+    let own = normalize::project(own_project);
+    let mut statement = tx.prepare(
+        "SELECT DISTINCT project FROM sync_mutations
+          WHERE entity = 'session' AND entity_key = ?1 AND op = ?2 AND project <> ''
+          ORDER BY project",
+    )?;
+    let projects = statement
+        .query_map(params![session_id, crate::sync::OP_UPSERT], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(projects
+        .into_iter()
+        .filter(|project| *project != own)
+        .collect())
+}
+
+/// Queues a session's delete under its own project and under every project it
+/// was sent to.
+///
+/// Under its own alone, a peer that follows only the project of a memory filed
+/// into this session was never told the session was gone and kept an orphan row
+/// for good. The delete does not ask whether memories are still there: the
+/// session is going, and so is every copy of it a peer holds.
 pub(super) fn enqueue_session_delete_tx(
     tx: &Transaction<'_>,
     session_id: &str,
     project: &str,
 ) -> Result<(), StoreError> {
-    enqueue_mutation(
-        tx,
-        "session",
-        session_id,
-        crate::sync::OP_DELETE,
-        &serde_json::json!({
-            "id": session_id,
-            "project": project,
-            "deleted": true,
-            "deleted_at": sqlite_now(),
-        }),
-        project,
-    )
+    let mut projects = vec![normalize::project(project)];
+    projects.extend(session_member_projects_tx(tx, session_id, project)?);
+    for project in projects {
+        enqueue_mutation(
+            tx,
+            "session",
+            session_id,
+            crate::sync::OP_DELETE,
+            &serde_json::json!({
+                "id": session_id,
+                "project": project,
+                "deleted": true,
+                "deleted_at": sqlite_now(),
+            }),
+            &project,
+        )?;
+    }
+    Ok(())
+}
+
+/// Queues a changed session under its own project and under each project it
+/// was sent to that still holds a memory or prompt of it.
+///
+/// `end_session` queued under the session's own project, so the peer that
+/// follows a memory's project went on holding a session that never ended. The
+/// rows are asked about, unlike in the delete: a session whose memories have
+/// moved to another project is no longer a member of the one they left, and
+/// telling that project's peers about it would put the old project name back on
+/// the session they hold.
+pub(super) fn enqueue_session_update_tx(
+    tx: &Transaction<'_>,
+    session: &Session,
+) -> Result<(), StoreError> {
+    let mut projects = vec![normalize::project(&session.project)];
+    for project in session_member_projects_tx(tx, &session.id, &session.project)? {
+        let still_a_member: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM observations
+                            WHERE session_id = ?1 AND ifnull(project, '') = ?2)
+                 OR EXISTS(SELECT 1 FROM prompts
+                            WHERE session_id = ?1 AND ifnull(project, '') = ?2)",
+            params![session.id, project],
+            |row| row.get(0),
+        )?;
+        if still_a_member {
+            projects.push(project);
+        }
+    }
+    for project in projects {
+        enqueue_mutation(
+            tx,
+            "session",
+            &session.id,
+            crate::sync::OP_UPSERT,
+            session,
+            &project,
+        )?;
+    }
+    Ok(())
 }
 
 /// Queues a session under the project of a row that points at it, when that is
@@ -990,6 +1080,47 @@ pub(super) fn enqueue_observation_version(
     )
 }
 
+/// Queues the history a memory holds, under `project`.
+///
+/// After the memory, which a peer applies in queue order, and only for the
+/// memories a project still holds: the live journal queues a version beside the
+/// write that replaced it, so a project enrolled afterwards arrived without a
+/// single one of its histories, and so did a project a merge had moved the
+/// memories into, whose peers read nothing queued under the old name.
+pub(super) fn enqueue_stored_versions_tx(
+    tx: &Transaction<'_>,
+    observation_sync_id: &str,
+    project: &str,
+) -> Result<(), StoreError> {
+    let versions = {
+        let mut statement = tx.prepare(
+            "SELECT revision, title, content, replaced_at FROM observation_versions
+             WHERE observation_sync_id = ?1 ORDER BY revision",
+        )?;
+        let rows = statement.query_map([observation_sync_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (revision, title, content, replaced_at) in versions {
+        enqueue_observation_version(
+            tx,
+            observation_sync_id,
+            revision,
+            &title,
+            &content,
+            &replaced_at,
+            project,
+        )?;
+    }
+    Ok(())
+}
+
 /// Queues everything a project already holds, as though it had just been saved.
 ///
 /// The same payloads the live journal writes, built the same way, so the cloud
@@ -1034,36 +1165,7 @@ pub(super) fn backfill_project_tx(tx: &Transaction<'_>, project: &str) -> Result
     for id in observations {
         let observation = get_observation_row(tx, id)?;
         enqueue_observation(tx, &observation)?;
-        // After the memory, which a peer applies in queue order, and only for the
-        // memories this project still holds: the live journal queues a version
-        // beside the write that replaced it, so a project enrolled afterwards
-        // arrived without a single one of its histories.
-        let versions = {
-            let mut statement = tx.prepare(
-                "SELECT revision, title, content, replaced_at FROM observation_versions
-                 WHERE observation_sync_id = ?1 ORDER BY revision",
-            )?;
-            let rows = statement.query_map([&observation.sync_id], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        for (revision, title, content, replaced_at) in versions {
-            enqueue_observation_version(
-                tx,
-                &observation.sync_id,
-                revision,
-                &title,
-                &content,
-                &replaced_at,
-                project,
-            )?;
-        }
+        enqueue_stored_versions_tx(tx, &observation.sync_id, project)?;
     }
     let prompts = query_column(
         tx,
@@ -1182,12 +1284,15 @@ fn backfill_relations_tx(tx: &Transaction<'_>, project: &str) -> Result<(), Stor
 /// A delete is rewritten to the canonical project and not left under the old
 /// one. A peer ignores a delete whose project is not the one the row is filed
 /// under (`apply_observation_delete_tx`), and the peers this is routed to are
-/// the ones replicating the canonical project, whose copy of the row is filed
-/// under it once they have merged too. Under the old name the delete would be
-/// ignored by every one of them. A peer that has not merged yet still holds the
-/// row under the old name and ignores the delete until it does; that is the
-/// price of the guard, and the guard is what stops a delete from killing a memory
-/// that was moved into the project.
+/// the ones replicating the canonical project. That guard is what stops a delete
+/// from killing a memory that was moved into the project, so it stays; what
+/// makes the rewritten delete find a peer's row is the rename the merge queued
+/// ahead of it (`enqueue_project_rename_tx`). A delete that was already waiting
+/// sits earlier in the queue than that rename, and a peer that has not merged
+/// would meet it while still holding the row under the old name and ignore it for
+/// good. So a delete is queued again, after the rename, rather than rewritten in
+/// place; unless something later is waiting for the same row, whose order it
+/// would then upset.
 ///
 /// A canonical name nobody replicates has nowhere to send them, and the unsent
 /// mutations go as they always did.
@@ -1215,6 +1320,52 @@ pub(super) fn carry_unsent_mutations_tx(
                    AND newer.op = ?3 AND newer.seq > sync_mutations.seq)",
         params![source, canonical, crate::sync::OP_UPSERT],
     )?;
+    // A version is told apart by its revision, which the key does not carry: the
+    // merge queued every version of a live memory again, and the copy that was
+    // still waiting is the duplicate.
+    tx.execute(
+        "DELETE FROM sync_mutations
+          WHERE project = ?1 AND acked_at IS NULL AND op = ?3 AND entity = ?4
+            AND EXISTS (
+                SELECT 1 FROM sync_mutations newer
+                 WHERE newer.project = ?2 AND newer.acked_at IS NULL
+                   AND newer.entity = sync_mutations.entity
+                   AND newer.entity_key = sync_mutations.entity_key
+                   AND newer.op = ?3 AND newer.seq > sync_mutations.seq
+                   AND json_extract(newer.payload, '$.revision')
+                       = json_extract(sync_mutations.payload, '$.revision'))",
+        params![
+            source,
+            canonical,
+            crate::sync::OP_UPSERT,
+            crate::sync::ENTITY_OBSERVATION_VERSION
+        ],
+    )?;
+    let deletes = {
+        let mut statement = tx.prepare(
+            "SELECT seq, entity, entity_key, payload FROM sync_mutations
+              WHERE project = ?1 AND acked_at IS NULL AND op = ?2
+                AND NOT EXISTS (
+                    SELECT 1 FROM sync_mutations later
+                     WHERE later.project = ?1 AND later.acked_at IS NULL
+                       AND later.entity = sync_mutations.entity
+                       AND later.entity_key = sync_mutations.entity_key
+                       AND later.seq > sync_mutations.seq)
+              ORDER BY seq",
+        )?;
+        let rows = statement.query_map(params![source, crate::sync::OP_DELETE], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (seq, ..) in &deletes {
+        tx.execute("DELETE FROM sync_mutations WHERE seq = ?1", [seq])?;
+    }
     // The payload names its project too, and a peer reads that one.
     let moved = tx.execute(
         "UPDATE sync_mutations
@@ -1240,7 +1391,178 @@ pub(super) fn carry_unsent_mutations_tx(
             )?;
         }
     }
+    for (_, entity, entity_key, payload) in deletes {
+        let mut payload: serde_json::Value = serde_json::from_str(&payload)?;
+        if let Some(object) = payload.as_object_mut()
+            && object.contains_key("project")
+        {
+            object.insert("project".to_owned(), canonical.into());
+        }
+        enqueue_serialized_mutation(
+            tx,
+            &entity,
+            &entity_key,
+            crate::sync::OP_DELETE,
+            &serde_json::to_string(&payload)?,
+            canonical,
+        )?;
+    }
     Ok(())
+}
+
+/// Moves the enrolment of any of `names` to `canonical`, when `canonical` has
+/// none. Whether it did.
+///
+/// Before anything is queued under the new name, which nothing is for a name
+/// nobody replicates; see the comment where the merge calls it.
+pub(super) fn move_enrolment_tx(
+    tx: &Transaction<'_>,
+    names: &BTreeSet<String>,
+    canonical: &str,
+) -> Result<bool, StoreError> {
+    if is_enrolled_tx(tx, canonical)? {
+        return Ok(false);
+    }
+    for name in names {
+        if is_enrolled_tx(tx, name)? {
+            tx.execute(
+                "INSERT OR IGNORE INTO sync_enrolled_projects (project) VALUES (?1)",
+                [canonical],
+            )?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Files every row of any of `names` under `canonical`. How many observations,
+/// sessions and prompts moved.
+pub(super) fn reassign_project_rows_tx(
+    tx: &Transaction<'_>,
+    names: &BTreeSet<String>,
+    canonical: &str,
+) -> Result<(i64, i64, i64), StoreError> {
+    let (mut observations, mut sessions, mut prompts) = (0, 0, 0);
+    for name in names {
+        observations += tx.execute(
+            "UPDATE observations SET project = ?1, updated_at = datetime('now')
+             WHERE LOWER(TRIM(ifnull(project, ''))) = ?2",
+            params![canonical, name],
+        )? as i64;
+        sessions += tx.execute(
+            "UPDATE sessions SET project = ?1 WHERE LOWER(TRIM(project)) = ?2",
+            params![canonical, name],
+        )? as i64;
+        prompts += tx.execute(
+            "UPDATE prompts SET project = ?1
+             WHERE LOWER(TRIM(ifnull(project, ''))) = ?2",
+            params![canonical, name],
+        )? as i64;
+    }
+    Ok((observations, sessions, prompts))
+}
+
+/// Stops replicating the names a merge emptied, and hands what they still had
+/// waiting to `canonical`. See [`carry_unsent_mutations_tx`].
+pub(super) fn retire_project_names_tx(
+    tx: &Transaction<'_>,
+    names: &BTreeSet<String>,
+    canonical: &str,
+) -> Result<(), StoreError> {
+    for name in names {
+        tx.execute(
+            "DELETE FROM sync_enrolled_projects WHERE project = ?1",
+            [name],
+        )?;
+        carry_unsent_mutations_tx(tx, name, canonical)?;
+    }
+    Ok(())
+}
+
+/// Tells a peer that `names` are now called `canonical`.
+///
+/// A mutation filed under a project is applied to the row the peer holds under
+/// that project, and a peer that has not merged holds every row of the old name
+/// under the old name: a delete or an update filed under the new one finds
+/// nothing there. Saying it once, ahead of the rows the merge queues again, lets
+/// every mutation after it find its row, and does not depend on which of those
+/// rows the merge happened to queue. A deleted memory is not one of them.
+///
+/// One per source, keyed by a fresh identifier: a merge is an event and not a
+/// state, and two merges of the same names are two things to apply.
+pub(super) fn enqueue_project_rename_tx(
+    tx: &Transaction<'_>,
+    names: &BTreeSet<String>,
+    canonical: &str,
+) -> Result<(), StoreError> {
+    let key: String = tx.query_row(
+        "SELECT 'rename-' || lower(hex(randomblob(16)))",
+        [],
+        |row| row.get(0),
+    )?;
+    enqueue_mutation(
+        tx,
+        crate::sync::ENTITY_PROJECT_RENAME,
+        &key,
+        crate::sync::OP_UPSERT,
+        &serde_json::json!({
+            "sync_id": key,
+            "sources": names,
+            "project": canonical,
+        }),
+        canonical,
+    )
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct SyncProjectRenamePayload {
+    sync_id: String,
+    sources: Vec<String>,
+    project: String,
+}
+
+/// Applies a rename a peer sent: the merge, without the queueing.
+///
+/// The rows move and the emptied names stop being replicated; nothing is
+/// queued, because the peer that merged already queued every row it needed to
+/// and a second copy from here would only come back to it.
+///
+/// A store skips the rename it sent itself, which the pull hands back: by then
+/// the old name may be in use again, and moving its rows into the new one would
+/// undo what its owner did since. The journal is what says whose it is.
+fn apply_project_rename_tx(
+    tx: &Transaction<'_>,
+    payload: SyncProjectRenamePayload,
+) -> Result<(), StoreError> {
+    let canonical = normalize::project(&payload.project);
+    let key = payload.sync_id.trim();
+    if canonical.is_empty() || key.is_empty() {
+        return Err(invalid_parameter(
+            "project rename sync payload requires sync_id and project",
+        ));
+    }
+    let sent_here: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_mutations
+          WHERE entity = ?1 AND entity_key = ?2 AND source = 'local')",
+        params![crate::sync::ENTITY_PROJECT_RENAME, key],
+        |row| row.get(0),
+    )?;
+    if sent_here {
+        return Ok(());
+    }
+    let names = payload
+        .sources
+        .iter()
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty() && *name != canonical)
+        .collect::<BTreeSet<_>>();
+    if names.is_empty() {
+        return Ok(());
+    }
+    move_enrolment_tx(tx, &names, &canonical)?;
+    reassign_project_rows_tx(tx, &names, &canonical)?;
+    retire_project_names_tx(tx, &names, &canonical)
 }
 
 pub(super) fn is_enrolled_tx(tx: &Transaction<'_>, project: &str) -> Result<bool, StoreError> {

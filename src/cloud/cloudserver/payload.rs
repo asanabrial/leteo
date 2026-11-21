@@ -67,7 +67,12 @@ pub(super) fn validate_mutation_entries(entries: &[MutationEntry]) -> Result<(),
             || entry.entity_key.trim().is_empty()
             || !matches!(
                 entry.entity.as_str(),
-                "session" | "observation" | "observation_version" | "prompt" | "relation"
+                "session"
+                    | "observation"
+                    | "observation_version"
+                    | "prompt"
+                    | "relation"
+                    | "project_rename"
             )
         {
             return Err(ApiError::bad_request(format!(
@@ -75,7 +80,9 @@ pub(super) fn validate_mutation_entries(entries: &[MutationEntry]) -> Result<(),
             )));
         }
         let supported_operation = match entry.entity.as_str() {
-            crate::sync::ENTITY_RELATION => entry.op == crate::sync::OP_UPSERT,
+            crate::sync::ENTITY_RELATION | crate::sync::ENTITY_PROJECT_RENAME => {
+                entry.op == crate::sync::OP_UPSERT
+            }
             _ => matches!(
                 entry.op.as_str(),
                 crate::sync::OP_UPSERT | crate::sync::OP_DELETE

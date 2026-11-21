@@ -34,6 +34,7 @@ pub const ENTITY_OBSERVATION: &str = "observation";
 pub const ENTITY_OBSERVATION_VERSION: &str = "observation_version";
 pub const ENTITY_PROMPT: &str = "prompt";
 pub const ENTITY_RELATION: &str = "relation";
+pub const ENTITY_PROJECT_RENAME: &str = "project_rename";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Manifest {
@@ -332,7 +333,7 @@ fn normalize_mutation(raw: Map<String, Value>, project: &str) -> Result<Value> {
 fn validate_supported_mutation(entity: &str, op: &str) -> Result<()> {
     let supported = match entity {
         ENTITY_SESSION | ENTITY_OBSERVATION | ENTITY_PROMPT => matches!(op, OP_UPSERT | OP_DELETE),
-        ENTITY_OBSERVATION_VERSION | ENTITY_RELATION => op == OP_UPSERT,
+        ENTITY_OBSERVATION_VERSION | ENTITY_RELATION | ENTITY_PROJECT_RENAME => op == OP_UPSERT,
         _ => false,
     };
     if supported {

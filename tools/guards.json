@@ -2396,5 +2396,77 @@
     "file": "src/cli/mod.rs",
     "old": "repair.then(|| store.remove_orphan_versions()).transpose()?;",
     "new": "None::<i64>;"
+  },
+  {
+    "name": "merge: the rename is not queued, so a peer that never merged cannot find the rows a delete names",
+    "file": "src/store/projects.rs",
+    "old": "            enqueue_project_rename_tx(&tx, &names, &canonical)?;",
+    "new": "            let _ = enqueue_project_rename_tx;"
+  },
+  {
+    "name": "merge: a delete that was waiting is rewritten in place, ahead of the rename",
+    "file": "src/store/wire.rs",
+    "old": "              WHERE project = ?1 AND acked_at IS NULL AND op = ?2\n                AND NOT EXISTS (",
+    "new": "              WHERE project = ?1 AND acked_at IS NULL AND op = ?2 AND 0\n                AND NOT EXISTS ("
+  },
+  {
+    "name": "merge: what was waiting under another spelling of the name stays where it was",
+    "file": "src/store/projects.rs",
+    "old": "            retire_project_names_tx(&tx, &names, &canonical)?;",
+    "new": "            retire_project_names_tx(&tx, &BTreeSet::from([source.clone()]), &canonical)?;"
+  },
+  {
+    "name": "merge: the versions of a moved memory are not queued under its new name",
+    "file": "src/store/projects.rs",
+    "old": "                    enqueue_stored_versions_tx(&tx, &observation.sync_id, &canonical)?;",
+    "new": "                    let _ = enqueue_stored_versions_tx;"
+  },
+  {
+    "name": "merge: a version still waiting is sent twice, carried and queued again",
+    "file": "src/store/wire.rs",
+    "old": "                   AND json_extract(newer.payload, '$.revision')\n                       = json_extract(sync_mutations.payload, '$.revision'))",
+    "new": "                   AND 0)"
+  },
+  {
+    "name": "rename: the store that sent it moves rows again when its own push comes back",
+    "file": "src/store/wire.rs",
+    "old": "    if sent_here {\n        return Ok(());\n    }",
+    "new": "    let _ = sent_here;"
+  },
+  {
+    "name": "rename: a peer does not apply a project_rename it pulls",
+    "file": "src/store/wire.rs",
+    "old": "crate::sync::ENTITY_PROJECT_RENAME if operation == crate::sync::OP_UPSERT => {",
+    "new": "crate::sync::ENTITY_PROJECT_RENAME if false => {"
+  },
+  {
+    "name": "rename: the sync codec refuses a project_rename",
+    "file": "src/sync/mod.rs",
+    "old": "ENTITY_OBSERVATION_VERSION | ENTITY_RELATION | ENTITY_PROJECT_RENAME => op == OP_UPSERT,",
+    "new": "ENTITY_OBSERVATION_VERSION | ENTITY_RELATION => op == OP_UPSERT,"
+  },
+  {
+    "name": "session: a delete is queued only under the session's own project",
+    "file": "src/store/wire.rs",
+    "old": "    projects.extend(session_member_projects_tx(tx, session_id, project)?);",
+    "new": "    let _ = session_member_projects_tx;"
+  },
+  {
+    "name": "session: an update is queued only under the session's own project",
+    "file": "src/store/wire.rs",
+    "old": "    for project in session_member_projects_tx(tx, &session.id, &session.project)? {",
+    "new": "    for project in Vec::<String>::new() {"
+  },
+  {
+    "name": "session: ending a session is queued without asking where it was sent",
+    "file": "src/store/sessions.rs",
+    "old": "        enqueue_session_update_tx(&tx, &session)?;",
+    "new": "        enqueue_mutation(\n            &tx,\n            \"session\",\n            id,\n            crate::sync::OP_UPSERT,\n            &session,\n            &session.project,\n        )?;"
+  },
+  {
+    "name": "prune: a project holding a soft-deleted memory is applied and aborts the run",
+    "file": "src/cli/projects.rs",
+    "old": "if let Some(reason) = store.prune_blocker(&candidate.name)? {",
+    "new": "if let Some(reason) = None::<String> {"
   }
 ]

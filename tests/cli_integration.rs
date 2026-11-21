@@ -2822,3 +2822,56 @@ fn a_setup_flag_keeps_a_level_written_in_another_case() {
     assert_eq!(written["voice"], json!("quiet"));
     assert_eq!(written["context_size"], json!("deep"));
 }
+
+#[test]
+fn cli_prune_skips_a_project_that_holds_a_soft_deleted_memory_and_still_prunes_the_rest() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-prune-soft.db");
+
+    for (session, project) in [("soft-session", "a-soft"), ("empty-session", "b-empty")] {
+        run_json(
+            leteo(&database)
+                .arg("session-start")
+                .arg(session)
+                .arg("--project")
+                .arg(project)
+                .arg("--directory")
+                .arg(temp.path()),
+        );
+    }
+    let saved = run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("Removed softly")
+            .arg("Body that stays referenced by its session")
+            .arg("--session")
+            .arg("soft-session"),
+    );
+    let id = saved["observation"]["id"].as_i64().expect("observation id");
+    run_json(
+        leteo(&database)
+            .arg("delete")
+            .arg("observation")
+            .arg(id.to_string()),
+    );
+
+    let pruned = run_json(leteo(&database).arg("projects").arg("prune").arg("--apply"));
+
+    let projects = pruned["projects"].as_array().expect("pruned projects");
+    let soft = projects
+        .iter()
+        .find(|entry| entry["project"] == json!("a-soft"))
+        .expect("the soft-deleted project is named");
+    assert!(
+        soft["skipped"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("soft-deleted")),
+        "{soft}"
+    );
+    assert_eq!(soft["result"], Value::Null);
+    let empty = projects
+        .iter()
+        .find(|entry| entry["project"] == json!("b-empty"))
+        .expect("the empty project is named");
+    assert_eq!(empty["result"]["sessions_deleted"], json!(1), "{empty}");
+}

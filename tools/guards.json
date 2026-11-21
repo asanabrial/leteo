@@ -1982,5 +1982,35 @@
     "file": "src/hooks/mod.rs",
     "old": "            let mut context = String::from(if input.summary_stored {",
     "new": "            let mut context = String::from(if false && input.summary_stored {"
+  },
+  {
+    "name": "files: a symbolic link is replaced instead of written through",
+    "file": "src/files.rs",
+    "old": "    let resolved = resolve_links(path)?;",
+    "new": "    let resolved = path.to_owned();"
+  },
+  {
+    "name": "files: a link that cannot be followed is replaced instead of refused",
+    "file": "src/files.rs",
+    "old": "    let resolved = fs::canonicalize(path).map_err(|error| {",
+    "new": "    let resolved = Ok::<PathBuf, io::Error>(path.to_owned()).map_err(|error| {"
+  },
+  {
+    "name": "files: a link to a directory is not refused by name",
+    "file": "src/files.rs",
+    "old": "    if resolved.is_dir() {",
+    "new": "    if false && resolved.is_dir() {"
+  },
+  {
+    "name": "files: a replaced file takes the umask default instead of its old mode",
+    "file": "src/files.rs",
+    "old": "        (Visibility::Inherited, Some(previous)) => file.set_permissions(\n            fs::Permissions::from_mode(previous.permissions().mode() & 0o7777),\n        ),",
+    "new": "        (Visibility::Inherited, Some(_)) => Ok(()),"
+  },
+  {
+    "name": "files: a private write is no longer restricted to its owner",
+    "file": "src/files.rs",
+    "old": "        (Visibility::OwnerOnly, _) => file.set_permissions(fs::Permissions::from_mode(0o600)),",
+    "new": "        (Visibility::OwnerOnly, _) => Ok(()),"
   }
 ]

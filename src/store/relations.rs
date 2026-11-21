@@ -787,13 +787,33 @@ pub(super) fn judge_relation_tx(
         .optional()?;
     let sync_id = existing.unwrap_or_else(|| normalize::sync_id("rel"));
     if get_relation_tx_optional(tx, &sync_id)?.is_some() {
+        // The pair is found in either direction, because a pending row is filed
+        // from whichever memory a scan met first. Only `supersedes` has a
+        // direction: it hides its target, so a row left as it was filed turned
+        // "the new memory overtakes the old" into the opposite and hid the
+        // current memory. The other verbs keep the order they were filed in.
+        let (stored_source, stored_target) = if relation == RELATION_SUPERSEDES {
+            (source_id, target_id)
+        } else {
+            ("", "")
+        };
         tx.execute(
             "UPDATE memory_relations
              SET relation = ?1, judgment_status = 'judged', confidence = ?2,
                  reason = ?3, marked_by_actor = 'leteo', marked_by_kind = 'system',
-                 marked_by_model = ?4, updated_at = datetime('now')
+                 marked_by_model = ?4, updated_at = datetime('now'),
+                 source_id = iif(?6 <> '', ?6, source_id),
+                 target_id = iif(?7 <> '', ?7, target_id)
              WHERE sync_id = ?5",
-            params![relation, confidence, reasoning, model, sync_id],
+            params![
+                relation,
+                confidence,
+                reasoning,
+                model,
+                sync_id,
+                stored_source,
+                stored_target
+            ],
         )?;
     } else {
         tx.execute(

@@ -1698,3 +1698,101 @@ fn moving_a_memory_out_of_a_project_retires_only_the_pending_proposals() {
         "and it still warns the memory it overturned: {caveats:?}"
     );
 }
+
+/// A pending relation is filed from whichever memory the scan met first, which
+/// is as often the older one as the newer. The verdict that settles it names
+/// who overtakes whom, and the row used to keep the filing order: the pair was
+/// found in either direction and only the verb was rewritten, so "the new one
+/// supersedes the old one" was stored as the opposite and hid the current
+/// memory instead of the stale one.
+fn pending_old_to_new(store: &mut Store) -> (Observation, Observation, String) {
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let old = store
+        .add_observation(observation("s1", "Cache layer", "the cache is Redis"))
+        .unwrap()
+        .observation;
+    let new = store
+        .add_observation(observation("s1", "Storage tier", "the store is SQLite"))
+        .unwrap()
+        .observation;
+    let pending = store
+        .save_relation(SaveRelationParams {
+            sync_id: normalize::sync_id("rel"),
+            source_id: old.sync_id.clone(),
+            target_id: new.sync_id.clone(),
+        })
+        .unwrap();
+    (old, new, pending.sync_id)
+}
+
+fn listed_titles(store: &Store) -> Vec<String> {
+    store
+        .recent_observations(Some("leteo"), None, false)
+        .unwrap()
+        .into_iter()
+        .map(|observation| observation.title)
+        .collect()
+}
+
+#[test]
+fn a_supersedes_verdict_is_stored_in_the_direction_it_was_given() {
+    let (_temp, mut store) = store();
+    let (old, new, pending) = pending_old_to_new(&mut store);
+
+    store
+        .judge_by_semantic(JudgeBySemanticParams {
+            source_id: new.sync_id.clone(),
+            target_id: old.sync_id.clone(),
+            relation: RELATION_SUPERSEDES.to_owned(),
+            confidence: Some(0.9),
+            reasoning: Some("the newer memory replaces the older one".to_owned()),
+            model: None,
+        })
+        .unwrap();
+
+    let stored = store.get_relation(&pending).unwrap();
+    assert_eq!(
+        (stored.source_id.as_str(), stored.target_id.as_str()),
+        (new.sync_id.as_str(), old.sync_id.as_str()),
+        "the same row, turned round to the pair as given"
+    );
+    let titles = listed_titles(&store);
+    assert!(
+        titles.contains(&new.title),
+        "the current memory stays listed: {titles:?}"
+    );
+    assert!(
+        !titles.contains(&old.title),
+        "the overtaken one is the one hidden: {titles:?}"
+    );
+    let rows: i64 = store
+        .connection
+        .query_row("SELECT COUNT(*) FROM memory_relations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 1, "turning a pair round does not file a second row");
+}
+
+#[test]
+fn an_undirected_verdict_keeps_the_direction_the_pair_was_filed_in() {
+    let (_temp, mut store) = store();
+    let (old, new, pending) = pending_old_to_new(&mut store);
+
+    store
+        .judge_by_semantic(JudgeBySemanticParams {
+            source_id: new.sync_id.clone(),
+            target_id: old.sync_id.clone(),
+            relation: RELATION_COMPATIBLE.to_owned(),
+            confidence: Some(0.8),
+            reasoning: None,
+            model: None,
+        })
+        .unwrap();
+
+    let stored = store.get_relation(&pending).unwrap();
+    assert_eq!(
+        (stored.source_id.as_str(), stored.target_id.as_str()),
+        (old.sync_id.as_str(), new.sync_id.as_str())
+    );
+}

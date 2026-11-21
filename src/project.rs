@@ -842,6 +842,7 @@ pub(crate) fn run_git_with_input(
     arguments: &[&str],
     input: String,
     timeout: Duration,
+    accepted_codes: &[i32],
 ) -> Result<String, String> {
     use std::io::Write;
 
@@ -894,7 +895,12 @@ pub(crate) fn run_git_with_input(
     };
     let _ = writer.join();
     let bytes = reader.join().unwrap_or_default();
-    if !status.success() {
+    // `accepted_codes` because a question can have a "no" that is an exit
+    // status: `check-ignore` exits 1 when none of the paths is ignored.
+    if !status
+        .code()
+        .is_some_and(|code| accepted_codes.contains(&code))
+    {
         return Err(format!("git exited with {status}"));
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())

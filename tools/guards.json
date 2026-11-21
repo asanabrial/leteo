@@ -2288,5 +2288,35 @@
     "file": "src/citations.rs",
     "old": "        .map_or(0, |(at, character)| at + character.len_utf8());",
     "new": "        .map_or(0, |(at, _)| at + 1);"
+  },
+  {
+    "name": "citations: a bare file name is not resolved by a tracked file of that name below the root",
+    "file": "src/citations.rs",
+    "old": "!path.contains('/') && tracked_names",
+    "new": "false && tracked_names"
+  },
+  {
+    "name": "citations: a path git ignores is counted as a citation",
+    "file": "src/citations.rs",
+    "old": "paths.iter().filter(|p| !ignored.contains(*p)).collect();",
+    "new": "paths.iter().filter(|_| true).collect();"
+  },
+  {
+    "name": "citations: no path being ignored is read as git failing",
+    "file": "src/citations.rs",
+    "old": "        &[0, 1],",
+    "new": "        &[0],"
+  },
+  {
+    "name": "citations: the tracked files are listed whether or not a bare name needs them",
+    "file": "src/citations.rs",
+    "old": "if wants_tracked {",
+    "new": "if wants_tracked || true {"
+  },
+  {
+    "name": "citations: a tracked listing with backslashes is not reduced to base names",
+    "file": "src/citations.rs",
+    "old": "            name.replace('\\\\', \"/\")\n                .rsplit('/')",
+    "new": "            name.to_owned()\n                .rsplit('/')"
   }
 ]

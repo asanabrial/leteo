@@ -14,7 +14,10 @@ All notable changes to Leteo are documented in this file.
   repository, the check reads that project's own memories only, asks git about
   every hash in one process, looks for each backticked path in the working tree,
   and reports the counts with the first ten memory ids. It is a warning, never
-  an unhealthy store, and nothing is hidden, marked or written. It is opt-in
+  an unhealthy store, and nothing is hidden, marked or written. A file name
+  written without its directory resolves when any tracked file carries it, and
+  a path git ignores is skipped, each decided in one `git` process for the
+  whole check, so it makes three at most. It is opt-in
   because it runs `git`; where it cannot (no git, no repository, a directory of
   another project) it says so and does not pass (#341).
 

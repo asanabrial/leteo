@@ -299,10 +299,21 @@ pub enum PathVerdict {
 }
 
 /// Looks for a path from [`paths_in`] in the checkout at `root`.
-pub fn judge_path(root: &Path, path: &str) -> PathVerdict {
+///
+/// A name with no directory in it is written that way because the memory was
+/// about the file and not its place: measured on a real store, 115 of the
+/// roughly 190 paths that did not exist where written were such names (`mod.rs`,
+/// `store.rs`), most of them present further down. It resolves at the root, as
+/// before, or when `tracked_names` holds a file of that name anywhere.
+pub fn judge_path(root: &Path, path: &str, tracked_names: Option<&HashSet<String>>) -> PathVerdict {
     let relative: PathBuf = path.split('/').collect();
     match root.join(&relative).try_exists() {
         Ok(true) => PathVerdict::Present,
+        Ok(false)
+            if !path.contains('/') && tracked_names.is_some_and(|names| names.contains(path)) =>
+        {
+            PathVerdict::Present
+        }
         Ok(false) => {
             let first = path.split('/').next().unwrap_or(path);
             let known_directory = root.join(first).exists();
@@ -337,8 +348,66 @@ pub fn resolving_commits(root: &Path, hashes: &[String]) -> Result<Vec<bool>, St
         &["cat-file", "--batch-check"],
         input,
         GIT_TIMEOUT,
+        &[0],
     )?;
     parse_batch_check(&output, hashes.len())
+}
+
+/// Which of `paths` the repository's ignore rules cover, asked of git in one
+/// process.
+///
+/// `check-ignore` exits 1 when none is ignored, which is an answer and not a
+/// failure; anything else is git not answering. Names are NUL-separated both
+/// ways, so a name git would otherwise quote comes back as it went in. A path
+/// that is tracked is never reported, which is what keeps a committed file under
+/// an ignored-looking directory a citation.
+pub fn ignored_paths(root: &Path, paths: &[String]) -> Result<HashSet<String>, String> {
+    if paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut input = paths.join("\0");
+    input.push('\0');
+    let output = crate::project::run_git_with_input(
+        root,
+        &["check-ignore", "--stdin", "-z"],
+        input,
+        GIT_TIMEOUT,
+        &[0, 1],
+    )?;
+    Ok(output
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(|name| name.replace('\\', "/"))
+        .collect())
+}
+
+/// The base name of every file the repository tracks, from one `ls-files`.
+///
+/// Separators are normalised before the base name is taken, so a listing with
+/// either one gives the same set.
+pub fn tracked_base_names(root: &Path) -> Result<HashSet<String>, String> {
+    let output = crate::project::run_git_with_input(
+        root,
+        &["ls-files", "-z"],
+        String::new(),
+        GIT_TIMEOUT,
+        &[0],
+    )?;
+    Ok(base_names(&output))
+}
+
+/// The base names in a NUL-separated listing, whichever separator its paths use.
+fn base_names(listing: &str) -> HashSet<String> {
+    listing
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| {
+            name.replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 /// Reads what `git cat-file --batch-check` printed for `expected` names.
@@ -372,6 +441,12 @@ pub struct Assessment {
     pub paths: usize,
     pub missing_paths: usize,
     pub unreadable_paths: usize,
+    /// Cited paths the repository's ignore rules cover, which are not counted.
+    pub ignored_paths: usize,
+    /// Why git could not be asked about ignored paths, when it could not.
+    pub ignore_rules_unreadable: Option<String>,
+    /// Why git could not list the tracked files, when it was needed and could not.
+    pub tracked_files_unreadable: Option<String>,
     /// Every memory with at least one missing citation, smallest id first.
     pub stale: Vec<i64>,
 }
@@ -417,9 +492,31 @@ pub fn assess(root: &Path, memories: &[(i64, String)]) -> Result<Assessment, Str
         .map(|(hash, _)| hash.as_str())
         .collect();
 
-    let verdicts: HashMap<&str, PathVerdict> = paths
+    // What git ignores is a build output or a scratch file, not a statement
+    // about the repository's content: `target/release/leteo.exe` is never in a
+    // checkout and was counted stale on a real store. If git cannot say, the
+    // paths are judged as they stand and the report says it could not.
+    let (ignored, ignore_rules_unreadable) = match ignored_paths(root, &paths) {
+        Ok(ignored) => (ignored, None),
+        Err(reason) => (HashSet::new(), Some(reason)),
+    };
+    let considered: Vec<&String> = paths.iter().filter(|p| !ignored.contains(*p)).collect();
+    // The listing of tracked files is only worth a process when some bare name
+    // is not at the root, which is what it exists to look further for.
+    let wants_tracked = considered
         .iter()
-        .map(|path| (path.as_str(), judge_path(root, path)))
+        .any(|path| !path.contains('/') && judge_path(root, path, None) == PathVerdict::Missing);
+    let (tracked, tracked_files_unreadable) = if wants_tracked {
+        match tracked_base_names(root) {
+            Ok(names) => (Some(names), None),
+            Err(reason) => (None, Some(reason)),
+        }
+    } else {
+        (None, None)
+    };
+    let verdicts: HashMap<&str, PathVerdict> = considered
+        .iter()
+        .map(|path| (path.as_str(), judge_path(root, path, tracked.as_ref())))
         .collect();
     let counted = |wanted: PathVerdict| verdicts.values().filter(|v| **v == wanted).count();
 
@@ -442,9 +539,14 @@ pub fn assess(root: &Path, memories: &[(i64, String)]) -> Result<Assessment, Str
         memories_read: memories.len(),
         commits: hashes.len(),
         missing_commits: missing_commits.len(),
-        paths: paths.len().saturating_sub(counted(PathVerdict::NotAPath)),
+        paths: considered
+            .len()
+            .saturating_sub(counted(PathVerdict::NotAPath)),
         missing_paths: counted(PathVerdict::Missing),
         unreadable_paths: counted(PathVerdict::Unreadable),
+        ignored_paths: ignored.len(),
+        ignore_rules_unreadable,
+        tracked_files_unreadable,
         stale: stale.into_iter().collect(),
     })
 }
@@ -452,7 +554,26 @@ pub fn assess(root: &Path, memories: &[(i64, String)]) -> Result<Assessment, Str
 impl Assessment {
     /// The sentence `doctor` reports, naming no more than [`EXAMPLE_IDS`] ids.
     pub fn describe(&self, project: &str) -> String {
-        let limits = "Nothing was hidden, changed or written. A commit resolves whenever git holds the object, reachable or not, so a dangling one passes, and a shallow clone cannot see older history; paths are looked for in the current checkout only, so one that exists on another branch reads as missing, and a file name with no directory is looked for at the repository root only";
+        let mut notes = String::new();
+        if self.ignored_paths > 0 {
+            notes.push_str(&format!(
+                "{} cited path(s) that git ignores were skipped. ",
+                self.ignored_paths
+            ));
+        }
+        if let Some(reason) = &self.ignore_rules_unreadable {
+            notes.push_str(&format!(
+                "The ignore rules could not be read ({reason}), so paths git ignores were judged like any other. "
+            ));
+        }
+        if let Some(reason) = &self.tracked_files_unreadable {
+            notes.push_str(&format!(
+                "The tracked files could not be listed ({reason}), so a file name with no directory was looked for at the repository root only. "
+            ));
+        }
+        let limits = format!(
+            "{notes}Nothing was hidden, changed or written. A commit resolves whenever git holds the object, reachable or not, so a dangling one passes, and a shallow clone cannot see older history; paths are looked for in the current checkout only, so one that exists on another branch reads as missing, and a file name with no directory resolves when the repository root has it or any tracked file carries that name"
+        );
         let unreadable = if self.unreadable_paths > 0 {
             format!(
                 "; {} path(s) could not be read and are not counted either way",
@@ -702,17 +823,166 @@ mod tests {
         std::fs::write(temp.path().join("src").join("here.rs"), "").unwrap();
         std::fs::write(temp.path().join("Cargo.toml"), "").unwrap();
 
-        assert_eq!(judge_path(temp.path(), "src/here.rs"), PathVerdict::Present);
-        assert_eq!(judge_path(temp.path(), "Cargo.toml"), PathVerdict::Present);
-        assert_eq!(judge_path(temp.path(), "src"), PathVerdict::Present);
-        assert_eq!(judge_path(temp.path(), "src/gone.rs"), PathVerdict::Missing);
-        assert_eq!(judge_path(temp.path(), "gone/old.rs"), PathVerdict::Missing);
-        assert_eq!(judge_path(temp.path(), "src/gone"), PathVerdict::Missing);
-        assert_eq!(judge_path(temp.path(), "Gone.toml"), PathVerdict::Missing);
+        let judged = |path: &str| judge_path(temp.path(), path, None);
+        assert_eq!(judged("src/here.rs"), PathVerdict::Present);
+        assert_eq!(judged("Cargo.toml"), PathVerdict::Present);
+        assert_eq!(judged("src"), PathVerdict::Present);
+        assert_eq!(judged("src/gone.rs"), PathVerdict::Missing);
+        assert_eq!(judged("gone/old.rs"), PathVerdict::Missing);
+        assert_eq!(judged("src/gone"), PathVerdict::Missing);
+        assert_eq!(judged("Gone.toml"), PathVerdict::Missing);
         assert_eq!(
-            judge_path(temp.path(), "read/write"),
+            judged("read/write"),
             PathVerdict::NotAPath,
             "a slash alone, in a directory the repository does not have, is not a path"
+        );
+    }
+
+    #[test]
+    fn a_bare_name_resolves_when_any_tracked_file_carries_it() {
+        let temp = TempDir::new().unwrap();
+        let tracked: HashSet<String> = ["mod.rs".to_owned()].into();
+        assert_eq!(
+            judge_path(temp.path(), "mod.rs", Some(&tracked)),
+            PathVerdict::Present
+        );
+        assert_eq!(
+            judge_path(temp.path(), "other.rs", Some(&tracked)),
+            PathVerdict::Missing
+        );
+        assert_eq!(
+            judge_path(temp.path(), "src/mod.rs", Some(&tracked)),
+            PathVerdict::Missing,
+            "a path with a directory is not rescued by a file of that name elsewhere"
+        );
+    }
+
+    /// A repository with a nested `mod.rs`, an ignore rule, and an untracked
+    /// file at the root.
+    fn repository_for_names(root: &Path) {
+        let git = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(arguments)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .expect("these tests need git on the PATH");
+            assert!(status.success(), "git {arguments:?}");
+        };
+        git(&["init", "--quiet"]);
+        std::fs::create_dir_all(root.join("src").join("deep").join("nested")).unwrap();
+        std::fs::write(
+            root.join("src").join("deep").join("nested").join("mod.rs"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(root.join("untracked.md"), "").unwrap();
+        // The build directory exists, as it does in a real checkout, so a
+        // cited file inside it that is not there reads as missing unless the
+        // ignore rules are consulted.
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        git(&["add", "src", ".gitignore"]);
+        git(&["commit", "--quiet", "-m", "x"]);
+    }
+
+    #[test]
+    fn names_and_ignored_paths_are_judged_by_what_git_tracks_and_ignores() {
+        let temp = TempDir::new().unwrap();
+        repository_for_names(temp.path());
+        let memories: Vec<(i64, String)> = vec![
+            (1, "see `mod.rs`".to_owned()),
+            (2, "see `nothing.rs`".to_owned()),
+            (3, "built `target/release/leteo.exe`".to_owned()),
+            (4, "see `untracked.md`".to_owned()),
+            (5, r"see `src\deep\nested\mod.rs`".to_owned()),
+            (6, "see `src/gone.rs`".to_owned()),
+        ];
+        let assessment = assess(temp.path(), &memories).unwrap();
+
+        assert_eq!(assessment.stale, [2, 6], "{assessment:?}");
+        assert_eq!(assessment.ignored_paths, 1);
+        assert_eq!(
+            assessment.paths, 5,
+            "the ignored path is not counted at all"
+        );
+        assert_eq!(assessment.missing_paths, 2);
+        assert!(assessment.ignore_rules_unreadable.is_none());
+        assert!(assessment.tracked_files_unreadable.is_none());
+        assert!(
+            assessment
+                .describe("p")
+                .contains("1 cited path(s) that git ignores were skipped")
+        );
+    }
+
+    #[test]
+    fn a_listing_is_reduced_to_base_names_whatever_its_separators() {
+        let names = base_names("src/a/mod.rs\0src\\b\\store.rs\0top.md\0");
+        let expected: HashSet<String> = ["mod.rs", "store.rs", "top.md"].map(str::to_owned).into();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn no_path_being_ignored_is_an_answer_and_not_a_failure() {
+        let temp = TempDir::new().unwrap();
+        repository_for_names(temp.path());
+        let assessment = assess(temp.path(), &[(1, "see `src/gone.rs`".to_owned())]).unwrap();
+        assert!(
+            assessment.ignore_rules_unreadable.is_none(),
+            "{assessment:?}"
+        );
+        assert_eq!(assessment.ignored_paths, 0);
+    }
+
+    #[test]
+    fn git_not_answering_is_said_and_paths_are_judged_as_they_stand() {
+        let temp = TempDir::new().unwrap();
+        // Not a repository: both questions fail, and neither failure is a pass.
+        let memories = vec![(1, "see `mod.rs` and `target/x.exe`".to_owned())];
+        let assessment = assess(temp.path(), &memories).unwrap();
+        assert!(assessment.ignore_rules_unreadable.is_some());
+        assert!(assessment.tracked_files_unreadable.is_some());
+        assert_eq!(assessment.stale, [1]);
+        let text = assessment.describe("p");
+        assert!(text.contains("ignore rules could not be read"), "{text}");
+        assert!(text.contains("tracked files could not be listed"), "{text}");
+    }
+
+    #[test]
+    fn the_whole_check_spawns_a_fixed_number_of_git_processes() {
+        let temp = TempDir::new().unwrap();
+        repository_for_names(temp.path());
+        let few: Vec<(i64, String)> = vec![
+            (1, format!("fixed in {}", "0".repeat(40))),
+            (2, "see `nothing.rs` and `target/a.exe`".to_owned()),
+        ];
+        let many: Vec<(i64, String)> = (0..60)
+            .flat_map(|n| {
+                [
+                    (n * 2, format!("fixed in {n:040x}")),
+                    (n * 2 + 1, format!("see `gone{n}.rs` and `target/{n}.exe`")),
+                ]
+            })
+            .collect();
+
+        let spawned = |memories: &[(i64, String)]| {
+            let before = crate::project::GIT_SPAWNS.with(std::cell::Cell::get);
+            assess(temp.path(), memories).unwrap();
+            crate::project::GIT_SPAWNS.with(std::cell::Cell::get) - before
+        };
+        assert_eq!(
+            spawned(&[(1, "see `src/gone.rs`".to_owned())]),
+            1,
+            "the tracked files are listed only when a bare name needs them"
+        );
+        assert_eq!(spawned(&few), 3, "cat-file, check-ignore, ls-files");
+        assert_eq!(
+            spawned(&many),
+            3,
+            "the same however many memories there are"
         );
     }
 
@@ -767,6 +1037,9 @@ mod tests {
             paths: 5,
             missing_paths: 1,
             unreadable_paths: 0,
+            ignored_paths: 0,
+            ignore_rules_unreadable: None,
+            tracked_files_unreadable: None,
             stale: (1..=EXAMPLE_IDS as i64 + 3).collect(),
         };
         let text = assessment.describe("demo");

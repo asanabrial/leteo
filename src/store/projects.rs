@@ -334,9 +334,15 @@ impl Store {
             //
             // Unacked only. An acknowledged row is the record of what a peer
             // already has, and the retention window is what removes those.
+            //
+            // And never a delete. The backfill queues what the project holds
+            // now, so it says nothing about a memory, prompt or session that is
+            // gone, and the unsent delete was the only copy of that fact:
+            // dropping it left the peer with a row its owner had removed.
             tx.execute(
-                "DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL",
-                [&project],
+                "DELETE FROM sync_mutations
+                  WHERE project = ?1 AND acked_at IS NULL AND op != ?2",
+                params![project, crate::sync::OP_DELETE],
             )?;
             backfill_project_tx(&tx, &project)?;
         }
@@ -709,10 +715,10 @@ impl Store {
     ///
     /// Replication follows the rows exactly as `merge_projects` arranges it:
     /// the canonical project takes over the enrolment, every moved row is
-    /// queued again under the new name, and the source's enrolment and unsent
-    /// mutations are dropped only when the move left it empty. Dropping them
-    /// while sessions stay behind would silence a project that still holds
-    /// rows.
+    /// queued again under the new name, and the source's enrolment goes, and its
+    /// unsent mutations move to the new name, only when the move left it empty.
+    /// Touching them while sessions stay behind would silence a project that
+    /// still holds rows.
     pub fn move_directory_sessions(
         &mut self,
         source: &str,
@@ -866,10 +872,7 @@ impl Store {
                 "DELETE FROM sync_enrolled_projects WHERE project = ?1",
                 [&source],
             )?;
-            tx.execute(
-                "DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL",
-                [&source],
-            )?;
+            carry_unsent_mutations_tx(&tx, &source, &canonical)?;
         }
         result.sources_merged.push(source);
 
@@ -1013,19 +1016,14 @@ impl Store {
                     &canonical,
                 )?;
             }
-            // And the name that is now empty stops being replicated. Its
-            // unsent mutations go with it: every row they described has just
-            // been queued again, in its current state, under the canonical
-            // name — which is the same argument that lets an unenrolled
-            // project skip the journal without losing history.
+            // And the name that is now empty stops being replicated. Its unsent
+            // mutations do not go with it: see `carry_unsent_mutations_tx` for
+            // what is dropped and what moves to the canonical name.
             tx.execute(
                 "DELETE FROM sync_enrolled_projects WHERE project = ?1",
                 [&source],
             )?;
-            tx.execute(
-                "DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL",
-                [&source],
-            )?;
+            carry_unsent_mutations_tx(&tx, &source, &canonical)?;
             result.sources_merged.push(source);
         }
 

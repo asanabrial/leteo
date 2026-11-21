@@ -1015,6 +1015,36 @@ pub(super) fn backfill_project_tx(tx: &Transaction<'_>, project: &str) -> Result
     for id in observations {
         let observation = get_observation_row(tx, id)?;
         enqueue_observation(tx, &observation)?;
+        // After the memory, which a peer applies in queue order, and only for the
+        // memories this project still holds: the live journal queues a version
+        // beside the write that replaced it, so a project enrolled afterwards
+        // arrived without a single one of its histories.
+        let versions = {
+            let mut statement = tx.prepare(
+                "SELECT revision, title, content, replaced_at FROM observation_versions
+                 WHERE observation_sync_id = ?1 ORDER BY revision",
+            )?;
+            let rows = statement.query_map([&observation.sync_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for (revision, title, content, replaced_at) in versions {
+            enqueue_observation_version(
+                tx,
+                &observation.sync_id,
+                revision,
+                &title,
+                &content,
+                &replaced_at,
+                project,
+            )?;
+        }
     }
     let prompts = query_column(
         tx,
@@ -1106,6 +1136,90 @@ fn backfill_relations_tx(tx: &Transaction<'_>, project: &str) -> Result<(), Stor
             &serde_json::to_string(&payload)?,
             project,
         )?;
+    }
+    Ok(())
+}
+
+/// Hands what a project still had waiting to be sent to the project that took
+/// its rows over, once the merge has queued those rows again under the new name.
+///
+/// The merge used to delete every unsent mutation of the emptied name, on the
+/// argument that each row they described had just been queued again. That holds
+/// for an upsert of a live row and for nothing else: a deleted memory is not
+/// queued again, nor is a judged relation, nor a superseded version, so the one
+/// copy of each that existed was thrown away and the peer kept a memory its
+/// owner had deleted, with no report of it.
+///
+/// What is dropped is only an upsert of a memory or prompt that has a newer
+/// unsent upsert under the canonical name, which is exactly what the merge
+/// queued a moment ago. Everything else is rewritten in place, in its own
+/// position in the queue, so a peer still applies a row's history in order.
+///
+/// A session upsert is kept even when the merge queued it again. The memories
+/// and prompts that are carried point at it, and the queued copy now sits after
+/// them: dropping the old one made a peer meet a deleted memory's upsert before
+/// its session and fail on the foreign key at every pull from then on.
+///
+/// A delete is rewritten to the canonical project and not left under the old
+/// one. A peer ignores a delete whose project is not the one the row is filed
+/// under (`apply_observation_delete_tx`), and the peers this is routed to are
+/// the ones replicating the canonical project, whose copy of the row is filed
+/// under it once they have merged too. Under the old name the delete would be
+/// ignored by every one of them. A peer that has not merged yet still holds the
+/// row under the old name and ignores the delete until it does; that is the
+/// price of the guard, and the guard is what stops a delete from killing a memory
+/// that was moved into the project.
+///
+/// A canonical name nobody replicates has nowhere to send them, and the unsent
+/// mutations go as they always did.
+pub(super) fn carry_unsent_mutations_tx(
+    tx: &Transaction<'_>,
+    source: &str,
+    canonical: &str,
+) -> Result<(), StoreError> {
+    if !is_enrolled_tx(tx, canonical)? {
+        tx.execute(
+            "DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL",
+            [source],
+        )?;
+        return Ok(());
+    }
+    tx.execute(
+        "DELETE FROM sync_mutations
+          WHERE project = ?1 AND acked_at IS NULL AND op = ?3
+            AND entity IN ('observation', 'prompt')
+            AND EXISTS (
+                SELECT 1 FROM sync_mutations newer
+                 WHERE newer.project = ?2 AND newer.acked_at IS NULL
+                   AND newer.entity = sync_mutations.entity
+                   AND newer.entity_key = sync_mutations.entity_key
+                   AND newer.op = ?3 AND newer.seq > sync_mutations.seq)",
+        params![source, canonical, crate::sync::OP_UPSERT],
+    )?;
+    // The payload names its project too, and a peer reads that one.
+    let moved = tx.execute(
+        "UPDATE sync_mutations
+            SET project = ?2,
+                payload = CASE
+                    WHEN json_valid(payload) AND json_type(payload, '$.project') IS NOT NULL
+                    THEN json_set(payload, '$.project', ?2)
+                    ELSE payload END
+          WHERE project = ?1 AND acked_at IS NULL",
+        params![source, canonical],
+    )?;
+    if moved > 0 {
+        let project_target = format!("cloud:{canonical}");
+        for target in ["cloud", project_target.as_str()] {
+            tx.execute(ENSURE_SYNC_TARGET, [target])?;
+            tx.execute(
+                "UPDATE sync_state
+                    SET lifecycle = 'pending', updated_at = datetime('now'),
+                        last_enqueued_seq = MAX(last_enqueued_seq,
+                            (SELECT MAX(seq) FROM sync_mutations WHERE project = ?2))
+                  WHERE target_key = ?1",
+                params![target, canonical],
+            )?;
+        }
     }
     Ok(())
 }

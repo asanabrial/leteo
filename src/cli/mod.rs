@@ -789,6 +789,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .transpose()?;
             let rehashed = repair.then(|| store.recompute_stale_hashes()).transpose()?;
             let folded = repair.then(|| store.fold_observation_types()).transpose()?;
+            let swept_versions = repair.then(|| store.remove_orphan_versions()).transpose()?;
             // The vectors the stage is missing. `doctor --repair` is the one
             // command that says "do it now": the background backfill drains a
             // store on its own schedule, and a one-shot import or a store nobody
@@ -842,6 +843,12 @@ pub async fn run(cli: Cli) -> Result<()> {
                 }
                 if let Some(folded) = folded {
                     object.insert("folded_types".to_owned(), serde_json::to_value(folded)?);
+                }
+                if let Some(swept) = swept_versions {
+                    object.insert(
+                        "removed_orphan_versions".to_owned(),
+                        serde_json::to_value(swept)?,
+                    );
                 }
                 if let Some(check) = check {
                     object.insert("check".to_owned(), serde_json::Value::String(check));

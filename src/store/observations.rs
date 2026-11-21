@@ -255,6 +255,110 @@ pub(super) fn delete_observation_versions_tx(
     )?)
 }
 
+/// The keys of a journalled payload that survive a hard delete.
+///
+/// What a peer needs to place the mutation and, for an upsert that was never
+/// pushed, to apply it without failing the pull: the identifiers, the revision
+/// and timestamp a version is keyed by, and the delete flags. Everything else in
+/// a payload is the memory's text or a field derived from it.
+const JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE: &[&str] = &[
+    "sync_id",
+    "session_id",
+    "project",
+    "revision",
+    "replaced_at",
+    "deleted",
+    "deleted_at",
+    "hard_delete",
+];
+
+/// Removes everything a hard delete of one memory must not leave behind.
+///
+/// #332 removed the version rows and stopped there, and two more copies of the
+/// text stayed: the journal, whose `sync_mutations.payload` holds every earlier
+/// title and body, sent and unsent alike, and — for a peer — the version a
+/// replicated stream delivers after the delete, which re-created a row. This is
+/// the one function the four paths that remove an observation row call, inside
+/// their transaction and before they queue their own delete, so the delete's
+/// payload is never the thing being redacted.
+///
+/// The journal rows are rewritten rather than deleted: a peer that has not pulled
+/// them still needs a mutation at that position, and the sequence the push
+/// cursor and `last_enqueued_seq` refer to must not develop holes.
+pub(super) fn erase_hard_deleted_observation_tx(
+    tx: &Transaction<'_>,
+    observation_sync_id: &str,
+) -> Result<(), StoreError> {
+    if observation_sync_id.is_empty() {
+        return Ok(());
+    }
+    delete_observation_versions_tx(tx, observation_sync_id)?;
+    redact_observation_journal_tx(tx, observation_sync_id)?;
+    tx.execute(
+        "INSERT INTO observation_deletions (sync_id, deleted_at)
+         VALUES (?1, datetime('now'))
+         ON CONFLICT(sync_id) DO UPDATE SET deleted_at = excluded.deleted_at",
+        [observation_sync_id],
+    )?;
+    Ok(())
+}
+
+fn redact_observation_journal_tx(
+    tx: &Transaction<'_>,
+    observation_sync_id: &str,
+) -> Result<(), StoreError> {
+    let rows: Vec<(i64, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT seq, payload FROM sync_mutations
+              WHERE entity_key = ?1 AND entity IN (?2, ?3)",
+        )?;
+        statement
+            .query_map(
+                params![
+                    observation_sync_id,
+                    crate::sync::ENTITY_OBSERVATION,
+                    crate::sync::ENTITY_OBSERVATION_VERSION
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<Result<_, _>>()?
+    };
+    for (seq, payload) in rows {
+        let redacted = redact_journal_payload(&payload, observation_sync_id);
+        if redacted != payload {
+            tx.execute(
+                "UPDATE sync_mutations SET payload = ?1 WHERE seq = ?2",
+                params![redacted, seq],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// A payload cut down to [`JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE`].
+///
+/// A payload that is not a JSON object — including one the journal wrapped as a
+/// JSON string, which the apply path also accepts — is replaced by the
+/// identifier alone instead of being left in place: an unreadable payload is
+/// exactly the one nobody can show holds no text.
+fn redact_journal_payload(payload: &str, observation_sync_id: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(payload.trim()).unwrap_or_default();
+    if let serde_json::Value::String(inner) = &value {
+        value = serde_json::from_str(inner).unwrap_or_default();
+    }
+    let mut kept = serde_json::Map::new();
+    if let serde_json::Value::Object(object) = value {
+        for (key, field) in object {
+            if JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE.contains(&key.as_str()) {
+                kept.insert(key, field);
+            }
+        }
+    }
+    kept.entry("sync_id")
+        .or_insert_with(|| serde_json::Value::String(observation_sync_id.to_owned()));
+    serde_json::Value::Object(kept).to_string()
+}
+
 impl Store {
     pub fn timeline(
         &self,
@@ -1420,7 +1524,7 @@ impl Store {
         if hard_delete {
             tx.execute("DELETE FROM observations WHERE id = ?1", [id])?;
             orphan_relations_tx(&tx, &observation.sync_id)?;
-            delete_observation_versions_tx(&tx, &observation.sync_id)?;
+            erase_hard_deleted_observation_tx(&tx, &observation.sync_id)?;
         } else {
             let changed = tx.execute(
                 "UPDATE observations SET deleted_at = ?1, updated_at = datetime('now')

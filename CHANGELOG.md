@@ -238,6 +238,16 @@ All notable changes to Leteo are documented in this file.
   captures (about 2 ms each, measured: a full spool of 1,000 took 2.2 s). The
   replay now happens on `session-start`, `subagent-stop` and `session-stop`;
   `user-prompt-submit` and `post-compaction` leave the queue alone (#343).
+- **A hard delete no longer leaves the memory's earlier text in the sync
+  journal, in swept-up leftovers, or open to a late replicated version.** After
+  #332 removed a memory's version rows, `sync_mutations.payload` still held
+  every earlier title and body, sent or not; version rows orphaned by hard
+  deletes made before then stayed in existing databases; and a version that
+  reached a peer after the delete re-created its row. A hard delete now cuts the
+  memory's journal payloads down to the identifiers a peer needs and records a
+  tombstone (migration 25) that makes a replicated version for that memory a
+  no-op. `leteo doctor` reports orphan version rows as `orphan_versions`, and
+  `--repair` removes them (#368).
 
 ## [0.4.3] - 2026-11-03
 

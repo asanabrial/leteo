@@ -922,6 +922,24 @@ impl Store {
                 ),
             });
         }
+        if want("orphan_versions") {
+            // Version rows whose memory is gone: the text a hard delete made
+            // before #332 left behind, which nothing swept. A warning and not an
+            // error, because the store works; what it holds is text somebody
+            // asked to have removed. A replica that has pulled a memory's
+            // versions and not yet its upsert shows them here for a moment too,
+            // which is why `--repair` is a choice and no open does it.
+            record(match orphan_version_count(&self.connection) {
+                Err(error) => could_not_run("orphan_versions", "the version history", &error),
+                Ok(0) => DoctorCheck::passed("orphan_versions"),
+                Ok(orphans) => DoctorCheck::warned(
+                    "orphan_versions",
+                    format!(
+                        "{orphans} version rows belong to no memory, the earlier text of memories deleted before hard deletes removed it; `leteo doctor --repair` removes them"
+                    ),
+                ),
+            });
+        }
         if want("hook_spool") {
             // Captures a busy store could not take and no later open has
             // replayed. A busy store is not damage, and the check says so with
@@ -1331,6 +1349,22 @@ impl Store {
         Ok(stale.len() as i64)
     }
 
+    /// Removes the version rows that name no memory, and says how many.
+    ///
+    /// Hard deletes made before #332 removed the observation and kept its
+    /// history, and nothing has swept those since. The same predicate the
+    /// `orphan_versions` check counts with, so the two cannot disagree about
+    /// what an orphan is.
+    pub fn remove_orphan_versions(&mut self) -> Result<i64, StoreError> {
+        let tx = self.write_transaction()?;
+        let removed = tx.execute(
+            &format!("DELETE FROM observation_versions WHERE {ORPHAN_VERSION_PREDICATE}"),
+            [],
+        )?;
+        tx.commit()?;
+        Ok(removed as i64)
+    }
+
     /// Folds the types an adoption copied before it folded them.
     ///
     /// A store adopted by an earlier build holds Engram's words — `bug`,
@@ -1451,6 +1485,18 @@ fn unsearchable_kinds(connection: &Connection) -> Result<Vec<(String, i64)>, rus
     }
     found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     Ok(found)
+}
+
+/// A version row no memory of this store owns. A soft-deleted memory still has
+/// its row, so its history is not an orphan.
+const ORPHAN_VERSION_PREDICATE: &str = "NOT EXISTS (SELECT 1 FROM observations WHERE observations.sync_id = observation_versions.observation_sync_id)";
+
+fn orphan_version_count(connection: &Connection) -> Result<i64, rusqlite::Error> {
+    connection.query_row(
+        &format!("SELECT COUNT(*) FROM observation_versions WHERE {ORPHAN_VERSION_PREDICATE}"),
+        [],
+        |row| row.get(0),
+    )
 }
 
 /// How many memories carry a hash that no longer describes their body.

@@ -58,10 +58,11 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0022_stems_keep_their_language.sql <- an identifier edit no longer re-stems
 ///   0023_stems_in_the_language_of_the_memory.sql <- each row stemmed in its own language
 ///   0024_several_vectors_per_memory.sql <- one vector per window of a memory
-///   0025_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0025_observation_deletions.sql      <- the tombstone a hard delete leaves
+///   0026_something.sql                  <- add here, and bump SCHEMA_VERSION
 /// ```
 ///
-/// The next number is 25 rather than 2 because 2 through 17 are spent history
+/// The next number is 26 rather than 2 because 2 through 17 are spent history
 /// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
 /// band and says why.
 ///
@@ -90,7 +91,13 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[
     (22, Migration::Sql(STEMS_KEEP_THEIR_LANGUAGE)),
     (23, Migration::Sql(STEMS_IN_THE_LANGUAGE_OF_THE_MEMORY)),
     (24, Migration::Sql(SEVERAL_VECTORS_PER_MEMORY)),
+    (25, Migration::Sql(OBSERVATION_DELETIONS)),
 ];
+
+/// Migration 25: the tombstone a hard delete of a memory leaves, so a version
+/// that replicates in after the delete is recognised and ignored.
+pub(super) const OBSERVATION_DELETIONS: &str =
+    include_str!("../../migrations/0025_observation_deletions.sql");
 
 pub(super) const REVIEW_CLOCKS_IN_CALENDAR_MONTHS: &str =
     include_str!("../../migrations/0018_review_clocks_in_calendar_months.sql");
@@ -195,7 +202,7 @@ pub(super) enum Migration {
 /// What raising it past them does *not* do is make them migratable: see
 /// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
 /// ambiguous and stay refused.
-pub(crate) const SCHEMA_VERSION: i32 = 24;
+pub(crate) const SCHEMA_VERSION: i32 = 25;
 
 /// The highest number stamped by the numbering that predates any release.
 ///

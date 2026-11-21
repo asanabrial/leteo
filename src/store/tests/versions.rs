@@ -832,3 +832,195 @@ fn a_hard_delete_applied_from_another_machine_removes_the_versions_it_holds() {
 
     assert_eq!(version_rows(&peer, &saved.sync_id), 0);
 }
+
+fn journal_payloads(store: &Store, sync_id: &str) -> Vec<String> {
+    let mut statement = store
+        .connection
+        .prepare("SELECT payload FROM sync_mutations WHERE entity_key = ?1 ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([sync_id], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// The journal held every earlier title and body of a memory, sent or not, and a
+/// hard delete took the version rows and left those.
+#[test]
+fn a_hard_delete_leaves_no_earlier_text_in_the_journal() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+    let rows_before = journal_payloads(&store, &saved.sync_id).len();
+    store
+        .connection
+        .execute(
+            "UPDATE sync_mutations SET acked_at = datetime('now') WHERE seq = (
+                 SELECT MIN(seq) FROM sync_mutations WHERE entity_key = ?1)",
+            [&saved.sync_id],
+        )
+        .unwrap();
+
+    store.delete_observation(saved.id, None, true).unwrap();
+
+    let payloads = journal_payloads(&store, &saved.sync_id);
+    for earlier in ["cuerpo uno", "cuerpo dos", "cuerpo tres", "Primera"] {
+        assert!(
+            payloads.iter().all(|payload| !payload.contains(earlier)),
+            "{earlier:?} is still in the journal: {payloads:?}"
+        );
+    }
+    assert_eq!(
+        payloads.len(),
+        rows_before + 1,
+        "rows are redacted in place, and the delete adds its own"
+    );
+    assert!(
+        journal_payloads(&store, &neighbour.sync_id)
+            .iter()
+            .any(|payload| payload.contains("texto uno")),
+        "another memory's journal is not this one's to redact"
+    );
+}
+
+/// What a peer pulls after the redaction has to apply without failing the pull.
+#[test]
+fn a_redacted_journal_still_applies_on_a_peer_and_ends_with_nothing() {
+    let (_source_temp, mut source) = store();
+    let (saved, _neighbour) = memory_with_two_versions(&mut source);
+    source.delete_observation(saved.id, None, true).unwrap();
+    let queued = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap();
+
+    let (_peer_temp, mut peer) = store();
+    for mutation in &queued {
+        peer.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+    }
+
+    assert_eq!(version_rows(&peer, &saved.sync_id), 0);
+    let memories: i64 = peer
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM observations WHERE sync_id = ?1",
+            [&saved.sync_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(memories, 0);
+}
+
+/// The journal queues a version before its memory's upsert, so a version for a
+/// memory that is absent is ordinary; one for a memory a hard delete removed is
+/// not.
+#[test]
+fn a_version_that_arrives_after_the_hard_delete_does_not_come_back() {
+    let (_source_temp, mut source) = store();
+    let (saved, _neighbour) = memory_with_two_versions(&mut source);
+    let versions: Vec<SyncMutation> = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap()
+        .into_iter()
+        .filter(|mutation| {
+            mutation.entity == crate::sync::ENTITY_OBSERVATION_VERSION
+                && mutation.entity_key == saved.sync_id
+        })
+        .collect();
+    assert_eq!(versions.len(), 2);
+
+    let (_peer_temp, mut peer) = store();
+    let delete = SyncMutation {
+        seq: 1,
+        target_key: "cloud".to_owned(),
+        entity: crate::sync::ENTITY_OBSERVATION.to_owned(),
+        entity_key: saved.sync_id.clone(),
+        op: crate::sync::OP_DELETE.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": saved.sync_id,
+            "session_id": "s1",
+            "project": "leteo",
+            "deleted": true,
+            "hard_delete": true,
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-08-05 04:00:00".to_owned(),
+        acked_at: None,
+    };
+    peer.apply_pulled_sync_mutation("cloud", &delete).unwrap();
+    for (offset, mut version) in versions.into_iter().enumerate() {
+        version.seq = 100 + offset as i64;
+        peer.apply_pulled_sync_mutation("cloud", &version).unwrap();
+    }
+
+    assert_eq!(version_rows(&peer, &saved.sync_id), 0);
+}
+
+/// A version whose memory has not arrived yet is legitimate, so the guard is the
+/// recorded delete and not the absence of a memory.
+#[test]
+fn a_version_for_a_memory_that_has_not_arrived_is_still_kept() {
+    let (_temp, mut store) = store();
+    let mutation = SyncMutation {
+        seq: 7,
+        target_key: "cloud".to_owned(),
+        entity: crate::sync::ENTITY_OBSERVATION_VERSION.to_owned(),
+        entity_key: "obs-not-yet".to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": "obs-not-yet",
+            "revision": 1,
+            "title": "T",
+            "content": "C",
+            "replaced_at": "2026-08-05 04:00:00",
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-08-05 04:00:00".to_owned(),
+        acked_at: None,
+    };
+    store
+        .apply_pulled_sync_mutation("cloud", &mutation)
+        .unwrap();
+    assert_eq!(version_rows(&store, "obs-not-yet"), 1);
+}
+
+/// Version rows a hard delete made before #332 left behind are counted by
+/// `doctor` and removed by `--repair`, and a live or soft-deleted memory's
+/// history is not touched.
+#[test]
+fn doctor_counts_orphan_versions_and_repair_removes_them() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+    store.delete_observation(neighbour.id, None, false).unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO observation_versions (observation_sync_id, revision, title, content)
+             VALUES ('obs-long-gone', 1, 'T', 'a secret body')",
+            [],
+        )
+        .unwrap();
+
+    let (report, _) = store.doctor_scoped(Some("orphan_versions"), None).unwrap();
+    let check = &report.checks[0];
+    assert!(!check.ok, "{report:?}");
+    assert!(
+        check
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("1 version rows"),
+        "{check:?}"
+    );
+
+    assert_eq!(store.remove_orphan_versions().unwrap(), 1);
+
+    assert_eq!(version_rows(&store, "obs-long-gone"), 0);
+    assert_eq!(version_rows(&store, &saved.sync_id), 2);
+    assert_eq!(version_rows(&store, &neighbour.sync_id), 1);
+    let (report, _) = store.doctor_scoped(Some("orphan_versions"), None).unwrap();
+    assert!(report.checks[0].ok, "{report:?}");
+}

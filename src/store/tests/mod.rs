@@ -174,6 +174,7 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "replaced_at",
         ],
     ),
+    ("observation_deletions", &["sync_id", "deleted_at"]),
     (
         "observation_vectors",
         &[

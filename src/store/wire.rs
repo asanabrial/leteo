@@ -675,6 +675,72 @@ pub(super) fn apply_relation_upsert_tx(
     // `normalize::judgment_text`. Neither path had them.
     let reason = normalize::judgment_text(payload.reason.as_deref(), max_content_bytes);
     let evidence = normalize::judgment_text(payload.evidence.as_deref(), max_content_bytes);
+
+    // One pair holds one relation. Two teams that judge the same pair mint two
+    // `sync_id`s, possibly in opposite directions, and keying only on
+    // `sync_id` inserted the second beside the first: `not_superseded()` then
+    // saw both, so a pair could hide one memory from each side. The row already
+    // here keeps its `sync_id` and takes the incoming content when that is
+    // newer; an older or equally old one is dropped, since the row here is at
+    // least as recent a word on the pair.
+    let same_sync_id_here = tx
+        .query_row(
+            "SELECT 1 FROM memory_relations WHERE sync_id = ?1",
+            [&payload.sync_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let other_row_for_pair = if same_sync_id_here {
+        None
+    } else {
+        tx.query_row(
+            "SELECT sync_id, datetime(updated_at) < datetime(?4) FROM memory_relations
+             WHERE sync_id <> ?1
+               AND ((source_id = ?2 AND target_id = ?3) OR (source_id = ?3 AND target_id = ?2))
+             ORDER BY id LIMIT 1",
+            params![
+                payload.sync_id,
+                payload.source_id,
+                payload.target_id,
+                updated_at
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()?
+    };
+    if let Some((existing_sync_id, incoming_is_newer)) = other_row_for_pair {
+        if incoming_is_newer {
+            tx.execute(
+                "UPDATE memory_relations SET
+                     source_id = ?2, target_id = ?3, relation = ?4, reason = ?5,
+                     evidence = ?6, confidence = ?7, judgment_status = ?8,
+                     marked_by_actor = ?9, marked_by_kind = ?10,
+                     marked_by_model = ?11, session_id = ?12, updated_at = ?13
+                 WHERE sync_id = ?1",
+                params![
+                    existing_sync_id,
+                    payload.source_id,
+                    payload.target_id,
+                    payload.relation,
+                    reason,
+                    evidence,
+                    confidence,
+                    payload.judgment_status,
+                    payload.marked_by_actor,
+                    payload.marked_by_kind,
+                    payload.marked_by_model,
+                    payload.session_id,
+                    updated_at
+                ],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM sync_deferred_mutations WHERE sync_id = ?1",
+            [&payload.sync_id],
+        )?;
+        return Ok(());
+    }
     tx.execute(
         &format!(
             "INSERT INTO memory_relations ({RELATION_INSERT_COLUMNS})

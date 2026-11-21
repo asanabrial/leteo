@@ -1725,6 +1725,7 @@ fn reading_an_overturned_memory_in_full_still_says_it_was_overturned() {
                 relation: crate::store::RELATION_SUPERSEDES.to_owned(),
                 marked_by_actor: "agent".to_owned(),
                 marked_by_kind: "agent".to_owned(),
+                superseding_id: Some(newer.id),
                 ..Default::default()
             })
             .unwrap();
@@ -2581,6 +2582,7 @@ fn a_judgment_reports_the_storage_cut_on_both_texts() {
             serde_json::from_value(json!({
                 "judgment_id": judgment,
                 "relation": "supersedes",
+                "superseding_id": second.id,
                 "reason": over.clone(),
                 "evidence": over.clone(),
             }))
@@ -2829,6 +2831,7 @@ fn the_context_leaves_out_the_memories_a_later_one_overturned() {
                 judgment_id: relation.sync_id,
                 relation: "supersedes".to_owned(),
                 marked_by_actor: "agent".to_owned(),
+                superseding_id: Some(new.id),
                 ..Default::default()
             })
             .unwrap();
@@ -3199,6 +3202,7 @@ fn a_superseded_memory_is_left_out_of_search_results() {
                 judgment_id: proposed.sync_id,
                 relation: "supersedes".to_owned(),
                 reason: Some("la nueva sustituye a la vieja".to_owned()),
+                superseding_id: Some(new.id),
                 ..Default::default()
             })
             .unwrap();
@@ -3284,6 +3288,7 @@ fn an_overturned_memory(
             judgment_id: proposed.sync_id,
             relation: "supersedes".to_owned(),
             reason: None,
+            superseding_id: Some(new.id),
             ..Default::default()
         })
         .unwrap();
@@ -3895,7 +3900,7 @@ fn judging_a_pair_replaces_the_verdict_and_refuses_what_the_graph_cannot_read() 
         server.mem_judge(Parameters(serde_json::from_value(value).unwrap()))
     };
     let verdict = judge(json!({
-        "judgment_id": judgment, "relation": "supersedes",
+        "judgment_id": judgment, "relation": "supersedes", "superseding_id": second.id,
         "reason": "the later one replaces it", "confidence": 0.8,
     }))
     .expect("a verdict on a pair that exists")
@@ -3955,6 +3960,76 @@ fn judging_a_pair_replaces_the_verdict_and_refuses_what_the_graph_cannot_read() 
         refused(json!({ "judgment_id": judgment, "relation": "related" })),
         "cross_project_relation"
     );
+}
+
+#[test]
+fn a_supersedes_verdict_without_superseding_id_says_exactly_what_to_send() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let (first, second) = {
+        let mut store = server.lock_store().unwrap();
+        store.enroll_project("leteo").unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        let mut save = |title: &str| {
+            store
+                .add_observation(AddObservation {
+                    session_id: "s1".to_owned(),
+                    kind: "bugfix".to_owned(),
+                    title: title.to_owned(),
+                    content: format!("the body of {title}"),
+                    tool_name: None,
+                    project: Some("leteo".to_owned()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                })
+                .unwrap()
+                .observation
+        };
+        (save("The pool leaked"), save("The pool no longer leaks"))
+    };
+    let judgment = server
+        .mem_compare(Parameters(
+            serde_json::from_value(json!({
+                "memory_id_a": first.id, "memory_id_b": second.id, "relation": "related",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0
+        .sync_id;
+
+    let Err(error) = server.mem_judge(Parameters(
+        serde_json::from_value(json!({ "judgment_id": judgment, "relation": "supersedes" }))
+            .unwrap(),
+    )) else {
+        panic!("a supersedes verdict that names no direction has to be refused");
+    };
+    let payload = error_payload(&error);
+    assert_eq!(payload["error"]["code"], "invalid_params");
+    let message = payload["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!("superseding_id={}", first.id))
+            && message.contains(&format!("superseding_id={}", second.id)),
+        "{message}"
+    );
+
+    // Every text that tells an agent how to call the tool names the parameter.
+    let tools = LeteoMcpServer::router().list_all();
+    let judge = tools.iter().find(|tool| tool.name == "mem_judge").unwrap();
+    assert!(
+        judge.input_schema["properties"]["superseding_id"]["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("supersedes")),
+        "the parameter is published with its rule"
+    );
+    assert!(
+        judge
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("superseding_id")
+    );
+    assert!(super::SERVER_INSTRUCTIONS.contains("superseding_id"));
 }
 
 #[test]
@@ -4478,6 +4553,7 @@ fn the_warning_against_a_memory_is_in_the_same_place_everywhere() {
                 relation: crate::store::RELATION_SUPERSEDES.to_owned(),
                 marked_by_actor: "agent".to_owned(),
                 marked_by_kind: "agent".to_owned(),
+                superseding_id: Some(newer.id),
                 ..Default::default()
             })
             .unwrap();
@@ -8024,12 +8100,12 @@ fn make_due(server: &LeteoMcpServer, id: i64) {
         .unwrap();
 }
 
-fn supersede(store: &mut Store, newer: &str, older: &str) {
+fn supersede(store: &mut Store, newer: &Observation, older: &Observation) {
     let relation = store
         .save_relation(crate::memory::model::SaveRelationParams {
             sync_id: crate::memory::normalize::sync_id("rel"),
-            source_id: newer.to_owned(),
-            target_id: older.to_owned(),
+            source_id: newer.sync_id.clone(),
+            target_id: older.sync_id.clone(),
         })
         .unwrap();
     store
@@ -8038,6 +8114,7 @@ fn supersede(store: &mut Store, newer: &str, older: &str) {
             relation: crate::store::RELATION_SUPERSEDES.to_owned(),
             marked_by_actor: "agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(newer.id),
             ..Default::default()
         })
         .unwrap();
@@ -8140,7 +8217,7 @@ fn marking_a_memory_reviewed_answers_with_a_preview_and_its_caveats() {
             .add_observation(memory_in("s1", "leteo", "Spaces everywhere", "the new one"))
             .unwrap()
             .observation;
-        supersede(&mut store, &newer.sync_id, &older.sync_id);
+        supersede(&mut store, &newer, &older);
         older
     };
     assert!(older.content.len() >= 5_000, "the fixture has to overrun");
@@ -8194,7 +8271,7 @@ fn a_timeline_neighbour_that_was_overturned_says_so() {
             ))
             .unwrap()
             .observation;
-        supersede(&mut store, &newer.sync_id, &older.sync_id);
+        supersede(&mut store, &newer, &older);
         (older, focus)
     };
     let timeline = server

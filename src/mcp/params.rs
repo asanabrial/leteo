@@ -444,6 +444,12 @@ pub(super) struct JudgeParams {
     pub(super) confidence: Option<f64>,
     /// Optional session in which the verdict was made.
     pub(super) session_id: Option<String>,
+    /// Required when relation is supersedes, ignored otherwise: the integer id
+    /// of the memory that supersedes the other, which is either the saved
+    /// memory's observation.id or the candidate's id from the same mem_save
+    /// reply. The superseded memory is the one hidden from context.
+    #[serde(default)]
+    pub(super) superseding_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

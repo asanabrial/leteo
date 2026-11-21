@@ -882,6 +882,7 @@ fn enrolling_a_project_queues_the_verdicts_it_already_holds() {
             judgment_id: proposed.sync_id.clone(),
             relation: "supersedes".to_owned(),
             reason: Some("la nueva manda".to_owned()),
+            superseding_id: Some(new.id),
             ..Default::default()
         })
         .unwrap();
@@ -2497,5 +2498,83 @@ fn deleting_a_session_files_each_memorys_delete_under_the_memorys_project() {
             && m.op == crate::sync::OP_DELETE
             && m.entity_key == saved.sync_id),
         "{pending:?}"
+    );
+}
+
+/// Two machines that judge one pair mint two `sync_id`s, and the second can
+/// say the opposite of the first about which memory supersedes.
+#[test]
+fn a_reversed_relation_under_another_sync_id_is_one_row_for_the_pair() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let first = store
+        .add_observation(observation("s1", "First decision", "the first body"))
+        .unwrap()
+        .observation;
+    let second = store
+        .add_observation(observation("s1", "Second decision", "the second body"))
+        .unwrap()
+        .observation;
+    let here = store
+        .judge_by_semantic(crate::memory::model::JudgeBySemanticParams {
+            source_id: second.sync_id.clone(),
+            target_id: first.sync_id.clone(),
+            relation: "supersedes".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let arriving = |seq: i64, sync_id: &str, updated_at: &str, relation: &str| SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: "relation".to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": sync_id,
+            "source_id": first.sync_id,
+            "target_id": second.sync_id,
+            "relation": relation,
+            "judgment_status": "judged",
+            "created_at": updated_at,
+            "updated_at": updated_at,
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: updated_at.to_owned(),
+        acked_at: None,
+    };
+    let rows = |store: &Store| -> i64 {
+        store
+            .connection
+            .query_row("SELECT COUNT(*) FROM memory_relations", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+
+    store
+        .apply_pulled_sync_mutation(
+            "cloud",
+            &arriving(1, "rel-from-a-peer", "2000-01-01 00:00:00", "supersedes"),
+        )
+        .unwrap();
+    assert_eq!(rows(&store), 1, "an older word on the pair is dropped");
+    let kept = store.get_relation(&here).unwrap();
+    assert_eq!(kept.source_id, second.sync_id, "{kept:?}");
+
+    store
+        .apply_pulled_sync_mutation(
+            "cloud",
+            &arriving(2, "rel-from-a-peer", "2999-01-01 00:00:00", "supersedes"),
+        )
+        .unwrap();
+    assert_eq!(rows(&store), 1, "a newer one updates the row, not a second");
+    let turned = store.get_relation(&here).unwrap();
+    assert_eq!(
+        (turned.source_id.as_str(), turned.target_id.as_str()),
+        (first.sync_id.as_str(), second.sync_id.as_str()),
+        "the newer verdict is the one that stands: {turned:?}"
     );
 }

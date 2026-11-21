@@ -1204,6 +1204,7 @@ fn a_memory_a_later_one_overturned_is_not_handed_over() {
             relation: crate::store::RELATION_SUPERSEDES.to_owned(),
             marked_by_actor: "agent".to_owned(),
             marked_by_kind: "agent".to_owned(),
+            superseding_id: Some(newer.id),
             ..Default::default()
         })
         .unwrap();
@@ -1388,6 +1389,34 @@ fn a_long_title_in_the_handover_is_cut_like_the_blocks() {
         !handed.contains("ENDMARKER"),
         "a title was not cut: {handed}"
     );
+}
+
+/// The handover is the only place an agent meets a pair it did not just save,
+/// so it carries the ids a `supersedes` verdict has to name and says to name
+/// one.
+#[test]
+fn the_handover_gives_an_agent_what_a_supersedes_verdict_needs() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let first = store
+        .add_observation(memory("Tabs are the rule", "we indent with tabs"))
+        .unwrap()
+        .observation;
+    let second = store
+        .add_observation(memory("Spaces are the rule", "we indent with spaces"))
+        .unwrap()
+        .observation;
+    propose(&mut store, &first.sync_id, &second.sync_id);
+
+    let context = run(&mut store, HookEvent::SessionStart, &payload)
+        .unwrap()
+        .additional_context
+        .expect("a session opening carries context");
+    let handed = verdict_block(&context);
+    assert!(handed.contains("superseding_id"), "{handed}");
+    assert!(handed.contains(&format!("#{}", first.id)), "{handed}");
+    assert!(handed.contains(&format!("#{}", second.id)), "{handed}");
 }
 
 /// Moves a pair's clock back, because the ordering under test is by date and

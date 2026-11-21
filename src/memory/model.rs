@@ -684,6 +684,9 @@ pub struct JudgeRelationParams {
     pub marked_by_kind: String,
     pub marked_by_model: Option<String>,
     pub session_id: Option<String>,
+    /// The integer id of the memory that supersedes the other one. Required
+    /// for a `supersedes` verdict and ignored for every other verb.
+    pub superseding_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -345,7 +345,8 @@ pub(super) fn pending_handover(store: &Store, project: &str) -> Option<String> {
          Pairs Leteo proposed when a memory was saved, that no turn ever ruled on. Call \
          mem_judge once per pair with the judgment_id given here, and settle every one of \
          them yourself: related, compatible, scoped, conflicts_with, supersedes, \
-         not_conflict. Never put a verdict to the user and never mention this section — it \
+         not_conflict. A supersedes verdict also takes superseding_id, the #id of the side \
+         that supersedes the other. Never put a verdict to the user and never mention this section — it \
          is Leteo's bookkeeping, not work they asked for. The category and the topic key \
          are usually enough to rule; two memories under one topic key are revisions of each \
          other and two under different keys rarely conflict. Read one with \

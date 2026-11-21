@@ -689,3 +689,146 @@ fn a_find_and_replace_reaches_the_peer_as_an_upsert() {
         "and it is the revision the edit made"
     );
 }
+
+/// Rows of `observation_versions` that carry a `sync_id`, counted on the table
+/// itself: the read API would be a fine witness here, but the claim is about
+/// what the database file still holds.
+fn version_rows(store: &Store, sync_id: &str) -> i64 {
+    store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM observation_versions WHERE observation_sync_id = ?1",
+            [sync_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// A memory rewritten twice under a topic key, and a second one beside it that
+/// a delete of the first must leave alone.
+fn memory_with_two_versions(store: &mut Store) -> (Observation, Observation) {
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let mut topic = observation("s1", "Primera", "cuerpo uno");
+    topic.topic_key = Some("architecture/doomed".to_owned());
+    let saved = store.add_observation(topic.clone()).unwrap().observation;
+    topic.content = "cuerpo dos".to_owned();
+    store.add_observation(topic.clone()).unwrap();
+    topic.content = "cuerpo tres".to_owned();
+    store.add_observation(topic).unwrap();
+
+    let mut other = observation("s1", "Vecina", "texto uno");
+    other.topic_key = Some("architecture/neighbour".to_owned());
+    let neighbour = store.add_observation(other.clone()).unwrap().observation;
+    other.content = "texto dos".to_owned();
+    store.add_observation(other).unwrap();
+
+    assert_eq!(version_rows(store, &saved.sync_id), 2);
+    assert_eq!(version_rows(store, &neighbour.sync_id), 1);
+    (saved, neighbour)
+}
+
+/// Deleting the row used to leave every earlier title and body in the file.
+#[test]
+fn a_hard_delete_of_one_memory_removes_its_versions_and_only_its_own() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+
+    store.delete_observation(saved.id, None, true).unwrap();
+
+    assert_eq!(version_rows(&store, &saved.sync_id), 0);
+    assert_eq!(
+        version_rows(&store, &neighbour.sync_id),
+        1,
+        "another memory's history is not this one's to remove"
+    );
+}
+
+/// The lighter delete keeps the row, so it keeps what the row replaced.
+#[test]
+fn a_soft_delete_keeps_the_versions() {
+    let (_temp, mut store) = store();
+    let (saved, _neighbour) = memory_with_two_versions(&mut store);
+
+    store.delete_observation(saved.id, None, false).unwrap();
+
+    assert_eq!(version_rows(&store, &saved.sync_id), 2);
+}
+
+#[test]
+fn a_hard_delete_of_a_session_removes_the_versions_of_its_memories() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+
+    store.delete_session_and_contents("s1", true).unwrap();
+
+    assert_eq!(version_rows(&store, &saved.sync_id), 0);
+    assert_eq!(version_rows(&store, &neighbour.sync_id), 0);
+}
+
+#[test]
+fn a_soft_delete_of_a_session_keeps_the_versions_of_its_memories() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+
+    store.delete_session_and_contents("s1", false).unwrap();
+
+    assert_eq!(version_rows(&store, &saved.sync_id), 2);
+    assert_eq!(version_rows(&store, &neighbour.sync_id), 1);
+}
+
+#[test]
+fn a_hard_delete_of_a_project_removes_the_versions_of_its_memories() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+
+    store.delete_project("leteo", true).unwrap();
+
+    assert_eq!(version_rows(&store, &saved.sync_id), 0);
+    assert_eq!(version_rows(&store, &neighbour.sync_id), 0);
+}
+
+#[test]
+fn a_soft_delete_of_a_project_keeps_the_versions_of_its_memories() {
+    let (_temp, mut store) = store();
+    let (saved, neighbour) = memory_with_two_versions(&mut store);
+
+    store.delete_project("leteo", false).unwrap();
+
+    assert_eq!(version_rows(&store, &saved.sync_id), 2);
+    assert_eq!(version_rows(&store, &neighbour.sync_id), 1);
+}
+
+/// A delete that arrives from another machine is a door like the local one: the
+/// peer holds the versions the origin sent, and the delete has to take them.
+#[test]
+fn a_hard_delete_applied_from_another_machine_removes_the_versions_it_holds() {
+    let (_source_temp, mut source) = store();
+    let (saved, _neighbour) = memory_with_two_versions(&mut source);
+    let queued = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap();
+
+    let (_peer_temp, mut peer) = store();
+    for mutation in &queued {
+        peer.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+    }
+    assert_eq!(
+        version_rows(&peer, &saved.sync_id),
+        2,
+        "the peer holds the history before the delete reaches it"
+    );
+
+    source.delete_observation(saved.id, None, true).unwrap();
+    let delete = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap()
+        .into_iter()
+        .rfind(|mutation| {
+            mutation.entity == crate::sync::ENTITY_OBSERVATION
+                && mutation.op == crate::sync::OP_DELETE
+        })
+        .expect("a hard delete queues a delete");
+    peer.apply_pulled_sync_mutation("cloud", &delete).unwrap();
+
+    assert_eq!(version_rows(&peer, &saved.sync_id), 0);
+}

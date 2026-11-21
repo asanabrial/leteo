@@ -234,6 +234,27 @@ pub(super) fn snapshot_observation_version_tx(
     Ok(inserted)
 }
 
+/// Removes every version a memory kept, for a hard delete.
+///
+/// `observation_versions` is keyed by `sync_id` with no foreign key, so deleting
+/// the observation row left every earlier title and body in the database file:
+/// someone who hard-deleted a memory because an old revision held a secret had
+/// not removed it. One function, called inside the transaction of each path that
+/// removes the row, so the two cannot disagree about whether the history went.
+/// A soft delete keeps the row and so keeps its versions.
+pub(super) fn delete_observation_versions_tx(
+    tx: &Transaction<'_>,
+    observation_sync_id: &str,
+) -> Result<usize, StoreError> {
+    if observation_sync_id.is_empty() {
+        return Ok(0);
+    }
+    Ok(tx.execute(
+        "DELETE FROM observation_versions WHERE observation_sync_id = ?1",
+        [observation_sync_id],
+    )?)
+}
+
 impl Store {
     pub fn timeline(
         &self,
@@ -1394,6 +1415,7 @@ impl Store {
         if hard_delete {
             tx.execute("DELETE FROM observations WHERE id = ?1", [id])?;
             orphan_relations_tx(&tx, &observation.sync_id)?;
+            delete_observation_versions_tx(&tx, &observation.sync_id)?;
         } else {
             let changed = tx.execute(
                 "UPDATE observations SET deleted_at = ?1, updated_at = datetime('now')

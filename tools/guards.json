@@ -1886,5 +1886,41 @@
     "file": "src/store/wire.rs",
     "old": "AND newer.op = ?3 AND newer.seq > sync_mutations.seq)",
     "new": "AND newer.op = ?3 AND newer.seq < sync_mutations.seq)"
+  },
+  {
+    "name": "hard delete: one memory keeps its versions",
+    "file": "src/store/observations.rs",
+    "old": "            orphan_relations_tx(&tx, &observation.sync_id)?;\n            delete_observation_versions_tx(&tx, &observation.sync_id)?;",
+    "new": "            orphan_relations_tx(&tx, &observation.sync_id)?;"
+  },
+  {
+    "name": "hard delete: a session keeps the versions of its memories",
+    "file": "src/store/sessions.rs",
+    "old": "                observations::delete_observation_versions_tx(&tx, &observation.sync_id)?;",
+    "new": ""
+  },
+  {
+    "name": "hard delete: a project keeps the versions of its memories",
+    "file": "src/store/projects.rs",
+    "old": "                observations::delete_observation_versions_tx(&tx, &observation.sync_id)?;",
+    "new": ""
+  },
+  {
+    "name": "hard delete: an applied remote delete keeps the versions",
+    "file": "src/store/wire.rs",
+    "old": "        crate::store::observations::delete_observation_versions_tx(tx, &payload.sync_id)?;",
+    "new": ""
+  },
+  {
+    "name": "hard delete: the version delete takes every memory's history",
+    "file": "src/store/observations.rs",
+    "old": "\"DELETE FROM observation_versions WHERE observation_sync_id = ?1\",",
+    "new": "\"DELETE FROM observation_versions WHERE ?1 = ?1\","
+  },
+  {
+    "name": "soft delete: a soft delete of one memory drops its versions",
+    "file": "src/store/observations.rs",
+    "old": "                 WHERE id = ?2 AND deleted_at IS NULL\",\n                params![deleted_at, id],\n            )?;\n            if changed == 0 {\n                return Err(deleted_or_missing(&tx, id));\n            }\n        }\n        let project = observation.project",
+    "new": "                 WHERE id = ?2 AND deleted_at IS NULL\",\n                params![deleted_at, id],\n            )?;\n            if changed == 0 {\n                return Err(deleted_or_missing(&tx, id));\n            }\n            delete_observation_versions_tx(&tx, &observation.sync_id)?;\n        }\n        let project = observation.project"
   }
 ]

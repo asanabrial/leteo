@@ -463,6 +463,7 @@ fn apply_observation_delete_tx(
     }
     if payload.hard_delete {
         orphan_relations_tx(tx, &payload.sync_id)?;
+        crate::store::observations::delete_observation_versions_tx(tx, &payload.sync_id)?;
         tx.execute("DELETE FROM observations WHERE id = ?1", [id])?;
     } else {
         let deleted_at = payload

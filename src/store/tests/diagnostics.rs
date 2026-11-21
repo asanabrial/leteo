@@ -1749,6 +1749,84 @@ fn a_check_whose_query_failed_says_it_could_not_run_and_does_not_pass() {
     }
 }
 
+fn assert_could_not_be_checked(store: &Store, code: &str) {
+    let (report, _) = store.doctor_scoped(Some(code), None).unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.code == code)
+        .unwrap_or_else(|| panic!("{code} is reported"));
+    assert!(!check.ok, "{code} passed without running: {report:?}");
+    let detail = check.detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("could not be checked"),
+        "{code} has to say it did not run: {detail}"
+    );
+    assert!(
+        !detail.contains("-1"),
+        "{code} printed a sentinel as a count: {detail}"
+    );
+    assert!(!report.healthy, "{code}: {report:?}");
+}
+
+/// The three sync checks used to compare the table against a count that was
+/// `-1` when the shadow table could not be read, and reported the mismatch
+/// `fts=-1` instead of saying the count could not be taken.
+#[test]
+fn a_full_text_row_count_that_failed_is_not_reported_as_a_mismatch() {
+    let cases = [
+        ("observation_fts_sync", "observations_fts_docsize"),
+        ("observation_exact_fts_sync", "observations_exact_docsize"),
+        ("prompt_fts_sync", "prompts_fts_docsize"),
+        ("observation_stems_sync", "observations_stemmed_docsize"),
+    ];
+    for (code, shadow) in cases {
+        let (_temp, mut store) = store();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        store
+            .add_observation(observation("s1", "A memory", "with a body"))
+            .unwrap();
+        assert!(store.doctor().unwrap().healthy, "healthy to begin with");
+
+        forbid_reading(&store, shadow, "");
+        assert_could_not_be_checked(&store, code);
+    }
+}
+
+/// `entries` used to turn any `read_dir` failure into an empty list, so a spool
+/// nobody could read was reported as nothing waiting. A file where the
+/// directory should be fails the listing for every user, root included, which a
+/// permission bit would not.
+#[cfg(unix)]
+#[test]
+fn a_spool_that_cannot_be_listed_says_it_could_not_be_checked() {
+    let (_temp, store) = store();
+    let spool = crate::hooks::spool::directory(store.data_dir());
+    std::fs::create_dir_all(spool.parent().unwrap()).unwrap();
+    std::fs::write(&spool, "not a directory").unwrap();
+
+    assert_could_not_be_checked(&store, "hook_spool");
+}
+
+#[test]
+fn a_spool_that_does_not_exist_is_an_empty_one() {
+    let (_temp, store) = store();
+    let (report, _) = store.doctor_scoped(Some("hook_spool"), None).unwrap();
+    assert!(report.checks[0].ok, "{report:?}");
+}
+
+/// `settings::load` falls back to the defaults for a file it cannot read, and
+/// `ignored` used to answer that with an empty list, so `settings_readable`
+/// passed on a file nothing was reading.
+#[cfg(unix)]
+#[test]
+fn a_settings_file_that_cannot_be_read_says_it_could_not_be_checked() {
+    let (_temp, store) = store();
+    std::fs::create_dir(crate::settings::path_in(store.data_dir())).unwrap();
+
+    assert_could_not_be_checked(&store, "settings_readable");
+}
+
 /// A memory with no hash at all is one nothing can be deduplicated against.
 ///
 /// A database adopted from an early Engram schema gets the column added

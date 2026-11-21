@@ -2570,5 +2570,35 @@
     "file": "src/store/wire.rs",
     "old": "datetime(updated_at) < datetime(?4) FROM memory_relations",
     "new": "datetime(updated_at) < datetime(?4) OR 1 FROM memory_relations"
+  },
+  {
+    "name": "doctor: a spool directory that cannot be listed reads as an empty one",
+    "file": "src/hooks/spool.rs",
+    "old": "        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),",
+    "new": "        Err(_) => return Ok(Vec::new()),"
+  },
+  {
+    "name": "doctor: a settings file that cannot be read reads as nothing ignored",
+    "file": "src/settings.rs",
+    "old": "        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),",
+    "new": "        Err(_) => return Ok(Vec::new()),"
+  },
+  {
+    "name": "doctor: a full-text row count that failed is -1 again and reported as a mismatch",
+    "file": "src/store/schema.rs",
+    "old": "        &format!(\"SELECT COUNT(*) FROM {index}_docsize\"),\n        [],\n        |row| row.get(0),\n    )\n}",
+    "new": "        &format!(\"SELECT COUNT(*) FROM {index}_docsize\"),\n        [],\n        |row| row.get(0),\n    )\n    .or(Ok(-1))\n}"
+  },
+  {
+    "name": "doctor: hook_spool passes when the spool could not be read",
+    "file": "src/store/diagnostics.rs",
+    "old": "Err(error) => could_not_run(\"hook_spool\", \"the hook capture spool\", &error),",
+    "new": "Err(_) => DoctorCheck::passed(\"hook_spool\"),"
+  },
+  {
+    "name": "doctor: settings_readable passes when the settings file could not be read",
+    "file": "src/store/diagnostics.rs",
+    "old": "Err(error) => could_not_run(\"settings_readable\", \"the settings file\", &error),",
+    "new": "Err(_) => DoctorCheck::passed(\"settings_readable\"),"
   }
 ]

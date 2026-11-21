@@ -176,7 +176,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
     let dir = directory(store.data_dir());
     let mut report = DrainReport::default();
     sweep(&dir, now_millis());
-    for path in entries(&dir) {
+    for path in entries_or_report(&dir) {
         if Instant::now() >= deadline {
             break;
         }
@@ -237,23 +237,23 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
             }
         }
     }
-    report.remaining = entries(&dir).len();
+    report.remaining = entries_or_report(&dir).len();
     report
 }
 
 /// The entries waiting in `dir`, oldest first, with the oldest entry's age.
-pub(crate) fn pending(dir: &Path) -> Pending {
+pub(crate) fn pending(dir: &Path) -> std::io::Result<Pending> {
     let now = now_millis();
-    let entries = entries(dir);
+    let entries = entries(dir)?;
     let oldest = entries
         .iter()
         .filter_map(|path| entry_millis(path))
         .map(|written| Duration::from_millis(now.saturating_sub(written).max(0) as u64))
         .max();
-    Pending {
+    Ok(Pending {
         entries: entries.len(),
         oldest,
-    }
+    })
 }
 
 /// An age in the largest unit that still reads as one.
@@ -276,25 +276,46 @@ pub(crate) fn describe_age(age: Duration) -> String {
 
 /// The entry files in `dir`, oldest first.
 ///
+/// A directory that does not exist is an empty spool, which is what every store
+/// that never met a busy hook has. Any other failure is an error and not an
+/// empty list: a spool nobody could read was reported by `doctor` as nothing
+/// waiting, with captures sitting in it.
+///
 /// A claimed file is not one, and neither is a claim's marker: the first is a
 /// name this directory made up for an entry already being replayed, ending in
 /// `.claimed-<pid>`, and the second is the `<entry>.claim` that fences the
 /// rename. Neither ends in `.json`.
-fn entries(dir: &Path) -> Vec<PathBuf> {
-    let Ok(read) = fs::read_dir(dir) else {
-        return Vec::new();
+fn entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let read = match fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
-    let mut found: Vec<PathBuf> = read
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".json"))
-        })
-        .collect();
+    let mut found = Vec::new();
+    for entry in read {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".json"))
+        {
+            found.push(path);
+        }
+    }
     found.sort();
-    found
+    Ok(found)
+}
+
+/// [`entries`] for a caller that cannot return the error: a replay has to go on
+/// without what it could not list, and says so on the way past.
+fn entries_or_report(dir: &Path) -> Vec<PathBuf> {
+    entries(dir).unwrap_or_else(|error| {
+        eprintln!(
+            "leteo hook: the capture spool {} could not be read, so nothing was replayed from it: {error}",
+            dir.display()
+        );
+        Vec::new()
+    })
 }
 
 /// Removes entries past their retention, and the claimed litter beside them.
@@ -321,7 +342,7 @@ fn sweep(dir: &Path, now: i64) {
 
 /// Drops the oldest entries past the cap.
 fn enforce_cap(dir: &Path) {
-    let mut entries = entries(dir);
+    let mut entries = entries_or_report(dir);
     if entries.len() <= SPOOL_CAP {
         return;
     }

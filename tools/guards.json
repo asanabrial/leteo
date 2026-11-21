@@ -1802,5 +1802,17 @@
     "file": "src/cli/bootstrap.rs",
     "old": "    if let Some(data_dir) = &cli.data_dir {\n        return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?));\n    }\n    if let Some(database) = &env_database {",
     "new": "    if let Some(database) = &env_database {\n        return Ok(StoreConfig::new(absolutize(database)?));\n    }\n    if let Some(data_dir) = &cli.data_dir {\n        return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?));\n    }\n    if let Some(database) = &env_database {"
+  },
+  {
+    "name": "judge prompt: supersedes is defined with B as the later note, against the direction the scan stores",
+    "file": "src/llm.rs",
+    "old": "  supersedes      A is the later word on the same point: B is now out of date.",
+    "new": "  supersedes      B is the later word on the same point: A is now out of date."
+  },
+  {
+    "name": "judge prompt: a note holding another placeholder has it filled in a second time",
+    "file": "src/llm.rs",
+    "old": "    prompt.push_str(rest);\n    prompt\n}",
+    "new": "    prompt.push_str(rest);\n    prompt.replace(\"{b_content}\", b_content)\n}"
   }
 ]

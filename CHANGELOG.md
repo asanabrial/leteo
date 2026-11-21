@@ -75,6 +75,16 @@ All notable changes to Leteo are documented in this file.
   variables apply only when no flag names a store. The test suite no longer
   inherits either variable from the developer's shell, so a test that passes a
   flag cannot end up in a real store (#326).
+- **The prompt that asks a model to compare two memories no longer defines
+  `supersedes` backwards.** It said B was the later note and A out of date,
+  while the scan stores A as the source and the store hides the target, so a
+  model that followed the written definition would have hidden the current
+  memory and kept the stale one. The five verdicts on the measured store all
+  came out the right way round, because the model read the verb in its ordinary
+  sense, so nothing was lost; the definition now says A is the later note. The
+  prompt is also filled in one pass, so a memory that quotes the template, such
+  as `{b_content}`, no longer has the other note's body pasted into its own
+  section (#327).
 
 ## [0.4.3] - 2026-11-03
 

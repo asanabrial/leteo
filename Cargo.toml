@@ -160,7 +160,7 @@ tokio = { version = "1.53.1", features = ["full"] }
 # The server's request deadline and concurrency bound. Already in the tree
 # under `axum`; naming it here is what lets the router apply its layers.
 tower = { version = "0.5.3", default-features = false, features = ["limit", "timeout", "util"], optional = true }
-tracing ="0.1.44"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 [dev-dependencies]

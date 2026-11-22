@@ -326,6 +326,20 @@ All notable changes to Leteo are documented in this file.
   the same ten seconds as a request, at most 128 connections are served at
   once and the next is answered `503` and closed, and tool calls run on the
   blocking pool (#376).
+- **A memory records the directory it was written from.** A save with no
+  session joins whichever session is live in its project, and a session keeps
+  the directory of whoever opened it, so on a real store 585 memories hung from
+  a session that recorded `H:\REPO` and another still named a worktree deleted
+  months earlier, while the reply to each save told the agent the directory of
+  that call. Migration 26 adds a nullable `observations.directory`; `mem_save`,
+  `mem_session_summary`, `mem_consolidate`, `mem_capture_passive`, `leteo save`,
+  `leteo consolidate` and the subagent-stop hook (live or replayed from the
+  spool) write it, and it travels with the memory through replication, the
+  cloud codec, export and import. A memory with none — everything written
+  before this, whose origin was never recorded — says so rather than inheriting
+  its session's. `mem_get_observation` names it; the MCP listings and search
+  results do not, a path on every hit being the reply size they are bounded
+  against. `sessions.directory` is untouched by a later save (#315).
 
 ## [0.4.3] - 2026-11-03
 

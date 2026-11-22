@@ -49,6 +49,7 @@ pub(super) struct SyncObservationPayload {
     pub(super) scope: String,
     pub(super) topic_key: Option<String>,
     pub(super) prompt_sync_id: Option<String>,
+    pub(super) directory: Option<String>,
     pub(super) revision_count: i64,
     pub(super) duplicate_count: i64,
     pub(super) last_seen_at: Option<String>,
@@ -327,6 +328,11 @@ fn apply_observation_upsert_tx(
         max_content_bytes,
     )
     .into_parts();
+    // Through the rule a local write follows, so a peer cannot hand over a
+    // relative path the local door would refuse. Absent keeps what this store
+    // holds: an older peer does not send the field, and its silence is not a
+    // statement that the memory has no origin.
+    let directory = normalize::directory(payload.directory.as_deref());
 
     // What the memory used to be, for the review clock below: a peer can change
     // a memory's type, and the three types that are ever due for review are
@@ -346,7 +352,8 @@ fn apply_observation_upsert_tx(
                  project = ?6, scope = ?7, topic_key = ?8, normalized_hash = ?9,
                  revision_count = ?10, duplicate_count = ?11, last_seen_at = ?12,
                  created_at = ?13, updated_at = ?14, deleted_at = NULL,
-                 prompt_sync_id = coalesce(?16, prompt_sync_id)
+                 prompt_sync_id = coalesce(?16, prompt_sync_id),
+                 directory = coalesce(?17, directory)
              WHERE id = ?15",
             params![
                 payload.session_id,
@@ -364,7 +371,8 @@ fn apply_observation_upsert_tx(
                 created_at,
                 updated_at,
                 id,
-                payload.prompt_sync_id
+                payload.prompt_sync_id,
+                directory
             ],
         )?;
     } else {
@@ -372,8 +380,8 @@ fn apply_observation_upsert_tx(
             "INSERT INTO observations
              (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
               normalized_hash, revision_count, duplicate_count, last_seen_at,
-              created_at, updated_at, deleted_at, prompt_sync_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16)",
+              created_at, updated_at, deleted_at, prompt_sync_id, directory)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16, ?17)",
             params![
                 payload.sync_id,
                 payload.session_id,
@@ -390,7 +398,8 @@ fn apply_observation_upsert_tx(
                 last_seen_at,
                 created_at,
                 updated_at,
-                payload.prompt_sync_id
+                payload.prompt_sync_id,
+                directory
             ],
         )?;
     }

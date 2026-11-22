@@ -96,17 +96,20 @@ impl LeteoMcpServer {
         let content_cut =
             crate::memory::normalize::cut_length(&content, store.max_observation_length());
         let outcome = store
-            .add_observation(AddObservation {
-                session_id: context.id,
-                kind: params.kind,
-                title: params.title,
-                content,
-                tool_name: params.tool_name,
-                project: Some(context.project),
-                scope: params.scope,
-                topic_key: params.topic_key,
-                prompt_sync_id,
-            })
+            .add_observation_from(
+                AddObservation {
+                    session_id: context.id,
+                    kind: params.kind,
+                    title: params.title,
+                    content,
+                    tool_name: params.tool_name,
+                    project: Some(context.project),
+                    scope: params.scope,
+                    topic_key: params.topic_key,
+                    prompt_sync_id,
+                },
+                context.directory.as_deref(),
+            )
             .map_err(store_error)?;
         let candidates = if outcome.kind == AddOutcomeKind::Deduplicated {
             Vec::new()
@@ -230,6 +233,7 @@ impl LeteoMcpServer {
         observation.caveats = caveats.into_iter().map(Into::into).collect();
         Ok(Json(ObservationResultOutput {
             observation,
+            directory: None,
             storage_truncation: crate::mcp::output::storage_truncation(content_cut, stored_bytes),
             replaced_bytes: replaced.map(|replaced| replaced.bytes),
             hint: replaced
@@ -410,18 +414,21 @@ impl LeteoMcpServer {
             ProjectChoice::default(),
         )?;
         let outcome = store
-            .consolidate_observations(ConsolidateObservations {
-                session_id: context.id,
-                kind: params.kind,
-                title: params.title,
-                content: params.content,
-                tool_name: None,
-                project: Some(context.project),
-                scope: params.scope,
-                topic_key: params.topic_key,
-                source_ids: params.source_ids,
-                expected_project: Some(expected_project),
-            })
+            .consolidate_observations_from(
+                ConsolidateObservations {
+                    session_id: context.id,
+                    kind: params.kind,
+                    title: params.title,
+                    content: params.content,
+                    tool_name: None,
+                    project: Some(context.project),
+                    scope: params.scope,
+                    topic_key: params.topic_key,
+                    source_ids: params.source_ids,
+                    expected_project: Some(expected_project),
+                },
+                context.directory.as_deref(),
+            )
             .map_err(store_error)?;
         Ok(Json(ConsolidateOutput {
             observation: ObservationOutput::from(outcome.observation).preview(),
@@ -566,10 +573,12 @@ impl LeteoMcpServer {
             .unwrap_or_default();
         drop(store);
 
+        let directory = observation.directory.clone();
         let mut observation = ObservationOutput::from(observation);
         observation.caveats = caveats.into_iter().map(Into::into).collect();
         Ok(Json(ObservationResultOutput {
             observation,
+            directory,
             storage_truncation: None,
             replaced_bytes: None,
             hint: None,
@@ -963,19 +972,22 @@ impl LeteoMcpServer {
         let content_cut =
             crate::memory::normalize::cut_length(&params.content, store.max_observation_length());
         let outcome = store
-            .add_observation(AddObservation {
-                session_id: context.id,
-                kind: "session_summary".to_owned(),
-                title: headline
-                    .clone()
-                    .unwrap_or_else(|| format!("Session summary: {}", context.project)),
-                content: params.content,
-                tool_name: None,
-                project: Some(context.project),
-                scope: "project".to_owned(),
-                topic_key: None,
-                prompt_sync_id: None,
-            })
+            .add_observation_from(
+                AddObservation {
+                    session_id: context.id,
+                    kind: "session_summary".to_owned(),
+                    title: headline
+                        .clone()
+                        .unwrap_or_else(|| format!("Session summary: {}", context.project)),
+                    content: params.content,
+                    tool_name: None,
+                    project: Some(context.project),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                },
+                context.directory.as_deref(),
+            )
             .map_err(store_error)?;
         let stored_bytes = outcome.observation.content.len();
         let caveats = crate::mcp::output::save_caveats(&store, &outcome);
@@ -1035,12 +1047,15 @@ impl LeteoMcpServer {
             params.source
         };
         let result = store
-            .passive_capture(PassiveCapture {
-                session_id: context.id,
-                content: params.content,
-                project: context.project,
-                source,
-            })
+            .passive_capture_from(
+                PassiveCapture {
+                    session_id: context.id,
+                    content: params.content,
+                    project: context.project,
+                    source,
+                },
+                context.directory.as_deref(),
+            )
             .map_err(|failure| store_error(failure.error))?;
         let mut captured = CapturePassiveOutput::new(result, context.envelope);
         captured.session_id = chosen_session;

@@ -1278,6 +1278,11 @@ pub(super) struct ObservationResultOutput {
     ///
     /// One path now: the caveats are on the memory, wherever the memory is.
     pub(super) observation: ObservationOutput,
+    /// Where the memory was written from, when that was recorded. Read from
+    /// mem_get_observation only: listings leave it out because a path on every
+    /// line is the reply size they are bounded against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) directory: Option<String>,
     /// Set when the storage bound cut the new body: what was stored is shorter
     /// than what was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]

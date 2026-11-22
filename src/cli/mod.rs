@@ -509,17 +509,20 @@ pub async fn run(cli: Cli) -> Result<()> {
             let prompt_sync_id =
                 store.prompt_behind_a_save(&session.id, &session.project, session.named);
             let project = Some(session.project);
-            let saved = store.add_observation(AddObservation {
-                session_id: session.id,
-                kind: r#type,
-                title,
-                content,
-                tool_name,
-                project,
-                scope,
-                topic_key,
-                prompt_sync_id,
-            })?;
+            let saved = store.add_observation_from(
+                AddObservation {
+                    session_id: session.id,
+                    kind: r#type,
+                    title,
+                    content,
+                    tool_name,
+                    project,
+                    scope,
+                    topic_key,
+                    prompt_sync_id,
+                },
+                session.directory.as_deref(),
+            )?;
             // The same sentence the tool answers with, on the channel a person
             // reads: the JSON reply already carries `replaced`, and a shrink is
             // easier to catch before it scrolls past than inside it.
@@ -545,18 +548,21 @@ pub async fn run(cli: Cli) -> Result<()> {
             // this command happens to be run from — see
             // `Store::consolidate_observations`.
             let session = resolve_write_session(&mut store, None, None)?;
-            let outcome = store.consolidate_observations(ConsolidateObservations {
-                session_id: session.id,
-                kind: r#type,
-                title,
-                content,
-                tool_name: None,
-                project: None,
-                scope,
-                topic_key,
-                source_ids,
-                expected_project: None,
-            })?;
+            let outcome = store.consolidate_observations_from(
+                ConsolidateObservations {
+                    session_id: session.id,
+                    kind: r#type,
+                    title,
+                    content,
+                    tool_name: None,
+                    project: None,
+                    scope,
+                    topic_key,
+                    source_ids,
+                    expected_project: None,
+                },
+                session.directory.as_deref(),
+            )?;
             print_json(&outcome)?;
         }
         Command::Search {

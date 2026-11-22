@@ -155,14 +155,14 @@ pub(crate) const MIN_RECALL_SAMPLE: usize = 3;
 /// name, which is what `map_observation` reads. Rows are mapped by name rather
 /// than by position: a list this long was mapped by index until adding one
 /// column silently shifted a neighbouring value onto the wrong field.
-const OBSERVATION_COLUMNS: &str = "id, ifnull(sync_id, '') AS sync_id, session_id, type, title, content, tool_name, project, scope, topic_key, revision_count, duplicate_count, last_seen_at, review_after, prompt_sync_id, pinned, created_at, updated_at, deleted_at";
+const OBSERVATION_COLUMNS: &str = "id, ifnull(sync_id, '') AS sync_id, session_id, type, title, content, tool_name, project, scope, topic_key, revision_count, duplicate_count, last_seen_at, review_after, prompt_sync_id, directory, pinned, created_at, updated_at, deleted_at";
 
 /// The same columns, qualified for a join where bare names would be ambiguous.
 ///
 /// `observations_fts` shares several column names with `observations`, so the
 /// full-text search has to qualify them. The aliases keep the result set
 /// identical to [`OBSERVATION_COLUMNS`], and a test holds the two in step.
-const OBSERVATION_COLUMNS_JOINED: &str = "o.id, ifnull(o.sync_id, '') AS sync_id, o.session_id, o.type, o.title, o.content, o.tool_name, o.project, o.scope, o.topic_key, o.revision_count, o.duplicate_count, o.last_seen_at, o.review_after, o.prompt_sync_id, o.pinned, o.created_at, o.updated_at, o.deleted_at";
+const OBSERVATION_COLUMNS_JOINED: &str = "o.id, ifnull(o.sync_id, '') AS sync_id, o.session_id, o.type, o.title, o.content, o.tool_name, o.project, o.scope, o.topic_key, o.revision_count, o.duplicate_count, o.last_seen_at, o.review_after, o.prompt_sync_id, o.directory, o.pinned, o.created_at, o.updated_at, o.deleted_at";
 
 /// Every column an [`ObservationVersion`] is built from.
 const OBSERVATION_VERSION_COLUMNS: &str = "revision, title, content, replaced_at";

@@ -5124,6 +5124,7 @@ fn a_mixed_page_is_not_told_that_every_row_was_found_by_meaning() {
             last_seen_at: None,
             review_after: None,
             prompt_sync_id: None,
+            directory: None,
             pinned: false,
             created_at: "2026-01-01 00:00:00".to_owned(),
             updated_at: "2026-01-01 00:00:00".to_owned(),
@@ -8617,6 +8618,169 @@ fn a_save_that_names_its_session_is_not_told_the_name_back() {
             .unwrap()
             .session_id,
         "mine"
+    );
+}
+
+fn stored_directory(server: &LeteoMcpServer, id: i64) -> Option<String> {
+    server
+        .lock_store()
+        .unwrap()
+        .get_observation(id)
+        .unwrap()
+        .directory
+}
+
+#[test]
+fn a_save_records_the_directory_its_own_reply_reports() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "title": "Where from",
+                "content": "A save that names no session.",
+                "capture_prompt": false,
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+
+    let told = saved.project_context.project_path.clone();
+    assert!(told.is_some(), "the fixture has to be told a directory");
+    assert_eq!(
+        stored_directory(&server, saved.observation.id),
+        told,
+        "the row keeps the directory the reply told the agent"
+    );
+    let session = server
+        .lock_store()
+        .unwrap()
+        .get_observation(saved.observation.id)
+        .unwrap()
+        .session_id;
+    let opened = server
+        .lock_store()
+        .unwrap()
+        .get_session(&session)
+        .unwrap()
+        .directory;
+
+    let again = server
+        .mem_session_summary(Parameters(
+            serde_json::from_value(json!({
+                "content": "Where the summary came from",
+                "project": "leteo",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(
+        stored_directory(&server, again.observation.id),
+        again.project_context.project_path
+    );
+    assert_eq!(
+        server
+            .lock_store()
+            .unwrap()
+            .get_session(&session)
+            .unwrap()
+            .directory,
+        opened,
+        "a later save does not rewrite where the session opened"
+    );
+}
+
+#[test]
+fn a_save_into_a_named_session_records_that_sessions_directory() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    open_hook_session(&server, "in-first", "leteo", first.path());
+    open_hook_session(&server, "in-second", "leteo", second.path());
+
+    let mut stored = Vec::new();
+    for session in ["in-first", "in-second"] {
+        let saved = server
+            .mem_save(Parameters(
+                serde_json::from_value(json!({
+                    "session_id": session,
+                    "title": format!("From {session}"),
+                    "content": format!("Saved into {session}."),
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+            .0;
+        let opened = server
+            .lock_store()
+            .unwrap()
+            .get_session(session)
+            .unwrap()
+            .directory;
+        assert!(!opened.is_empty());
+        assert_eq!(
+            stored_directory(&server, saved.observation.id),
+            Some(opened.clone())
+        );
+        stored.push(opened);
+    }
+    assert_ne!(stored[0], stored[1], "two directories, told apart");
+}
+
+#[test]
+fn only_reading_one_memory_whole_names_where_it_was_written() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    open_hook_session(&server, "mine", "leteo", directory.path());
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "mine",
+                "title": "Placed memory",
+                "content": "Findable by the word placed.",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let opened = server
+        .lock_store()
+        .unwrap()
+        .get_session("mine")
+        .unwrap()
+        .directory;
+
+    let read = server
+        .mem_get_observation(Parameters(
+            serde_json::from_value(json!({ "id": saved.observation.id })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(read.directory.as_deref(), Some(opened.as_str()));
+
+    let listed = serde_json::to_string(
+        &server
+            .mem_search(Parameters(
+                serde_json::from_value(json!({ "query": "placed", "project": "leteo" })).unwrap(),
+            ))
+            .unwrap()
+            .0,
+    )
+    .unwrap();
+    assert!(listed.contains("Placed memory"), "{listed}");
+    assert!(
+        !listed.contains("\"directory\""),
+        "a path on every hit is the reply size a listing is bounded against: {listed}"
     );
 }
 

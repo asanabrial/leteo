@@ -86,6 +86,23 @@ fn closure_only_session_keeps_its_project() {
 }
 
 #[test]
+fn the_codec_that_re_encodes_a_memory_for_the_cloud_keeps_its_directory() {
+    let raw = br#"{
+            "mutations":[{
+                "entity":"observation",
+                "op":"upsert",
+                "payload":"{\"sync_id\":\"obs-1\",\"session_id\":\"s1\",\"type\":\"note\",\"title\":\"T\",\"content\":\"B\",\"scope\":\"project\",\"directory\":\"/work/checkout\"}"
+            }]
+        }"#;
+
+    let canonical = canonicalize_for_project(raw, "proj-a").unwrap();
+    let value: Value = serde_json::from_slice(&canonical).unwrap();
+    let payload: Value =
+        serde_json::from_str(value["mutations"][0]["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["directory"], "/work/checkout");
+}
+
+#[test]
 fn relation_mutation_is_validated_and_project_scoped() {
     let raw = br#"{
             "mutations":[{

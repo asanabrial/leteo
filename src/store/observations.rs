@@ -168,16 +168,18 @@ fn insert_observation_tx(
     session_id: &str,
     tool_name: Option<&str>,
     prompt_sync_id: Option<&str>,
+    directory: Option<&str>,
     fields: normalize::Fields,
 ) -> Result<Observation, StoreError> {
     let (kind, title, content, project, scope, topic_key, hash) = fields.into_parts();
     let sync_id = normalize::sync_id("obs");
+    let directory = normalize::directory(directory);
     tx.execute(
         "INSERT INTO observations
          (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
-          normalized_hash, prompt_sync_id, revision_count, duplicate_count, last_seen_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, 1, datetime('now'), datetime('now'))",
-        params![sync_id, session_id, kind, title, content, tool_name, project, scope, topic_key, hash, prompt_sync_id],
+          normalized_hash, prompt_sync_id, directory, revision_count, duplicate_count, last_seen_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, datetime('now'), datetime('now'))",
+        params![sync_id, session_id, kind, title, content, tool_name, project, scope, topic_key, hash, prompt_sync_id, directory],
     )?;
     let id = tx.last_insert_rowid();
     reschedule_review(tx, id, &kind, None)?;
@@ -453,7 +455,29 @@ impl Store {
         })
     }
 
+    /// Writes a memory for a caller that has no working directory to name.
+    ///
+    /// Not a default for the ones that do: every door that knows where it runs
+    /// goes through [`Store::add_observation_from`]. What this records is "not
+    /// known", which is a different statement from "none" — a revision of an
+    /// existing memory keeps the directory it already has.
     pub fn add_observation(&mut self, input: AddObservation) -> Result<AddOutcome, StoreError> {
+        self.add_observation_from(input, None)
+    }
+
+    /// Writes a memory and records the directory it was written from.
+    ///
+    /// Beside the session rather than inside it: the session is where a
+    /// conversation opened, and a memory joins whichever one is live. A revision
+    /// that lands on an existing topic key takes the directory of the write that
+    /// rewrote it, like the tool and the text, and keeps the old one when this
+    /// write knows none. A repeat inside the dedupe window changes nothing.
+    pub fn add_observation_from(
+        &mut self,
+        input: AddObservation,
+        directory: Option<&str>,
+    ) -> Result<AddOutcome, StoreError> {
+        let directory = normalize::directory(directory);
         let fields = normalize::fields(
             &input.kind,
             &input.title,
@@ -535,6 +559,7 @@ impl Store {
                 tx.execute(
                     "UPDATE observations SET type = ?1, title = ?2, content = ?3, tool_name = ?4,
                      topic_key = ?5, normalized_hash = ?6, revision_count = revision_count + 1,
+                     directory = coalesce(?8, directory),
                      last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?7",
                     params![
                         fields.kind(),
@@ -543,7 +568,8 @@ impl Store {
                         input.tool_name,
                         topic_key,
                         fields.hash(),
-                        id
+                        id,
+                        directory
                     ],
                 )?;
                 reschedule_review(&tx, id, fields.kind(), Some(&previous_kind))?;
@@ -637,6 +663,7 @@ impl Store {
             &input.session_id,
             input.tool_name.as_deref(),
             prompt_sync_id,
+            directory.as_deref(),
             fields,
         )?;
         tx.commit()?;
@@ -666,6 +693,16 @@ impl Store {
     pub fn consolidate_observations(
         &mut self,
         input: ConsolidateObservations,
+    ) -> Result<ConsolidateOutcome, StoreError> {
+        self.consolidate_observations_from(input, None)
+    }
+
+    /// [`Store::consolidate_observations`], recording the directory the merge
+    /// was run from on the replacement. The sources keep their own.
+    pub fn consolidate_observations_from(
+        &mut self,
+        input: ConsolidateObservations,
+        directory: Option<&str>,
     ) -> Result<ConsolidateOutcome, StoreError> {
         // A merge of nothing, and a merge that would record two relations to
         // one memory, are caller mistakes rather than store ones. Refused
@@ -727,6 +764,7 @@ impl Store {
             &input.session_id,
             input.tool_name.as_deref(),
             None,
+            directory,
             fields,
         )?;
         // One judged `supersedes` per source, through the same path every other
@@ -1568,6 +1606,16 @@ impl Store {
         &mut self,
         input: PassiveCapture,
     ) -> Result<PassiveCaptureResult, CaptureFailure> {
+        self.passive_capture_from(input, None)
+    }
+
+    /// [`Store::passive_capture`], recording the directory the learnings were
+    /// captured from on each memory it stores.
+    pub fn passive_capture_from(
+        &mut self,
+        input: PassiveCapture,
+        directory: Option<&str>,
+    ) -> Result<PassiveCaptureResult, CaptureFailure> {
         let project = normalize::project(&input.project);
         let learnings = normalize::extract_learnings(&input.content);
         // Bounded here rather than in the extractor, because the extractor is
@@ -1614,17 +1662,20 @@ impl Store {
             // shorter than that is cut once here and never shown cut at all —
             // see `normalize::TITLE_CHARS`.
             let title = normalize::truncate_words(&learning, normalize::TITLE_CHARS);
-            let outcome = match self.add_observation(AddObservation {
-                session_id: input.session_id.clone(),
-                kind: "passive".to_owned(),
-                title,
-                content: learning,
-                tool_name: normalize::optional(Some(&input.source)),
-                project: (!project.is_empty()).then_some(project.clone()),
-                scope: "project".to_owned(),
-                topic_key: None,
-                prompt_sync_id: None,
-            }) {
+            let outcome = match self.add_observation_from(
+                AddObservation {
+                    session_id: input.session_id.clone(),
+                    kind: "passive".to_owned(),
+                    title,
+                    content: learning,
+                    tool_name: normalize::optional(Some(&input.source)),
+                    project: (!project.is_empty()).then_some(project.clone()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                },
+                directory,
+            ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     return Err(CaptureFailure {

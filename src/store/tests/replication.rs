@@ -1057,6 +1057,7 @@ fn everything_a_memory_carries_is_the_same_on_both_sides_of_the_wire() {
         last_seen_at: Some("2026-08-05 04:00:00".to_owned()),
         review_after: Some("2027-02-05 04:00:00".to_owned()),
         prompt_sync_id: Some("prompt-abc".to_owned()),
+        directory: Some("C:/repo/leteo".to_owned()),
         pinned: true,
         created_at: "2026-08-01 10:00:00".to_owned(),
         updated_at: "2026-08-05 04:00:00".to_owned(),
@@ -1082,6 +1083,7 @@ fn everything_a_memory_carries_is_the_same_on_both_sides_of_the_wire() {
     assert_eq!(arrived.scope, original.scope);
     assert_eq!(arrived.topic_key, original.topic_key);
     assert_eq!(arrived.prompt_sync_id, original.prompt_sync_id);
+    assert_eq!(arrived.directory, original.directory);
     assert_eq!(arrived.revision_count, original.revision_count);
     assert_eq!(arrived.duplicate_count, original.duplicate_count);
     assert_eq!(arrived.last_seen_at, original.last_seen_at);
@@ -1225,8 +1227,15 @@ fn a_memory_crossing_the_wire_arrives_whole_except_what_stays_home() {
     input.tool_name = Some("una-herramienta".to_owned());
     input.topic_key = Some("decision/replicada".to_owned());
     input.prompt_sync_id = Some(asked.clone());
-    let saved = source.add_observation(input.clone()).unwrap().observation;
-    source.add_observation(input).unwrap();
+    let origin = std::env::temp_dir()
+        .join("where-it-was-written")
+        .to_string_lossy()
+        .into_owned();
+    let saved = source
+        .add_observation_from(input.clone(), Some(&origin))
+        .unwrap()
+        .observation;
+    source.add_observation_from(input, Some(&origin)).unwrap();
     source.pin_observation(saved.id, None).unwrap();
     // Something for the session to lose on the way, or comparing two empty
     // summaries proves nothing.
@@ -1239,6 +1248,7 @@ fn a_memory_crossing_the_wire_arrives_whole_except_what_stays_home() {
         "the fixture has to pin it or nothing is proven"
     );
     assert_eq!(sent.prompt_sync_id.as_deref(), Some(asked.as_str()));
+    assert_eq!(sent.directory.as_deref(), Some(origin.as_str()));
     assert!(sent.revision_count > 1, "{sent:?}");
 
     // And a judged relation, the fourth entity that crosses and the fourth
@@ -2577,4 +2587,162 @@ fn a_reversed_relation_under_another_sync_id_is_one_row_for_the_pair() {
         (first.sync_id.as_str(), second.sync_id.as_str()),
         "the newer verdict is the one that stands: {turned:?}"
     );
+}
+
+fn memory_arriving(sync_id: &str, extra: serde_json::Value) -> SyncMutation {
+    let mut payload = serde_json::json!({
+        "sync_id": sync_id,
+        "session_id": "s1",
+        "type": "discovery",
+        "title": "Arrives",
+        "content": "from a peer",
+        "project": "leteo",
+        "scope": "project",
+        "created_at": "2026-08-01 10:00:00",
+        "updated_at": "2026-08-01 10:00:00",
+    });
+    payload
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    SyncMutation {
+        seq: 1,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: payload.to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-08-01 10:00:00".to_owned(),
+        acked_at: None,
+    }
+}
+
+#[test]
+fn a_memory_replicated_to_another_store_keeps_its_directory_or_the_absence_of_one() {
+    let root = TempDir::new().unwrap();
+    let placed = root.path().join("placed").to_string_lossy().into_owned();
+    let (_source_temp, mut source) = store();
+    source.create_session("s1", "leteo", &placed).unwrap();
+    let with = source
+        .add_observation_from(
+            observation("s1", "Placed", "has a directory"),
+            Some(&placed),
+        )
+        .unwrap()
+        .observation;
+    let without = source
+        .add_observation(observation("s1", "Unplaced", "has none"))
+        .unwrap()
+        .observation;
+
+    let (_peer_temp, peer) = peer_after_applying(&source, "leteo");
+
+    assert_eq!(
+        peer.get_observation(peer_id(&peer, &with.sync_id))
+            .unwrap()
+            .directory,
+        Some(placed)
+    );
+    assert_eq!(
+        peer.get_observation(peer_id(&peer, &without.sync_id))
+            .unwrap()
+            .directory,
+        None
+    );
+}
+
+fn peer_id(store: &Store, sync_id: &str) -> i64 {
+    store
+        .connection
+        .query_row(
+            "SELECT id FROM observations WHERE sync_id = ?1",
+            [sync_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_peer_silent_about_the_directory_does_not_erase_it_and_a_relative_one_is_dropped() {
+    let root = TempDir::new().unwrap();
+    let placed = root.path().join("placed").to_string_lossy().into_owned();
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", &placed).unwrap();
+
+    store
+        .apply_pulled_sync_mutation(
+            "cloud",
+            &memory_arriving("obs-peer-a", serde_json::json!({ "directory": placed })),
+        )
+        .unwrap();
+    let mut later = memory_arriving("obs-peer-a", serde_json::json!({ "title": "Edited" }));
+    later.seq = 2;
+    store.apply_pulled_sync_mutation("cloud", &later).unwrap();
+    let id = peer_id(&store, "obs-peer-a");
+    let kept = store.get_observation(id).unwrap();
+    assert_eq!(kept.title, "Edited", "the second payload did apply");
+    assert_eq!(
+        kept.directory.as_deref(),
+        Some(placed.as_str()),
+        "an older peer does not send the field, and that is not a statement"
+    );
+
+    let mut relative = memory_arriving(
+        "obs-peer-b",
+        serde_json::json!({ "directory": "../somewhere/else" }),
+    );
+    relative.seq = 3;
+    store
+        .apply_pulled_sync_mutation("cloud", &relative)
+        .unwrap();
+    assert_eq!(
+        store
+            .get_observation(peer_id(&store, "obs-peer-b"))
+            .unwrap()
+            .directory,
+        None
+    );
+}
+
+#[test]
+fn a_hard_delete_takes_the_directory_out_of_the_journal_with_the_text() {
+    let root = TempDir::new().unwrap();
+    let placed = root.path().join("secret-client-checkout");
+    let placed = placed.to_string_lossy().into_owned();
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", &placed).unwrap();
+    let saved = store
+        .add_observation_from(observation("s1", "Doomed", "to be erased"), Some(&placed))
+        .unwrap()
+        .observation;
+    assert!(
+        journal_of(&store, &saved.sync_id)
+            .iter()
+            .any(|payload| payload.contains("secret-client-checkout")),
+        "the fixture has to put the directory in the journal first"
+    );
+
+    store.delete_observation(saved.id, None, true).unwrap();
+
+    let after = journal_of(&store, &saved.sync_id);
+    assert!(
+        after
+            .iter()
+            .all(|payload| !payload.contains("secret-client-checkout")),
+        "{after:?}"
+    );
+}
+
+fn journal_of(store: &Store, sync_id: &str) -> Vec<String> {
+    let mut statement = store
+        .connection
+        .prepare("SELECT payload FROM sync_mutations WHERE entity_key = ?1 ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([sync_id], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }

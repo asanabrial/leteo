@@ -219,7 +219,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
                 continue;
             }
         }
-        match store.passive_capture(entry.capture()) {
+        match store.passive_capture_from(entry.capture(), Some(&entry.directory)) {
             Ok(result) => {
                 report.stored += result.saved;
                 let _ = fs::remove_file(&claimed);

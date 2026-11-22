@@ -4,6 +4,18 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-22
+
+Semantic search indexes multiple windows of each memory. The release also
+improves session capture, replication, and cloud request handling.
+
+### Upgrading from 0.4.3
+
+The first open upgrades the SQLite store from schema 22 to 27. Take a backup
+before upgrading if you may need to go back. Leteo 0.4.3 can open that backup
+and will refuse the migrated store. With the semantic model installed, vectors
+rebuild in the background or with `leteo doctor --repair`.
+
 ### Added
 
 - **`leteo doctor --citations` lists the memories that cite a commit or a path

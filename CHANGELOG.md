@@ -346,7 +346,7 @@ All notable changes to Leteo are documented in this file.
   on a real store 629 of 651 sessions opened under temporary directories held
   nothing, across 14 names such as `tmp` and `bin`. A name is now known when it
   holds a memory, a prompt, or a session opened by `mem_session_start` with a
-  project of its own or by `leteo session-start`, so creating a project there and saving to it later still
+  project of its own, so creating a project there and saving to it later still
   works. Migration 27 adds `sessions.declared` and marks every existing session
   declared, so no name known before the upgrade becomes unknown; the column is
   not replicated. A name this directory was itself recorded under still resolves,

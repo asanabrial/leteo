@@ -485,13 +485,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             project,
             directory,
         } => {
-            // The project is a required argument here, so naming it is the same
-            // deliberate act as `mem_session_start` with a project.
-            print_json(&store.create_declared_session(
-                &id,
-                &project,
-                &directory.to_string_lossy(),
-            )?)?;
+            print_json(&store.create_session(&id, &project, &directory.to_string_lossy())?)?;
         }
         Command::SessionEnd { id, summary } => {
             print_json(&store.end_session(&id, summary.as_deref())?)?;

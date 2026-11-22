@@ -356,6 +356,24 @@ All notable changes to Leteo are documented in this file.
   `mem_session_start` does.** It opened an undeclared session, so a project
   created from the command line was refused as unknown when an agent named it
   from another directory before anything was saved to it (#391).
+- **Behaviours the reviews of #321 to #343 recorded as untested now have a test
+  that fails when they are broken.** Nothing in the program changes except a
+  doc comment on the stop-word table that named example words the table does not
+  hold, the one expression `restem_observations` wrote four times, and the
+  comments that said the next hook replays a captured learning, which the prompt
+  and compaction hooks do not. The tests cover a language setting no stemmer
+  exists for, a changed windowing, an empty `LETEO_DATABASE`, a delete naming no
+  project, a merge into a project nobody replicates, a prompt's session in
+  another project, the caveats of a timeline's later neighbours and of an
+  opening block, `mem_review` and the command line's elsewhere count where the
+  directory names no project or the limit is past the store's, hash repair
+  failures, a live session joined by a passive capture and a prompt, uninstall
+  through a linked instruction file, and a session start replaying the spool.
+  The git repositories built by tests no longer depend on a signing
+  configuration, and a test that asserted nothing now asserts that git failing
+  is an error. Two defects they found are left for their own issues: a harness
+  prefix after a non-ASCII space, and a caveat lookup that fails silently in
+  `mem_timeline` (#372).
 
 ## [0.4.3] - 2026-11-03
 

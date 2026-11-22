@@ -2774,5 +2774,119 @@
     "file": "src/cli/mod.rs",
     "old": "store.create_declared_session(",
     "new": "store.create_session("
+  },
+  {
+    "name": "language: a setting naming a language nobody speaks counts as naming English",
+    "file": "src/stemming.rs",
+    "old": "setting.and_then(Interface::parse)",
+    "new": "setting.and_then(Interface::parse).or(Some(Interface::English))"
+  },
+  {
+    "name": "harness prefix: the listing stops skipping a vertical tab the hook skips",
+    "file": "src/store/prompts.rs",
+    "old": "char(32, 9, 10, 11, 12, 13)",
+    "new": "char(32, 9, 10, 12, 13)"
+  },
+  {
+    "name": "semantic: a vector cut by another windowing is still current",
+    "file": "src/store/semantic_stage.rs",
+    "old": "AND v.windowing = ?{} AND",
+    "new": "AND (v.windowing = ?{} OR 1) AND"
+  },
+  {
+    "name": "store location: an empty LETEO_DATABASE names the working directory",
+    "file": "src/cli/bootstrap.rs",
+    "old": ".filter(|value| !value.is_empty())",
+    "new": ".filter(|_| true)"
+  },
+  {
+    "name": "store location: --data-dir writes its store somewhere other than the directory named",
+    "file": "src/cli/bootstrap.rs",
+    "old": "return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?));",
+    "new": "return Ok(StoreConfig::in_data_dir(absolutize(data_dir)?.join(\"elsewhere\")));"
+  },
+  {
+    "name": "replication: a delete that names no project reaches a memory filed under one",
+    "file": "src/store/wire.rs",
+    "old": "if filed_under != normalize::project(current_project.as_deref().unwrap_or_default()) {",
+    "new": "if !filed_under.is_empty()\n        && filed_under != normalize::project(current_project.as_deref().unwrap_or_default())\n    {"
+  },
+  {
+    "name": "replication: a merge into a project nobody replicates files what was waiting under it",
+    "file": "src/store/wire.rs",
+    "old": "if !is_enrolled_tx(tx, canonical)? {",
+    "new": "if false {"
+  },
+  {
+    "name": "replication: a prompt asked in another project's session leaves the session behind",
+    "file": "src/store/prompts.rs",
+    "old": "enqueue_session_for_member_tx(&tx, &prompt.session_id, &prompt.project)?;",
+    "new": "let _ = (&prompt.session_id, &prompt.project);"
+  },
+  {
+    "name": "timeline: the neighbours after the focus are not asked for caveats",
+    "file": "src/mcp/tools.rs",
+    "old": ".chain(&timeline.after)",
+    "new": ".chain(timeline.after.iter().take(0))"
+  },
+  {
+    "name": "review: a directory with no project narrows the queue to a project of nothing",
+    "file": "src/mcp/tools.rs",
+    "old": ".or_else(|| self.read_project().map(|(detected, _source)| detected));",
+    "new": ".or_else(|| Some(self.read_project().map(|(detected, _source)| detected).unwrap_or_else(|| \"nowhere\".to_owned())));"
+  },
+  {
+    "name": "search: the elsewhere count of the command line is measured against the typed limit",
+    "file": "src/cli/mod.rs",
+    "old": "let cap_asked = store.effective_search_limit(options.limit);",
+    "new": "let cap_asked = options.limit.unwrap_or(10);"
+  },
+  {
+    "name": "doctor: a hash repair skips a row it cannot read",
+    "file": "src/store/diagnostics.rs",
+    "old": "let (id, content, hash) = row?;",
+    "new": "let Ok((id, content, hash)) = row else {\n                    continue;\n                };"
+  },
+  {
+    "name": "doctor: a hash repair counts a hash it could not write",
+    "file": "src/store/diagnostics.rs",
+    "old": "params![hash, id],\n            )?;",
+    "new": "params![hash, id],\n            )\n            .ok();"
+  },
+  {
+    "name": "hints: the caveats an opening block printed are not recorded as delivered",
+    "file": "src/hooks/nudge.rs",
+    "old": "self.remember_caveats(listed.caveats.iter().cloned());",
+    "new": "let _ = &listed.caveats;"
+  },
+  {
+    "name": "session: a passive capture without a session is filed under the manual one",
+    "file": "src/mcp/tools.rs",
+    "old": "PassiveCapture {\n                    session_id: context.id,",
+    "new": "PassiveCapture {\n                    session_id: \"manual-save-leteo\".to_owned(),"
+  },
+  {
+    "name": "session: a prompt without a session is filed under the manual one",
+    "file": "src/mcp/tools.rs",
+    "old": "session_id: context.id.clone(),",
+    "new": "session_id: \"manual-save-leteo\".to_owned(),"
+  },
+  {
+    "name": "citations: a commit git could not be asked about counts as resolving",
+    "file": "src/citations.rs",
+    "old": "let resolved = resolving_commits(root, &hashes)?;",
+    "new": "let resolved = resolving_commits(root, &hashes).unwrap_or_else(|_| vec![true; hashes.len()]);"
+  },
+  {
+    "name": "setup: an instruction file that is a link is replaced by a plain file",
+    "file": "src/setup/mod.rs",
+    "old": "crate::files::replace(path, desired)\n            .with_context(|| format!(\"write {}\", path.display()))?;",
+    "new": "(|| {\n            if path.is_symlink() {\n                let _ = std::fs::remove_file(path);\n            }\n            crate::files::replace(path, desired)\n        })()\n        .with_context(|| format!(\"write {}\", path.display()))?;"
+  },
+  {
+    "name": "hooks: a session start no longer replays the spool",
+    "file": "src/hooks/mod.rs",
+    "old": "Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,\n            Self::PostCompaction | Self::UserPromptSubmit => false,",
+    "new": "Self::SubagentStop | Self::SessionStop => true,\n            Self::SessionStart | Self::PostCompaction | Self::UserPromptSubmit => false,"
   }
 ]

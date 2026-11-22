@@ -2646,6 +2646,58 @@ fn a_memory_the_opening_block_listed_is_not_named_by_the_hint() {
     );
 }
 
+/// A caveat the opening block printed has been handed over, as the memory it
+/// sits under has.
+///
+/// The hint lifts its already-shown rule for a caveat nobody has delivered, so a
+/// block that listed a memory without recording its caveat made the first
+/// matching prompt name the memory again to say what the block had just said.
+#[test]
+fn a_caveat_the_opening_block_printed_does_not_lift_the_rule_for_the_hint() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let answer = crowd_and_answer(&mut store, "We chose SQLite as the storage engine");
+    let newer = store
+        .add_observation(memory(
+            "We moved the storage engine to Postgres",
+            "The storage engine decision was revisited and changed",
+        ))
+        .unwrap()
+        .observation;
+    let relation = propose(&mut store, &newer.sync_id, &answer.sync_id);
+    store
+        .judge_relation(crate::memory::model::JudgeRelationParams {
+            judgment_id: relation,
+            relation: crate::store::RELATION_CONFLICTS_WITH.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let opening = run(&mut store, HookEvent::SessionStart, &payload)
+        .unwrap()
+        .additional_context
+        .expect("a session opening carries context");
+    assert!(
+        opening.contains(&format!("- #{} ", answer.id))
+            && opening.contains(&format!("conflicts with #{}", newer.id)),
+        "the block lists the memory and says what is against it: {opening}"
+    );
+
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    let hint = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context;
+    assert!(
+        hint.is_none(),
+        "the agent was handed the memory and its caveat a moment ago: {}",
+        hint.unwrap_or_default()
+    );
+}
+
 /// A memory the byte budget cut from the block was not shown, so the hint may
 /// name it, and a compaction starts the list and the header over.
 ///
@@ -3282,8 +3334,8 @@ fn a_capture_the_store_refuses_says_what_happened_and_what_to_do() {
 ///
 /// The whole point of the spool: a `subagent-stop` is the one event whose text
 /// is the subagent's only copy, and a busy store used to lose it after a
-/// warning. The capture is written beside the database, and the next hook
-/// replays it through the same door.
+/// warning. The capture is written beside the database, and a later session
+/// start, subagent stop or session end replays it through the same door.
 #[test]
 fn a_capture_that_meets_a_held_store_is_kept_once_it_is_free() {
     let (temp, mut store) = store();
@@ -3324,7 +3376,7 @@ fn a_capture_that_meets_a_held_store_is_kept_once_it_is_free() {
 
     holder.execute_batch("ROLLBACK").unwrap();
 
-    // The next hook replays what the busy one left, at the end of its own run.
+    // The session start replays what the busy hook left, at the end of its own run.
     run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
     assert_eq!(
         spool::pending(&spool_dir).unwrap().entries,
@@ -3782,6 +3834,27 @@ fn a_compaction_leaves_the_spool_alone() {
     run(&mut store, HookEvent::PostCompaction, &input(temp.path())).unwrap();
 
     assert_eq!(spool::pending(&spool_dir).unwrap().entries, 1);
+}
+
+/// Opening a session is where a capture left by a busy store is replayed first.
+///
+/// The prompt and the compaction leave the spool alone, so the session start is
+/// what stands between a spooled capture and a conversation that never ends.
+#[test]
+fn a_session_start_replays_the_spool() {
+    let (temp, mut store, spool_dir) = store_with_one_spooled_capture();
+
+    run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+
+    assert_eq!(spool::pending(&spool_dir).unwrap().entries, 0);
+    assert_eq!(
+        store
+            .recent_observations(Some("hook-project"), Some(10), true)
+            .unwrap()
+            .len(),
+        1,
+        "with the learning in the store"
+    );
 }
 
 /// A spool write past the cap drops the oldest entries.

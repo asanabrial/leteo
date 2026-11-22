@@ -6,8 +6,10 @@
 //! is discarded as it stops, so a lost capture is gone. When the store is busy
 //! past the budget the text is written here instead — one JSON file per capture,
 //! under `<database parent>/hooks/spool/` beside the reminder files — and a
-//! later open replays it through the same [`Store::passive_capture`] door the
-//! hook would have used.
+//! later session start, subagent stop or session end, or the next start of the
+//! MCP server, replays it through the same [`Store::passive_capture`] door the
+//! hook would have used. The prompt and compaction hooks leave it alone, because
+//! a person is waiting behind them.
 //!
 //! The shape is one file per entry rather than one growing log because a drain
 //! has to claim work without a lock of its own. A claim renames the entry to a

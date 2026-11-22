@@ -8408,6 +8408,49 @@ fn a_timeline_neighbour_that_was_overturned_says_so() {
     );
 }
 
+/// The neighbours after the focus are looked up with the ones before it, and a
+/// lookup that stopped at the first list would leave these reading as current.
+#[test]
+fn a_timeline_neighbour_after_the_focus_that_was_overturned_says_so() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let (focus, older) = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/workspace").unwrap();
+        let focus = store
+            .add_observation(memory_in("s1", "leteo", "An earlier note", "the focus"))
+            .unwrap()
+            .observation;
+        let older = store
+            .add_observation(memory_in("s1", "leteo", "Tabs everywhere", "the old rule"))
+            .unwrap()
+            .observation;
+        let newer = store
+            .add_observation(memory_in(
+                "s1",
+                "leteo",
+                "Spaces everywhere",
+                "the new rule",
+            ))
+            .unwrap()
+            .observation;
+        supersede(&mut store, &newer, &older);
+        (focus, older)
+    };
+    let timeline = server
+        .mem_timeline(Parameters(
+            serde_json::from_value(json!({ "observation_id": focus.id })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let neighbour = timeline
+        .after
+        .iter()
+        .find(|entry| entry.id == older.id)
+        .expect("the older memory comes after the focus");
+    assert_eq!(neighbour.caveats.len(), 1, "{neighbour:?}");
+    assert_eq!(neighbour.caveats[0].relation, "superseded_by");
+}
+
 #[test]
 fn a_timeline_neighbour_without_a_caveat_does_not_grow() {
     let (_temp, server) = test_server(McpOptions::default());
@@ -8620,6 +8663,55 @@ fn a_save_without_a_session_joins_the_one_the_hook_opened() {
         "a summary attaches to the live session without ending it, so the \
          conversation's later prompts still land in an open one"
     );
+}
+
+/// The doors beside `mem_save` that also take no session: a subagent's passive
+/// capture and a recorded prompt. They went to the manual session while the
+/// save beside them joined the conversation, so the two halves of one turn were
+/// filed under different sessions.
+#[test]
+fn a_passive_capture_and_a_prompt_without_a_session_join_the_one_the_hook_opened() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    open_hook_session(&server, "agent-session", "leteo", directory.path());
+
+    let captured = server
+        .mem_capture_passive(Parameters(
+            serde_json::from_value(json!({
+                "content": "## Key Learnings\n- a capture that names no session joins the live one",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(captured.saved, 1);
+    assert_eq!(captured.session_id.as_deref(), Some("agent-session"));
+
+    let prompt = server
+        .mem_save_prompt(Parameters(
+            serde_json::from_value(json!({
+                "content": "What did the subagent learn?",
+                "project": "leteo",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(prompt.prompt.session_id, "agent-session");
+
+    let store = server.lock_store().unwrap();
+    let filed_under: String = store
+        .connection()
+        .query_row(
+            "SELECT session_id FROM observations WHERE title <> '' ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(filed_under, "agent-session");
 }
 
 #[test]

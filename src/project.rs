@@ -1924,7 +1924,16 @@ mod worktree_identity {
         Command::new("git")
             .arg("-C")
             .arg(directory)
-            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+            ])
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

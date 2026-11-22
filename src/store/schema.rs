@@ -1060,15 +1060,21 @@ pub(crate) fn restem_observations(connection: &Connection) -> Result<(), rusqlit
     connection.execute_batch(
         "DELETE FROM observation_stems
          WHERE NOT EXISTS (SELECT 1 FROM observations o WHERE o.id = observation_id);
-         WITH wanted AS (
-             SELECT o.id AS id,
-                    ifnull(s.language, leteo_memory_language(o.title, o.content)) AS language,
-                    leteo_stem(o.title, ifnull(s.language, leteo_memory_language(o.title, o.content))) AS title,
-                    leteo_stem(o.content, ifnull(s.language, leteo_memory_language(o.title, o.content))) AS content,
+         WITH kept AS (
+             SELECT o.id AS id, o.title AS title, o.content AS content,
                     o.tool_name AS tool_name, o.type AS type, o.project AS project,
-                    leteo_stem(o.topic_key, ifnull(s.language, leteo_memory_language(o.title, o.content))) AS topic_key
+                    o.topic_key AS topic_key,
+                    ifnull(s.language, leteo_memory_language(o.title, o.content)) AS language
              FROM observations o LEFT JOIN observation_stems s ON s.observation_id = o.id
              WHERE typeof(o.id) = 'integer'
+         ),
+         wanted AS (
+             SELECT id, language,
+                    leteo_stem(title, language) AS title,
+                    leteo_stem(content, language) AS content,
+                    tool_name, type, project,
+                    leteo_stem(topic_key, language) AS topic_key
+             FROM kept
          )
          INSERT INTO observation_stems(observation_id, language, title, content, tool_name, type, project, topic_key)
          SELECT w.id, w.language, w.title, w.content, w.tool_name, w.type, w.project, w.topic_key

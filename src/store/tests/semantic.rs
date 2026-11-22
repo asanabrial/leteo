@@ -764,6 +764,38 @@ fn a_vector_whose_text_changed_is_made_again() {
     assert_eq!(models, vec![crate::semantic::MODEL_ID.to_owned()]);
 }
 
+/// Vectors cut by another windowing are the same text under a different cut, so
+/// nothing in the text says they are old: the windowing recorded beside them is
+/// the only thing that does.
+#[test]
+fn a_vector_cut_by_another_windowing_is_made_again() {
+    let Some((_temp, store, _)) = store_with_keys() else {
+        return;
+    };
+    store.search(ASKED_IN_SPANISH, on()).unwrap();
+    let written = vector_rows(&store);
+    assert!(written >= 4);
+    store
+        .connection
+        .execute(
+            "UPDATE observation_vectors SET windowing = 'an-older-cut'",
+            [],
+        )
+        .unwrap();
+
+    store.backfill_vectors(16).unwrap();
+
+    let windowings: Vec<String> = store
+        .connection
+        .prepare("SELECT DISTINCT windowing FROM observation_vectors")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(windowings, vec![crate::semantic::WINDOWING.to_owned()]);
+}
+
 /// A vector that was already current is not made again: the second question
 /// does not write.
 #[test]

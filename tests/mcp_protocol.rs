@@ -368,3 +368,99 @@ fn a_refusal_carries_its_code_as_text_at_every_revision() {
         );
     }
 }
+
+/// One `mem_review` listing, asked by a server started in `directory`.
+fn review_listing_in(database: &std::path::Path, directory: &std::path::Path) -> serde_json::Value {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_leteo"))
+        .arg("--database")
+        .arg(database)
+        .arg("mcp")
+        .arg("--tools=agent")
+        .current_dir(directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn leteo mcp");
+    let requests = json!([
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "mcp-protocol-test", "version": "1"}
+            }
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "mem_review", "arguments": {"action": "list"}}
+        }
+    ]);
+    let stdin = child.stdin.as_mut().expect("open stdin");
+    for line in requests.as_array().expect("three requests") {
+        writeln!(stdin, "{line}").expect("write MCP request");
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("read MCP server output");
+    let stdout = String::from_utf8(output.stdout).expect("MCP stdout is UTF-8");
+    stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("each line is JSON"))
+        .find(|message| message.get("id") == Some(&json!(2)))
+        .expect("response arrived")["result"]
+        .clone()
+}
+
+/// A directory whose project cannot be detected names none, and the review
+/// queue then reads the whole store as it did before it narrowed to the project
+/// it was started in. Narrowing to nothing instead would list nothing, which a
+/// person would read as an empty queue.
+///
+/// The directory is one whose project configuration is refused, because that is
+/// a detection failure a test can build without a repository.
+#[test]
+fn the_review_queue_of_a_directory_with_no_project_is_the_whole_store() {
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".leteo")).expect("create the configuration directory");
+    std::fs::write(
+        workspace.join(".leteo").join("config.json"),
+        br#"{"project_name": "../other"}"#,
+    )
+    .expect("write a configuration detection refuses");
+    let database = temp.path().join("review.db");
+    for project in ["alpha", "beta"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_leteo"))
+            .arg("--database")
+            .arg(&database)
+            .args([
+                "save",
+                &format!("A decision of {project}"),
+                "A body worth rereading",
+            ])
+            .args(["--project", project])
+            .output()
+            .expect("run leteo save");
+        assert!(output.status.success(), "{output:?}");
+    }
+    rusqlite::Connection::open(&database)
+        .expect("open the seeded store")
+        .execute(
+            "UPDATE observations SET review_after = datetime('now', '-1 day')",
+            [],
+        )
+        .expect("make both memories due");
+
+    let reply = review_listing_in(&database, &workspace);
+
+    assert_ne!(reply["isError"], json!(true), "{reply}");
+    assert_eq!(
+        reply["structuredContent"]["count"],
+        json!(2),
+        "both projects' memories are due and no project narrows the list: {reply}"
+    );
+}

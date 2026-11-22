@@ -739,12 +739,14 @@ mod tests {
     }
 
     #[test]
-    fn a_text_that_cannot_be_read_says_so_instead_of_panicking() {
+    fn a_commit_cited_where_git_cannot_answer_is_an_error_and_not_a_count() {
         let temp = TempDir::new().unwrap();
         let memories = vec![(1, "revisión commit a1b2c3d 🎉 `src/ñ.rs`".to_owned())];
-        // Not a repository: git is asked only if a hash is found, and it is,
-        // so the answer is an error or a count — never a panic.
-        let _ = assess(temp.path(), &memories);
+        let said = assess(temp.path(), &memories);
+        assert!(
+            said.as_ref().is_err_and(|reason| reason.contains("git")),
+            "a count of commits that did not resolve is only one if git answered: {said:?}"
+        );
     }
 
     #[test]
@@ -857,20 +859,34 @@ mod tests {
         );
     }
 
+    /// Runs git in `root` with everything a commit needs given on the command
+    /// line, so a developer's own configuration — a signing key that asks for a
+    /// passphrase, a missing identity — cannot decide whether these tests run.
+    fn git_in(root: &Path, arguments: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+            ])
+            .args(arguments)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("these tests need git on the PATH");
+        assert!(status.success(), "git {arguments:?}");
+    }
+
     /// A repository with a nested `mod.rs`, an ignore rule, and an untracked
     /// file at the root.
     fn repository_for_names(root: &Path) {
-        let git = |arguments: &[&str]| {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-                .args(arguments)
-                .stdout(std::process::Stdio::null())
-                .status()
-                .expect("these tests need git on the PATH");
-            assert!(status.success(), "git {arguments:?}");
-        };
+        let git = |arguments: &[&str]| git_in(root, arguments);
         git(&["init", "--quiet"]);
         std::fs::create_dir_all(root.join("src").join("deep").join("nested")).unwrap();
         std::fs::write(
@@ -1003,17 +1019,7 @@ mod tests {
     fn every_hash_of_a_project_is_asked_of_git_in_one_process() {
         let temp = TempDir::new().unwrap();
         let root = temp.path();
-        let git = |arguments: &[&str]| {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-                .args(arguments)
-                .stdout(std::process::Stdio::null())
-                .status()
-                .expect("these tests need git on the PATH");
-            assert!(status.success(), "git {arguments:?}");
-        };
+        let git = |arguments: &[&str]| git_in(root, arguments);
         git(&["init", "--quiet"]);
         git(&["commit", "--quiet", "--allow-empty", "-m", "x"]);
 

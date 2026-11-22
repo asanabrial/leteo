@@ -921,6 +921,31 @@ fn engram_fixture(path: &Path) {
         .expect("populate Engram fixture");
 }
 
+#[test]
+fn cli_session_start_declares_the_project_it_names() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-cli.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("declared-session")
+            .arg("--project")
+            .arg("declared-project")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+
+    let declared: i64 = rusqlite::Connection::open(&database)
+        .expect("open database")
+        .query_row(
+            "SELECT declared FROM sessions WHERE id = 'declared-session'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the session");
+    assert_eq!(declared, 1);
+}
+
 fn relation_count(database: &Path) -> i64 {
     rusqlite::Connection::open(database)
         .expect("open database")

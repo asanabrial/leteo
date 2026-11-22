@@ -60,10 +60,11 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0024_several_vectors_per_memory.sql <- one vector per window of a memory
 ///   0025_observation_deletions.sql      <- the tombstone a hard delete leaves
 ///   0026_observation_directory.sql      <- where a memory was written from
-///   0027_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0027_session_declared.sql           <- whether a caller opened a session on purpose
+///   0028_something.sql                  <- add here, and bump SCHEMA_VERSION
 /// ```
 ///
-/// The next number is 27 rather than 2 because 2 through 17 are spent history
+/// The next number is 28 rather than 2 because 2 through 17 are spent history
 /// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
 /// band and says why.
 ///
@@ -97,7 +98,29 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[
         26,
         Migration::Rust(OBSERVATION_DIRECTORY, observation_directory),
     ),
+    (27, Migration::Rust(SESSION_DECLARED, session_declared)),
 ];
+
+/// Migration 27: whether a caller opened a session to bring its project into
+/// being.
+///
+/// A step in Rust because the backfill must run only on the open that added the
+/// column; the file carries the reasoning.
+pub(super) const SESSION_DECLARED: &str =
+    include_str!("../../migrations/0027_session_declared.sql");
+
+fn session_declared(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let present = table_info(connection, "sessions")?
+        .iter()
+        .any(|column| column.name == "declared");
+    if present {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "ALTER TABLE sessions ADD COLUMN declared INTEGER NOT NULL DEFAULT 0;
+         UPDATE sessions SET declared = 1;",
+    )
+}
 
 /// Migration 26: the directory a memory was written from.
 ///
@@ -218,7 +241,7 @@ pub(super) enum Migration {
 /// What raising it past them does *not* do is make them migratable: see
 /// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
 /// ambiguous and stay refused.
-pub(crate) const SCHEMA_VERSION: i32 = 26;
+pub(crate) const SCHEMA_VERSION: i32 = 27;
 
 /// The highest number stamped by the numbering that predates any release.
 ///

@@ -1,0 +1,30 @@
+-- Whether a caller opened a session to bring its project into being.
+--
+-- Carried out in Rust, and this file is the prose: the column has to be added
+-- only when it is absent, and the backfill has to run only on the open that
+-- added it. A store whose stamp was rewound past this step, as a restored copy or
+-- a test does, would otherwise run the backfill again and mark every session
+-- opened since as declared.
+--
+-- What was wrong. `project_exists` counted a session as proof that its project
+-- exists, and a hook opens one on every session-start wherever it runs. On a
+-- real store 629 of 651 sessions opened under temporary directories held no
+-- memory and no prompt, spread over 14 names such as `tmp` and `bin`, and each
+-- of those names was accepted when an agent wrote it as `project`. Counting only
+-- memories and prompts would also refuse a project an agent created on purpose
+-- with `mem_session_start` and has not written to yet, and nothing in the row
+-- told the two openers apart.
+--
+-- What this adds. `sessions.declared`, an integer defaulting to 0, raised to 1
+-- when `mem_session_start` is called with a project of its own. Hooks, the
+-- manual-save path and the live-session join leave it 0.
+--
+-- Backfill. Every row that exists when the column is added becomes 1, so a name
+-- that is known today stays known after the upgrade. The fix applies to sessions
+-- opened from now on; `leteo projects prune` is how the old ones are cleared.
+--
+-- Local. The column is not part of what a session replicates or exports: a peer
+-- learns a project from what is written to it, not from how a session was
+-- opened on another machine.
+--
+-- No full-text index carries the column, so nothing is rebuilt.

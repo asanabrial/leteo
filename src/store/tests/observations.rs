@@ -805,7 +805,9 @@ fn replaying_deferred_relations_applies_them_once_their_observations_arrive() {
 #[test]
 fn project_existence_covers_sessions_observations_and_prompts() {
     let (_temp, mut store) = store();
-    store.create_session("s1", "Leteo", "C:/repo").unwrap();
+    store
+        .create_declared_session("s1", "Leteo", "C:/repo")
+        .unwrap();
 
     assert!(store.project_exists("leteo").unwrap());
     assert!(store.project_exists(" LETEO ").unwrap());

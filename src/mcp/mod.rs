@@ -343,6 +343,18 @@ impl LeteoMcpServer {
         if known {
             return Ok((requested, SOURCE_KNOWN_PROJECT.to_owned()));
         }
+        // A name this very directory was recorded under is one the drift gate
+        // itself offers as a candidate and `passive_capture_project` files under
+        // without being asked, so it has to resolve even when only an empty
+        // session carries it. Refusing it would leave a caller choosing from the
+        // gate's own list with an `unknown_project` for the answer, and would
+        // drop a passive capture's learnings on the floor.
+        let recorded_here = store
+            .recent_projects_in_directory(&detection.path, &detected)
+            .map_err(store_error)?;
+        if recorded_here.contains(&requested) {
+            return Ok((requested, SOURCE_KNOWN_PROJECT.to_owned()));
+        }
         Err(unknown_project_error(
             &requested,
             &detected,

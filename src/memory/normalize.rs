@@ -1287,8 +1287,8 @@ pub fn prompt_core(prompt: &str) -> String {
 /// Claude Code then delivers through the same `UserPromptSubmit` event a typed
 /// prompt arrives on.
 ///
-/// The one list: the hook reads it through [`is_harness_message`], the listing
-/// of recent prompts builds its SQL from it, and the tests iterate it. On a
+/// The one list: the hook and the listing of recent prompts both read it
+/// through [`is_harness_message`], and the tests iterate it. On a
 /// real store 7,104 of 15,158 stored prompts began with `<task-notification>`,
 /// about 39 MB of the 42 MB of prompt text. `<pasted_content` is deliberately
 /// absent: a person pasted that.

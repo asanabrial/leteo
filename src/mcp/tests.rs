@@ -9010,3 +9010,144 @@ fn every_tool_that_picks_a_session_for_the_caller_says_how() {
         assert!(said.contains("share"), "{name}: {said:?}");
     }
 }
+
+/// `unwrap_or_default` on the lookup answered every one of these as if nothing
+/// had been said against any memory, so an overturned neighbour read as current.
+///
+/// The lookup is made to fail by giving the memory that was overturned a title
+/// the lookup cannot read as text, and moving it out of the session the
+/// timeline shows. Every listing hides an overturned memory, so none of the
+/// tools' own queries reads it; only the lookup of caveats meets it. Denying
+/// the whole relations table instead would also fail the queries that hide
+/// superseded memories, which would test a different failure.
+#[test]
+fn a_tool_whose_caveat_lookup_failed_says_so_and_still_answers() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    let (old, new) = an_overturned_memory(
+        &server,
+        "decision",
+        "The method we used before",
+        "We used the old method.",
+    );
+    let unread = crate::mcp::output::CAVEATS_UNREAD_HINT;
+    let call = |server: &LeteoMcpServer| {
+        let searched = server
+            .mem_search(Parameters(
+                serde_json::from_value(json!({ "query": "newer decision" })).unwrap(),
+            ))
+            .unwrap()
+            .0;
+        let context = server
+            .mem_context(Parameters(
+                serde_json::from_value(json!({ "project": "leteo" })).unwrap(),
+            ))
+            .unwrap()
+            .0;
+        let reviewed = server
+            .mem_review(Parameters(
+                serde_json::from_value(json!({ "action": "list", "limit": 20 })).unwrap(),
+            ))
+            .unwrap()
+            .0;
+        let timeline = server
+            .mem_timeline(Parameters(
+                serde_json::from_value(json!({ "observation_id": new.id })).unwrap(),
+            ))
+            .unwrap()
+            .0;
+        let read = server
+            .mem_get_observation(Parameters(
+                serde_json::from_value(json!({ "id": new.id })).unwrap(),
+            ))
+            .unwrap()
+            .0;
+        let saved = server
+            .mem_save(Parameters(
+                serde_json::from_value(json!({
+                    "title": "The newer decision",
+                    "content": "Changed course.",
+                    "type": "decision",
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+            .0;
+        (searched, context, reviewed, timeline, read, saved)
+    };
+    {
+        let store = server.lock_store().unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE observations SET review_after = datetime('now', '-1 day') WHERE id = ?1",
+                rusqlite::params![new.id],
+            )
+            .unwrap();
+    }
+
+    let (searched, context, reviewed, timeline, read, saved) = call(&server);
+    assert_eq!(searched.hint, None);
+    assert_eq!(context.hint, None);
+    assert_eq!(reviewed.hint, None);
+    assert_eq!(timeline.hint, None);
+    assert_eq!(read.hint, None);
+    assert_eq!(saved.hint, None);
+
+    {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s2", "leteo", "C:/repo").unwrap();
+        // The indexing triggers hand the title to functions that refuse a blob,
+        // which would fail the write itself rather than leave a title only the
+        // lookup trips over.
+        store
+            .connection()
+            .execute_batch(
+                "DROP TRIGGER obs_exact_update;
+                 DROP TRIGGER obs_fts_update;
+                 DROP TRIGGER obs_stems_update;
+                 DROP TRIGGER obs_stems_identifiers;",
+            )
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE observations SET session_id = 's2', title = CAST(title AS BLOB)
+                 WHERE id = ?1",
+                rusqlite::params![old.id],
+            )
+            .unwrap();
+        assert!(
+            store
+                .caveats_for(std::slice::from_ref(&new.sync_id))
+                .is_err(),
+            "the lookup this test is about has to fail for the rest to mean anything"
+        );
+    }
+
+    let (searched, context, reviewed, timeline, read, saved) = call(&server);
+    for (tool, hint) in [
+        ("mem_search", &searched.hint),
+        ("mem_context", &context.hint),
+        ("mem_review", &reviewed.hint),
+        ("mem_timeline", &timeline.hint),
+        ("mem_get_observation", &read.hint),
+        ("mem_save", &saved.hint),
+    ] {
+        assert!(
+            hint.as_deref().is_some_and(|said| said.contains(unread)),
+            "{tool} must say its caveats could not be read: {hint:?}"
+        );
+    }
+    assert_eq!(searched.results.len(), 1, "{searched:?}");
+    assert_eq!(timeline.focus.id, new.id);
+    assert_eq!(read.observation.id, new.id);
+    assert_eq!(saved.status, "deduplicated");
+    let rendered = serde_json::to_value(&timeline).unwrap();
+    assert!(
+        rendered["hint"].as_str().is_some(),
+        "the note is on the wire: {rendered}"
+    );
+}

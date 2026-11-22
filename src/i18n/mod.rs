@@ -278,6 +278,8 @@ pub struct Screens {
     pub deleted_project: &'static str,
     /// `{count}`.
     pub sessions_kept: &'static str,
+    /// The status line of a memory opened while its caveats could not be read.
+    pub caveats_unread: &'static str,
     /// `{query}`, `{observations}`, `{sessions}`, `{prompts}`.
     pub refreshed_query: &'static str,
 
@@ -547,6 +549,7 @@ mod tests {
             deleted_session,
             deleted_project,
             sessions_kept,
+            caveats_unread,
             refreshed_query,
             keys_confirm,
             keys_confirm_footer,
@@ -724,6 +727,7 @@ mod tests {
             ("deleted_session", deleted_session),
             ("deleted_project", deleted_project),
             ("sessions_kept", sessions_kept),
+            ("caveats_unread", caveats_unread),
             ("refreshed_query", refreshed_query),
             ("keys_confirm", keys_confirm),
             ("keys_confirm_footer", keys_confirm_footer),

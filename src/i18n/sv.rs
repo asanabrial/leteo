@@ -170,6 +170,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Projektet {name} {gone}, med {memories} minne(n), \
                       {sessions} session(er) och {prompts} prompt(er)",
     sessions_kept: " — {count} session(er) behållna, de bär rader från andra projekt",
+    caveats_unread: "Dess förbehåll kunde inte läsas: det här minnet kan ha ersatts eller motsagts",
     refreshed_query: "\"{query}\": {observations} iakttagelse(r), {sessions} session(er), \
                       {prompts} prompt(er)",
 

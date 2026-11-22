@@ -171,6 +171,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Project {name} {gone}, met {memories} herinnering(en), \
                       {sessions} sessie(s) en {prompts} prompt(s)",
     sessions_kept: " — {count} sessie(s) behouden, die dragen rijen van andere projecten",
+    caveats_unread: "De kanttekeningen konden niet worden gelezen: deze herinnering kan zijn achterhaald of weersproken",
     refreshed_query: "\"{query}\": {observations} waarneming(en), {sessions} sessie(s), \
                       {prompts} prompt(s)",
 

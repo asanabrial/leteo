@@ -172,6 +172,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Projet {name} {gone}, avec {memories} souvenir(s), \
                       {sessions} session(s) et {prompts} prompt(s)",
     sessions_kept: " — {count} session(s) gardées, elles tiennent d'autres projets",
+    caveats_unread: "Ses réserves n'ont pas pu être lues : ce souvenir a peut-être été remplacé ou contredit",
     refreshed_query: "\"{query}\" : {observations} observation(s), {sessions} session(s), \
                       {prompts} prompt(s)",
 

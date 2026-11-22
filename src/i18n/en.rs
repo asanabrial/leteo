@@ -175,6 +175,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Project {name} {gone}, with {memories} memory(s), \
                       {sessions} session(s) and {prompts} prompt(s)",
     sessions_kept: " — {count} session(s) kept, they hold other projects' rows",
+    caveats_unread: "Its caveats could not be read: this memory may have been superseded or contradicted",
     refreshed_query: "\"{query}\": {observations} observation(s), {sessions} session(s), \
                       {prompts} prompt(s)",
 

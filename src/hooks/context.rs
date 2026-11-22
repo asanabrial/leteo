@@ -75,7 +75,7 @@ pub(super) fn prompt_recall(
         .iter()
         .map(|observation| observation.sync_id.clone())
         .collect();
-    let caveats = store.caveats_for(&sync_ids).unwrap_or_default();
+    let (caveats, caveats_note) = crate::recall::read_caveats(store, &sync_ids);
 
     // Not what this conversation has already been handed — unless something new
     // is said against it.
@@ -133,6 +133,12 @@ pub(super) fn prompt_recall(
     } else {
         HINT_HEADER
     });
+    // Once for the hint, not once per line: the hint is wrong most of the time it
+    // speaks and the sentence is long, so it is not repeated under each match.
+    if let Some(note) = caveats_note {
+        recall.push_str(&note);
+        recall.push('\n');
+    }
     for observation in &matches {
         recall.push_str(&format!(
             "- #{} [{}] {}\n",

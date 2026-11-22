@@ -86,36 +86,9 @@ pub(super) struct SaveOutput {
     pub(super) caveats: Vec<CaveatOutput>,
 }
 
-/// What a reply says when the relation graph could not be read.
-///
-/// A reply with no caveats reads as "nothing was said against these", which is
-/// the reading that hands over an overturned decision as current. Found by
-/// making `memory_relations` unreadable with a SQLite authorizer: every tool
-/// that looks caveats up answered as if there were none, with no sign a lookup
-/// had failed.
-pub(super) const CAVEATS_UNREAD_HINT: &str = "The relation graph could not be read, so this answer does not say whether any memory in it was superseded or contradicted. Treat every memory here as unchecked.";
-
-/// Looks the caveats of `named` up, and says so when the lookup failed.
-///
-/// One function for every tool that carries caveats, so none of them chooses
-/// its own way of swallowing the error. The lookup failing costs the
-/// annotation and the note takes its place; it never costs the call, because
-/// what was asked for was already read.
-pub(super) fn read_caveats(
-    store: &crate::store::Store,
-    named: &[String],
-) -> (
-    std::collections::BTreeMap<String, Vec<crate::memory::model::Caveat>>,
-    Option<String>,
-) {
-    match store.caveats_for(named) {
-        Ok(caveats) => (caveats, None),
-        Err(error) => {
-            tracing::warn!(%error, "caveat lookup failed");
-            (Default::default(), Some(CAVEATS_UNREAD_HINT.to_owned()))
-        }
-    }
-}
+// The rule lives in `crate::recall`, which the opening block, the hint and the
+// terminal interface reach without depending on this layer.
+pub(super) use crate::recall::read_caveats;
 
 /// [`read_caveats`] for the one memory a reply is about.
 pub(super) fn read_caveats_of(

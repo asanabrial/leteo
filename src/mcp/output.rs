@@ -86,25 +86,72 @@ pub(super) struct SaveOutput {
     pub(super) caveats: Vec<CaveatOutput>,
 }
 
+/// What a reply says when the relation graph could not be read.
+///
+/// A reply with no caveats reads as "nothing was said against these", which is
+/// the reading that hands over an overturned decision as current. Found by
+/// making `memory_relations` unreadable with a SQLite authorizer: every tool
+/// that looks caveats up answered as if there were none, with no sign a lookup
+/// had failed.
+pub(super) const CAVEATS_UNREAD_HINT: &str = "The relation graph could not be read, so this answer does not say whether any memory in it was superseded or contradicted. Treat every memory here as unchecked.";
+
+/// Looks the caveats of `named` up, and says so when the lookup failed.
+///
+/// One function for every tool that carries caveats, so none of them chooses
+/// its own way of swallowing the error. The lookup failing costs the
+/// annotation and the note takes its place; it never costs the call, because
+/// what was asked for was already read.
+pub(super) fn read_caveats(
+    store: &crate::store::Store,
+    named: &[String],
+) -> (
+    std::collections::BTreeMap<String, Vec<crate::memory::model::Caveat>>,
+    Option<String>,
+) {
+    match store.caveats_for(named) {
+        Ok(caveats) => (caveats, None),
+        Err(error) => {
+            tracing::warn!(%error, "caveat lookup failed");
+            (Default::default(), Some(CAVEATS_UNREAD_HINT.to_owned()))
+        }
+    }
+}
+
+/// [`read_caveats`] for the one memory a reply is about.
+pub(super) fn read_caveats_of(
+    store: &crate::store::Store,
+    sync_id: &str,
+) -> (Vec<crate::memory::model::Caveat>, Option<String>) {
+    let (mut caveats, note) = read_caveats(store, &[sync_id.to_owned()]);
+    (caveats.remove(sync_id).unwrap_or_default(), note)
+}
+
+/// Puts a note after whatever a reply's hint already says, so that one line of
+/// advice never replaces another.
+pub(super) fn append_hint(hint: &mut Option<String>, note: Option<String>) {
+    let Some(note) = note else { return };
+    *hint = Some(match hint.take() {
+        Some(said) => format!("{said} {note}"),
+        None => note,
+    });
+}
+
 /// The caveats a save's reply carries: those of the memory it resolved to, and
-/// only when that memory was there before the save.
+/// only when that memory was there before the save, with the note to add to
+/// the hint when the lookup failed.
 ///
 /// One function for `mem_save` and `mem_session_summary`, so the two cannot
 /// disagree about when a reply speaks for an older memory. A store that cannot
 /// answer costs the caveats rather than the save, which has already landed.
-pub(super) fn save_caveats(store: &crate::store::Store, outcome: &AddOutcome) -> Vec<CaveatOutput> {
+pub(super) fn save_caveats(
+    store: &crate::store::Store,
+    outcome: &AddOutcome,
+) -> (Vec<CaveatOutput>, Option<String>) {
     if outcome.kind == AddOutcomeKind::Inserted {
-        return Vec::new();
+        return (Vec::new(), None);
     }
-    let sync_id = &outcome.observation.sync_id;
-    store
-        .caveats_for(std::slice::from_ref(sync_id))
-        .unwrap_or_default()
-        .remove(sync_id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(Into::into)
-        .collect()
+    let (caveats, note) = read_caveats_of(store, &outcome.observation.sync_id);
+    (caveats.into_iter().map(Into::into).collect(), note)
 }
 
 impl SaveOutput {
@@ -317,6 +364,11 @@ pub(super) struct ReviewOutput {
     pub(super) observations: Vec<ObservationOutput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) observation: Option<ObservationOutput>,
+    /// Said when the relation graph could not be read, so the memories here
+    /// carry no caveats because none were looked up and not because none
+    /// exist. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) hint: Option<String>,
 }
 
 impl ReviewOutput {
@@ -343,6 +395,7 @@ impl ReviewOutput {
             due_omitted: due.saturating_sub(observations.len()),
             observations,
             observation: None,
+            hint: None,
         }
     }
 
@@ -362,6 +415,7 @@ impl ReviewOutput {
             due_omitted: 0,
             observations: Vec::new(),
             observation: Some(observation),
+            hint: None,
         }
     }
 }
@@ -407,6 +461,11 @@ pub(super) struct TimelineOutput {
     /// say whether there is more on either side.
     pub(super) before_total: i64,
     pub(super) after_total: i64,
+    /// Said when the relation graph could not be read, so the neighbours carry
+    /// no caveats because none were looked up and not because none exist.
+    /// Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) hint: Option<String>,
 }
 
 impl TimelineOutput {
@@ -456,6 +515,7 @@ impl TimelineOutput {
             session_info: value.session_info.map(Into::into),
             before_total: value.before_total,
             after_total: value.after_total,
+            hint: None,
         }
     }
 }
@@ -1076,7 +1136,9 @@ pub(super) struct SearchOutput {
     /// term was read as another word to answer.
     ///
     /// The wording is in [`NO_MATCH_HINT`], [`PARTIAL_MATCH_HINT`],
-    /// [`SEMANTIC_MATCH_HINT`] and [`corrected_terms_hint`]. Below the blank line because everything above
+    /// [`SEMANTIC_MATCH_HINT`] and [`corrected_terms_hint`]. Also carried, after
+    /// any of those, when the relation graph could not be read and the results
+    /// therefore carry no caveats. Below the blank line because everything above
     /// it is shipped to every client that lists the tools, and an intra-doc
     /// link arrives there as brackets around a name that resolves to nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1292,7 +1354,9 @@ pub(super) struct ObservationResultOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) replaced_bytes: Option<usize>,
     /// Set when the replacement was under half the body it replaced, naming the
-    /// read that returns the previous text.
+    /// read that returns the previous text, and when the relation graph could
+    /// not be read, so `observation` carries no caveats because none were
+    /// looked up and not because none exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
     /// The titles and bodies earlier writes replaced, newest first. Empty
@@ -1377,7 +1441,9 @@ pub(super) struct ContextOutput {
     ///
     /// The wording is in `no_match_here_hint`, shared with search: an empty
     /// answer that does not say which of its two reasons it is sends the
-    /// reader to solve the wrong problem.
+    /// reader to solve the wrong problem. Also carried, after that, when the
+    /// relation graph could not be read and the memories therefore carry no
+    /// caveats.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
     pub(super) observations: Vec<ObservationOutput>,

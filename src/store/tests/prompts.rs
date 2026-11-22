@@ -251,8 +251,8 @@ fn the_recent_prompts_are_the_recent_distinct_ones() {
 }
 
 /// Older versions stored what the harness wrote as if somebody had asked it:
-/// five of the ten lines of one real opening block. Left out inside the SQL, so
-/// the page is still filled with prompts somebody typed.
+/// five of the ten lines of one real opening block. Left out before the page is
+/// counted, so it is still filled with prompts somebody typed.
 #[test]
 fn a_stored_harness_message_is_not_listed_and_does_not_take_a_place() {
     let (_temp, mut store) = store();
@@ -309,15 +309,19 @@ fn a_stored_harness_message_is_not_listed_and_does_not_take_a_place() {
     assert_eq!(everything.len(), 13);
 }
 
-/// The hook decides with Rust's `trim_start` and the listing with SQL's `ltrim`,
-/// and they have to agree about what may stand in front of a harness prefix.
-/// Only ASCII whitespace is held here: Unicode whitespace is where they differ.
+/// The hook and the listing have to agree about what may stand in front of a
+/// harness prefix. The listing used to skip a fixed ASCII set in SQL while the
+/// hook used Rust's `trim_start`, which also skips U+00A0, U+0085, U+2003 and
+/// U+3000: a stored `\u{a0}<task-notification>` was a harness message to the
+/// hook and was still listed.
 #[test]
-fn the_listing_and_the_hook_agree_on_ascii_whitespace_before_a_harness_prefix() {
+fn the_listing_and_the_hook_agree_on_whitespace_before_a_harness_prefix() {
     let (_temp, mut store) = store();
     store.create_session("s1", "leteo", "C:/repo").unwrap();
     let prefix = crate::memory::normalize::HARNESS_MESSAGE_PREFIXES[0];
-    let leaders = [" ", "\t", "\n", "\u{b}", "\u{c}", "\r"];
+    let leaders = [
+        " ", "\t", "\n", "\u{b}", "\u{c}", "\r", "\u{a0}", "\u{85}", "\u{2003}", "\u{3000}",
+    ];
     for (n, leader) in leaders.iter().enumerate() {
         store
             .connection

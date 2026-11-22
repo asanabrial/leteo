@@ -140,7 +140,7 @@ impl LeteoMcpServer {
             .filter(|replaced| replaced.shrunk)
             .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes));
         let stored_bytes = outcome.observation.content.len();
-        let caveats = crate::mcp::output::save_caveats(&store, &outcome);
+        let (caveats, caveats_note) = crate::mcp::output::save_caveats(&store, &outcome);
         let mut saved = SaveOutput::new(outcome, candidates, context.envelope);
         saved.caveats = caveats;
         saved.session_id = chosen_session;
@@ -153,6 +153,7 @@ impl LeteoMcpServer {
         if let Some(shrink) = shrink {
             hints.push(shrink);
         }
+        hints.extend(caveats_note);
         saved.hint = (!hints.is_empty()).then(|| hints.join(" "));
         Ok(Json(saved))
     }
@@ -215,11 +216,8 @@ impl LeteoMcpServer {
                 },
             )
             .map_err(store_error)?;
-        let caveats = store
-            .caveats_for(std::slice::from_ref(&outcome.observation.sync_id))
-            .unwrap_or_default()
-            .remove(&outcome.observation.sync_id)
-            .unwrap_or_default();
+        let (caveats, caveats_note) =
+            crate::mcp::output::read_caveats_of(&store, &outcome.observation.sync_id);
         drop(store);
 
         let UpdateOutcome {
@@ -231,14 +229,16 @@ impl LeteoMcpServer {
         let stored_bytes = updated.content.len();
         let mut observation = ObservationOutput::from(updated).preview();
         observation.caveats = caveats.into_iter().map(Into::into).collect();
+        let mut hint = replaced
+            .filter(|replaced| replaced.shrunk)
+            .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes));
+        crate::mcp::output::append_hint(&mut hint, caveats_note);
         Ok(Json(ObservationResultOutput {
             observation,
             directory: None,
             storage_truncation: crate::mcp::output::storage_truncation(content_cut, stored_bytes),
             replaced_bytes: replaced.map(|replaced| replaced.bytes),
-            hint: replaced
-                .filter(|replaced| replaced.shrunk)
-                .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes)),
+            hint,
             versions: Vec::new(),
         }))
     }
@@ -282,12 +282,14 @@ impl LeteoMcpServer {
                     .iter()
                     .map(|observation| observation.sync_id.clone())
                     .collect();
-                let caveats = store.caveats_for(&named).unwrap_or_default();
+                let (caveats, caveats_note) = crate::mcp::output::read_caveats(&store, &named);
                 let due = store
                     .count_review_due(project.as_deref())
                     .unwrap_or_default()
                     .max(0) as usize;
-                Ok(Json(ReviewOutput::listing(observations, &caveats, due)))
+                let mut listed = ReviewOutput::listing(observations, &caveats, due);
+                listed.hint = caveats_note;
+                Ok(Json(listed))
             }
             "mark_reviewed" => {
                 let id = params.observation_id.or(params.id).ok_or_else(|| {
@@ -307,12 +309,11 @@ impl LeteoMcpServer {
                     .mark_reviewed(id, Some(expected_project.as_str()))
                     .map_err(store_error)?;
                 let observation = store.get_observation(id).map_err(store_error)?;
-                let caveats = store
-                    .caveats_for(std::slice::from_ref(&observation.sync_id))
-                    .unwrap_or_default()
-                    .remove(&observation.sync_id)
-                    .unwrap_or_default();
-                Ok(Json(ReviewOutput::marked(observation, caveats)))
+                let (caveats, caveats_note) =
+                    crate::mcp::output::read_caveats_of(&store, &observation.sync_id);
+                let mut marked = ReviewOutput::marked(observation, caveats);
+                marked.hint = caveats_note;
+                Ok(Json(marked))
             }
             _ => Err(structured_error(
                 error_code::INVALID_PARAMS,
@@ -501,7 +502,7 @@ impl LeteoMcpServer {
             .iter()
             .map(|result| result.observation.sync_id.clone())
             .collect();
-        let caveats = store.caveats_for(&named).unwrap_or_default();
+        let (caveats, caveats_note) = crate::mcp::output::read_caveats(&store, &named);
         let inferred = params.project.is_none() && !params.all_projects;
         let elsewhere = match (results.is_empty() && inferred, fallback.as_ref()) {
             (true, Some((project, _))) => store
@@ -527,7 +528,7 @@ impl LeteoMcpServer {
             _ => None,
         };
 
-        Ok(Json(SearchOutput::new(
+        let mut found = SearchOutput::new(
             results,
             envelope,
             clamped,
@@ -535,7 +536,9 @@ impl LeteoMcpServer {
             elsewhere,
             more,
             corrections,
-        )))
+        );
+        crate::mcp::output::append_hint(&mut found.hint, caveats_note);
+        Ok(Json(found))
     }
 
     #[tool(
@@ -566,11 +569,8 @@ impl LeteoMcpServer {
         } else {
             Vec::new()
         };
-        let caveats = store
-            .caveats_for(std::slice::from_ref(&observation.sync_id))
-            .unwrap_or_default()
-            .remove(&observation.sync_id)
-            .unwrap_or_default();
+        let (caveats, caveats_note) =
+            crate::mcp::output::read_caveats_of(&store, &observation.sync_id);
         drop(store);
 
         let directory = observation.directory.clone();
@@ -581,7 +581,7 @@ impl LeteoMcpServer {
             directory,
             storage_truncation: None,
             replaced_bytes: None,
-            hint: None,
+            hint: caveats_note,
             versions: versions.into_iter().map(Into::into).collect(),
         }))
     }
@@ -681,7 +681,7 @@ impl LeteoMcpServer {
             .iter()
             .map(|observation| observation.sync_id.clone())
             .collect();
-        let caveats = store.caveats_for(&named).unwrap_or_default();
+        let (caveats, caveats_note) = crate::mcp::output::read_caveats(&store, &named);
         let elsewhere = match (
             observations.is_empty() && sessions.is_empty() && prompts.is_empty() && inferred,
             project.as_deref(),
@@ -693,26 +693,26 @@ impl LeteoMcpServer {
                 .map(|held| (project.to_owned(), held as usize)),
             _ => None,
         };
-        Ok(Json(
-            ContextOutput::new(
-                observations,
-                pinned,
-                pinned_omitted,
-                sessions,
-                prompts,
-                crate::mcp::output::ContextEnvelope {
-                    project: envelope,
-                    memory_language: language,
-                    elsewhere,
-                },
-                &caveats,
-            )
-            // The ceiling above is the setting's own bytes or a caller's
-            // smaller one. The schema publishes the deep ceiling, the largest
-            // any answer reaches once the setting is deep, as the field's
-            // maximum; the setting is what a call is capped by here.
-            .within(byte_budget),
-        ))
+        let mut context = ContextOutput::new(
+            observations,
+            pinned,
+            pinned_omitted,
+            sessions,
+            prompts,
+            crate::mcp::output::ContextEnvelope {
+                project: envelope,
+                memory_language: language,
+                elsewhere,
+            },
+            &caveats,
+        );
+        // Before `within`, so the bound is measured against the note too.
+        crate::mcp::output::append_hint(&mut context.hint, caveats_note);
+        // The ceiling above is the setting's own bytes or a caller's smaller
+        // one. The schema publishes the deep ceiling, the largest any answer
+        // reaches once the setting is deep, as the field's maximum; the setting
+        // is what a call is capped by here.
+        Ok(Json(context.within(byte_budget)))
     }
 
     #[tool(
@@ -941,8 +941,11 @@ impl LeteoMcpServer {
                     .map(|entry| entry.sync_id.clone()),
             )
             .collect();
-        let caveats = self.lock_store()?.caveats_for(&named).unwrap_or_default();
-        Ok(Json(TimelineOutput::new(timeline, &caveats)))
+        let (caveats, caveats_note) =
+            crate::mcp::output::read_caveats(&*self.lock_store()?, &named);
+        let mut output = TimelineOutput::new(timeline, &caveats);
+        output.hint = caveats_note;
+        Ok(Json(output))
     }
 
     #[tool(
@@ -1002,7 +1005,7 @@ impl LeteoMcpServer {
             )
             .map_err(store_error)?;
         let stored_bytes = outcome.observation.content.len();
-        let caveats = crate::mcp::output::save_caveats(&store, &outcome);
+        let (caveats, caveats_note) = crate::mcp::output::save_caveats(&store, &outcome);
         let mut saved = SaveOutput::new(outcome, Vec::new(), context.envelope);
         saved.caveats = caveats;
         saved.session_id = chosen_session;
@@ -1011,6 +1014,7 @@ impl LeteoMcpServer {
         if headline.is_none() {
             saved.hint = Some(UNNAMED_SUMMARY_HINT.to_owned());
         }
+        crate::mcp::output::append_hint(&mut saved.hint, caveats_note);
         Ok(Json(saved))
     }
 

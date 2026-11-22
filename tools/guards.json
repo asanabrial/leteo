@@ -2888,5 +2888,17 @@
     "file": "src/hooks/mod.rs",
     "old": "Self::SessionStart | Self::SubagentStop | Self::SessionStop => true,\n            Self::PostCompaction | Self::UserPromptSubmit => false,",
     "new": "Self::SubagentStop | Self::SessionStop => true,\n            Self::SessionStart | Self::PostCompaction | Self::UserPromptSubmit => false,"
+  },
+  {
+    "name": "prompts: the listing hides a harness message after the whitespace the hook skips",
+    "file": "src/store/prompts.rs",
+    "old": "normalize::is_harness_message(&prompt.content)",
+    "new": "normalize::HARNESS_MESSAGE_PREFIXES.iter().any(|harness| prompt.content.trim_start_matches([' ', '\\t', '\\n', '\\u{b}', '\\u{c}', '\\r']).starts_with(harness))"
+  },
+  {
+    "name": "mcp: a failed caveat lookup is not said in the reply",
+    "file": "src/mcp/output.rs",
+    "old": "(Default::default(), Some(CAVEATS_UNREAD_HINT.to_owned()))",
+    "new": "(Default::default(), None)"
   }
 ]

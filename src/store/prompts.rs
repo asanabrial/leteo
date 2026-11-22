@@ -337,36 +337,36 @@ impl Store {
         // No floor, for the reason `recent_sessions` has none: a section of a
         // composite answer, and zero asks for none of it.
         let wanted = limit.unwrap_or(10);
-        // Read more than are wanted, because the second pass throws some away.
-        //
-        // The SQL groups by the text exactly; `normalize::prompt_core` catches
-        // what that cannot — the same question with a slash command in front of
-        // it, or with different spacing or case. Three times the budget covers
-        // a stretch where every prompt is a variant of one question, costs
-        // twenty more rows of a table read by an index, and where it does not
-        // cover it the answer is short rather than wrong.
-        let over_fetch = (wanted.saturating_mul(3)).min(120) as i64;
+        if wanted == 0 {
+            return Ok(Vec::new());
+        }
         let mut narrowing = Narrowing::new();
         narrowing.equals("project", project.as_ref());
-        let limit = narrowing.bind(&over_fetch);
-        // And nothing blank. The door refuses those now, but a store that has
-        // been running a while already holds them — eleven on a real one — and
-        // a line reading "somebody asked:" with nothing after it spends one of
+        // Nothing blank. The door refuses those now, but a store that has been
+        // running a while already holds them — eleven on a real one — and a
+        // line reading "somebody asked:" with nothing after it spends one of
         // the ten places on saying that a question happened.
         //
-        // Nor a message the harness wrote, which older versions stored as a
-        // prompt: half of one real store's rows. It is left out inside the SQL
-        // rather than in the Rust pass below, so the over-fetch still fills the
-        // page with prompts somebody typed. The comparison is `substr` against
-        // each prefix and not LIKE, so `_`, `%` and case folding cannot matter.
-        let harness = harness_rows_clause();
+        // The rows are streamed newest first with no SQL limit, and the pass
+        // below stops when the page is full. It has to throw rows away for two
+        // reasons the SQL cannot see: `normalize::prompt_core` catches the same
+        // question with a slash command in front of it or with different
+        // spacing or case, and `normalize::is_harness_message` catches a
+        // message the harness wrote, which older versions stored as a prompt —
+        // half of one real store's rows. The latter used to be an `ltrim` set in
+        // SQL that skipped ASCII whitespace only, while the hook's rule also
+        // skips U+00A0, U+0085, U+2003 and U+3000, so a stored
+        // `\u{a0}<task-notification>` was a harness message to one and a prompt
+        // to the other. A fixed over-fetch would come back short on a stretch
+        // of harness rows; streaming fills the page, and the grouping and sort
+        // were already reading the whole table.
         let mut statement = self.connection.prepare(&format!(
             "SELECT {PROMPT_COLUMNS}
-             FROM prompts WHERE trim(ifnull(content, '')) <> '' AND NOT ({harness}) AND id IN (
+             FROM prompts WHERE trim(ifnull(content, '')) <> '' AND id IN (
                  SELECT MAX(id) FROM prompts WHERE 1 = 1{}
                   GROUP BY content
              )
-             ORDER BY datetime(created_at) DESC, id DESC LIMIT ?{limit}",
+             ORDER BY datetime(created_at) DESC, id DESC",
             narrowing.clauses()
         ))?;
         let rows =
@@ -375,6 +375,9 @@ impl Store {
         let mut kept = Vec::with_capacity(wanted);
         for prompt in rows {
             let prompt = prompt?;
+            if normalize::is_harness_message(&prompt.content) {
+                continue;
+            }
             if seen.insert(normalize::prompt_core(&prompt.content)) {
                 kept.push(prompt);
                 if kept.len() == wanted {
@@ -432,27 +435,6 @@ impl Store {
 /// gets. Two is enough for two hooks racing on one event and far too short for
 /// anybody to have typed the same thing again.
 const PROMPT_ECHO_SECONDS: i64 = 2;
-
-/// A SQL condition true for a row whose content begins with any of
-/// `normalize::HARNESS_MESSAGE_PREFIXES`, after the whitespace Rust's `trim`
-/// would also skip.
-///
-/// Interpolated rather than bound: the prefixes are compile-time constants, and
-/// one containing a quote would be a bug in the list that `debug_assert!`
-/// catches on the first run of any test.
-fn harness_rows_clause() -> String {
-    normalize::HARNESS_MESSAGE_PREFIXES
-        .iter()
-        .map(|prefix| {
-            debug_assert!(!prefix.contains('\''));
-            format!(
-                "substr(ltrim(content, char(32, 9, 10, 11, 12, 13)), 1, {}) = '{prefix}'",
-                prefix.chars().count()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
 
 /// The prompt this one would be a second copy of, if there is one.
 fn echoed_prompt(

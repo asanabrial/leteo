@@ -374,6 +374,19 @@ All notable changes to Leteo are documented in this file.
   is an error. Two defects they found are left for their own issues: a harness
   prefix after a non-ASCII space, and a caveat lookup that fails silently in
   `mem_timeline` (#372).
+- **A stored message the harness wrote is hidden from the recent prompts
+  whatever space it starts with, and a tool that could not read a memory's
+  caveats says so.** The listing skipped a fixed set of ASCII whitespace in SQL
+  before a harness prefix while the hook used Rust's `trim_start`, so a stored
+  `\u{a0}<task-notification>` was a harness message to the hook and a prompt to
+  the listing; both now read `is_harness_message`, and the listing streams rows
+  until the page is full rather than over-fetching a fixed number. Separately,
+  `mem_search`, `mem_context`, `mem_review`, `mem_timeline`, `mem_get_observation`,
+  `mem_update`, `mem_save` and `mem_session_summary` answered an ordinary reply
+  with no caveats when the lookup failed, which reads as "nothing was said
+  against these" and hands an overturned memory over as current. Each now keeps
+  answering and adds a sentence to its `hint`; `mem_review` and `mem_timeline`
+  gain an optional `hint` field, skipped when empty (#394).
 
 ## [0.4.3] - 2026-11-03
 

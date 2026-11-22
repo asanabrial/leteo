@@ -99,7 +99,7 @@ measure = []
 # client's own HTTPS reaches it through `rustls`, so the tree held it before
 # this feature existed. What the feature removes is the server's direct use of
 # it, beside the whole PostgreSQL stack.
-cloud-server = ["dep:axum", "dep:hmac", "dep:sqlx", "dep:subtle"]
+cloud-server = ["dep:axum", "dep:hmac", "dep:sqlx", "dep:subtle", "dep:tower"]
 
 [dependencies]
 anyhow = "1.0.100"
@@ -157,6 +157,9 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 subtle = { version = "2.6.1", optional = true }
 thiserror = "2.0.17"
 tokio = { version = "1.53.1", features = ["full"] }
+# The server's request deadline and concurrency bound. Already in the tree
+# under `axum`; naming it here is what lets the router apply its layers.
+tower = { version = "0.5.3", default-features = false, features = ["limit", "timeout", "util"], optional = true }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
@@ -180,6 +183,8 @@ axum = "0.8.9"
 # one SQLite build the tests and the product share.
 rusqlite = { version = "0.39.0", features = ["bundled-full"] }
 tempfile = "3.23.0"
+# `start_paused` lets a test cross a deadline of seconds without waiting them.
+tokio = { version = "1.53.1", features = ["test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
 
 # Only to ask Windows what language it is set to. Every other platform puts

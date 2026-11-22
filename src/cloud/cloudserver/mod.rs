@@ -1,8 +1,9 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use axum::{
-    Json, Router,
+    BoxError, Json, Router,
     body::Body,
+    error_handling::HandleErrorLayer,
     extract::{DefaultBodyLimit, Form, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
@@ -12,6 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use tower::ServiceBuilder;
 
 use crate::sync::{ChunkData, MutationEntry, canonicalize_for_project, decode_chunk};
 
@@ -41,6 +43,59 @@ use guard::{
 use payload::{validate_chunk_payload, validate_mutation_entries, validate_session_references};
 
 pub(super) const DASHBOARD_COOKIE: &str = "leteo_dashboard";
+
+/// How long a request has from arrival to its response, queueing for a
+/// concurrency slot included; past it the answer is `503` with `Retry-After`.
+///
+/// Under the sync client's own 30 second timeout on purpose: a server that
+/// gives up later than its client does is a server whose answer nobody reads,
+/// and the client sees a dropped connection where it could have seen a `503`.
+/// Before this bound the only limit on a request was the pool's five-second
+/// acquire timeout, which a request already holding a connection never met.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// How many requests run at once; the next ones wait for a slot, for as long
+/// as `REQUEST_TIMEOUT` leaves them, and are then answered `503`.
+///
+/// Waiting rather than refusing, because a sync client pushing a backlog is
+/// better served by a short queue than by a retry storm. The bound sits above
+/// the default connection pool, so the pool's own acquire timeout stays the
+/// first thing a flood of database work meets.
+const MAX_IN_FLIGHT_REQUESTS: usize = 64;
+
+/// The two bounds a request lives under, gathered so a test can use the
+/// published ones or shrink them without a second copy of the code applying them.
+#[derive(Clone, Copy)]
+struct Bounds {
+    request_timeout: Duration,
+    max_in_flight: usize,
+}
+
+impl Bounds {
+    const PUBLISHED: Self = Self {
+        request_timeout: REQUEST_TIMEOUT,
+        max_in_flight: MAX_IN_FLIGHT_REQUESTS,
+    };
+}
+
+/// The deadline is the outer layer so that time spent queued for a slot counts
+/// against it; inside, a request could wait for a slot forever.
+///
+/// It takes a router whose state has been applied, and only that. On a router
+/// still waiting for its state axum builds each route again for every request,
+/// the layer with it, and a concurrency limit then gets a fresh semaphore per
+/// request: the bound reads as applied and bounds nothing. Measured, as 192
+/// handlers running at once under a limit of 64.
+fn bounded(router: Router, bounds: Bounds) -> Router {
+    router.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(|_: BoxError| async {
+                ApiError::busy("the request took too long; retry shortly")
+            }))
+            .timeout(bounds.request_timeout)
+            .concurrency_limit(bounds.max_in_flight),
+    )
+}
 
 #[derive(Clone)]
 pub struct CloudServer {
@@ -78,7 +133,7 @@ impl CloudServer {
     }
 
     pub fn router(&self) -> Router {
-        Router::new()
+        let router = Router::new()
             .route("/health", get(health))
             .route("/sync/pull", get(pull_manifest))
             .route("/sync/pull/{chunk_id}", get(pull_chunk))
@@ -92,7 +147,8 @@ impl CloudServer {
             .route("/dashboard/memory", get(browse_memory))
             .route("/dashboard/search", get(browse_search))
             .layer(DefaultBodyLimit::max(self.state.config.max_push_body_bytes))
-            .with_state(Arc::clone(&self.state))
+            .with_state(Arc::clone(&self.state));
+        bounded(router, Bounds::PUBLISHED)
     }
 
     pub async fn serve(self) -> Result<(), ServerError> {
@@ -357,7 +413,9 @@ async fn login(
         .auth
         .resolve_bearer(&state.store, form.token.trim())
         .await
-        .map_err(|_| ApiError::unauthorized("invalid admin token"))?;
+        .map_err(|error| {
+            ApiError::unless_store(error, |_| ApiError::unauthorized("invalid admin token"))
+        })?;
     if principal.role != PrincipalRole::Admin {
         return Err(ApiError::forbidden("admin role is required"));
     }

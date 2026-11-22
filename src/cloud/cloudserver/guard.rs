@@ -27,7 +27,9 @@ pub(super) async fn authenticate(
         .auth
         .resolve_bearer(&state.store, token)
         .await
-        .map_err(|_| ApiError::unauthorized("invalid bearer token"))
+        .map_err(|error| {
+            ApiError::unless_store(error, |_| ApiError::unauthorized("invalid bearer token"))
+        })
 }
 
 pub(super) async fn authorize_project(
@@ -40,9 +42,11 @@ pub(super) async fn authorize_project(
         .auth
         .authorize_project(&state.store, principal, project)
         .await
-        .map_err(|error| match error {
-            AuthError::ProjectRequired => ApiError::bad_request(error.to_string()),
-            _ => ApiError::forbidden("project is not allowed"),
+        .map_err(|error| {
+            ApiError::unless_store(error, |error| match error {
+                AuthError::ProjectRequired => ApiError::bad_request(error.to_string()),
+                _ => ApiError::forbidden("project is not allowed"),
+            })
         })
 }
 

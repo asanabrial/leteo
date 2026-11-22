@@ -739,6 +739,14 @@ of this applies to a normal installation.
 | `LETEO_CLOUD_MAX_POOL` | PostgreSQL connection-pool limit |
 | `LETEO_CLOUD_MAX_PUSH_BYTES` | Maximum cloud push body size |
 
+**Limits on a request.** A request has 25 seconds from arrival to its response,
+time spent waiting for a slot included, and at most 64 run at once; the rest
+wait for a slot. A request past the deadline, and one that fails because the
+database is busy or unreachable (the pool's five-second acquire timeout, a
+server out of connections, a connection that cannot be made), is answered `503`
+with `Retry-After: 5`, and the sync client retries it on its backoff. Any other
+database error is a `500`. Neither limit is configurable.
+
 **Browsing what the server holds.** Sign in at `/dashboard/login` with an admin
 token and `/dashboard` links to a read-only browse: the projects, each
 project's sessions and memories, and a search over memory titles, content and

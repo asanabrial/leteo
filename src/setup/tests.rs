@@ -1311,6 +1311,47 @@ fn uninstalling_takes_leteo_out_and_leaves_everything_else() {
     assert_eq!(again.changed_files(), 0, "{:?}", again.actions);
 }
 
+/// An instruction file kept in a dotfiles repository is a link, and removing
+/// Leteo's block from it rewrites the file it points at. Replacing the link
+/// instead left the repository holding the block and the home directory holding
+/// a copy that had none.
+#[cfg(unix)]
+#[test]
+fn uninstalling_from_an_instruction_file_that_is_a_link_leaves_it_a_link() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = SetupOptions {
+        install_instructions: true,
+        ..options(&temp)
+    };
+    let paths = resolve_agent_paths("claude-code", &setup_options).unwrap();
+    let instructions_path = paths.instructions.clone().unwrap();
+    let dotfiles = temp.path().join("dotfiles").join("CLAUDE.md");
+    write_fixture(&dotfiles, "# My own notes\n\nKeep these.\n");
+    fs::create_dir_all(instructions_path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&dotfiles, &instructions_path).unwrap();
+
+    setup("claude-code", &setup_options).unwrap();
+    assert!(
+        fs::read_to_string(&dotfiles)
+            .unwrap()
+            .contains(MEMORY_PROTOCOL_END),
+        "the install has to have reached the file the link points at"
+    );
+
+    uninstall("claude-code", &setup_options).unwrap();
+
+    assert!(
+        fs::symlink_metadata(&instructions_path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link was replaced by a plain file"
+    );
+    let kept = fs::read_to_string(&dotfiles).unwrap();
+    assert!(!kept.contains(MEMORY_PROTOCOL_END), "{kept}");
+    assert!(kept.contains("Keep these."), "{kept}");
+}
+
 #[test]
 fn uninstalling_an_agent_that_never_had_leteo_changes_nothing() {
     let temp = TempDir::new().unwrap();

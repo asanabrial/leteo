@@ -1905,6 +1905,71 @@ fn a_tombstone_that_returns_to_its_origin_does_not_delete_the_moved_memory() {
     );
 }
 
+/// A delete that names no project is "gone from the memories filed under none",
+/// which is the comparison every other delete makes, so it takes out a memory
+/// that has no project and leaves one that has.
+#[test]
+fn a_delete_that_names_no_project_applies_only_to_a_memory_filed_under_none() {
+    let (_temp, mut store) = super::store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let filed = store
+        .add_observation(observation("s1", "Filed under a project", "a body"))
+        .unwrap()
+        .observation;
+    let unfiled = store
+        .add_observation(observation("s1", "Filed under none", "another body"))
+        .unwrap()
+        .observation;
+    store
+        .connection()
+        .execute(
+            "UPDATE observations SET project = NULL WHERE id = ?1",
+            [unfiled.id],
+        )
+        .unwrap();
+    let delete = |seq: i64, sync_id: &str| crate::memory::model::SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: crate::sync::OP_DELETE.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": sync_id,
+            "deleted": true,
+            "deleted_at": "2026-01-01 00:00:00",
+        })
+        .to_string(),
+        source: "cloud".to_owned(),
+        project: String::new(),
+        occurred_at: "2026-01-01 00:00:00".to_owned(),
+        acked_at: None,
+    };
+
+    store
+        .apply_pulled_sync_mutation("cloud", &delete(1, &filed.sync_id))
+        .unwrap();
+    store
+        .apply_pulled_sync_mutation("cloud", &delete(2, &unfiled.sync_id))
+        .unwrap();
+
+    assert!(
+        store
+            .get_observation(filed.id)
+            .unwrap()
+            .deleted_at
+            .is_none(),
+        "a delete naming no project reached a memory filed under one"
+    );
+    assert!(
+        store
+            .get_observation(unfiled.id)
+            .unwrap()
+            .deleted_at
+            .is_some(),
+        "a delete naming no project did not reach a memory filed under none"
+    );
+}
+
 /// The journal's own vocabulary: what is asked for, what is enrolled, and what
 /// a queued mutation infers.
 ///
@@ -2484,6 +2549,28 @@ fn a_memory_saved_into_another_projects_session_takes_the_session_with_it() {
         .filter(|m| m.entity == "session")
         .count();
     assert_eq!(sessions, 1);
+}
+
+/// The test above saves a memory first, and the memory queues the session before
+/// the prompt does, so it cannot say whether the prompt would have.
+#[test]
+fn a_prompt_asked_in_another_projects_session_takes_the_session_with_it() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "elsewhere", "/tmp/x").unwrap();
+    store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "asked in the other project's session".to_owned(),
+            project: Some("leteo".to_owned()),
+        })
+        .unwrap();
+
+    let (_peer_temp, peer) = peer_after_applying(&store, "leteo");
+
+    assert_eq!(
+        peer.recent_prompts(Some("leteo"), Some(10)).unwrap().len(),
+        1
+    );
 }
 
 #[test]

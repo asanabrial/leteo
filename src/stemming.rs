@@ -112,10 +112,11 @@ pub fn memory_language(setting: Option<&str>) -> Interface {
 /// The function words each candidate language is recognised by.
 ///
 /// The one table detection, `doctor` and the tests all read. A word that appears
-/// in the lists of two languages — `de`, `que`, `in`, `den` — is kept here
+/// in the lists of two languages — `de`, `que`, `por`, `con` — is kept here
 /// because it is a stop word in both, and is dropped when the table is indexed:
 /// it cannot say which of the two a text is in, and counting it for both would
-/// let a Portuguese sentence full of `de` and `que` tie with a Spanish one.
+/// let a Spanish sentence full of `por` and `que` score as much for Portuguese
+/// or French as for Spanish.
 /// The lists are short on purpose. They are the commonest function words, which
 /// a text of a sentence or two carries several of, and not a vocabulary.
 ///

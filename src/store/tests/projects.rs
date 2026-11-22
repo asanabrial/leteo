@@ -1053,6 +1053,38 @@ fn merging_a_project_does_not_send_a_live_memory_twice() {
     assert_eq!(observations, 1);
 }
 
+/// A name nobody replicates has nowhere to send what was waiting, so it goes
+/// rather than being filed under a project no peer follows.
+#[test]
+fn merging_into_a_project_nobody_replicates_drops_what_was_waiting() {
+    let (_temp, mut store) = enrolled_store(&["old-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Saved before it was left", "body");
+    memory.project = Some("old-project".to_owned());
+    store.add_observation(memory).unwrap();
+    assert!(
+        !unsent_under(&store, "old-project").is_empty(),
+        "the fixture needs something waiting"
+    );
+    store
+        .connection
+        .execute(
+            "DELETE FROM sync_enrolled_projects WHERE project = 'old-project'",
+            [],
+        )
+        .unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "private-project")
+        .unwrap();
+
+    assert!(unsent_under(&store, "old-project").is_empty());
+    assert!(
+        unsent_under(&store, "private-project").is_empty(),
+        "what was waiting was filed under a project no peer follows"
+    );
+}
+
 /// Moving a directory's sessions out of a name that is left empty carries the
 /// delete the same way, because it is the same arrangement for fewer rows.
 #[test]

@@ -841,18 +841,23 @@ fn an_explicit_store_flag_beats_the_environment_that_names_another_store() {
     );
     assert!(from_flag.join("leteo.db").is_file());
 
+    let after_subcommand = temp.path().join("after-subcommand");
     let stats = run_json(
         bare_leteo()
             .env("LETEO_DATA_DIR", &from_env)
             .env("LETEO_DATABASE", &env_database)
             .arg("stats")
             .arg("--data-dir")
-            .arg(&from_flag),
+            .arg(&after_subcommand),
     );
     assert_eq!(
         stats["total_observations"],
         json!(0),
         "the flag also wins when it follows the subcommand"
+    );
+    assert!(
+        after_subcommand.join("leteo.db").is_file(),
+        "the flag after the subcommand named a store that was never written"
     );
 
     let stats = run_json(
@@ -864,6 +869,26 @@ fn an_explicit_store_flag_beats_the_environment_that_names_another_store() {
         stats["total_observations"],
         json!(1),
         "with no flag the environment still names the store"
+    );
+}
+
+/// A variable exported empty is how a shell unsets one it cannot remove, and it
+/// names no store: reading it as a path would open the working directory.
+#[test]
+fn an_empty_database_variable_names_no_store() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let data_dir = temp.path().join("named-by-data-dir");
+
+    run_json(
+        bare_leteo()
+            .env("LETEO_DATABASE", "")
+            .env("LETEO_DATA_DIR", &data_dir)
+            .arg("stats"),
+    );
+
+    assert!(
+        data_dir.join("leteo.db").is_file(),
+        "an empty LETEO_DATABASE overruled LETEO_DATA_DIR"
     );
 }
 
@@ -1710,6 +1735,52 @@ fn a_listing_answers_about_the_project_the_directory_belongs_to() {
     assert!(
         nada.contains("matches words, not meanings"),
         "a search that fails everywhere is about the words after all: {nada}"
+    );
+}
+
+/// An empty answer that asks for more than the store returns says its count is
+/// a floor.
+///
+/// The count behind "N elsewhere" is of what the store handed back, which it
+/// stops at its own maximum, so measuring it against the limit that was typed
+/// printed "20 elsewhere" for a store that holds twenty-five.
+#[test]
+fn an_empty_search_past_the_stores_maximum_says_the_elsewhere_count_is_a_floor() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("floor.db");
+    let here = temp.path().join("alpha");
+    std::fs::create_dir_all(here.join(".leteo")).expect("create the project directory");
+    std::fs::write(
+        here.join(".leteo").join("config.json"),
+        br#"{"project_name": "alpha"}"#,
+    )
+    .expect("name the project this directory belongs to");
+    for index in 0..25 {
+        leteo(&database)
+            .arg("save")
+            .arg(format!("A note about zarandajas number {index}"))
+            .arg(format!(
+                "It speaks of zarandajas and nothing else, {index}."
+            ))
+            .arg("--project")
+            .arg("beta")
+            .assert()
+            .success();
+    }
+
+    let answer = leteo(&database)
+        .current_dir(&here)
+        .arg("search")
+        .arg("zarandajas")
+        .arg("--limit")
+        .arg("60")
+        .assert()
+        .success();
+
+    let said = String::from_utf8_lossy(&answer.get_output().stderr).into_owned();
+    assert!(
+        said.contains("Nothing in alpha") && said.contains("20 or more elsewhere"),
+        "{said}"
     );
 }
 

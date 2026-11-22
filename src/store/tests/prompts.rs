@@ -309,6 +309,44 @@ fn a_stored_harness_message_is_not_listed_and_does_not_take_a_place() {
     assert_eq!(everything.len(), 13);
 }
 
+/// The hook decides with Rust's `trim_start` and the listing with SQL's `ltrim`,
+/// and they have to agree about what may stand in front of a harness prefix.
+/// Only ASCII whitespace is held here: Unicode whitespace is where they differ.
+#[test]
+fn the_listing_and_the_hook_agree_on_ascii_whitespace_before_a_harness_prefix() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let prefix = crate::memory::normalize::HARNESS_MESSAGE_PREFIXES[0];
+    let leaders = [" ", "\t", "\n", "\u{b}", "\u{c}", "\r"];
+    for (n, leader) in leaders.iter().enumerate() {
+        store
+            .connection
+            .execute(
+                "INSERT INTO prompts (sync_id, session_id, content, project)
+                 VALUES (?1, 's1', ?2, 'leteo')",
+                rusqlite::params![format!("lead-{n}"), format!("{leader}{prefix} body {n}")],
+            )
+            .unwrap();
+    }
+    let listed: Vec<String> = store
+        .recent_distinct_prompts(Some("leteo"), Some(50))
+        .unwrap()
+        .into_iter()
+        .map(|prompt| prompt.content)
+        .collect();
+    for leader in leaders {
+        let content = format!("{leader}{prefix} body");
+        let by_hook = crate::memory::normalize::is_harness_message(&content);
+        let by_listing = !listed
+            .iter()
+            .any(|listed| listed.starts_with(&format!("{leader}{prefix}")));
+        assert_eq!(
+            by_hook, by_listing,
+            "{leader:?} before {prefix}: the hook says harness={by_hook}, the listing hides it={by_listing}"
+        );
+    }
+}
+
 #[test]
 fn a_prompt_with_nothing_in_it_is_refused_like_a_memory_with_nothing_in_it() {
     // The door that refuses an empty memory did not exist for prompts, and a

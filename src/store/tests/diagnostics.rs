@@ -1880,6 +1880,65 @@ fn a_memory_with_no_hash_counts_as_stale_and_is_repaired() {
     );
 }
 
+/// A repair that could not read a row or write a hash says so, instead of
+/// returning the count of the ones it did reach.
+///
+/// `doctor --repair` prints this number as what was put back, so an `Ok` that
+/// left rows alone would report a store as repaired that it had not touched.
+#[test]
+fn a_hash_repair_that_could_not_read_or_write_says_so() {
+    let (_temp, mut unreadable) = store();
+    unreadable.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = unreadable
+        .add_observation(observation("s1", "Unreadable body", "a body"))
+        .unwrap()
+        .observation;
+    unreadable
+        .connection()
+        .execute(
+            "UPDATE observations SET normalized_hash = x'ff00' WHERE id = ?1",
+            rusqlite::params![memory.id],
+        )
+        .unwrap();
+    assert!(
+        unreadable.recompute_stale_hashes().is_err(),
+        "a row whose hash cannot be read was skipped and the repair reported success"
+    );
+
+    let (_temp, mut unwritable) = store();
+    unwritable.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = unwritable
+        .add_observation(observation("s1", "Unwritable hash", "a body"))
+        .unwrap()
+        .observation;
+    unwritable
+        .connection()
+        .execute(
+            "UPDATE observations SET normalized_hash = NULL WHERE id = ?1",
+            rusqlite::params![memory.id],
+        )
+        .unwrap();
+    {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        unwritable
+            .connection()
+            .authorizer(Some(|context: AuthContext<'_>| match context.action {
+                AuthAction::Update {
+                    table_name,
+                    column_name,
+                } if table_name == "observations" && column_name == "normalized_hash" => {
+                    Authorization::Deny
+                }
+                _ => Authorization::Allow,
+            }))
+            .unwrap();
+    }
+    assert!(
+        unwritable.recompute_stale_hashes().is_err(),
+        "a hash that could not be written was counted as put back"
+    );
+}
+
 /// Runs git in `directory` and returns what it printed. These tests need git, as
 /// the suite does everywhere it runs: a test that skipped without it would be
 /// one that checks nothing on the machine that most needs the answer.
@@ -1894,6 +1953,8 @@ fn git_in(directory: &std::path::Path, arguments: &[&str]) -> String {
             "user.email=t@example.com",
             "-c",
             "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
         ])
         .args(arguments)
         .output()

@@ -788,6 +788,29 @@ fn a_spanish_memory_is_stemmed_in_spanish_when_no_language_is_set() {
     assert!(strict(&english, SPANISH_QUESTION).is_empty());
 }
 
+/// The setting is free text handed to a model, so it can name a language no
+/// stemmer exists for. That says nothing about what was written, and the store
+/// must go on detecting rather than file everything under English.
+#[test]
+fn a_setting_that_names_a_language_leteo_does_not_speak_leaves_detection_on() {
+    let temp = TempDir::new().unwrap();
+    crate::settings::save(
+        temp.path(),
+        &crate::settings::Settings {
+            language: Some("klingon".to_owned()),
+            ..crate::settings::Settings::default()
+        },
+    )
+    .unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+    assert!(store.detects_language());
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", SPANISH_TITLE, SPANISH_BODY))
+        .unwrap();
+    assert_eq!(language_of(&store, SPANISH_TITLE), "es");
+}
+
 #[test]
 fn an_english_memory_and_one_too_short_to_tell_are_recorded_in_english() {
     let (_temp, mut store) = store_with_no_language();

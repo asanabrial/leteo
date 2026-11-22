@@ -109,6 +109,34 @@ async fn mint_admin(server: &CloudServer, pepper: &str, name: &str, project: &st
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn cloud_router_applies_the_published_bounds() {
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config).await.unwrap();
+    let response = server
+        .router()
+        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bounds = response
+        .extensions()
+        .get::<Bounds>()
+        .expect("cloud router bounds");
+    assert_eq!(bounds.request_timeout, REQUEST_TIMEOUT);
+    assert_eq!(bounds.max_in_flight, MAX_IN_FLIGHT_REQUESTS);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
 async fn a_tenant_can_never_reach_another_tenants_project() {
     use axum::body::Body;
     use axum::http::Request;

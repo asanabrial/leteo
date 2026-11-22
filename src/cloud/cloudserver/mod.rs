@@ -86,15 +86,32 @@ impl Bounds {
 /// the layer with it, and a concurrency limit then gets a fresh semaphore per
 /// request: the bound reads as applied and bounds nothing. Measured, as 192
 /// handlers running at once under a limit of 64.
+///
+/// POST /sync/push deduplicates the chunk by project and canonical id in the
+/// same transaction as its derived mutations. POST /sync/mutations/push appends
+/// new sequences on replay and can duplicate a batch after an uncertain commit.
+/// POST /dashboard/login mints a signed cookie without creating a session row.
+/// Managed bearer authentication can refresh last_used_at, and paused pushes
+/// can log another rejected attempt. Those writes do not replay sync data.
 fn bounded(router: Router, bounds: Bounds) -> Router {
-    router.layer(
+    let router = router.layer(
         ServiceBuilder::new()
             .layer(HandleErrorLayer::new(|_: BoxError| async {
                 ApiError::busy("the request took too long; retry shortly")
             }))
             .timeout(bounds.request_timeout)
             .concurrency_limit(bounds.max_in_flight),
-    )
+    );
+
+    #[cfg(test)]
+    let router = router.layer(axum::middleware::map_response(
+        move |mut response: Response| async move {
+            response.extensions_mut().insert(bounds);
+            response
+        },
+    ));
+
+    router
 }
 
 #[derive(Clone)]

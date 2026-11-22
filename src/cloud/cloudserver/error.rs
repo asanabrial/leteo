@@ -113,8 +113,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// What a `503` tells a client to wait, in seconds. A little over the pool's
-/// acquire timeout, so a retry does not land on the same full pool.
+/// The `503` retry delay matches the pool's five-second acquire timeout.
 pub(super) const RETRY_AFTER_SECONDS: u64 = 5;
 
 /// Whether a database error means "not now" rather than "this is broken".

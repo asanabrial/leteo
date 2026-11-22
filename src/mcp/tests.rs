@@ -704,6 +704,33 @@ fn a_name_only_an_empty_hook_session_carries_is_refused_as_unknown() {
 }
 
 #[test]
+fn a_name_an_empty_session_recorded_for_this_directory_resolves() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    store
+        .create_session("hook", "recorded-here", "C:/workspace")
+        .unwrap();
+
+    assert_eq!(
+        explicit_project_resolution(&server, &store, "recorded-here").unwrap(),
+        ("recorded-here".to_owned(), SOURCE_KNOWN_PROJECT.to_owned())
+    );
+}
+
+#[test]
+fn a_name_an_empty_session_recorded_for_another_directory_is_refused() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    store
+        .create_session("hook", "recorded-there", "C:/elsewhere")
+        .unwrap();
+
+    let error = explicit_project_resolution(&server, &store, "recorded-there")
+        .expect_err("a name only another directory carries is not known here");
+    assert_eq!(error_payload(&error)["error"]["code"], "unknown_project");
+}
+
+#[test]
 fn a_project_opened_with_mem_session_start_is_accepted_before_it_holds_anything() {
     let (_temp, server) = test_server(McpOptions::default());
     server

@@ -375,9 +375,8 @@ impl Store {
     /// MCP uses it to reject project names an agent invented.
     ///
     /// An empty session a hook opened does not count: a hook opens one wherever
-    /// an agent starts, and on a real store 629 of 651 sessions opened under
-    /// temporary directories held nothing, each making its directory's name a
-    /// project an agent could then write to.
+    /// an agent starts, so counting it made every directory's name a project an
+    /// agent could then write to.
     pub fn project_exists(&self, project: &str) -> Result<bool, StoreError> {
         let project = normalize::project(project);
         if project.is_empty() {

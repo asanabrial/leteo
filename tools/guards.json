@@ -2768,5 +2768,11 @@
     "file": "src/mcp/mod.rs",
     "old": "if recorded_here.contains(&requested) {",
     "new": "if false {"
+  },
+  {
+    "name": "declared: leteo session-start opens its session undeclared",
+    "file": "src/cli/mod.rs",
+    "old": "store.create_declared_session(",
+    "new": "store.create_session("
   }
 ]

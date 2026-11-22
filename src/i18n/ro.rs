@@ -171,6 +171,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Proiectul {name} {gone}, cu {memories} memorii, \
                       {sessions} sesiuni și {prompts} prompturi",
     sessions_kept: " — {count} sesiuni păstrate, conțin rânduri ale altor proiecte",
+    caveats_unread: "Rezervele ei nu au putut fi citite: această amintire poate fi depășită sau contrazisă",
     refreshed_query: "\"{query}\": {observations} observații, {sessions} sesiuni, \
                       {prompts} prompturi",
 

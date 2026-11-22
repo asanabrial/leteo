@@ -9032,7 +9032,7 @@ fn a_tool_whose_caveat_lookup_failed_says_so_and_still_answers() {
         "The method we used before",
         "We used the old method.",
     );
-    let unread = crate::mcp::output::CAVEATS_UNREAD_HINT;
+    let unread = crate::recall::CAVEATS_UNREAD_HINT;
     let call = |server: &LeteoMcpServer| {
         let searched = server
             .mem_search(Parameters(

@@ -60,3 +60,34 @@ fn a_delete_is_asked_about_before_it_reaches_the_store() {
         "gone, and the list reloaded without it"
     );
 }
+
+/// `unwrap_or_default` on the lookup opened a memory with no caveat on it and
+/// nothing on screen to say that the graph could not be asked.
+#[test]
+fn a_memory_opened_while_its_caveats_could_not_be_read_says_so_in_the_status_line() {
+    let (_temp, mut store) = store_of(0);
+    let listed = crate::recall::unreadable::listed_memory_with_unreadable_caveats(
+        &mut store,
+        "s1",
+        "leteo",
+        "We indent with tabs",
+        "We indent with spaces now",
+    );
+    let mut app = App::load(&mut store).unwrap();
+    app.page = Page::Dashboard;
+
+    assert!(!apply_action(
+        &mut app,
+        &mut store,
+        Action::OpenObservation(listed.id)
+    ));
+
+    assert_eq!(app.page, Page::Detail);
+    let status = app.status.as_ref().expect("the status line says it");
+    assert_eq!(
+        status.text,
+        crate::i18n::screens(app.interface).caveats_unread
+    );
+    assert!(status.is_error);
+    assert_eq!(app.detail.as_ref().map(|shown| shown.id), Some(listed.id));
+}

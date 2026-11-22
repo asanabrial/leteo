@@ -387,6 +387,14 @@ All notable changes to Leteo are documented in this file.
   against these" and hands an overturned memory over as current. Each now keeps
   answering and adds a sentence to its `hint`; `mem_review` and `mem_timeline`
   gain an optional `hint` field, skipped when empty (#394).
+- **The opening block, the per-prompt hint and the terminal interface say when
+  they could not read a memory's caveats.** They answered a failed lookup with
+  no caveats at all, so an overturned decision read as current in the two texts
+  an agent reads most. The opening block now carries the same sentence the MCP
+  tools use, once, under its heading and inside its byte budget; the hint
+  carries it once under its header; opening a memory in the terminal interface
+  puts it in the status line, in the interface language. The rule moved from the
+  MCP layer to `recall`, which all of them can reach (#396).
 
 ## [0.4.3] - 2026-11-03
 

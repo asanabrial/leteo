@@ -2897,8 +2897,32 @@
   },
   {
     "name": "mcp: a failed caveat lookup is not said in the reply",
-    "file": "src/mcp/output.rs",
-    "old": "(Default::default(), Some(CAVEATS_UNREAD_HINT.to_owned()))",
-    "new": "(Default::default(), None)"
+    "file": "src/recall.rs",
+    "old": "(BTreeMap::new(), Some(CAVEATS_UNREAD_HINT.to_owned()))",
+    "new": "(BTreeMap::new(), None)"
+  },
+  {
+    "name": "recall: the opening block does not say its caveats could not be read",
+    "file": "src/recall.rs",
+    "old": "caveats_unread: caveats_note.is_some(),",
+    "new": "caveats_unread: false,"
+  },
+  {
+    "name": "recall: the block leaves the unread-caveats sentence out of the render the budget measures",
+    "file": "src/recall.rs",
+    "old": "    if caveats_unread {\n        context.push_str(CAVEATS_UNREAD_HINT);",
+    "new": "    if false && caveats_unread {\n        context.push_str(CAVEATS_UNREAD_HINT);"
+  },
+  {
+    "name": "hooks: the per-prompt hint does not say its caveats could not be read",
+    "file": "src/hooks/context.rs",
+    "old": "if let Some(note) = caveats_note {",
+    "new": "if let Some(note) = caveats_note.filter(|_| false) {"
+  },
+  {
+    "name": "tui: a memory opened with unreadable caveats says nothing in the status line",
+    "file": "src/tui/actions.rs",
+    "old": "if unread.is_some() {",
+    "new": "if false && unread.is_some() {"
   }
 ]

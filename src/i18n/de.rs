@@ -173,6 +173,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Projekt {name} {gone}, mit {memories} Erinnerung(en), \
                       {sessions} Sitzung(en) und {prompts} Prompt(s)",
     sessions_kept: " — {count} Sitzung(en) behalten, sie tragen fremde Projekte",
+    caveats_unread: "Die Vorbehalte konnten nicht gelesen werden: Diese Erinnerung könnte überholt oder widerlegt sein",
     refreshed_query: "\"{query}\": {observations} Beobachtung(en), {sessions} Sitzung(en), \
                       {prompts} Prompt(s)",
 

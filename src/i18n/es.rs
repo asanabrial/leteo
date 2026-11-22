@@ -171,6 +171,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Proyecto {name} {gone}, con {memories} memoria(s), \
                       {sessions} sesión(es) y {prompts} prompt(s)",
     sessions_kept: " — se conservaron {count} sesión(es): tienen filas de otros proyectos",
+    caveats_unread: "No se pudieron leer sus advertencias: esta memoria puede haber sido superada o contradicha",
     refreshed_query: "\"{query}\": {observations} memoria(s), {sessions} sesión(es), \
                       {prompts} prompt(s)",
 

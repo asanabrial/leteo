@@ -4299,3 +4299,43 @@ fn a_whole_conversation_is_remembered_so_no_hint_is_offered_twice() {
         written.len()
     );
 }
+
+/// `unwrap_or_default` on the lookup printed the match as if nothing had been
+/// said against it, in the line an agent reads at every prompt.
+#[test]
+fn a_hint_whose_caveat_lookup_failed_says_so_once_and_still_names_the_memory() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    // The relevance bar is relative to the median of the candidates, so a lone
+    // match is not enough for the hint to speak.
+    for index in 0..14 {
+        store
+            .add_observation(memory(
+                &format!("Engine note {index}"),
+                "A passing remark about the rendering engine and nothing else",
+            ))
+            .unwrap();
+    }
+    let listed = crate::recall::unreadable::listed_memory_with_unreadable_caveats(
+        &mut store,
+        "agent-session",
+        "hook-project",
+        "We chose SQLite as the storage engine",
+        "We moved the storage engine to Postgres",
+    );
+
+    let mut prompt = payload.clone();
+    prompt.prompt = "Which storage engine did we choose?".to_owned();
+    let hint = run(&mut store, HookEvent::UserPromptSubmit, &prompt)
+        .unwrap()
+        .additional_context
+        .expect("the prompt matches the memory that is still listed");
+
+    assert_eq!(
+        hint.matches(crate::recall::CAVEATS_UNREAD_HINT).count(),
+        1,
+        "{hint}"
+    );
+    assert!(hint.contains(&format!("- #{}", listed.id)), "{hint}");
+}

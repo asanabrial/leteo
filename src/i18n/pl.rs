@@ -171,6 +171,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "Projekt {name} {gone}, z {memories} wspomnieniami, {sessions} sesjami \
                       i {prompts} promptami",
     sessions_kept: " — zachowano {count} sesji, trzymają wiersze innych projektów",
+    caveats_unread: "Nie udało się odczytać jej zastrzeżeń: to wspomnienie mogło zostać zastąpione lub zaprzeczone",
     refreshed_query: "\"{query}\": {observations} obserwacji, {sessions} sesji, \
                       {prompts} promptów",
 

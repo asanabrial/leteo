@@ -204,13 +204,21 @@ pub(super) fn apply_action(app: &mut App, store: &mut Store, action: Action) -> 
             match store.get_observation(id) {
                 Ok(observation) => {
                     // Failing to reach the graph costs the annotation, not the
-                    // memory somebody asked to read.
-                    let caveats = store
-                        .caveats_for(std::slice::from_ref(&observation.sync_id))
-                        .unwrap_or_default()
-                        .remove(&observation.sync_id)
-                        .unwrap_or_default();
+                    // memory somebody asked to read; the status line says so,
+                    // because a detail page with no caveat reads as one that
+                    // has none.
+                    let (mut caveats, unread) = crate::recall::read_caveats(
+                        store,
+                        std::slice::from_ref(&observation.sync_id),
+                    );
+                    let caveats = caveats.remove(&observation.sync_id).unwrap_or_default();
                     app.open_detail(observation, caveats);
+                    if unread.is_some() {
+                        app.status = Some(StatusMessage {
+                            text: say.caveats_unread.to_owned(),
+                            is_error: true,
+                        });
+                    }
                 }
                 Err(error) => app.set_error(error),
             }

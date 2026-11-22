@@ -50,6 +50,126 @@ pub(crate) const SESSION_LINE_CHARS: usize = 320;
 /// bound and that is 18% of pasted files not spent on an opening block.
 pub(crate) const PROMPT_LINE_CHARS: usize = 200;
 
+/// What a surface says when the relation graph could not be read.
+///
+/// A reply with no caveats reads as "nothing was said against these", which is
+/// the reading that hands over an overturned decision as current. Found by
+/// making `memory_relations` unreadable with a SQLite authorizer: every surface
+/// that looks caveats up answered as if there were none, with no sign a lookup
+/// had failed.
+///
+/// Here rather than in the MCP layer because the opening block, the per-prompt
+/// hint and the terminal interface need the same rule and none of them may
+/// depend on the layer above them. The MCP tools read it from here too, so the
+/// sentence and the function that decides when to say it exist once.
+pub const CAVEATS_UNREAD_HINT: &str = "The relation graph could not be read, so this answer does not say whether any memory in it was superseded or contradicted. Treat every memory here as unchecked.";
+
+/// Looks the caveats of `named` up, and says so when the lookup failed.
+///
+/// One function for every surface that carries caveats, so none of them chooses
+/// its own way of swallowing the error. The lookup failing costs the
+/// annotation and the note takes its place; it never costs the call, because
+/// what was asked for was already read.
+pub fn read_caveats(
+    store: &crate::store::Store,
+    named: &[String],
+) -> (BTreeMap<String, Vec<Caveat>>, Option<String>) {
+    match store.caveats_for(named) {
+        Ok(caveats) => (caveats, None),
+        Err(error) => {
+            tracing::warn!(%error, "caveat lookup failed");
+            (BTreeMap::new(), Some(CAVEATS_UNREAD_HINT.to_owned()))
+        }
+    }
+}
+
+/// A store whose caveat lookup fails, for the tests of every surface that says so.
+#[cfg(test)]
+pub(crate) mod unreadable {
+    use crate::memory::model::{AddObservation, Observation};
+
+    /// Saves a memory that a later one overturned, then makes the lookup of the
+    /// later one's caveats fail, and answers with the later one — the memory every
+    /// listing still shows.
+    ///
+    /// The failure is a title the lookup cannot read as text, on the memory that
+    /// was overturned and moved out of `session_id`, which every listing hides.
+    /// Only the lookup of caveats meets it: denying the whole relations table
+    /// would also fail the queries that hide superseded memories, and test a
+    /// different failure. The indexing triggers hand a title to functions that
+    /// refuse a blob, so they are dropped first, or the write itself would fail.
+    pub(crate) fn listed_memory_with_unreadable_caveats(
+        store: &mut crate::store::Store,
+        session_id: &str,
+        project: &str,
+        overturned_title: &str,
+        listed_title: &str,
+    ) -> Observation {
+        let mut save = |title: &str| {
+            store
+                .add_observation(AddObservation {
+                    session_id: session_id.to_owned(),
+                    kind: "decision".to_owned(),
+                    title: title.to_owned(),
+                    content: format!("the body of {title}"),
+                    tool_name: None,
+                    project: Some(project.to_owned()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                })
+                .unwrap()
+                .observation
+        };
+        let old = save(overturned_title);
+        let new = save(listed_title);
+        let proposed = store
+            .save_relation(crate::memory::model::SaveRelationParams {
+                sync_id: crate::memory::normalize::sync_id("rel"),
+                source_id: new.sync_id.clone(),
+                target_id: old.sync_id.clone(),
+            })
+            .unwrap();
+        store
+            .judge_relation(crate::memory::model::JudgeRelationParams {
+                judgment_id: proposed.sync_id,
+                relation: crate::store::RELATION_SUPERSEDES.to_owned(),
+                marked_by_actor: "agent".to_owned(),
+                marked_by_kind: "agent".to_owned(),
+                superseding_id: Some(new.id),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .create_session("elsewhere", project, "C:/repo")
+            .unwrap();
+        store
+            .connection()
+            .execute_batch(
+                "DROP TRIGGER obs_exact_update;
+                 DROP TRIGGER obs_fts_update;
+                 DROP TRIGGER obs_stems_update;
+                 DROP TRIGGER obs_stems_identifiers;",
+            )
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE observations SET session_id = 'elsewhere', title = CAST(title AS BLOB)
+                 WHERE id = ?1",
+                rusqlite::params![old.id],
+            )
+            .unwrap();
+        assert!(
+            store
+                .caveats_for(std::slice::from_ref(&new.sync_id))
+                .is_err(),
+            "the lookup these tests are about has to fail for the rest to mean anything"
+        );
+        new
+    }
+}
+
 /// Gathers a session's opening context and renders it.
 ///
 /// Both surfaces that hand context to an agent — `leteo context` and the
@@ -167,8 +287,9 @@ pub fn assemble_listed(
     //
     // Not fatal. The annotation is worth having and the context is worth far
     // more, so a store that cannot answer this costs the caveats rather than
-    // the whole opening context — which is what `?` here would have cost.
-    let caveats = store.caveats_for(&named).unwrap_or_default();
+    // the whole opening context — which is what `?` here would have cost. The
+    // block says so instead, inside its budget.
+    let (caveats, caveats_note) = read_caveats(store, &named);
     // The count comes back with the text, from the same render, because the
     // byte budget can drop memories: a count taken before the cut is a number
     // the block does not carry, and this is the surface whose caller reports
@@ -183,6 +304,7 @@ pub fn assemble_listed(
         Frame {
             project,
             budget_bytes,
+            caveats_unread: caveats_note.is_some(),
         },
     ))
 }
@@ -286,6 +408,11 @@ pub struct Frame<'a> {
     /// it; with none, every line does.
     pub project: Option<&'a str>,
     pub budget_bytes: usize,
+    /// Whether the lookup behind `caveats` failed, so the block says that its
+    /// memories are unchecked. Part of the frame because the sentence has to be
+    /// rendered inside the loop that enforces `budget_bytes`: appended after it,
+    /// the block would exceed the limit it publishes.
+    pub caveats_unread: bool,
 }
 
 /// Renders the opening context.
@@ -356,6 +483,7 @@ pub fn format_context_listed(
     let Frame {
         project,
         budget_bytes,
+        caveats_unread,
     } = frame;
     // A session with no summary is a date and nothing else: it cannot tell
     // anybody what the work was for, and on a real store one such line was a
@@ -391,6 +519,7 @@ pub fn format_context_listed(
         pinned_omitted,
         observations,
         caveats,
+        caveats_unread,
         own_project: own_project.as_deref(),
     };
     // Render, and when the block is over budget drop the least important thing
@@ -481,6 +610,7 @@ struct Sections<'a> {
     pinned_omitted: usize,
     observations: &'a [Observation],
     caveats: &'a BTreeMap<String, Vec<Caveat>>,
+    caveats_unread: bool,
     /// The project the block is scoped to, as the store spells it.
     own_project: Option<&'a str>,
 }
@@ -494,9 +624,16 @@ fn render_context(sections: &Sections, shown: &Shown, budget_bytes: usize) -> St
         pinned_omitted,
         observations,
         caveats,
+        caveats_unread,
         own_project,
     } = *sections;
     let mut context = String::from("## Memory from Previous Sessions\n\n");
+    // Above the memories it qualifies, and rendered here rather than appended to
+    // the finished block so that the byte budget counts it.
+    if caveats_unread {
+        context.push_str(CAVEATS_UNREAD_HINT);
+        context.push_str("\n\n");
+    }
     if shown.sessions > 0 {
         context.push_str("### Recent Sessions\n");
         for session in &sessions[..shown.sessions] {
@@ -819,6 +956,7 @@ mod tests {
             Frame {
                 project: None,
                 budget_bytes: usize::MAX,
+                caveats_unread: false,
             },
         );
         assert!(context.contains("Ship the pagination work"), "{context}");
@@ -849,6 +987,7 @@ mod tests {
             Frame {
                 project: None,
                 budget_bytes: usize::MAX,
+                caveats_unread: false,
             },
         );
 
@@ -1121,6 +1260,7 @@ mod tests {
             Frame {
                 project: None,
                 budget_bytes: usize::MAX,
+                caveats_unread: false,
             },
         );
 
@@ -1292,6 +1432,7 @@ mod tests {
             Frame {
                 project: None,
                 budget_bytes: usize::MAX,
+                caveats_unread: false,
             },
         );
         assert!(
@@ -1552,6 +1693,7 @@ And the tests could not see it, because a small store scores near zero."
             Frame {
                 project: Some("quarry"),
                 budget_bytes,
+                caveats_unread: false,
             },
         )
     }
@@ -1737,5 +1879,70 @@ And the tests could not see it, because a small store scores near zero."
             !context.contains("Memory number 0 "),
             "the oldest memory is the one the budget drops first: {context}"
         );
+    }
+
+    /// `unwrap_or_default` on the lookup printed every memory of the block as if
+    /// nothing had been said against it.
+    #[test]
+    fn an_opening_block_whose_caveat_lookup_failed_says_so_once_and_still_lists() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(crate::store::StoreConfig::new(temp.path().join("c.db")))
+                .unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        let listed = unreadable::listed_memory_with_unreadable_caveats(
+            &mut store,
+            "s1",
+            "leteo",
+            "We indent with tabs",
+            "We indent with spaces now",
+        );
+
+        let context = assemble(&store, Some("leteo"), None, 20, usize::MAX).unwrap();
+
+        assert_eq!(context.matches(CAVEATS_UNREAD_HINT).count(), 1, "{context}");
+        assert!(
+            context.contains(&format!(
+                "- #{} [decision] We indent with spaces now",
+                listed.id
+            )),
+            "the memory is still listed: {context}"
+        );
+    }
+
+    /// The limit a block publishes is the limit it applies, sentence included.
+    #[test]
+    fn the_sentence_about_unread_caveats_is_counted_against_the_budget() {
+        let memories: Vec<Observation> = (1..=6)
+            .map(|id| observation(id, &format!("Memory number {id}")))
+            .collect();
+        let render = |budget_bytes: usize| {
+            format_context_listed(
+                &[],
+                &[],
+                &[],
+                0,
+                &memories,
+                &BTreeMap::new(),
+                Frame {
+                    project: None,
+                    budget_bytes,
+                    caveats_unread: true,
+                },
+            )
+        };
+        let (whole, listed) = render(usize::MAX);
+        assert_eq!(listed.memories.len(), 6, "{whole}");
+
+        let budget = whole.len() - 1;
+        let (cut, listed) = render(budget);
+
+        assert!(
+            cut.len() <= budget,
+            "{} bytes against a {budget}-byte budget: {cut}",
+            cut.len()
+        );
+        assert!(listed.memories.len() < 6, "{cut}");
+        assert_eq!(cut.matches(CAVEATS_UNREAD_HINT).count(), 1, "{cut}");
     }
 }

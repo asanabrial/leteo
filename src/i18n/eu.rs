@@ -175,6 +175,7 @@ pub const SCREENS: Screens = Screens {
     deleted_project: "{name} proiektua {gone}, {memories} memoria, {sessions} saio eta \
                       {prompts} promptekin",
     sessions_kept: " — {count} saio mantendu dira, beste proiektuen lerroak dituzte",
+    caveats_unread: "Ezin izan dira bere oharrak irakurri: oroitzapen hau gaindituta edo gezurtatuta egon daiteke",
     refreshed_query: "\"{query}\": {observations} behaketa, {sessions} saio, {prompts} prompt",
 
     keys_confirm: "y berretsi  n/Esc utzi",

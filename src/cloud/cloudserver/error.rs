@@ -70,6 +70,33 @@ impl ApiError {
         )
     }
 
+    /// The server could not take the request now and a later one may succeed:
+    /// a database that is full or unreachable, a request that outlived its
+    /// deadline. A client reads this as "retry", where the 500 it replaces read
+    /// as "the server is broken".
+    pub(super) fn busy(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "transient",
+            "server_busy",
+            message,
+        )
+    }
+
+    /// An error from the store while checking who is asking is the store's
+    /// answer, not a verdict on the caller: reported as 401 or 403 it would
+    /// tell a client its token is bad and send its sync into the long standing
+    /// backoff, when the database was only busy.
+    pub(super) fn unless_store(
+        error: AuthError,
+        otherwise: impl FnOnce(AuthError) -> Self,
+    ) -> Self {
+        match error {
+            AuthError::Store(error) => Self::from(error),
+            other => otherwise(other),
+        }
+    }
+
     pub(super) fn with_project(mut self, project: &str) -> Self {
         self.body.project = Some(project.to_owned());
         self.body.project_source = Some("request_body");
@@ -80,7 +107,30 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
-        (self.status, Json(*self.body)).into_response()
+        let retry_after = (self.status == StatusCode::SERVICE_UNAVAILABLE)
+            .then(|| [(header::RETRY_AFTER, HeaderValue::from(RETRY_AFTER_SECONDS))]);
+        (self.status, retry_after, Json(*self.body)).into_response()
+    }
+}
+
+/// What a `503` tells a client to wait, in seconds. A little over the pool's
+/// acquire timeout, so a retry does not land on the same full pool.
+pub(super) const RETRY_AFTER_SECONDS: u64 = 5;
+
+/// Whether a database error means "not now" rather than "this is broken".
+///
+/// Pool exhaustion surfaces as `PoolTimedOut` after the acquire timeout, and
+/// was answered `500` with the genuine faults. The two SQLSTATEs are the
+/// server's own refusals to take a connection (`too_many_connections` and
+/// `cannot_connect_now`); an I/O error is a database that cannot be reached.
+/// Anything else stays a `500`.
+fn database_is_busy(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_) => true,
+        sqlx::Error::Database(failure) => {
+            matches!(failure.code().as_deref(), Some("53300" | "57P03"))
+        }
+        _ => false,
     }
 }
 
@@ -100,6 +150,10 @@ impl From<CloudStoreError> for ApiError {
                 "chunk_not_found",
                 error.to_string(),
             ),
+            CloudStoreError::Database(ref failure) if database_is_busy(failure) => {
+                tracing::warn!(%error, "cloud database is busy or unreachable");
+                Self::busy("the database is busy; retry shortly")
+            }
             CloudStoreError::Database(_) => {
                 tracing::error!(%error, "cloud database operation failed");
                 Self::internal()
@@ -115,10 +169,7 @@ impl From<AuthError> for ApiError {
             AuthError::ProjectForbidden | AuthError::DashboardAdminRequired => {
                 Self::forbidden(error.to_string())
             }
-            AuthError::Store(error) => {
-                tracing::error!(%error, "cloud authentication store operation failed");
-                Self::internal()
-            }
+            AuthError::Store(error) => Self::from(error),
             _ => Self::unauthorized(error.to_string()),
         }
     }

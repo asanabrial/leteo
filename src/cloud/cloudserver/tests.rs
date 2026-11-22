@@ -301,6 +301,190 @@ async fn database_errors_are_logged_but_redacted_from_responses() {
     assert!(body.contains("internal server error"));
 }
 
+#[derive(Debug)]
+struct SqlState(&'static str);
+
+impl std::fmt::Display for SqlState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "sqlstate {}", self.0)
+    }
+}
+
+impl std::error::Error for SqlState {}
+
+impl sqlx::error::DatabaseError for SqlState {
+    fn message(&self) -> &str {
+        "stub"
+    }
+
+    fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(self.0.into())
+    }
+
+    fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+        self
+    }
+
+    fn kind(&self) -> sqlx::error::ErrorKind {
+        sqlx::error::ErrorKind::Other
+    }
+}
+
+fn status_of(error: sqlx::Error) -> Response {
+    ApiError::from(CloudStoreError::Database(error)).into_response()
+}
+
+#[test]
+fn a_database_that_is_busy_answers_503_and_one_that_is_broken_answers_500() {
+    let busy = [
+        sqlx::Error::PoolTimedOut,
+        sqlx::Error::PoolClosed,
+        sqlx::Error::Io(std::io::Error::other("connection refused")),
+        sqlx::Error::Database(Box::new(SqlState("53300"))),
+        sqlx::Error::Database(Box::new(SqlState("57P03"))),
+    ];
+    for error in busy {
+        let label = error.to_string();
+        let response = status_of(error);
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{label}"
+        );
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER).unwrap(),
+            &HeaderValue::from(error::RETRY_AFTER_SECONDS),
+            "{label}"
+        );
+    }
+
+    let broken = [
+        sqlx::Error::Protocol("unexpected".to_owned()),
+        sqlx::Error::RowNotFound,
+        sqlx::Error::Database(Box::new(SqlState("23505"))),
+    ];
+    for error in broken {
+        let label = error.to_string();
+        let response = status_of(error);
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{label}"
+        );
+        assert!(
+            response.headers().get(header::RETRY_AFTER).is_none(),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn a_busy_store_while_checking_the_caller_is_not_a_refusal_of_the_caller() {
+    let busy = || AuthError::Store(CloudStoreError::Database(sqlx::Error::PoolTimedOut));
+    let refusal = |_| ApiError::unauthorized("invalid bearer token");
+
+    assert_eq!(
+        ApiError::unless_store(busy(), refusal)
+            .into_response()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        ApiError::from(busy()).into_response().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        ApiError::unless_store(AuthError::InvalidDashboardSession, refusal)
+            .into_response()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+fn stub_router(handler: axum::routing::MethodRouter, bounds: Bounds) -> Router {
+    bounded(
+        Router::new().route("/probe", handler).with_state(()),
+        bounds,
+    )
+}
+
+async fn probe(router: Router) -> Response {
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    router
+        .oneshot(Request::get("/probe").body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_that_outlives_the_deadline_is_answered_503_with_retry_after() {
+    let router = stub_router(get(std::future::pending::<&'static str>), Bounds::PUBLISHED);
+
+    let started = tokio::time::Instant::now();
+    let response = probe(router).await;
+
+    assert_eq!(started.elapsed(), Bounds::PUBLISHED.request_timeout);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().contains_key(header::RETRY_AFTER));
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("server_busy"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_inside_the_deadline_is_not_touched_by_it() {
+    let router = stub_router(
+        get(|| async {
+            tokio::time::sleep(Bounds::PUBLISHED.request_timeout / 2).await;
+            "done"
+        }),
+        Bounds::PUBLISHED,
+    );
+
+    assert_eq!(probe(router).await.status(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_more_requests_run_at_once_than_the_published_bound() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let running = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let handler = {
+        let (running, peak) = (Arc::clone(&running), Arc::clone(&peak));
+        get(move || {
+            let (running, peak) = (Arc::clone(&running), Arc::clone(&peak));
+            async move {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                running.fetch_sub(1, Ordering::SeqCst);
+                "done"
+            }
+        })
+    };
+    let router = stub_router(handler, Bounds::PUBLISHED);
+
+    let mut requests = tokio::task::JoinSet::new();
+    for _ in 0..Bounds::PUBLISHED.max_in_flight * 3 {
+        requests.spawn(probe(router.clone()));
+    }
+    while let Some(response) = requests.join_next().await {
+        assert_eq!(response.unwrap().status(), StatusCode::OK);
+    }
+
+    assert_eq!(peak.load(Ordering::SeqCst), Bounds::PUBLISHED.max_in_flight);
+}
+
 #[test]
 fn a_mutation_filed_under_one_key_may_not_be_about_another() {
     let mut crossed = mutation(

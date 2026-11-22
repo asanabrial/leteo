@@ -2924,5 +2924,35 @@
     "file": "src/tui/actions.rs",
     "old": "if unread.is_some() {",
     "new": "if false && unread.is_some() {"
+  },
+  {
+    "name": "cloud server: a pool that cannot hand out a connection is answered 500, not 503",
+    "file": "src/cloud/cloudserver/error.rs",
+    "old": "sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Io(_) => true,",
+    "new": "sqlx::Error::PoolClosed | sqlx::Error::Io(_) => true,"
+  },
+  {
+    "name": "cloud server: a database that refuses a connection for want of slots is answered 500",
+    "file": "src/cloud/cloudserver/error.rs",
+    "old": "Some(\"53300\" | \"57P03\")",
+    "new": "Some(\"57P03\")"
+  },
+  {
+    "name": "cloud server: a busy store while checking the caller is reported as a refusal of the caller",
+    "file": "src/cloud/cloudserver/error.rs",
+    "old": "AuthError::Store(error) => Self::from(error),\n            other => otherwise(other)",
+    "new": "other => otherwise(other)"
+  },
+  {
+    "name": "cloud server: the request deadline is twice the published one",
+    "file": "src/cloud/cloudserver/mod.rs",
+    "old": ".timeout(bounds.request_timeout)",
+    "new": ".timeout(bounds.request_timeout * 2)"
+  },
+  {
+    "name": "cloud server: twice the published number of requests run at once",
+    "file": "src/cloud/cloudserver/mod.rs",
+    "old": ".concurrency_limit(bounds.max_in_flight)",
+    "new": ".concurrency_limit(bounds.max_in_flight * 2)"
   }
 ]

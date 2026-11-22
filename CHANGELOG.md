@@ -395,6 +395,18 @@ All notable changes to Leteo are documented in this file.
   carries it once under its header; opening a memory in the terminal interface
   puts it in the status line, in the interface language. The rule moved from the
   MCP layer to `recall`, which all of them can reach (#396).
+- **The cloud server bounds a request and says "busy" when the database is.**
+  It had no deadline per request and no limit on how many ran at once, and a
+  database that could not take a connection — the pool's five-second acquire
+  timeout, a full server, an unreachable one — was answered `500`, the same as
+  a fault. A request now has 25 seconds from arrival, queueing included, and 64
+  run at once; past the deadline, and for those database errors, the answer is
+  `503` with `Retry-After: 5`. The sync client already retries any answer other
+  than 401, 403 and 409 on its exponential backoff, so it needed no change.
+  Beside it, a store error while checking the bearer token, the project grant
+  or the dashboard login was reported as 401 or 403 and would have sent a
+  client into its long standing backoff over a busy database; it now answers
+  as the store error does. Both limits are in the README (#388).
 
 ## [0.4.3] - 2026-11-03
 

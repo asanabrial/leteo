@@ -352,6 +352,10 @@ All notable changes to Leteo are documented in this file.
   not replicated. A name this directory was itself recorded under still resolves,
   because the drift refusal offers it and a passive capture files under it
   (#316).
+- **`leteo session-start --project` makes its project known, as
+  `mem_session_start` does.** It opened an undeclared session, so a project
+  created from the command line was refused as unknown when an agent named it
+  from another directory before anything was saved to it (#391).
 
 ## [0.4.3] - 2026-11-03
 

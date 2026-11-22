@@ -3,6 +3,96 @@
 use super::*;
 
 #[test]
+fn an_empty_session_a_hook_opened_does_not_make_its_name_a_project() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "tmp", "C:/tmp").unwrap();
+
+    assert!(!store.project_exists("tmp").unwrap());
+
+    let mut memory = observation("s1", "Something", "body");
+    memory.project = Some("tmp".to_owned());
+    store.add_observation(memory).unwrap();
+    assert!(
+        store.project_exists("tmp").unwrap(),
+        "a project holding a memory is known whoever opened its session"
+    );
+}
+
+#[test]
+fn an_empty_declared_session_makes_its_name_a_project() {
+    let (_temp, mut store) = store();
+    store
+        .create_declared_session("s1", "Fresh", "C:/tmp")
+        .unwrap();
+
+    assert!(store.project_exists("fresh").unwrap());
+}
+
+#[test]
+fn a_prompt_alone_makes_its_name_a_project() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "tmp", "C:/tmp").unwrap();
+    store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "a question".to_owned(),
+            project: Some("asked".to_owned()),
+        })
+        .unwrap();
+
+    assert!(store.project_exists("asked").unwrap());
+    assert!(!store.project_exists("tmp").unwrap());
+}
+
+#[test]
+fn opening_a_declared_session_under_an_id_a_hook_took_raises_its_flag() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "tmp", "C:/tmp").unwrap();
+    assert!(!store.project_exists("tmp").unwrap());
+
+    store
+        .create_declared_session("s1", "tmp", "C:/tmp")
+        .unwrap();
+    assert!(store.project_exists("tmp").unwrap());
+
+    store
+        .create_declared_session("s2", "other", "C:/tmp")
+        .unwrap();
+    store
+        .create_declared_session("s2", "elsewhere", "C:/tmp")
+        .unwrap();
+    assert!(
+        !store.project_exists("elsewhere").unwrap(),
+        "the row an id keeps is not the project that was named for it"
+    );
+}
+
+#[test]
+fn declaring_a_session_a_hook_opened_raises_its_flag_and_nothing_lowers_it() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "tmp", "C:/tmp").unwrap();
+
+    assert!(
+        !store.declare_session("s1", "other").unwrap(),
+        "the row under another project is not what the caller named"
+    );
+    assert!(!store.project_exists("tmp").unwrap());
+
+    assert!(store.declare_session("s1", "TMP").unwrap());
+    assert!(store.project_exists("tmp").unwrap());
+
+    store.create_session("s1", "tmp", "C:/tmp").unwrap();
+    assert!(
+        store.project_exists("tmp").unwrap(),
+        "a hook that runs again leaves the flag where it was"
+    );
+    assert!(
+        !store.declare_session("s1", "tmp").unwrap(),
+        "raising it twice changes nothing"
+    );
+}
+
+#[test]
 fn deleting_a_project_keeps_the_sessions_that_hold_another_projects_rows() {
     // A session belongs to one project but the rows inside it carry their
     // own, and agents do save a prompt under a different name than the

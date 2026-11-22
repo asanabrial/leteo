@@ -1710,6 +1710,42 @@ fn adding_calendar_months_happens_only_where_this_test_names() {
 }
 
 #[test]
+fn a_database_migrated_with_an_empty_session_keeps_that_name_known() {
+    let (_temp, store) = store();
+    let path = store.database_path().to_path_buf();
+    store
+        .connection
+        .execute_batch(
+            "ALTER TABLE sessions DROP COLUMN declared;
+             INSERT INTO sessions (id, project, directory)
+                 VALUES ('old', 'tmp', 'C:/tmp');
+             PRAGMA user_version = 26;",
+        )
+        .unwrap();
+    drop(store);
+
+    let mut reopened = Store::open(StoreConfig::new(path.clone())).unwrap();
+    assert!(reopened.project_exists("tmp").unwrap());
+
+    reopened.create_session("new", "later", "C:/later").unwrap();
+    assert!(
+        !reopened.project_exists("later").unwrap(),
+        "only the rows that existed at the upgrade are carried over"
+    );
+    drop(reopened);
+
+    // A migration interrupted after adding the column is retried from the top,
+    // and the retry must not run the backfill again, which would declare every
+    // session opened since.
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("PRAGMA user_version = 26")
+        .unwrap();
+    let reopened = Store::open(StoreConfig::new(path)).unwrap();
+    assert!(!reopened.project_exists("later").unwrap());
+}
+
+#[test]
 fn a_migration_leaves_a_copy_at_the_schema_it_came_from() {
     // The one-way door the backup closes. A migration rewrites the schema in
     // place; afterwards an older binary refuses the store, so the copy taken

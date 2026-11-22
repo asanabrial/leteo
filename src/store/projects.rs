@@ -370,8 +370,14 @@ impl Store {
             .map_err(StoreError::from)
     }
 
-    /// Reports whether a project already owns a session, observation, or prompt.
+    /// Reports whether a project already owns an observation, a prompt, or a
+    /// session a caller declared with `mem_session_start`.
     /// MCP uses it to reject project names an agent invented.
+    ///
+    /// An empty session a hook opened does not count: a hook opens one wherever
+    /// an agent starts, and on a real store 629 of 651 sessions opened under
+    /// temporary directories held nothing, each making its directory's name a
+    /// project an agent could then write to.
     pub fn project_exists(&self, project: &str) -> Result<bool, StoreError> {
         let project = normalize::project(project);
         if project.is_empty() {
@@ -379,7 +385,8 @@ impl Store {
         }
         Ok(self.connection.query_row(
             "SELECT EXISTS(
-                 SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
+                 SELECT 1 FROM sessions
+                 WHERE LOWER(TRIM(project)) = ?1 AND declared = 1
                  UNION ALL
                  SELECT 1 FROM observations
                  WHERE LOWER(TRIM(ifnull(project, ''))) = ?1 AND deleted_at IS NULL

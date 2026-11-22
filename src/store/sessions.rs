@@ -82,6 +82,45 @@ impl Store {
         project: &str,
         directory: &str,
     ) -> Result<Session, StoreError> {
+        self.create_session_marked(id, project, directory, false)
+    }
+
+    /// Creates a session a caller opened to bring its project into being, which
+    /// is what `project_exists` counts even while the session is empty.
+    ///
+    /// The flag is only ever raised: a session a hook already opened under this
+    /// id becomes declared when the caller names its project, and nothing here
+    /// lowers it again.
+    pub fn create_declared_session(
+        &mut self,
+        id: &str,
+        project: &str,
+        directory: &str,
+    ) -> Result<Session, StoreError> {
+        self.create_session_marked(id, project, directory, true)
+    }
+
+    /// Raises the declared flag of an existing session, provided it belongs to
+    /// `project`. A session opened under another project is not what the caller
+    /// named, so it is left as it was. Returns whether a row was raised.
+    pub fn declare_session(&mut self, id: &str, project: &str) -> Result<bool, StoreError> {
+        let project = normalize::project(project);
+        let tx = self.write_transaction()?;
+        let raised = tx.execute(
+            "UPDATE sessions SET declared = 1 WHERE id = ?1 AND project = ?2 AND declared = 0",
+            params![id, project],
+        )?;
+        tx.commit()?;
+        Ok(raised > 0)
+    }
+
+    fn create_session_marked(
+        &mut self,
+        id: &str,
+        project: &str,
+        directory: &str,
+        declared: bool,
+    ) -> Result<Session, StoreError> {
         let project = normalize::project(project);
         // Every local creator passes here, so this is where a relative
         // directory is kept out: see `recordable_directory`.
@@ -91,6 +130,15 @@ impl Store {
             "INSERT OR IGNORE INTO sessions (id, project, directory) VALUES (?1, ?2, ?3)",
             params![id, project, directory],
         )?;
+        // After the insert and never in it, so a session that was already there
+        // under another opener is raised too. Scoped to the project the caller
+        // named: the row a conflicting id keeps is not the project declared.
+        if declared {
+            tx.execute(
+                "UPDATE sessions SET declared = 1 WHERE id = ?1 AND project = ?2",
+                params![id, project],
+            )?;
+        }
         let session = get_session_row(&tx, id)?;
         // Only when the row is new. This is an ensure, not a write: `INSERT OR
         // IGNORE` does nothing the second time and the row is returned

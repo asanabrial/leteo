@@ -671,6 +671,91 @@ fn every_tool_declares_behavior_annotations() {
     }
 }
 
+fn explicit_project_resolution(
+    server: &LeteoMcpServer,
+    store: &Store,
+    requested: &str,
+) -> Result<(String, String), CallToolResult> {
+    let detection = ProjectDetection {
+        project: "leteo".to_owned(),
+        source: crate::project::SOURCE_GIT_ROOT.to_owned(),
+        path: "C:/workspace".to_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    };
+    server.resolve_write_project(
+        store,
+        Some(requested.to_owned()),
+        &detection,
+        ProjectChoice::default(),
+    )
+}
+
+#[test]
+fn a_name_only_an_empty_hook_session_carries_is_refused_as_unknown() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    store.create_session("hook", "tmp", "C:/elsewhere").unwrap();
+
+    let error = explicit_project_resolution(&server, &store, "tmp")
+        .expect_err("an empty session a hook opened is not a project");
+    assert_eq!(error_payload(&error)["error"]["code"], "unknown_project");
+}
+
+#[test]
+fn a_project_opened_with_mem_session_start_is_accepted_before_it_holds_anything() {
+    let (_temp, server) = test_server(McpOptions::default());
+    server
+        .mem_session_start(Parameters(
+            serde_json::from_value(json!({"session_id": "s1", "project": "fresh"})).unwrap(),
+        ))
+        .unwrap();
+    let store = server.lock_store().unwrap();
+
+    assert_eq!(
+        explicit_project_resolution(&server, &store, "fresh").unwrap(),
+        ("fresh".to_owned(), SOURCE_KNOWN_PROJECT.to_owned())
+    );
+}
+
+#[test]
+fn mem_session_start_naming_a_project_declares_a_session_a_hook_opened() {
+    let (_temp, server) = test_server(McpOptions::default());
+    server
+        .lock_store()
+        .unwrap()
+        .create_session("s1", "tmp", "C:/elsewhere")
+        .unwrap();
+    assert!(
+        explicit_project_resolution(&server, &server.lock_store().unwrap(), "tmp").is_err(),
+        "undeclared until the caller names it"
+    );
+
+    server
+        .mem_session_start(Parameters(
+            serde_json::from_value(json!({"session_id": "s1", "project": "tmp"})).unwrap(),
+        ))
+        .unwrap();
+
+    assert!(explicit_project_resolution(&server, &server.lock_store().unwrap(), "tmp").is_ok());
+}
+
+#[test]
+fn mem_session_start_without_a_project_declares_nothing() {
+    let (_temp, server) = test_server(McpOptions::default());
+    server
+        .mem_session_start(Parameters(
+            serde_json::from_value(json!({"session_id": "s1", "directory": "C:/elsewhere/quiet"}))
+                .unwrap(),
+        ))
+        .unwrap();
+    let store = server.lock_store().unwrap();
+    let session = store.get_session("s1").unwrap();
+
+    assert!(!store.project_exists(&session.project).unwrap());
+}
+
 #[test]
 fn explicit_projects_must_be_backed_by_known_context() {
     let (_temp, server) = test_server(McpOptions::default());
@@ -680,7 +765,7 @@ fn explicit_projects_must_be_backed_by_known_context() {
     // test is the known-project path, not the drift gate that has its own test
     // below.
     store
-        .create_session("known", "known-project", "C:/elsewhere")
+        .create_declared_session("known", "known-project", "C:/elsewhere")
         .unwrap();
     let detection = ProjectDetection {
         project: "leteo".to_owned(),

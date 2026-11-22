@@ -790,6 +790,14 @@ impl LeteoMcpServer {
         // already made. `create_session` is `INSERT OR IGNORE`, so this is the
         // same row the gate would otherwise have kept the caller from reaching.
         if let Ok(existing) = store.get_session(&params.id) {
+            // A hook may have opened this id already. Naming its project here is
+            // the caller declaring it, and the flag is raised without touching
+            // the row the caller is told comes back unchanged.
+            if let Some(project) = params.project.as_deref() {
+                store
+                    .declare_session(&params.id, project)
+                    .map_err(store_error)?;
+            }
             return Ok(Json(SessionResultOutput {
                 session: existing.into(),
                 storage_truncation: None,
@@ -798,15 +806,19 @@ impl LeteoMcpServer {
         let detection = requested_directory
             .as_deref()
             .map_or_else(detect_current_project, detect_project);
+        let declared = params.project.is_some();
         let project = self.resolve_session_project(
             &store,
             params.project.or_else(|| self.default_project.clone()),
             &detection,
         )?;
         let directory = requested_directory.unwrap_or(detection.path);
-        let session = store
-            .create_session(&params.id, &project, &directory)
-            .map_err(store_error)?;
+        let session = if declared {
+            store.create_declared_session(&params.id, &project, &directory)
+        } else {
+            store.create_session(&params.id, &project, &directory)
+        }
+        .map_err(store_error)?;
 
         Ok(Json(SessionResultOutput {
             session: session.into(),

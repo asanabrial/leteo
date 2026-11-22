@@ -136,6 +136,7 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "started_at",
             "ended_at",
             "summary",
+            "declared",
         ],
     ),
     (

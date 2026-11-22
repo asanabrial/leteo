@@ -2726,5 +2726,47 @@
     "file": "src/hooks/spool.rs",
     "old": "store.passive_capture_from(entry.capture(), Some(&entry.directory))",
     "new": "store.passive_capture_from(entry.capture(), None)"
+  },
+  {
+    "name": "declared: an empty hook session makes its name a project again",
+    "file": "src/store/projects.rs",
+    "old": "WHERE LOWER(TRIM(project)) = ?1 AND declared = 1",
+    "new": "WHERE LOWER(TRIM(project)) = ?1"
+  },
+  {
+    "name": "declared: mem_session_start opens its session undeclared",
+    "file": "src/mcp/tools.rs",
+    "old": "store.create_declared_session(&params.id, &project, &directory)",
+    "new": "store.create_session(&params.id, &project, &directory)"
+  },
+  {
+    "name": "declared: naming a project on an existing session leaves it undeclared",
+    "file": "src/mcp/tools.rs",
+    "old": ".declare_session(&params.id, project)",
+    "new": ".declare_session(&params.id, \"\")"
+  },
+  {
+    "name": "declared: a declared open under a hook-taken id leaves the flag down",
+    "file": "src/store/sessions.rs",
+    "old": "\"UPDATE sessions SET declared = 1 WHERE id = ?1 AND project = ?2\",",
+    "new": "\"UPDATE sessions SET declared = 0 WHERE id = ?1 AND project = ?2\","
+  },
+  {
+    "name": "declared: a declare of an already declared session reports a change",
+    "file": "src/store/sessions.rs",
+    "old": "AND project = ?2 AND declared = 0",
+    "new": "AND project = ?2"
+  },
+  {
+    "name": "declared: the migration forgets to carry existing sessions over",
+    "file": "src/store/schema.rs",
+    "old": "UPDATE sessions SET declared = 1;\",",
+    "new": "\","
+  },
+  {
+    "name": "declared: a name this directory was recorded under is refused",
+    "file": "src/mcp/mod.rs",
+    "old": "if recorded_here.contains(&requested) {",
+    "new": "if false {"
   }
 ]

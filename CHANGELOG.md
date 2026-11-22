@@ -340,6 +340,18 @@ All notable changes to Leteo are documented in this file.
   its session's. `mem_get_observation` names it; the MCP listings and search
   results do not, a path on every hit being the reply size they are bounded
   against. `sessions.directory` is untouched by a later save (#315).
+- **An empty session a hook opened no longer makes its directory a project.**
+  A hook opens a session wherever an agent starts, and each one made its
+  directory's name a project that `mem_save` accepted when an agent wrote it:
+  on a real store 629 of 651 sessions opened under temporary directories held
+  nothing, across 14 names such as `tmp` and `bin`. A name is now known when it
+  holds a memory, a prompt, or a session opened by `mem_session_start` with a
+  project of its own, so creating a project there and saving to it later still
+  works. Migration 27 adds `sessions.declared` and marks every existing session
+  declared, so no name known before the upgrade becomes unknown; the column is
+  not replicated. A name this directory was itself recorded under still resolves,
+  because the drift refusal offers it and a passive capture files under it
+  (#316).
 
 ## [0.4.3] - 2026-11-03
 

@@ -7,41 +7,54 @@ number here and regenerate; never edit assets/tokens.svg, which is output.
 The figure deliberately carries no signed percentage. An earlier draft labelled
 the saving "-27%" and it read at a glance as *27% worse* -- a sign is the wrong
 carrier for a direction when the reader has not yet been told what is being
-subtracted from what. Every figure here is a verb and a magnitude instead.
+subtracted from what. Every figure here is a magnitude and a word instead.
 
 It also carries the correctness beside the tokens. The article's own conclusion
 is that the correctness is what survives the variance and that the tokens are
 the noisier half; a token chart standing alone would invert the document it is
 drawn from.
+
+Every engine has a lane, not only this one. The first figure drew Leteo against
+no memory and nothing else, which answers a question nobody choosing a memory
+engine is asking, and it let a reader assume the saving was Leteo's. Measured,
+it is not: on this question three engines spent less than Leteo did.
 """
 
 import io
 import os
 
-# --- the measurement, from docs/does-memory-save-tokens.md, "The runs" -------
-# B2: the questions only the store can answer. B1 is not drawn -- the article
-# says its 14% median is smaller than the noise it sits in, and charting a
-# difference its own author would not defend is the opposite of the point.
-WITHOUT = [27_394, 85_950, 98_733]
-WITH = [29_996, 55_189, 71_037, 100_417]
+# --- the measurement, from docs/does-memory-save-tokens.md -------------------
+# "Six engines, one command": B2, the question only the store can answer.
+# Tokens per run, every model call of the run summed.
+WITHOUT = [384_028, 461_868, 684_593]
 # How many answers were right. A measurement like the token counts, so it is
-# written once and every sentence about it is built from here. The zero used to
-# be typed into three separate f-strings.
+# written once and every sentence about it is built from here.
 RIGHT_WITHOUT = 0
-RIGHT_WITH = 4
 
-# The one run whose prompt asked for a field the others did not. It is counted,
-# and it is marked wherever it appears -- a dashed dot, an asterisk on its
-# value, and a footnote saying what the numbers become without it.
-OFF_PROTOCOL = 29_996
+# name, runs, how many were right. The order here is not the order drawn: the
+# lanes are sorted by median, so the list cannot flatter anybody by position.
+ENGINES = [
+    ("Leteo", [154_469, 327_398, 370_348], 3),
+    ("Engram", [207_802, 234_842, 382_985], 3),
+    ("server-memory", [230_895, 235_006, 340_772], 3),
+    ("claude-mem", [290_273, 314_557, 337_273], 3),
+    ("mem0", [324_451, 390_714, 446_152], 3),
+    ("basic-memory", [369_167, 469_391, 666_401], 3),
+]
+OURS = "Leteo"
 
-# The off-protocol run was one of the right answers, so dropping it drops one.
-RIGHT_STRICT = RIGHT_WITH - 1
-
-# How many runs the figure draws. Written out by hand in the subtitle and a card
-# label until a review pointed out that a fifth run would have drawn eight dots
-# under a subtitle still saying seven.
-RUNS = len(WITHOUT) + len(WITH)
+# B1, the question the repository answers. It has no lanes, and it is not left
+# out either: the footnote says how the same engines did on it, because a figure
+# that drew only the question memory wins would be choosing its pair.
+B1_WITHOUT = [110_812, 137_128, 154_766]
+B1_ENGINES = [
+    ("Leteo", [122_701, 130_836, 158_182]),
+    ("Engram", [118_893, 151_672, 213_151]),
+    ("server-memory", [131_060, 132_393, 160_700]),
+    ("claude-mem", [102_333, 118_621, 196_233]),
+    ("mem0", [73_959, 156_387, 179_845]),
+    ("basic-memory", [96_743, 166_046, 227_622]),
+]
 
 
 def median(values):
@@ -52,99 +65,118 @@ def median(values):
     return (ordered[mid - 1] + ordered[mid]) / 2
 
 
-# Derived, never written twice. The first draft hard-coded 63,113 beside the
-# list it is the median of, and the guard below caught it as a number that is
-# not any run -- which is true, and is also how a hand-copied median survives a
-# change to the runs it came from.
+# Derived, never written twice. The first draft hard-coded a median beside the
+# list it is the median of, which is how a hand-copied median survives a change
+# to the runs it came from.
 MEDIAN_WITHOUT = median(WITHOUT)
-MEDIAN_WITH = median(WITH)
-STRICT = [v for v in WITH if v != OFF_PROTOCOL]
+BY_MEDIAN = sorted(ENGINES, key=lambda engine: median(engine[1]))
+CHEAPEST, DEAREST = BY_MEDIAN[0], BY_MEDIAN[-1]
+RUNS_OF = {name: runs for name, runs, _ in ENGINES}
+RUNS = len(WITHOUT) + sum(len(runs) for _, runs, _ in ENGINES)
 
-# Each reading is a pair drawn from the runs above, and each is checked against
-# them by check_readings() rather than trusted.
+
+def against(value, baseline):
+    """A median beside the one without memory, as `(magnitude, word)`."""
+    change = round((value / baseline - 1) * 100)
+    return (f"{abs(change)}%", "fewer" if change < 0 else "more")
+
+
+# What the three cards print, each a literal that check_readings() recomputes
+# from the runs and refuses when the two disagree.
 READINGS = [
-    ("saves", "70%", "best run · first search landed", min(WITH), max(WITHOUT)),
-    ("saves", "27%", f"median vs median, all {RUNS} runs", MEDIAN_WITH, MEDIAN_WITHOUT),
-    ("saves", "17%", "median, strict protocol only", median(STRICT), MEDIAN_WITHOUT),
+    ("29%", "fewer", f"{OURS}, median against no memory", OURS),
+    ("49%", "fewer", f"the cheapest engine, {CHEAPEST[0]}", CHEAPEST[0]),
+    ("2%", "more", f"the dearest engine, {DEAREST[0]}", DEAREST[0]),
 ]
-STRICT_BEST = (min(STRICT), max(WITHOUT), "44%")  # the footnote's figure
+# The footnote's three figures for B1: the best and the worst engine median
+# against no memory, and this engine's.
+B1_READINGS = (("13%", "fewer"), ("21%", "more"), ("5%", "fewer"))
 
 # --- canvas -----------------------------------------------------------------
-W, H = 880, 414
-X0, X1 = 168.0, 836.0
-VMAX = 105_000.0
-TICK = 25_000  # gridline spacing; the last one drawn is the last that fits VMAX
-TOP, LANE_1, ARROW, LANE_2, BOT = 96, 128, 176, 224, 258
-FOOTER = 348
+W = 880
+X0, X1 = 168.0, 690.0
+SIDE = 708
+VMAX = 700_000.0
+TICK = 100_000  # gridline spacing; the last one drawn is the last that fits VMAX
+TOP, FIRST_LANE, LANE_GAP = 96, 126, 46
+LANES = 1 + len(ENGINES)
+BOT = FIRST_LANE + LANE_GAP * (LANES - 1) + 26
+FOOTER = BOT + 92
+H = FOOTER + 66
 
 BG, CARD = "#0b1220", "#101c2f"
 GRID, AXIS = "#1b2941", "#5b6b85"
 TITLE, SUB = "#e2e8f0", "#8496b0"
 RED, RED_FILL = "#f2626b", "#7f2a30"
-GREEN, GREEN_FILL, GREEN_DIM = "#5ed48a", "#245c3c", "#3f9c66"
+GREEN, GREEN_FILL = "#5ed48a", "#245c3c"
+OTHER, OTHER_FILL = "#8aa0c2", "#2a3a57"
 
 MONO = "ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'DejaVu Sans Mono', monospace"
 SANS = "-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
 
 
-def ratio(right, runs):
-    """How many of an arm's runs answered correctly, as `3 of 4`."""
-    return f"{right} of {len(runs)}"
-
-
 def correct(right, runs):
-    """The same, as the lane labels say it."""
-    return f"{ratio(right, runs)} right"
-
-
-def saving(with_leteo, without):
-    """The percentage a pair supports, rounded the way the figure prints it."""
-    return round((1 - with_leteo / without) * 100)
+    """How many of an arm's runs answered correctly, as the lanes say it."""
+    return f"{right} of {len(runs)} right"
 
 
 def check_readings():
     """Every printed percentage is derivable from the runs, or this refuses."""
-    for _, printed, label, a, b in READINGS + [("", STRICT_BEST[2], "the footnote's best run",
-                                                STRICT_BEST[0], STRICT_BEST[1])]:
-        got = f"{saving(a, b)}%"
-        assert got == printed, f"{label}: the figure says {printed}, the runs say {got}"
-    for name, right, runs in (
-        ("without", RIGHT_WITHOUT, WITHOUT),
-        ("with", RIGHT_WITH, WITH),
-        ("strict", RIGHT_STRICT, STRICT),
-    ):
-        assert 0 <= right <= len(runs), (
-            f"the {name} arm is recorded as {right} right out of {len(runs)} runs"
+    for figure, word, label, name in READINGS:
+        got = against(median(RUNS_OF[name]), MEDIAN_WITHOUT)
+        assert got == (figure, word), (
+            f"{label}: the figure says {figure} {word}, the runs say {got[0]} {got[1]}"
         )
-    assert max(WITHOUT + WITH) <= VMAX, (
-        f"a run of {max(WITHOUT + WITH):,} does not fit an axis that stops at "
+    b1 = sorted(B1_ENGINES, key=lambda engine: median(engine[1]))
+    b1_without = median(B1_WITHOUT)
+    measured = (
+        against(median(b1[0][1]), b1_without),
+        against(median(b1[-1][1]), b1_without),
+        against(median(dict(B1_ENGINES)[OURS]), b1_without),
+    )
+    assert measured == B1_READINGS, f"the footnote says {B1_READINGS} on B1, the runs say {measured}"
+    assert [name for name, _ in B1_ENGINES] == [name for name, _, _ in ENGINES], (
+        "the two questions do not list the same engines in the same order"
+    )
+    for name, runs, right in [("without memory", WITHOUT, RIGHT_WITHOUT)] + ENGINES:
+        assert 0 <= right <= len(runs), f"{name} is recorded as {right} right out of {len(runs)} runs"
+    longest = max(WITHOUT + [run for _, runs, _ in ENGINES for run in runs])
+    assert longest <= VMAX, (
+        f"a run of {longest:,} does not fit an axis that stops at "
         f"{VMAX:,.0f} -- it would be drawn past the end of it, in silence"
     )
-    assert OFF_PROTOCOL in WITH, "the off-protocol run is not among the runs"
-    assert len(STRICT) == len(WITH) - 1, "the strict protocol dropped more than one run"
-    assert MEDIAN_WITH < MEDIAN_WITHOUT, "the arrow points the wrong way"
 
 
 def x(value):
     return X0 + (value / VMAX) * (X1 - X0)
 
 
+def footnote():
+    (best, best_word), (worst, worst_word), (ours, ours_word) = B1_READINGS
+    return (
+        f"On the question the code does answer, not drawn, the six medians run from {best} "
+        f"{best_word} to {worst} {worst_word} than without memory, {OURS}'s is {ours} {ours_word}, "
+        "and every run was right."
+    )
+
+
 def render():
     out = []
     add = out.append
 
-    runs_without = ", ".join(f"{v:,}" for v in WITHOUT)
-    runs_with = ", ".join(f"{v:,}*" if v == OFF_PROTOCOL else f"{v:,}" for v in WITH)
+    def listed(runs):
+        return ", ".join(f"{v:,}" for v in runs)
+
+    lanes_said = " ".join(
+        f"{name}: {listed(runs)}, {correct(right, runs)}, median {median(runs):,.0f}, "
+        f"{' '.join(against(median(runs), MEDIAN_WITHOUT))}."
+        for name, runs, right in BY_MEDIAN
+    )
     alt = (
-        f"Tokens per run on the one question the code cannot answer. Without Leteo: "
-        f"{len(WITHOUT)} runs at {runs_without} tokens, {correct(RIGHT_WITHOUT, WITHOUT)}. With Leteo: "
-        f"{len(WITH)} runs at {runs_with} tokens, {correct(RIGHT_WITH, WITH)}. The median falls from "
-        f"{MEDIAN_WITHOUT:,.0f} to {MEDIAN_WITH:,.0f}, which is "
-        f"{saving(MEDIAN_WITH, MEDIAN_WITHOUT)}% fewer tokens. The best run saves "
-        f"{READINGS[0][1]} and the median {READINGS[1][1]}. The run marked * is off-protocol: "
-        f"its prompt asked for one field the others did not, and dropping it leaves the best "
-        f"run saving {STRICT_BEST[2]}, the median {READINGS[2][1]}, and "
-        f"{correct(RIGHT_STRICT, STRICT)} against {ratio(RIGHT_WITHOUT, WITHOUT)}."
+        f"Tokens per run on the one question the code cannot answer, {RUNS} runs. Without memory: "
+        f"{listed(WITHOUT)} tokens, {correct(RIGHT_WITHOUT, WITHOUT)}, median {MEDIAN_WITHOUT:,.0f}. "
+        f"With each of six memory engines, cheapest first, each against that median. {lanes_said} "
+        f"{footnote()}"
     )
     add(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
@@ -157,8 +189,12 @@ def render():
         "Tokens per run — the one question the code cannot answer</text>"
     )
     add(
-        f'<text x="24" y="57" fill="{SUB}" font-size="12.5">{RUNS} runs · same agent, '
-        f"one question, with and without Leteo · further left is cheaper</text>"
+        f'<text x="24" y="57" fill="{SUB}" font-size="12.5">{RUNS} runs · same agent, same prompt, '
+        f"same memories in every engine · further left is cheaper</text>"
+    )
+    add(
+        f'<text x="{SIDE}" y="{TOP - 16}" fill="{AXIS}" font-size="10.5" '
+        f'font-family="{MONO}">median · against none</text>'
     )
 
     for value in range(0, int(VMAX) + 1, TICK):
@@ -172,73 +208,70 @@ def render():
             f'font-family="{MONO}" text-anchor="middle">{value // 1000}k</text>'
         )
 
-    # Full-height guides, so the distance between the two medians is the picture
-    # rather than something the reader has to measure by eye between two dots.
-    for mid, colour in ((MEDIAN_WITHOUT, RED), (MEDIAN_WITH, GREEN)):
-        gx = x(mid)
-        add(
-            f'<line x1="{gx:.1f}" y1="{TOP - 8}" x2="{gx:.1f}" y2="{BOT}" stroke="{colour}" '
-            'stroke-width="1.5" stroke-dasharray="4 4" opacity="0.5"/>'
-        )
-        add(
-            f'<text x="{gx:.1f}" y="{TOP - 16}" fill="{colour}" font-size="10.5" '
-            f'font-family="{MONO}" text-anchor="middle" opacity="0.95">median {mid:,.0f}</text>'
-        )
+    # A full-height guide at the median without memory, so each lane is read
+    # against one line rather than against a dot three lanes above it.
+    gx = x(MEDIAN_WITHOUT)
+    add(
+        f'<line x1="{gx:.1f}" y1="{TOP - 8}" x2="{gx:.1f}" y2="{BOT}" stroke="{RED}" '
+        'stroke-width="1.5" stroke-dasharray="4 4" opacity="0.5"/>'
+    )
+    add(
+        f'<text x="{gx:.1f}" y="{TOP - 16}" fill="{RED}" font-size="10.5" '
+        f'font-family="{MONO}" text-anchor="middle" opacity="0.95">median without</text>'
+    )
 
-    def lane(y, label, verdict, runs, stroke, fill):
+    def lane(y, label, verdict, runs, stroke, fill, side):
         add(
             f'<line x1="{X0:.1f}" y1="{y}" x2="{X1:.1f}" y2="{y}" '
             f'stroke="{GRID}" stroke-width="1"/>'
         )
         add(
-            f'<text x="152" y="{y - 4}" fill="{TITLE}" font-size="13.5" font-weight="600" '
+            f'<text x="152" y="{y - 3}" fill="{TITLE}" font-size="13.5" font-weight="600" '
             f'text-anchor="end">{label}</text>'
         )
         add(
-            f'<text x="152" y="{y + 14}" fill="{stroke}" font-size="12" font-family="{MONO}" '
+            f'<text x="152" y="{y + 13}" fill="{stroke}" font-size="11.5" font-family="{MONO}" '
             f'text-anchor="end">{verdict}</text>'
         )
+        mid = median(runs)
         for value in runs:
-            cx = x(value)
-            dashed = ' stroke-dasharray="2.5 2.5"' if value == OFF_PROTOCOL else ""
-            star = "*" if value == OFF_PROTOCOL else ""
+            # The middle run is drawn solid and the other two hollow, so the
+            # median named at the end of the lane is a dot the eye can find.
+            inside = fill if value != mid else stroke
             add(
-                f'<circle cx="{cx:.1f}" cy="{y}" r="8.5" fill="{fill}" stroke="{stroke}" '
-                f'stroke-width="2"{dashed}/>'
+                f'<circle cx="{x(value):.1f}" cy="{y}" r="7" fill="{inside}" stroke="{stroke}" '
+                f'stroke-width="2"/>'
             )
-            add(
-                f'<text x="{cx:.1f}" y="{y + 26}" fill="{SUB}" font-size="10" '
-                f'font-family="{MONO}" text-anchor="middle">{value:,}{star}</text>'
-            )
+        add(
+            f'<text x="{SIDE}" y="{y - 3}" fill="{TITLE}" font-size="12.5" '
+            f'font-family="{MONO}">{mid:,.0f}</text>'
+        )
+        add(
+            f'<text x="{SIDE}" y="{y + 13}" fill="{stroke}" font-size="11.5" '
+            f'font-family="{MONO}">{side}</text>'
+        )
 
-    lane(LANE_1, "without Leteo", correct(RIGHT_WITHOUT, WITHOUT), WITHOUT, RED, RED_FILL)
-    lane(LANE_2, "with Leteo", correct(RIGHT_WITH, WITH), WITH, GREEN, GREEN_FILL)
-
-    xa, xb = x(MEDIAN_WITH), x(MEDIAN_WITHOUT)
-    ay = ARROW + 14
-    add(
-        f'<text x="{(xa + xb) / 2:.1f}" y="{ARROW - 2}" fill="{GREEN}" font-size="14.5" '
-        f'font-weight="700" text-anchor="middle">'
-        f"{saving(MEDIAN_WITH, MEDIAN_WITHOUT)}% fewer tokens</text>"
-    )
-    add(
-        f'<line x1="{xb:.1f}" y1="{ay}" x2="{xa + 9:.1f}" y2="{ay}" '
-        f'stroke="{GREEN}" stroke-width="2"/>'
-    )
-    add(f'<path d="M {xa:.1f} {ay} l 11 -6 l 0 12 z" fill="{GREEN}"/>')
-    add(
-        f'<text x="{(xa + xb) / 2:.1f}" y="{ay + 15}" fill="{SUB}" font-size="10" '
-        'text-anchor="middle">median to median</text>'
-    )
+    lane(FIRST_LANE, "without memory", correct(RIGHT_WITHOUT, WITHOUT), WITHOUT, RED, RED_FILL, "the baseline")
+    for i, (name, runs, right) in enumerate(BY_MEDIAN, start=1):
+        stroke, fill = (GREEN, GREEN_FILL) if name == OURS else (OTHER, OTHER_FILL)
+        lane(
+            FIRST_LANE + LANE_GAP * i,
+            name,
+            correct(right, runs),
+            runs,
+            stroke,
+            fill,
+            " ".join(against(median(runs), MEDIAN_WITHOUT)),
+        )
 
     add(
         f'<rect x="24" y="{FOOTER - 42}" width="{W - 48}" height="70" rx="7" '
         f'fill="{CARD}" stroke="{GRID}"/>'
     )
     cell = (W - 48) / len(READINGS)
-    for i, (verb, figure, label, _, _) in enumerate(READINGS):
+    for i, (figure, word, label, name) in enumerate(READINGS):
         cx = 24 + cell * i + cell / 2
-        colour = GREEN_DIM if "strict" in label else GREEN
+        colour = GREEN if name == OURS else OTHER
         if i:
             edge = 24 + cell * i
             add(
@@ -247,7 +280,7 @@ def render():
             )
         add(
             f'<text x="{cx:.1f}" y="{FOOTER - 20}" fill="{colour}" font-size="11" '
-            f'font-weight="600" letter-spacing="1.6" text-anchor="middle">{verb.upper()}</text>'
+            f'font-weight="600" letter-spacing="1.6" text-anchor="middle">{word.upper()} TOKENS</text>'
         )
         add(
             f'<text x="{cx:.1f}" y="{FOOTER + 6}" fill="{colour}" font-size="26" '
@@ -258,13 +291,7 @@ def render():
             f'text-anchor="middle">{label}</text>'
         )
 
-    add(
-        f'<text x="24" y="{H - 13}" fill="{AXIS}" font-size="10">* off-protocol: its prompt '
-        "asked for one field the others did not. Drop it and the best run saves "
-        f"{STRICT_BEST[2]}, the median saves {READINGS[2][1]}, and it is "
-        f"{correct(RIGHT_STRICT, STRICT)} against "
-        f"{ratio(RIGHT_WITHOUT, WITHOUT)}.</text>"
-    )
+    add(f'<text x="24" y="{H - 13}" fill="{AXIS}" font-size="10">{footnote()}</text>')
     add("</svg>")
     return "\n".join(out)
 

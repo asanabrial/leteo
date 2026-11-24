@@ -477,7 +477,7 @@ class ClaudeMemAdapter(LLMAdapter):
     """
 
     name, label = "claude-mem", "claude-mem"
-    PIN = "13.35.0"
+    PIN = "16.1.2"
     models_used = ()
     notes_text = ("measured through `save_memory` and `search`; the write path calls no model, "
                   "and its index is Chroma's local ONNX embedder, not Ollama",)

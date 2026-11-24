@@ -1142,12 +1142,17 @@ fn the_figure_describes_itself_the_same_way_twice() {
         "assets/tokens.svg should carry an aria-label — it is the only description a reader \
          who opens the figure on its own ever gets",
     );
+    // The caveat changes with the runs the figure is drawn from. It was the
+    // off-protocol run while the figure showed the August runs; since the runs
+    // on 0.5.0 it is the question that is not drawn, on which the arm with
+    // memory spent more. Whichever it is, it is the clause a description loses
+    // first, so its presence is how this knows it is reading the right text.
     assert!(
-        aria.len() > 200 && aria.contains("off-protocol"),
-        "the figure's aria-label is {} characters and {} name the off-protocol run, so this \
+        aria.len() > 200 && aria.contains("not drawn"),
+        "the figure's aria-label is {} characters and {} say what is not drawn, so this \
          guard is no longer reading the description it was written for",
         aria.len(),
-        if aria.contains("off-protocol") {
+        if aria.contains("not drawn") {
             "does"
         } else {
             "does not"

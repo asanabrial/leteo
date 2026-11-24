@@ -234,15 +234,40 @@ impl LeteoMcpServer {
             });
         }
 
-        let detection = detect_current_project();
+        self.write_session_in(store, project, choice, detect_current_project())
+    }
+
+    /// [`Self::write_session`] for a write that names no session, with the
+    /// detection handed in so a test can say where the server is standing.
+    fn write_session_in(
+        &self,
+        store: &mut Store,
+        project: Option<String>,
+        choice: ProjectChoice,
+        detection: ProjectDetection,
+    ) -> Result<WriteSession, CallToolResult> {
         let (project, project_source) =
             self.resolve_write_project(store, project, &detection, choice)?;
+        // The person answered a drift refusal with the name the directory
+        // resolves to, which says the other names recorded here are not this
+        // directory's history. Nothing else could ever clear that refusal: the
+        // write it let through joined a session that already existed, so the
+        // row behind the question stayed and the next silent write asked again.
+        // The source alone does not say drift — choosing among several
+        // repositories carries it too — but there detection names no project.
+        if project_source == SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT
+            && normalize::project(&detection.project) == project
+        {
+            store
+                .release_directory_to(&detection.path, &project)
+                .map_err(store_error)?;
+        }
         let directory = if detection.path.is_empty() {
             std::env::current_dir()
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_default()
         } else {
-            detection.path
+            detection.path.clone()
         };
         // Looked up inside the resolved project only, so the session a save
         // joins and the project it is filed under cannot disagree. The window
@@ -260,8 +285,9 @@ impl LeteoMcpServer {
             Some(session) => session.id,
             None => {
                 let id = manual_session_id(&project);
+                let recorded = crate::project::session_directory(&project, &detection, &directory);
                 store
-                    .create_session(&id, &project, &directory)
+                    .create_session(&id, &project, recorded)
                     .map_err(store_error)?;
                 id
             }
@@ -327,6 +353,34 @@ impl LeteoMcpServer {
         // token, and `mem_capture_passive` has no project at all — would be an
         // error no caller could ever clear.
         if requested == detected {
+            // Naming the detected side with the reason and the token is the
+            // one answer that can settle a drift, so it is the one that has to
+            // be the person's: the token is redeemed against the refusal it
+            // came from, and `write_session_in` releases the directory on the
+            // strength of the source returned here.
+            if choice.reason.as_deref() == Some(SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT)
+                && let Some(token) = choice
+                    .recovery_token
+                    .filter(|token| !token.trim().is_empty())
+                && let Some(drifted) = self.recorded_directory_detection(store, detection)?
+            {
+                let accepted = self
+                    .recovery
+                    .lock()
+                    .map(|mut tokens| tokens.redeem(&token, &requested, &drifted))
+                    .unwrap_or(false);
+                if !accepted {
+                    return Err(structured_error_with(
+                        error_code::INVALID_RECOVERY_TOKEN,
+                        "the recovery token is unknown, expired, or issued for another project choice",
+                        json!({ "available_projects": drifted.available_projects }),
+                    ));
+                }
+                return Ok((
+                    requested,
+                    SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT.to_owned(),
+                ));
+            }
             return Ok((requested, detection.source.clone()));
         }
         if self
@@ -492,7 +546,9 @@ impl LeteoMcpServer {
             error_hint: Some(format!(
                 "this directory's sessions were recorded under {recorded_names}, but it now \
                  resolves to {detected:?}; ask the user which project this belongs to. If the \
-                 two names are one project, `leteo projects consolidate` folds them together."
+                 two names are one project, `leteo projects consolidate` folds them together. \
+                 If they are different projects, a write answered with {detected:?} and the \
+                 recovery token its refusal carries settles it, and this is not asked again."
             )),
         }))
     }

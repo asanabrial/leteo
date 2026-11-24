@@ -9151,3 +9151,173 @@ fn a_tool_whose_caveat_lookup_failed_says_so_and_still_answers() {
         "the note is on the wire: {rendered}"
     );
 }
+
+fn standing_in(project: &str, path: &str) -> ProjectDetection {
+    ProjectDetection {
+        project: project.to_owned(),
+        source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+        path: path.to_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    }
+}
+
+/// A project the store knows and that has no live session, so a save naming it
+/// opens its manual session rather than joining a conversation.
+fn known_and_idle(store: &mut Store, project: &str, directory: &str) {
+    let id = format!("ended-{project}");
+    store
+        .create_declared_session(&id, project, directory)
+        .unwrap();
+    store.end_session(&id, None).unwrap();
+}
+
+/// A save filed under another project from inside a repository does not make
+/// the repository look renamed.
+///
+/// The manual session the save opened used to record the directory the server
+/// was standing in, under the project the save named. The drift gate reads that
+/// as "this directory used to be called that", so on a real store one such save
+/// had every later write that named no project refused, seven months on, with
+/// 331 sessions in the directory under the name it resolves to.
+#[test]
+fn a_save_filed_under_another_project_does_not_rename_the_directory() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    known_and_idle(&mut store, "elsewhere", "C:/elsewhere");
+
+    let crossed = server
+        .write_session_in(
+            &mut store,
+            Some("elsewhere".to_owned()),
+            ProjectChoice::default(),
+            standing_in("here", "C:/here"),
+        )
+        .expect("a known project can be named from anywhere");
+    assert_eq!(crossed.project, "elsewhere");
+    assert_eq!(
+        store.get_session(&crossed.id).unwrap().directory,
+        "",
+        "the bucket of another project is not something that happened here"
+    );
+
+    let silent = server
+        .write_session_in(
+            &mut store,
+            None,
+            ProjectChoice::default(),
+            standing_in("here", "C:/here"),
+        )
+        .expect("the directory still resolves to one project and nothing says otherwise");
+    assert_eq!(silent.project, "here");
+    assert_eq!(
+        store.get_session(&silent.id).unwrap().directory,
+        "C:/here",
+        "a save under the project the directory resolves to still records it"
+    );
+}
+
+/// Answering a drift refusal with the detected name, the reason and the token
+/// settles it: the next write that names nothing is not asked again.
+///
+/// Before this the refusal had no exit for two projects that really are two.
+/// Naming the detected side passed and changed nothing, so the row behind the
+/// question stayed, and the one remedy the message offered was to merge them.
+#[test]
+fn choosing_the_detected_project_with_the_token_stops_the_question() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    store
+        .create_session("planted", "elsewhere", "C:/here")
+        .unwrap();
+    store.end_session("planted", None).unwrap();
+
+    let refused = server
+        .write_session_in(
+            &mut store,
+            None,
+            ProjectChoice::default(),
+            standing_in("here", "C:/here"),
+        )
+        .err()
+        .expect("the planted row makes the directory look renamed");
+    let payload = error_payload(&refused);
+    assert_eq!(payload["error"]["code"], "ambiguous_project");
+    let token = payload["recovery_token"].as_str().unwrap().to_owned();
+
+    let stale = server
+        .write_session_in(
+            &mut store,
+            Some("here".to_owned()),
+            ProjectChoice {
+                reason: Some(SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT.to_owned()),
+                recovery_token: Some("rec-0000000000000000".to_owned()),
+            },
+            standing_in("here", "C:/here"),
+        )
+        .err()
+        .expect("a token this refusal did not issue settles nothing");
+    assert_eq!(
+        error_payload(&stale)["error"]["code"],
+        "invalid_recovery_token"
+    );
+    assert_eq!(
+        store.get_session("planted").unwrap().directory,
+        "C:/here",
+        "and a refused answer leaves the evidence where it was"
+    );
+
+    let chosen = server
+        .write_session_in(
+            &mut store,
+            Some("here".to_owned()),
+            ProjectChoice {
+                reason: Some(SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT.to_owned()),
+                recovery_token: Some(token),
+            },
+            standing_in("here", "C:/here"),
+        )
+        .expect("the person's answer is accepted");
+    assert_eq!(chosen.project, "here");
+
+    let planted = store.get_session("planted").unwrap();
+    assert_eq!(
+        (planted.project.as_str(), planted.directory.as_str()),
+        ("elsewhere", ""),
+        "the session keeps its project and loses only the claim that it was opened here"
+    );
+    let silent = server
+        .write_session_in(
+            &mut store,
+            None,
+            ProjectChoice::default(),
+            standing_in("here", "C:/here"),
+        )
+        .expect("the question was answered once and is not asked again");
+    assert_eq!(silent.project, "here");
+}
+
+/// Naming the detected project with no token still passes and still settles
+/// nothing, because `mem_update` can send no token and must not be left with an
+/// error it cannot clear.
+#[test]
+fn naming_the_detected_project_without_a_token_settles_nothing() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    store
+        .create_session("planted", "elsewhere", "C:/here")
+        .unwrap();
+    store.end_session("planted", None).unwrap();
+
+    let named = server
+        .write_session_in(
+            &mut store,
+            Some("here".to_owned()),
+            ProjectChoice::default(),
+            standing_in("here", "C:/here"),
+        )
+        .expect("a named side resolves the drift for this one write");
+    assert_eq!(named.project, "here");
+    assert_eq!(store.get_session("planted").unwrap().directory, "C:/here");
+}

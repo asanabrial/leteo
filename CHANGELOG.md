@@ -4,6 +4,22 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A memory saved under another project no longer makes the directory it was
+  saved from refuse every later write.** `mem_save` and `leteo save` naming a
+  project the directory does not resolve to recorded that directory on the
+  other project's manual session, and the check for a renamed repository read
+  the row as proof of a rename: on one real store a single such save had every
+  write that named no project answered `ambiguous_project` seven months later,
+  with 331 sessions in the directory under the name it resolves to. Saved from
+  inside a repository, the manual session of another project now records no
+  directory. For a store that already
+  holds such a row, answering the refusal with the detected project, the reason
+  and the recovery token settles it: the other project's sessions keep their
+  project and their memories and stop being counted as that directory's
+  history, so the question is not asked again.
+
 ## [0.5.0] - 2026-11-22
 
 Semantic search indexes multiple windows of each memory. The release also

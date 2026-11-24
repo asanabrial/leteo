@@ -317,7 +317,20 @@ pub(super) fn resolve_write_session(
         });
     }
 
-    let detection = crate::project::detect_current_project();
+    join_or_open_manual_session(
+        store,
+        explicit_project,
+        crate::project::detect_current_project(),
+    )
+}
+
+/// The tail of [`resolve_write_session`] for a write that names no session,
+/// with the detection handed in so a test can say where the command was run.
+fn join_or_open_manual_session(
+    store: &mut Store,
+    explicit_project: Option<String>,
+    detection: crate::project::ProjectDetection,
+) -> Result<WriteSession> {
     let project = match explicit_project {
         Some(project) => {
             let project = crate::memory::normalize::project(&project);
@@ -347,7 +360,7 @@ pub(super) fn resolve_write_session(
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default()
     } else {
-        detection.path
+        detection.path.clone()
     };
     // The same lookup, window and definition of a synthetic session that
     // `write_session` in the MCP server uses, so a memory typed at a terminal
@@ -362,7 +375,8 @@ pub(super) fn resolve_write_session(
         Some(session) => session.id,
         None => {
             let id = crate::mcp::manual_session_id(&project);
-            store.create_session(&id, &project, &directory)?;
+            let recorded = crate::project::session_directory(&project, &detection, &directory);
+            store.create_session(&id, &project, recorded)?;
             id
         }
     };
@@ -481,5 +495,32 @@ mod tests {
             similar_project_groups(&renamed),
             vec![("nombre-nuevo".to_owned(), vec!["nombre-viejo".to_owned()])]
         );
+    }
+
+    /// The command line's twin of the MCP guard: `leteo save --project other`
+    /// from inside a repository opens the other project's manual session
+    /// without recording the repository on it.
+    #[test]
+    fn a_save_for_another_project_does_not_record_this_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store =
+            Store::open(crate::store::StoreConfig::new(temp.path().join("cli.db"))).unwrap();
+        let standing_in = |project: &str| crate::project::ProjectDetection {
+            project: project.to_owned(),
+            source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+            path: "C:/here".to_owned(),
+            available_projects: Vec::new(),
+            warning: None,
+            error_hint: None,
+        };
+
+        let crossed =
+            join_or_open_manual_session(&mut store, Some("other".to_owned()), standing_in("here"))
+                .unwrap();
+        assert_eq!(store.get_session(&crossed.id).unwrap().directory, "");
+
+        let own = join_or_open_manual_session(&mut store, None, standing_in("here")).unwrap();
+        assert_eq!(own.project, "here");
+        assert_eq!(store.get_session(&own.id).unwrap().directory, "C:/here");
     }
 }

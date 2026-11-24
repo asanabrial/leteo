@@ -516,9 +516,7 @@ fn a_replicated_session_is_filed_under_the_normalised_project() {
         occurred_at: "2026-08-05 04:00:00".to_owned(),
         acked_at: None,
     };
-    store
-        .apply_pulled_sync_mutation("cloud", &mutation)
-        .unwrap();
+    store.apply_pulled(&mutation).unwrap();
 
     let session = store.get_session("peer-session").unwrap();
     assert_eq!(
@@ -651,11 +649,7 @@ fn a_session_summary_is_redacted_and_bounded_on_both_paths() {
         occurred_at: "2026-08-05 10:00:00".to_owned(),
         acked_at: None,
     };
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&mutation).unwrap());
     let replicated = store.get_session("s2").unwrap().summary.unwrap_or_default();
     assert!(!replicated.contains("hunter2"), "{replicated}");
     assert!(replicated.contains("[REDACTED]"), "{replicated}");

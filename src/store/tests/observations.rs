@@ -38,11 +38,7 @@ fn a_replicated_memory_is_held_to_the_same_rules_as_one_typed_here() {
         occurred_at: saved.updated_at.clone(),
         acked_at: None,
     };
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&mutation).unwrap());
 
     let stored = store.get_observation(saved.id).unwrap();
     assert_eq!(stored.kind, "bugfix", "the type folds");

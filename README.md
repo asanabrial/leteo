@@ -593,6 +593,11 @@ leteo cloud config show
 `config show` reads the configuration back with the token replaced by a presence
 flag, so it is safe to paste.
 
+Enrolment is the scope in both directions: a pull asks the server for the
+enrolled projects only, and a row that arrives for another one is refused
+rather than written. A token granted `*` still reads every project it can, but
+a machine only keeps the ones it enrolled.
+
 **Once it is on**, `health` asks the server whether it is there and answering.
 `status` contacts nothing at all: it reports this machine's own view — what is
 enrolled, how many changes are waiting and since when, and whether the last

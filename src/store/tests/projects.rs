@@ -948,7 +948,7 @@ fn merging_a_project_keeps_the_delete_that_was_waiting_for_a_peer() {
         .list_pending_sync_mutations("cloud", &["canonical-project".to_owned()], 100)
         .unwrap();
     for mutation in &pending {
-        peer.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+        peer.apply_pulled(mutation).unwrap();
     }
     let deleted_at: Option<String> = peer
         .connection
@@ -1596,13 +1596,12 @@ fn deliver(store: &mut Store, peer: &mut Store, project: &str) {
         .list_pending_sync_mutations("cloud", &[project.to_owned()], 100)
         .unwrap();
     for mutation in &pending {
-        peer.apply_pulled_sync_mutation("cloud", mutation)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "seq {} ({}) could not be applied at the peer: {error}",
-                    mutation.seq, mutation.entity
-                )
-            });
+        peer.apply_pulled(mutation).unwrap_or_else(|error| {
+            panic!(
+                "seq {} ({}) could not be applied at the peer: {error}",
+                mutation.seq, mutation.entity
+            )
+        });
     }
     let sequences: Vec<i64> = pending.iter().map(|mutation| mutation.seq).collect();
     store.ack_sync_mutation_seqs("cloud", &sequences).unwrap();
@@ -1686,8 +1685,8 @@ fn a_delete_filed_after_a_merge_finds_the_row_on_a_peer_that_never_merged() {
         .find(|mutation| mutation.entity == "observation" && mutation.op == "delete")
         .unwrap();
     assert!(rename.seq < delete.seq);
-    peer.apply_pulled_sync_mutation("cloud", rename).unwrap();
-    peer.apply_pulled_sync_mutation("cloud", delete).unwrap();
+    peer.apply_pulled(rename).unwrap();
+    peer.apply_pulled(delete).unwrap();
 
     assert_eq!(
         project_of_observation(&peer, &saved.sync_id),
@@ -1728,7 +1727,7 @@ fn a_rename_moves_sessions_and_prompts_and_queues_nothing_at_the_peer() {
         .list_pending_sync_mutations("cloud", &["*".to_owned()], 100)
         .unwrap()
         .len();
-    peer.apply_pulled_sync_mutation("cloud", &rename).unwrap();
+    peer.apply_pulled(&rename).unwrap();
 
     for table in ["sessions", "prompts"] {
         let stale: i64 = peer
@@ -1783,7 +1782,7 @@ fn a_store_does_not_apply_the_rename_it_sent() {
     let mut echoed = rename.clone();
     echoed.seq = i64::MAX / 2;
     echoed.source = "remote".to_owned();
-    store.apply_pulled_sync_mutation("cloud", &echoed).unwrap();
+    store.apply_pulled(&echoed).unwrap();
 
     assert_eq!(
         project_of_observation(&store, &again.sync_id).0,
@@ -1830,10 +1829,10 @@ fn a_rename_from_a_peer_does_not_move_a_project_this_store_never_shared() {
     let private = memory_in(&mut store, "s2", "private-notes");
 
     store
-        .apply_pulled_sync_mutation(
-            "cloud",
-            &rename_from_peer(&["shared-old", "private-notes"], "shared-new"),
-        )
+        .apply_pulled(&rename_from_peer(
+            &["shared-old", "private-notes"],
+            "shared-new",
+        ))
         .unwrap();
 
     assert_eq!(
@@ -1870,7 +1869,7 @@ fn a_rename_that_names_only_unshared_projects_enrols_nothing() {
     let private = memory_in(&mut store, "s1", "private-notes");
 
     store
-        .apply_pulled_sync_mutation("cloud", &rename_from_peer(&["private-notes"], "shared-new"))
+        .apply_pulled(&rename_from_peer(&["private-notes"], "shared-new"))
         .unwrap();
 
     assert_eq!(project_of_observation(&store, &private).0, "private-notes");

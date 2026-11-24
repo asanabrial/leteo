@@ -38,6 +38,19 @@ fn bare_store() -> (TempDir, Store) {
     (temp, Store::open(config).unwrap())
 }
 
+impl Store {
+    /// Applies a pulled mutation as the sync loop does for a peer replicating
+    /// the project the mutation names.
+    ///
+    /// The tests below are about what a pulled row turns into, not about which
+    /// project the pull was scoped to, so the scope follows the mutation. A
+    /// test that means a peer *not* replicating it calls
+    /// `apply_pulled_sync_mutation` with the narrow list itself.
+    fn apply_pulled(&mut self, mutation: &SyncMutation) -> Result<bool, StoreError> {
+        self.apply_pulled_sync_mutation("cloud", mutation, std::slice::from_ref(&mutation.project))
+    }
+}
+
 fn observation(session: &str, title: &str, content: &str) -> AddObservation {
     AddObservation {
         session_id: session.to_owned(),

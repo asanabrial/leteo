@@ -295,13 +295,20 @@ class BasicMemoryAdapter(_External):
 
     name, label, runner = "basic-memory", "basic-memory", "uvx"
     needs = "uvx runs the pinned release"
-    PIN = "0.23.2"
-    # Its full-text index is filled asynchronously after `write_note` returns,
-    # and 0.23.2 exposes no completion signal to wait on (`status --wait` is
-    # documented to return immediately), so two loads of the same corpus rank a
-    # paraphrase differently. The row is measured over five loads and reported
-    # as a spread rather than as one draw presented as reproducible.
+    PIN = "1.0.0"
+    # On 0.23.2 its full-text index was filled asynchronously after a note was
+    # written, with no completion signal to wait on (`status --wait` was
+    # documented to return immediately), so two loads of the same corpus ranked
+    # a paraphrase differently and the row was reported as a spread. On 1.0.0
+    # five loads gave identical figures. It stays at five: that they agree is
+    # what was measured, and one load could not have shown it.
     passes = 5
+    # 1.0.0 renamed its tools (`write_note` to `bm_write`, `search_notes` to
+    # `bm_search`) and refuses either without a scope: a search with none
+    # answers INVALID_ARGUMENTS, "Search needs an explicit scope". `main` is the
+    # project it creates by default under BASIC_MEMORY_HOME, and each corpus
+    # project already has a home of its own, so it is the only one there.
+    SCOPE = "main"
 
     def command(self):
         return [self.runner, f"basic-memory@{self.PIN}", "mcp"]
@@ -327,7 +334,7 @@ class BasicMemoryAdapter(_External):
         return m.group(1)
 
     def warm(self, server):
-        call_json(server, "search_notes", {"query": "warmup", "output_format": "json"})
+        call_json(server, "bm_search", {"query": "warmup", "project": self.SCOPE, "output_format": "json"})
 
     def load(self, members):
         shutil.rmtree(os.path.join(BENCH, "basic-memory"), ignore_errors=True)
@@ -336,15 +343,15 @@ class BasicMemoryAdapter(_External):
             server = self.open(project)
             for m in group:
                 args = {"title": names[m["key"]], "content": m["content"], "directory": project,
-                        "note_type": m["type"], "output_format": "json"}
+                        "note_type": m["type"], "project": self.SCOPE, "output_format": "json"}
                 if m["topic"]:
                     args["tags"] = [m["topic"]]
-                reply, _, _ = call_json(server, "write_note", args)
+                reply, _, _ = call_json(server, "bm_write", args)
                 self.keymap[reply["file_path"]] = m["key"]
 
     def search(self, project, query, limit):
-        reply, _, _ = call_json(self.open(project), "search_notes",
-                                {"query": query, "page_size": limit, "output_format": "json"})
+        reply, _, _ = call_json(self.open(project), "bm_search",
+                                {"query": query, "page_size": limit, "project": self.SCOPE, "output_format": "json"})
         return [Hit(r.get("file_path"), r.get("content") or r.get("matched_chunk")) for r in reply.get("results") or []]
 
 

@@ -34,15 +34,15 @@ on cloud replication for a project you name.
 and once without:
 
 <p align="center">
-  <img width="880" alt="Tokens per run on the one question the code cannot answer. Without Leteo: 3 runs at 27,394, 85,950, 98,733 tokens, 0 of 3 right. With Leteo: 4 runs at 29,996*, 55,189, 71,037, 100,417 tokens, 4 of 4 right. The median falls from 85,950 to 63,113, which is 27% fewer tokens. The best run saves 70% and the median 27%. The run marked * is off-protocol: its prompt asked for one field the others did not, and dropping it leaves the best run saving 44%, the median 17%, and 3 of 3 right against 0 of 3." src="assets/tokens.svg" />
+  <img width="880" alt="Tokens per run on the one question the code cannot answer, 21 runs. Without memory: 384,028, 461,868, 684,593 tokens, 0 of 3 right, median 461,868. With each of six memory engines, cheapest first, each against that median. Engram: 207,802, 234,842, 382,985, 3 of 3 right, median 234,842, 49% fewer. server-memory: 230,895, 235,006, 340,772, 3 of 3 right, median 235,006, 49% fewer. claude-mem: 290,273, 314,557, 337,273, 3 of 3 right, median 314,557, 32% fewer. Leteo: 154,469, 327,398, 370,348, 3 of 3 right, median 327,398, 29% fewer. mem0: 324,451, 390,714, 446,152, 3 of 3 right, median 390,714, 15% fewer. basic-memory: 369,167, 469,391, 666,401, 3 of 3 right, median 469,391, 2% more. On the question the code does answer, not drawn, the six medians run from 13% fewer to 21% more than without memory, Leteo's is 5% fewer, and every run was right." src="assets/tokens.svg" />
 </p>
 
-**Four right answers out of four, where the agent without it got none out of
-three.** That is the finding that survives the variance, and the tokens are the
-noisier half of it. [Every run is here](docs/does-memory-save-tokens.md) — both
-baselines, the fixed cost of about 15,400 tokens a session that **both arms
-pay**, and the pairing from these same seven runs that says Leteo *costs 3.7x as
-much*.
+**Three right answers out of three, where the agent without memory got none out
+of three.** That finding has now held twice, and it is not Leteo's alone: five
+other memory engines, given the same memories, got it right every time too. The
+tokens are the noisier half. [Every run is here](docs/does-memory-save-tokens.md)
+— all six engines, both months, the fixed cost of about 20,200 tokens a session,
+and the three engines that spent less than Leteo did.
 
 **Works with:** Claude Code · ZCode · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
 VS Code Copilot · Kilo Code · Qwen · Kiro · Antigravity · Pi · DeepSeek Harness ·
@@ -65,21 +65,31 @@ with you, and `leteo delete` means it.
 
 ## Does it pay for itself?
 
-Measured rather than asserted, over thirteen runs: **four right answers out of
-four on the questions the code cannot answer, where an agent without it got none
-out of three** — or three out of three against that same none out of three, on
-the strict protocol. That is the finding that survives the variance.
+Measured rather than asserted, and against the alternatives. On the current
+release, on a question the code cannot answer: **three right answers out of
+three with Leteo, none out of three without memory.** The first measurement, in
+August, said four out of four against none out of three.
 
-The tokens are noisier. On those same questions the median saving is 27% and the
-best case 70% — or 17% and 44% if you drop the one run whose prompt differed by
-a field, which the article does for you. On questions the code *does* answer the
-difference is inside the noise, and the same thirteen runs support *"costs 3.7x
-as much"* if you pick the opposite pair.
+That is what having a memory buys, not what Leteo buys. Engram, server-memory,
+claude-mem, mem0 and basic-memory were loaded with the same memories and asked
+the same question, and each got it right three times out of three.
 
-[*does memory save tokens?*](docs/does-memory-save-tokens.md) shows every run,
-both baselines, the fixed per-session cost of about 15,400 tokens, and where the
-number is weak. The honest summary is that it does not reliably save you tokens
-— it stops your agent confidently answering something else.
+The tokens are noisier, and Leteo does not win them. On that question it spent
+29% fewer than no memory at the median; Engram and server-memory spent 49%
+fewer, claude-mem 32%, mem0 15%, and basic-memory 2% more. On a question the
+code *does* answer, the six engines land between 13% fewer and 21% more than no
+memory, Leteo at 5% fewer, which is no effect. Two sets of three Leteo runs on
+the same day differ from each other by more than most of those gaps.
+
+Where Leteo does lead is in finding the right memory on the first try, which is
+[a separate measurement](docs/comparison.md): 0.96 against 0.93 for the next
+engine and 0.64 for Engram.
+
+[*does memory save tokens?*](docs/does-memory-save-tokens.md) shows every run of
+both months and all six engines, both baselines, the fixed per-session cost of
+about 20,200 tokens, and where the numbers are weak. The honest summary is that
+it does not reliably save you tokens — it has the answer that never reached the
+code, and so does any engine you put the same memories in.
 
 ## Install
 

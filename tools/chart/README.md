@@ -12,19 +12,23 @@ anybody regenerates, and nothing would say so.
 
 ## Where the numbers come from
 
-The seven runs at the top of `tokens.py` are copied from
+The runs at the top of `tokens.py` are copied from
 [`docs/does-memory-save-tokens.md`](../../docs/does-memory-save-tokens.md),
-section *"The runs"*, B2 — the questions only the store can answer. They are the
-only place the figure states them. B1 is deliberately not drawn: the article
-says its 14% median is smaller than the noise it sits in, and charting a
-difference its own author would not defend is the opposite of why the figure
-exists.
+section *"Six engines, one command"*. They are the only place the figure states
+them. B2, the question only the store can answer, is drawn: one lane without
+memory and one for each of six engines, sorted by median so that the order of
+the list in the file cannot flatter anybody by position.
 
-**Measurements are written once; sentences about them are built.** The runs, how
-many answers were right in each arm (`RIGHT_WITHOUT`, `RIGHT_WITH`), and the axis
-are the measurements. Everything the figure says about them is assembled from
-those: the medians, the number of runs in the subtitle and on the middle card,
-both lane verdicts, the footnote's ratios and the whole description.
+B1 has no lanes and is not left out. On that question the six engines land on
+both sides of the no-memory median, so the footnote gives the range and where
+this engine sits in it. A figure showing only the question memory wins would be
+choosing its pair.
+
+**Measurements are written once; sentences about them are built.** The runs and
+how many answers were right in each lane are the measurements. Everything the
+figure says about them is assembled from those: the medians, the number of runs
+in the subtitle, every lane's verdict and its figure against no memory, which
+engine is the cheapest and which the dearest, and the whole description.
 
 Review found the same defect in this file three times over, each time in a
 sentence written to fix the previous one — `63,113` hard-copied beside the four
@@ -32,80 +36,53 @@ numbers it is the median of, then `seven runs` beside two lists that add up to
 it, then a `0` typed into three separate f-strings. Each was a second copy of
 something a list already determined.
 
-**What is still literal, and why each is allowed.** The four percentages, which
-`check_readings()` recomputes and rejects. The card labels and the title, which
-are prose. The canvas geometry, which nothing else determines. And this file,
-which spells counts out in prose above and below — deliberately, because a
-sentence explaining why B1 is not drawn is not a thing a generator produces, and
-a wrong count here misleads a maintainer rather than a reader of the front page.
-Change the runs and this file is one of the places to reread.
+**What is still literal, and why each is allowed.** The three percentages on the
+cards and the three in the footnote, which `check_readings()` recomputes and
+rejects. The title, which is prose. The canvas geometry, which nothing else
+determines. And this file, which spells things out in prose above and below —
+deliberately, because a sentence explaining why B1 is not drawn is not a thing a
+generator produces. Change the runs and this file is one of the places to
+reread.
 
 ## What the check covers, and what it does not
 
-`check_readings()` recomputes the four percentages the figure prints and refuses
-to write if one of them is not what the runs support. It also refuses a run that
-does not fit the axis, which would otherwise be drawn past the end of it in
-silence.
+`check_readings()` recomputes the three percentages on the cards and the three
+in the footnote, and refuses to write if one of them is not what the runs
+support. It also refuses a run that does not fit the axis, a lane recorded as
+more right answers than it has runs, and two questions that do not list the same
+engines.
 
-**It does not notice every change to a run.** The percentages come from
-`min(WITH)`, `max(WITHOUT)`, the two medians, `median(STRICT)` and `min(STRICT)`,
-so a run only matters while it is one of those. Swept one value at a time over
-every integer up to 130,000, two of the seven can move a long way with nothing
-firing:
+**It does not notice every change to a run.** A card is checked against the
+median of the engine it names, so only the middle run of that engine matters to
+it. And two of the cards follow a role, not a name: move Engram's middle run
+from `234,842` to `250,000` and nothing refuses, because server-memory at
+`235,006` becomes the cheapest engine and its median also rounds to 49% fewer.
+The figure that comes out is right, with a different name on the card. An engine
+that is on no card, claude-mem or mem0 here, can move anywhere: its lane is
+computed, so there is no literal for it to disagree with.
 
-| run | moves freely over | why |
-| --- | --- | --- |
-| `27,394` | `0` to `86,105` | it is the minimum of its arm and the arm's median sits above it |
-| `100,417` | `70,909` to `105,000` | it is above the two-element middle that forms the median of `WITH` |
-
-Outside those spans the percentages move and it refuses — `27,394 → 90,000`
-makes its arm's median 90,000 and the figure's 27% becomes 30%. The spans are
-measured, not reasoned: an earlier draft of this table reasoned them as
-`85,950` and `71,037` and both edges were wrong.
-
-Nor are the card labels checked against the pair beside them: swap two of those
-strings and nothing objects.
+Nor is the footnote's wording checked beyond its three figures.
 
 So read it as *the printed percentages agree with the printed runs*, which is
 what it asserts, and not as *the figure is correct*.
 
 ### Verified by breaking it
 
-Each of these makes it refuse, and the generator was restored byte for byte
-after each:
+Each of these makes it refuse, and the generator and the figure were restored
+byte for byte after the last:
 
 | broken | what it says |
 | --- | --- |
-| a run that feeds a reading (`55,189` → `60,000`) | `median vs median, all 7 runs: the figure says 27%, the runs say 24%` |
-| the off-protocol run pointed at nothing (`OFF_PROTOCOL = 29_997`) | `median, strict protocol only: the figure says 17%, the runs say 27%` |
-| the two **medians** swapped, both lines (`MEDIAN_WITHOUT = median(WITH)` **and** `MEDIAN_WITH = median(WITHOUT)`) | `median vs median, all 7 runs: the figure says 27%, the runs say -36%` |
-| a run past the end of the axis (`100,417` → `250,000`) | `a run of 250,000 does not fit an axis that stops at 105,000 -- it would be drawn past the end of it, in silence` |
+| this engine's middle run (`327,398` → `300,000`) | `Leteo, median against no memory: the figure says 29% fewer, the runs say 35% fewer` |
+| the cheapest engine's middle run, kept cheapest (`234,842` → `220,000`) | `the cheapest engine, Engram: the figure says 49% fewer, the runs say 52% fewer` |
+| the axis shortened under a run (`VMAX = 600_000.0`) | `a run of 684,593 does not fit an axis that stops at 600,000 -- it would be drawn past the end of it, in silence` |
+| a B1 run that feeds the footnote (claude-mem `118,621` → `140,000`) | `the footnote says (('13%', 'fewer'), ('21%', 'more'), ('5%', 'fewer')) on B1, the runs say (('5%', 'fewer'), ('21%', 'more'), ('5%', 'fewer'))` |
+| an engine dropped from B1 only (the mem0 line) | `the two questions do not list the same engines in the same order` |
+| more right answers than runs (basic-memory `3` → `4`) | `basic-memory is recorded as 4 right out of 3 runs` |
 
-Rows two and three name the exact edit because the obvious reading of each is
-something else. Pointing `OFF_PROTOCOL` at another run that *is* in `WITH` fires
-the footnote's reading instead; swapping the two run *lists* rather than the two
-medians fires the first reading, at 73%. And swapping one median line without
-the other makes both medians equal and reports 0%. A row a
-maintainer cannot reproduce from its own label is not evidence.
-
-### Two of the remaining assertions are watching nothing
-
-`assert OFF_PROTOCOL in WITH` and `assert MEDIAN_WITH < MEDIAN_WITHOUT` cannot
-fire, and that is provable rather than merely unobserved:
-
-- If `OFF_PROTOCOL` is not in `WITH` then `STRICT` is `WITH`, so `median(STRICT)`
-  is `MEDIAN_WITH` — and the readings print `27%` and `17%` for that one value,
-  which cannot both hold. The percentage check always fails first.
-- Reaching the second requires the `27%` reading to have passed, and
-  `round((1 - a/b) * 100) == 27` puts `a/b` below 1 — which puts `a` below `b`
-  because token counts are positive. (For a negative `b` it would not follow, so
-  the premise is doing work and is worth saying.)
-
-`assert len(STRICT) == len(WITH) - 1` is the one that is live: two runs sharing
-the off-protocol value would be double-starred, and
-`WITH = [29_996, 29_996, 55_000, 71_000, 71_500, 90_000]` reaches it with all
-four percentages still holding. The other two are kept as statements of intent
-and are not evidence of anything.
+Row two keeps Engram cheapest on purpose. Raising its middle run instead hands
+the role to server-memory, as the section above says, and refuses nothing. A row
+a maintainer cannot reproduce from its own label is not evidence.
 
 ## The description is generated, and the README's copy of it is guarded
 
@@ -117,10 +94,10 @@ so the other is what goes stale, which is why
 compares them and fails the build when they part. Change the figure, regenerate,
 and copy the new `aria-label` into the README rather than editing the `alt`.
 
-That guard was broken twice to check it is one — one figure drifting in the alt
-(`27%` to `37%`), and the off-protocol clause deleted from it, which is the
-defect it exists to prevent. Both fail, and `README.md` was restored byte for
-byte after each. It is not in `tools/guards.json`: every case there names a file
+That guard was broken twice to check it is one, on the figure as it stood in
+August — one number drifting in the alt (`27%` to `37%`), and a clause deleted
+from it, which is the defect it exists to prevent. Both failed, and `README.md`
+was restored byte for byte after each. It is not in `tools/guards.json`: every case there names a file
 under `src/`, and the mutation harness runs the whole suite per case, which is
 ten minutes for a string comparison. Broken by hand instead, and recorded here
 because that is the only place it would be recorded.
@@ -136,24 +113,26 @@ what `tokens.py` would generate.
 **No signed percentages.** An earlier draft labelled the saving `-27%` and it
 read as *27% worse* — a sign is the wrong carrier for a direction when the
 reader has not yet been told what is being subtracted from what. Every figure is
-a verb and a magnitude: `SAVES 27%`.
+a magnitude and a word: `29% fewer`, `2% more`.
 
-**The correctness travels with the tokens.** `0 of 3 right` and `4 of 4 right`
+**The correctness travels with the tokens.** `0 of 3 right` and `3 of 3 right`
 sit in the lane labels because the article's own conclusion is that correctness
 is what survives the variance and the tokens are the noisier half. A token chart
 standing alone would invert the document it is drawn from.
 
 ## What is not in the figure, and where it went
 
-The article supports a third reading of the same seven runs — the most expensive
-run *with* Leteo against the cheapest one without, which comes out at *costs
-3.7x as much*. It is cherry-picked in exactly the way the `70%` is, and a panel
-holding both invites a reader to average two numbers that mean nothing averaged.
+B1 has no lanes, for the reason given at the top, and the footnote carries it.
 
-It is not hidden. The 100,417-token dot that produces it is drawn, is a *with
-Leteo* run, and is the rightmost point on the chart — so the figure shows that
-the most expensive run of all is ours. The ratio itself stays in the README's
-*"Does it pay for itself?"* section and in the article.
+Leteo's first three runs of the day, through its own command line, are not drawn
+either. They gave a different median from the three drawn here, 257,230 against
+327,398, and the article says so and says what that difference means for every
+other gap on the figure. The lanes show the runs in which all six engines were
+asked through the same command with the same prompt, because that is the only
+set in which the lanes can be compared with each other.
+
+The August runs were counted in another unit and cannot share an axis with
+these; they stay in the article, dated.
 
 ## Rendering it while you work
 

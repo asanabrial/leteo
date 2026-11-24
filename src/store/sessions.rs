@@ -76,6 +76,64 @@ impl Store {
         Ok(projects)
     }
 
+    /// Takes `directory` away from every session recorded in it under a project
+    /// other than `keep`, and returns how many sessions that was.
+    ///
+    /// The other half of [`Self::recent_projects_in_directory`]: that reads the
+    /// directory's sessions as evidence it used to be called something else,
+    /// and this is what a person's answer that it never was does to the
+    /// evidence. The sessions stay under their own project with everything they
+    /// hold; only the claim that they were opened here goes, which is the one
+    /// thing the answer contradicts. The directory is matched in Rust for the
+    /// reason given there.
+    ///
+    /// Each changed session is queued for a peer, because a peer that kept the
+    /// directory would go on asking the question this store has stopped asking.
+    pub fn release_directory_to(
+        &mut self,
+        directory: &str,
+        keep: &str,
+    ) -> Result<usize, StoreError> {
+        let keep = normalize::project(keep);
+        let tx = self.write_transaction()?;
+        let mut released = Vec::new();
+        {
+            let mut statement = tx.prepare(
+                "SELECT id, project, directory FROM sessions
+                 WHERE directory IS NOT NULL AND trim(directory) <> ''",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, project, recorded) = row?;
+                if normalize::project(&project) != keep
+                    && crate::project::same_directory(&recorded, Path::new(directory))
+                {
+                    released.push(id);
+                }
+            }
+        }
+        for id in &released {
+            tx.execute("UPDATE sessions SET directory = '' WHERE id = ?1", [id])?;
+            let session = get_session_row(&tx, id)?;
+            enqueue_mutation(
+                &tx,
+                "session",
+                id,
+                crate::sync::OP_UPSERT,
+                &session,
+                &session.project,
+            )?;
+        }
+        tx.commit()?;
+        Ok(released.len())
+    }
+
     pub fn create_session(
         &mut self,
         id: &str,

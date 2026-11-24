@@ -686,3 +686,57 @@ fn a_session_never_records_a_relative_directory() {
         "/work/repo"
     );
 }
+
+/// Releasing a directory to one project takes it from the sessions recorded
+/// there under any other, across the spellings one directory is written in,
+/// and from nothing else.
+#[test]
+fn releasing_a_directory_leaves_only_its_own_project_recorded_there() {
+    let (_temp, mut store) = store();
+    store.enroll_project("other").unwrap();
+    store.enroll_project("third").unwrap();
+    store.create_session("mine", "here", "C:/repo").unwrap();
+    store.create_session("planted", "other", "C:/repo").unwrap();
+    store
+        .create_session("folded", "third", "C:\\repo\\")
+        .unwrap();
+    store
+        .create_session("away", "other", "C:/elsewhere")
+        .unwrap();
+    let queued = |store: &Store| -> i64 {
+        rusqlite::Connection::open(store.database_path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_mutations WHERE entity = 'session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let before = queued(&store);
+
+    assert_eq!(store.release_directory_to("C:/repo", "here").unwrap(), 2);
+
+    assert_eq!(store.get_session("mine").unwrap().directory, "C:/repo");
+    assert_eq!(store.get_session("planted").unwrap().directory, "");
+    assert_eq!(store.get_session("folded").unwrap().directory, "");
+    assert_eq!(
+        store.get_session("away").unwrap().directory,
+        "C:/elsewhere",
+        "the same project recorded in another directory is not touched"
+    );
+    assert_eq!(store.get_session("planted").unwrap().project, "other");
+    assert!(
+        store
+            .recent_projects_in_directory("C:/repo", "here")
+            .unwrap()
+            .is_empty(),
+        "nothing is left for the drift gate to offer"
+    );
+    assert_eq!(
+        queued(&store) - before,
+        2,
+        "each changed session is queued for a peer, and only those"
+    );
+    assert_eq!(store.release_directory_to("C:/repo", "here").unwrap(), 0);
+}

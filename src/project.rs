@@ -1097,6 +1097,47 @@ pub(crate) fn recordable_directory(directory: &str) -> &str {
     }
 }
 
+/// The directory a project's stable manual session records, given what
+/// detection made of the place the save came from.
+///
+/// A session's directory is read back as evidence of what that directory is
+/// called: `Store::recent_projects_in_directory` offers every project recorded
+/// there, and a write that names none is refused while one of them differs from
+/// detection. A manual session is not a conversation that happened somewhere;
+/// it is the bucket a save lands in when it names no session, so when the save
+/// names a project the directory does not resolve to, the bucket must not
+/// carry the directory. One `mem_save` naming another project from inside a
+/// repository recorded that repository under the other name, and seven months
+/// later every silent write from it was still being refused as a rename — 331
+/// sessions there under the detected name against that single row.
+///
+/// The directory is kept when detection names nothing, and when all it has is
+/// the folder's own name, guessed or not. A folder that is no repository has no
+/// name of its own to contradict, and naming its project by hand is how such a
+/// folder gets one: `tests/cli_integration.rs` holds two plain checkouts saved
+/// under one project, whose session records the first. Only a repository, or a
+/// `.leteo/config.json`, says what a directory is called firmly enough for a
+/// save under another name to be a save about somewhere else.
+///
+/// A session an agent opens with `mem_session_start`, or a hook opens for it,
+/// does not pass through here: that is a conversation held in the directory,
+/// and under a project the caller declared it is the evidence the gate wants.
+pub(crate) fn session_directory<'a>(
+    project: &str,
+    detection: &ProjectDetection,
+    directory: &'a str,
+) -> &'a str {
+    let detected = crate::memory::normalize::project(&detection.project);
+    if detected.is_empty()
+        || detection.source == SOURCE_DIR_BASENAME
+        || detected == crate::memory::normalize::project(project)
+    {
+        directory
+    } else {
+        ""
+    }
+}
+
 /// Whether a stored session directory names the directory a caller is in.
 ///
 /// The same directory is written in several ways across machines — a trailing

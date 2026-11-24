@@ -916,6 +916,25 @@ async fn insert_mutations_tx(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     entries: &[MutationEntry],
 ) -> Result<Vec<i64>, CloudStoreError> {
+    // The sequence has to become visible in the order it was allocated.
+    //
+    // `BIGSERIAL` hands out its number at insert time and PostgreSQL commits in
+    // whatever order transactions finish, so a short push queued behind a long
+    // one can commit first. A pull then sees the later sequence, stores it as
+    // its cursor, and the rows the long push already numbered — but has not
+    // committed — are behind that cursor for good: no error, no retry, just
+    // memories that never arrive while the sync reports healthy.
+    //
+    // Taking the transaction-scoped lock before the first `nextval` puts
+    // allocation and commit in one order: the next push cannot draw a number
+    // until this transaction has ended, so a reader never sees a gap that is
+    // still being filled. It is released on commit or rollback, so a failed
+    // push holds nothing. The lock is per-database and covers every insert
+    // path, chunks included, because they all come through here.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(MUTATION_SEQUENCE_LOCK_KEY)
+        .execute(&mut **transaction)
+        .await?;
     let mut sequences = Vec::with_capacity(entries.len());
     for entry in entries {
         let row = sqlx::query(
@@ -1121,6 +1140,11 @@ fn usize_from_i32(value: i32) -> usize {
 }
 
 const MIGRATION_LOCK_KEY: i64 = 0x4C_45_54_45_4F_01;
+
+/// The advisory lock every insert into `cloud_mutations` takes, so the
+/// sequence numbers it allocates become visible in the order they were handed
+/// out. See `insert_mutations_tx`.
+const MUTATION_SEQUENCE_LOCK_KEY: i64 = 0x4C_45_54_45_4F_02;
 
 const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS cloud_principals (

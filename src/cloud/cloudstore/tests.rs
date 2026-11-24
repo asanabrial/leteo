@@ -789,3 +789,85 @@ async fn a_list_cut_at_its_limit_says_so() {
     let whole = store.list_memories(&own, None, 2).await.unwrap();
     assert_eq!((whole.items.len(), whole.truncated), (2, false));
 }
+
+/// A pull must never walk its cursor past a sequence an uncommitted push
+/// already holds.
+///
+/// `BIGSERIAL` hands out its number at insert time and PostgreSQL commits in
+/// whatever order transactions finish, so a push that drew later numbers can
+/// commit before one that drew earlier ones. A pull that then stores the later
+/// number as its cursor has skipped the earlier rows for good — they commit
+/// behind it and nothing asks for them again.
+///
+/// The first push here is held open inside its transaction on purpose. In the
+/// buggy world the second commits at once and the first pull returns it; with
+/// the lock the second waits, the first pull is empty, and the second pull sees
+/// both. Either way every mutation must be returned exactly once.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_pull_never_advances_past_a_push_that_has_not_committed() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let (store, stamp) = test_store().await;
+    let other = CloudStore::connect(&database_url, 2).await.unwrap();
+    let project = format!("push-order-{stamp}");
+    let entry = |key: &str| MutationEntry {
+        project: project.clone(),
+        entity: crate::sync::ENTITY_SESSION.to_owned(),
+        entity_key: key.to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "id": key,
+            "project": project.clone(),
+            "directory": format!("/tmp/{key}"),
+        }),
+    };
+
+    let mut held = store.pool().begin().await.unwrap();
+    insert_mutations_tx(&mut held, &[entry("early-1"), entry("early-2")])
+        .await
+        .unwrap();
+
+    let mut late = tokio::spawn({
+        let entries = vec![entry("late-1")];
+        async move { other.insert_mutations(&entries).await }
+    });
+    // Nothing to wait for when the insert is serialised behind the held
+    // transaction: it cannot finish until the commit below. When it can finish,
+    // that is the interleaving this test exists to refuse.
+    let late_finished_early = tokio::time::timeout(Duration::from_millis(500), &mut late)
+        .await
+        .is_ok();
+
+    let scope = std::slice::from_ref(&project);
+    let (first_page, _, cursor) = store
+        .list_mutations_since(0, 100, Some(scope))
+        .await
+        .unwrap();
+    held.commit().await.unwrap();
+    if !late_finished_early {
+        late.await.unwrap().unwrap();
+    }
+    let (second_page, _, _) = store
+        .list_mutations_since(cursor, 100, Some(scope))
+        .await
+        .unwrap();
+
+    let mut seen = first_page
+        .iter()
+        .chain(second_page.iter())
+        .map(|mutation| mutation.entity_key.clone())
+        .collect::<Vec<_>>();
+    seen.sort();
+    assert_eq!(
+        seen,
+        ["early-1", "early-2", "late-1"],
+        "every mutation of both pushes is returned exactly once; the first pull \
+         returned {first_page:?} and the second {second_page:?}"
+    );
+
+    sqlx::query("DELETE FROM cloud_mutations WHERE project = $1")
+        .bind(&project)
+        .execute(store.pool())
+        .await
+        .unwrap();
+}

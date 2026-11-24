@@ -9,6 +9,21 @@ use crate::sync::{Manifest, MutationEntry, StoredMutation};
 
 const MAX_RESPONSE_BYTES: u64 = crate::sync::MAX_UNCOMPRESSED_CHUNK_BYTES;
 
+/// The enrolment entry that stands for every project.
+pub(crate) const PROJECT_WILDCARD: &str = "*";
+
+/// Whether an enrolment list means every project.
+///
+/// It is one rule and it lives here because both directions of the sync read
+/// it: the push sends every project when the list is the wildcard, a pull must
+/// accept every project, and a pull must not ask the server to narrow to a
+/// project literally named `*`, which nothing would match.
+pub(crate) fn allows_every_project(projects: &[String]) -> bool {
+    projects
+        .iter()
+        .any(|project| project.trim() == PROJECT_WILDCARD)
+}
+
 #[derive(Debug, Clone)]
 pub struct RemoteClient {
     base_url: Url,
@@ -172,6 +187,10 @@ impl RemoteClient {
     /// the wire at all, and a wildcard grant is exactly the case that would
     /// otherwise deliver a whole machine's memories to a peer that asked for
     /// one project.
+    ///
+    /// A peer enrolled in `*` sends no narrowing at all. The wildcard means
+    /// every project, and naming it on the wire would ask the server for a
+    /// project literally called `*`, which nothing matches.
     pub async fn pull_mutations(
         &self,
         since_sequence: i64,
@@ -187,7 +206,7 @@ impl RemoteClient {
             .map(|project| project.trim())
             .filter(|project| !project.is_empty())
             .collect::<Vec<_>>();
-        if !enrolled.is_empty() {
+        if !enrolled.is_empty() && !allows_every_project(projects) {
             // One comma-separated value rather than a repeated key: the
             // endpoint deserializes into a plain `Deserialize` struct, and
             // `serde_urlencoded` refuses a repeated key there.

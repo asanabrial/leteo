@@ -785,6 +785,49 @@ mod tests {
         );
     }
 
+    /// A peer enrolled in the wildcard replicates every project, so its pull
+    /// must ask for no narrowing and accept both projects the server holds.
+    #[tokio::test]
+    async fn a_wildcard_peer_pulls_every_project_and_asks_for_no_narrowing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut store =
+            Store::open(crate::store::StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+        store.create_session("s1", "proj-a", "/tmp/proj-a").unwrap();
+        store.create_session("s2", "proj-b", "/tmp/proj-b").unwrap();
+        store.enroll_project("*").unwrap();
+
+        let (address, queries) = two_project_server().await;
+        let remote =
+            RemoteClient::new(&format!("http://{address}"), "a-token-that-is-long-enough").unwrap();
+        let config = AutosyncConfig {
+            allowed_projects: vec!["*".to_owned()],
+            ..AutosyncConfig::default()
+        };
+        let outcome = {
+            let mut autosync = Autosync::new(&mut store, remote, config).unwrap();
+            tokio::time::timeout(Duration::from_secs(10), autosync.pull_remote())
+                .await
+                .expect("pull_remote terminated")
+        };
+        assert!(outcome.is_ok(), "{outcome:?}");
+
+        for (project, expected) in [("proj-a", 2), ("proj-b", 1)] {
+            assert_eq!(
+                store
+                    .recent_observations(Some(project), Some(10), true)
+                    .unwrap()
+                    .len(),
+                expected,
+                "{project} is replicated by a wildcard peer"
+            );
+        }
+        let asked = queries.lock().expect("the query log is not poisoned");
+        assert!(
+            asked.iter().all(|query| !query.contains("projects=")),
+            "a wildcard peer asks for no narrowing at all: {asked:?}"
+        );
+    }
+
     #[test]
     fn backoff_is_exponential_and_capped() {
         let base = Duration::from_secs(1);

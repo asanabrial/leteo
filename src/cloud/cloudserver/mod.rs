@@ -388,9 +388,18 @@ struct MutationPullQuery {
 ///
 /// `None` still means "no scope at all" — a wildcard grant and a client that
 /// asked for nothing — and an empty vector means the peer enrolled nothing, so
-/// the page is empty rather than unfiltered.
+/// the page is empty rather than unfiltered. A request carrying the wildcard
+/// entry is the peer saying it replicates every project, which is the same as
+/// asking for nothing; the store's own wildcard rule is
+/// `super::remote::allows_every_project`.
 fn narrow_pull_scope(granted: Option<Vec<String>>, requested: Option<&str>) -> Option<Vec<String>> {
     let requested = requested.map(super::config::parse_projects);
+    if requested
+        .as_deref()
+        .is_some_and(super::remote::allows_every_project)
+    {
+        return granted;
+    }
     match (granted, requested) {
         (None, None) => None,
         (None, Some(requested)) => Some(requested),
@@ -692,6 +701,20 @@ mod pull_scope_tests {
             narrow_pull_scope(None, Some("")).unwrap(),
             Vec::<String>::new(),
             "a peer that enrolled nothing receives nothing, not everything"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_request_is_the_peers_everything_not_a_project_named_star() {
+        assert_eq!(
+            narrow_pull_scope(None, Some("*")),
+            None,
+            "a wildcard peer asks for every project the grant allows"
+        );
+        assert_eq!(
+            narrow_pull_scope(Some(scope(&["leteo", "otro"])), Some("*")).unwrap(),
+            scope(&["leteo", "otro"]),
+            "and the grant still bounds it"
         );
     }
 }

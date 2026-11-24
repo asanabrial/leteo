@@ -2870,3 +2870,56 @@ fn a_pull_refuses_an_unenrolled_project_and_still_walks_the_cursor_past_it() {
         1
     );
 }
+
+/// The wildcard is one rule for both directions, and this is the direction it
+/// was missing from.
+///
+/// `list_pending_sync_mutations` sends every project when the enrolment list
+/// holds `*`. A door that compared `*` to a project name the way it compares
+/// real names would refuse every arriving row, so a wildcard peer would push
+/// everything and receive nothing — the failure would be silent, because the
+/// cursor walks past each refusal.
+#[test]
+fn a_wildcard_enrolment_applies_a_pull_of_any_project() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "/tmp/leteo").unwrap();
+    store.create_session("s2", "otro", "/tmp/otro").unwrap();
+    let pulled = pulled_memory(1, "otro", "s2");
+    assert!(
+        store
+            .apply_pulled_sync_mutation("cloud", &pulled, &["*".to_owned()])
+            .unwrap(),
+        "a peer enrolled in * replicates every project"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("otro"), Some(10), true)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+fn pulled_memory(seq: i64, project: &str, session: &str) -> SyncMutation {
+    SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: format!("obs-{seq}"),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": format!("obs-{seq}"),
+            "session_id": session,
+            "type": "decision",
+            "title": format!("memory {seq}"),
+            "content": "body",
+            "project": project,
+            "scope": "project",
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: project.to_owned(),
+        occurred_at: "2026-08-02T10:00:00Z".to_owned(),
+        acked_at: None,
+    }
+}

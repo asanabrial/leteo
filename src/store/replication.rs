@@ -6,9 +6,15 @@ use super::*;
 ///
 /// `allowed_projects` is the same list the push filters by and the pull asks
 /// the server for, so a mutation the server was not asked to send is not
-/// written either. An empty project is allowed: it is how a mutation that
-/// belongs to no single project is filed, and there is no project to refuse.
+/// written either. The wildcard is the same entry here as there: a peer
+/// enrolled in `*` replicates every project, and refusing them all would make
+/// the push work while the pull silently received nothing. An empty project is
+/// allowed too: it is how a mutation that belongs to no single project is
+/// filed, and there is no project to refuse.
 fn replicating_for_pull(allowed_projects: &[String], project: &str) -> bool {
+    if crate::cloud::remote::allows_every_project(allowed_projects) {
+        return true;
+    }
     let project = normalize::project(project);
     project.is_empty()
         || allowed_projects
@@ -146,7 +152,7 @@ impl Store {
     ) -> Result<Vec<SyncMutation>, StoreError> {
         let target_key = require_sync_target(target_key)?;
         let limit = limit.clamp(1, 100) as i64;
-        let allow_all = allowed_projects.iter().any(|project| project.trim() == "*");
+        let allow_all = crate::cloud::remote::allows_every_project(allowed_projects);
         if allowed_projects.is_empty() && !allow_all {
             return Ok(Vec::new());
         }

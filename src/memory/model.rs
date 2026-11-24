@@ -341,6 +341,14 @@ pub struct AddOutcome {
     /// a deduplicated save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaced: Option<ReplacedContent>,
+    /// The memory this save matched and did not land on, because a judged
+    /// relation has hidden it from every listing. A save under that memory's
+    /// topic key, or a repeat of its text inside the dedupe window, inserts a
+    /// new row instead of writing where nothing reads; this names the hidden
+    /// copy so the reply can still say the text was overturned. Absent when
+    /// nothing hidden matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overturned: Option<String>,
 }
 
 /// One `mem_update`, and what it replaced.

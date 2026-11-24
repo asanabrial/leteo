@@ -6,6 +6,16 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A save never lands on a memory a later one has overtaken.** A `mem_save`
+  under the topic key of a memory `mem_judge` had marked superseded rewrote
+  that memory, and an identical save inside the dedupe window folded into it:
+  both answered as if the save landed, and every listing hides such a memory,
+  so the text was unreachable from the moment it was stored. Both lookups now
+  read the same narrowing the listings apply, a live copy of the key wins over
+  a hidden one, and the save inserts a new memory when only a hidden one
+  matched. Passive capture's duplicate check follows the same rule, and the
+  reply still says the text was overturned, so a learning is stored rather than
+  counted as a duplicate of a memory nothing shows.
 - **A memory saved under another project no longer makes the directory it was
   saved from refuse every later write.** `mem_save` and `leteo save` naming a
   project the directory does not resolve to recorded that directory on the

@@ -2518,10 +2518,28 @@
     "new": ""
   },
   {
-    "name": "save: a deduplicated or revised save names an overturned memory without saying so",
+    "name": "save: an insert beside a hidden memory drops the caveat that names it",
     "file": "src/mcp/output.rs",
-    "old": "    if outcome.kind == AddOutcomeKind::Inserted {",
-    "new": "    if outcome.kind != AddOutcomeKind::Inserted {"
+    "old": "        match outcome.overturned.as_deref() {",
+    "new": "        match None::<&str> {"
+  },
+  {
+    "name": "save: a superseded topic key is revised into text nothing lists",
+    "file": "src/store/observations.rs",
+    "old": "                                CASE WHEN {not_superseded} THEN 0 ELSE 1 END AS hidden\n                         FROM observations o\n                         WHERE o.topic_key = ?1 AND ifnull(o.project, '') = ifnull(?2, '')",
+    "new": "                                0 AS hidden\n                         FROM observations o\n                         WHERE o.topic_key = ?1 AND ifnull(o.project, '') = ifnull(?2, '')"
+  },
+  {
+    "name": "save: the dedupe window lands on a superseded memory again",
+    "file": "src/store/observations.rs",
+    "old": "                            CASE WHEN {not_superseded} THEN 0 ELSE 1 END AS hidden\n                     FROM observations o\n                     WHERE o.normalized_hash = ?1 AND ifnull(o.project, '') = ifnull(?2, '')",
+    "new": "                            0 AS hidden\n                     FROM observations o\n                     WHERE o.normalized_hash = ?1 AND ifnull(o.project, '') = ifnull(?2, '')"
+  },
+  {
+    "name": "capture: a superseded learning counts as a duplicate again",
+    "file": "src/store/observations.rs",
+    "old": "                          AND ifnull(o.project, '') = ?2 AND o.deleted_at IS NULL\n                          AND {not_superseded}",
+    "new": "                          AND ifnull(o.project, '') = ?2 AND o.deleted_at IS NULL"
   },
   {
     "name": "save: mem_save drops the caveats it computed",

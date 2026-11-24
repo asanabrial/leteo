@@ -3430,8 +3430,8 @@ fn saving_a_duplicate_of_an_overturned_memory_says_it_was_overturned() {
             .unwrap(),
         ))
         .unwrap();
-    assert_eq!(saved.status, "deduplicated", "{saved:?}");
-    assert_eq!(saved.observation.id, old.id);
+    assert_eq!(saved.status, "inserted", "{saved:?}");
+    assert_ne!(saved.observation.id, old.id, "{saved:?}");
     assert_eq!(saved.caveats.len(), 1, "{saved:?}");
     assert_eq!(saved.caveats[0].relation, "superseded_by");
     assert_eq!(saved.caveats[0].other_id, new.id);
@@ -3476,7 +3476,7 @@ fn a_repeated_session_summary_of_an_overturned_one_says_it_was_overturned() {
             serde_json::from_value(json!({ "content": summary })).unwrap(),
         ))
         .unwrap();
-    assert_eq!(saved.observation.id, old.id, "{saved:?}");
+    assert_ne!(saved.observation.id, old.id, "{saved:?}");
     assert_eq!(saved.caveats.len(), 1, "{saved:?}");
     assert_eq!(saved.caveats[0].other_id, new.id);
 }

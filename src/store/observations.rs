@@ -504,18 +504,42 @@ impl Store {
 
         let tx = self.write_transaction()?;
         ensure_session_tx(&tx, &input.session_id)?;
+        // A memory `mem_judge` marked superseded is hidden from every listing,
+        // so revising it writes the new text where nothing reads: the save
+        // answers `Revised` and the memory is gone from search, from the
+        // context block and from the prompt hint. Both lookups below read the
+        // same narrowing the listings apply, order a hidden match last so a
+        // live copy of the key wins, and — when only a hidden one matched —
+        // insert a new memory and name that copy so the reply can still say the
+        // text was overturned.
+        let not_superseded = super::relations::not_superseded();
+        let mut overturned: Option<String> = None;
         if let Some(topic_key) = fields.topic_key() {
             let existing = tx
                 .query_row(
-                    "SELECT id FROM observations
-                     WHERE topic_key = ?1 AND ifnull(project, '') = ifnull(?2, '')
-                       AND scope = ?3 AND deleted_at IS NULL
-                     ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC LIMIT 1",
+                    &format!(
+                        "SELECT o.id, o.sync_id,
+                                CASE WHEN {not_superseded} THEN 0 ELSE 1 END AS hidden
+                         FROM observations o
+                         WHERE o.topic_key = ?1 AND ifnull(o.project, '') = ifnull(?2, '')
+                           AND o.scope = ?3 AND o.deleted_at IS NULL
+                         ORDER BY hidden ASC, datetime(o.updated_at) DESC,
+                                  datetime(o.created_at) DESC LIMIT 1"
+                    ),
                     params![topic_key, fields.project(), fields.scope()],
-                    |row| row.get::<_, i64>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, bool>(2)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            if let Some(id) = existing {
+            if let Some((_, sync_id, true)) = &existing {
+                overturned = Some(sync_id.clone());
+            }
+            if let Some((id, _, false)) = existing {
                 // Everything the replaced revision held, read in one go and
                 // before the UPDATE overwrites it: the snapshot keeps the old
                 // title and body, and the reply reports the size of the body it
@@ -602,6 +626,7 @@ impl Store {
                     kind: AddOutcomeKind::Revised,
                     observation,
                     replaced,
+                    overturned: None,
                 });
             }
         }
@@ -609,11 +634,16 @@ impl Store {
         let modifier = normalize::sqlite_datetime_modifier(dedupe_minutes);
         let existing = tx
             .query_row(
-                "SELECT id FROM observations
-                 WHERE normalized_hash = ?1 AND ifnull(project, '') = ifnull(?2, '')
-                   AND scope = ?3 AND type = ?4 AND title = ?5 AND deleted_at IS NULL
-                   AND datetime(created_at) >= datetime('now', ?6)
-                 ORDER BY created_at DESC LIMIT 1",
+                &format!(
+                    "SELECT o.id, o.sync_id,
+                            CASE WHEN {not_superseded} THEN 0 ELSE 1 END AS hidden
+                     FROM observations o
+                     WHERE o.normalized_hash = ?1 AND ifnull(o.project, '') = ifnull(?2, '')
+                       AND o.scope = ?3 AND o.type = ?4 AND o.title = ?5
+                       AND o.deleted_at IS NULL
+                       AND datetime(o.created_at) >= datetime('now', ?6)
+                     ORDER BY hidden ASC, o.created_at DESC LIMIT 1"
+                ),
                 params![
                     fields.hash(),
                     fields.project(),
@@ -622,10 +652,19 @@ impl Store {
                     fields.title(),
                     modifier.as_ref()
                 ],
-                |row| row.get::<_, i64>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
             )
             .optional()?;
-        if let Some(id) = existing {
+        if let Some((_, sync_id, true)) = &existing {
+            overturned.get_or_insert(sync_id.clone());
+        }
+        if let Some((id, _, false)) = existing {
             tx.execute(
                 "UPDATE observations SET duplicate_count = duplicate_count + 1,
                  last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1",
@@ -638,6 +677,7 @@ impl Store {
                 kind: AddOutcomeKind::Deduplicated,
                 observation,
                 replaced: None,
+                overturned: None,
             });
         }
 
@@ -672,6 +712,7 @@ impl Store {
             kind: AddOutcomeKind::Inserted,
             observation,
             replaced: None,
+            overturned,
         })
     }
 
@@ -1636,11 +1677,19 @@ impl Store {
             // collects copies.
             let (_, hash) =
                 normalize::stored_content(&learning, self.config.max_observation_length);
+            // The same narrowing as the save's two lookups: a superseded row is
+            // live in the table but hidden from every listing, so counting it as
+            // the duplicate of this learning reports a capture that never stored
+            // anything.
+            let not_superseded = super::relations::not_superseded();
             let duplicate = match self.connection.query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM observations WHERE normalized_hash = ?1
-                      AND ifnull(project, '') = ?2 AND deleted_at IS NULL
-                 )",
+                &format!(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM observations o WHERE o.normalized_hash = ?1
+                          AND ifnull(o.project, '') = ?2 AND o.deleted_at IS NULL
+                          AND {not_superseded}
+                     )"
+                ),
                 params![hash, project],
                 |row| row.get::<_, bool>(0),
             ) {

@@ -62,11 +62,7 @@ fn a_pulled_session_never_records_a_relative_directory() {
         occurred_at: "2026-07-27T12:00:00Z".to_owned(),
         acked_at: None,
     };
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&mutation).unwrap());
     assert_eq!(store.get_session("remote-session").unwrap().directory, "");
 }
 
@@ -105,11 +101,7 @@ fn replication_cannot_put_back_a_synonym_the_migration_removed() {
         occurred_at: saved.updated_at.clone(),
         acked_at: None,
     };
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&mutation).unwrap());
 
     let stored = store.get_observation(saved.id).unwrap();
     assert_eq!(stored.content, "the pool leaked, again", "the pull landed");
@@ -471,16 +463,8 @@ fn pulled_mutation_applies_once_and_advances_cursor_atomically() {
         acked_at: None,
     };
 
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
-    assert!(
-        !store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&mutation).unwrap());
+    assert!(!store.apply_pulled(&mutation).unwrap());
     assert_eq!(
         store.get_session("remote-session").unwrap().project,
         "leteo"
@@ -542,13 +526,12 @@ fn a_backfilled_project_arrives_at_a_peer_in_an_order_it_can_apply() {
     let peer_temp = tempfile::TempDir::new().unwrap();
     let mut peer = Store::open(StoreConfig::new(peer_temp.path().join("peer.db"))).unwrap();
     for mutation in &pending {
-        peer.apply_pulled_sync_mutation("cloud", mutation)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "seq {} ({}) could not be applied at the peer: {error}",
-                    mutation.seq, mutation.entity
-                )
-            });
+        peer.apply_pulled(mutation).unwrap_or_else(|error| {
+            panic!(
+                "seq {} ({}) could not be applied at the peer: {error}",
+                mutation.seq, mutation.entity
+            )
+        });
     }
     assert_eq!(
         peer.recent_observations(Some("leteo"), Some(10), true)
@@ -620,7 +603,7 @@ fn a_peer_cannot_send_a_memory_that_belongs_to_nobody() {
     ] {
         assert!(
             store
-                .apply_pulled_sync_mutation("cloud", &mutation(entity, key, body.clone()))
+                .apply_pulled(&mutation(entity, key, body.clone()))
                 .is_err(),
             "a {entity} with no identity was written: key={key:?} {body}"
         );
@@ -628,19 +611,21 @@ fn a_peer_cannot_send_a_memory_that_belongs_to_nobody() {
 
     assert!(
         store
-            .apply_pulled_sync_mutation(
-                "cloud",
-                &mutation("observation", "obs-from-key", observation("", "s1"))
-            )
+            .apply_pulled(&mutation(
+                "observation",
+                "obs-from-key",
+                observation("", "s1")
+            ))
             .is_ok(),
         "the mutation key is an identity even when the payload omits one"
     );
     assert!(
         store
-            .apply_pulled_sync_mutation(
-                "cloud",
-                &mutation("observation", "obs-ok", observation("obs-ok", "s1"))
-            )
+            .apply_pulled(&mutation(
+                "observation",
+                "obs-ok",
+                observation("obs-ok", "s1")
+            ))
             .is_ok()
     );
     assert_eq!(
@@ -955,11 +940,7 @@ fn a_relation_that_arrives_first_waits_for_its_memories() {
         occurred_at: "2026-01-01 00:00:00".to_owned(),
         acked_at: None,
     };
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &relation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&relation).unwrap());
     assert_eq!(
         store
             .count_relations(ListRelationsOptions::default())
@@ -998,7 +979,7 @@ fn a_relation_that_arrives_first_waits_for_its_memories() {
         acked_at: None,
     };
     store
-        .apply_pulled_sync_mutation("cloud", &memory(2, "obs-vieja", "Decisión vieja"))
+        .apply_pulled(&memory(2, "obs-vieja", "Decisión vieja"))
         .unwrap();
     assert_eq!(
         store
@@ -1009,7 +990,7 @@ fn a_relation_that_arrives_first_waits_for_its_memories() {
     );
 
     store
-        .apply_pulled_sync_mutation("cloud", &memory(3, "obs-nueva", "Decisión nueva"))
+        .apply_pulled(&memory(3, "obs-nueva", "Decisión nueva"))
         .unwrap();
     assert_eq!(
         store
@@ -1168,7 +1149,7 @@ fn a_replicated_write_and_a_typed_one_leave_the_same_row() {
         ..session.clone()
     };
     for mutation in [&session, &prompt] {
-        store.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+        store.apply_pulled(mutation).unwrap();
     }
 
     let project_of_session = |id: &str| store.get_session(id).unwrap().project;
@@ -1276,10 +1257,7 @@ fn a_memory_crossing_the_wire_arrives_whole_except_what_stays_home() {
     let (_destination_temp, mut destination) = store();
     let mut applied = 0;
     for mutation in &queued {
-        if destination
-            .apply_pulled_sync_mutation("cloud", mutation)
-            .unwrap_or(false)
-        {
+        if destination.apply_pulled(mutation).unwrap_or(false) {
             applied += 1;
         }
     }
@@ -1587,7 +1565,7 @@ fn an_arriving_memory_does_not_undo_a_reread() {
 
     assert!(
         store
-            .apply_pulled_sync_mutation("cloud", &arriving("decision", 1, "2027-01-01 00:00:00"))
+            .apply_pulled(&arriving("decision", 1, "2027-01-01 00:00:00"))
             .unwrap()
     );
     let stored = store.get_observation(saved.id).unwrap();
@@ -1611,7 +1589,7 @@ fn an_arriving_memory_does_not_undo_a_reread() {
     // worked out afresh.
     assert!(
         store
-            .apply_pulled_sync_mutation("cloud", &arriving("policy", 2, "2027-01-02 00:00:00"))
+            .apply_pulled(&arriving("policy", 2, "2027-01-02 00:00:00"))
             .unwrap()
     );
     let after_kind_change = store
@@ -1812,16 +1790,12 @@ fn the_tombstone_a_move_queues_is_one_a_peer_can_apply() {
             .unwrap()
     };
     assert!(
-        destino
-            .apply_pulled_sync_mutation("cloud", &mutaciones[0])
-            .unwrap(),
+        destino.apply_pulled(&mutaciones[0]).unwrap(),
         "el peer acepta el upsert"
     );
     assert_eq!(vivas(&destino), 1, "y la memoria está allí");
     assert!(
-        destino
-            .apply_pulled_sync_mutation("cloud", &mutaciones[1])
-            .unwrap(),
+        destino.apply_pulled(&mutaciones[1]).unwrap(),
         "y acepta la lápida en vez de diferirla"
     );
     assert_eq!(
@@ -1872,11 +1846,7 @@ fn a_tombstone_that_returns_to_its_origin_does_not_delete_the_moved_memory() {
         .unwrap();
     assert_eq!(queued.len(), 1, "the move queued its tombstone");
 
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &queued[0])
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&queued[0]).unwrap());
     let kept = store.get_observation(saved.id).unwrap();
     assert!(
         kept.deleted_at.is_none(),
@@ -1895,10 +1865,7 @@ fn a_tombstone_that_returns_to_its_origin_does_not_delete_the_moved_memory() {
     let mut tombstone = queued[0].clone();
     tombstone.entity_key = held.sync_id.clone();
     tombstone.payload = tombstone.payload.replace(&saved.sync_id, &held.sync_id);
-    assert!(
-        peer.apply_pulled_sync_mutation("cloud", &tombstone)
-            .unwrap()
-    );
+    assert!(peer.apply_pulled(&tombstone).unwrap());
     assert!(
         peer.get_observation(held.id).unwrap().deleted_at.is_some(),
         "a delete for a row still in the project it was filed under is applied"
@@ -1945,12 +1912,8 @@ fn a_delete_that_names_no_project_applies_only_to_a_memory_filed_under_none() {
         acked_at: None,
     };
 
-    store
-        .apply_pulled_sync_mutation("cloud", &delete(1, &filed.sync_id))
-        .unwrap();
-    store
-        .apply_pulled_sync_mutation("cloud", &delete(2, &unfiled.sync_id))
-        .unwrap();
+    store.apply_pulled(&delete(1, &filed.sync_id)).unwrap();
+    store.apply_pulled(&delete(2, &unfiled.sync_id)).unwrap();
 
     assert!(
         store
@@ -2476,13 +2439,12 @@ fn peer_after_applying(store: &Store, project: &str) -> (TempDir, Store) {
     let peer_temp = TempDir::new().unwrap();
     let mut peer = Store::open(StoreConfig::new(peer_temp.path().join("peer.db"))).unwrap();
     for mutation in &pending {
-        peer.apply_pulled_sync_mutation("cloud", mutation)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "seq {} ({}) could not be applied at the peer: {error}",
-                    mutation.seq, mutation.entity
-                )
-            });
+        peer.apply_pulled(mutation).unwrap_or_else(|error| {
+            panic!(
+                "seq {} ({}) could not be applied at the peer: {error}",
+                mutation.seq, mutation.entity
+            )
+        });
     }
     (peer_temp, peer)
 }
@@ -2652,20 +2614,24 @@ fn a_reversed_relation_under_another_sync_id_is_one_row_for_the_pair() {
     };
 
     store
-        .apply_pulled_sync_mutation(
-            "cloud",
-            &arriving(1, "rel-from-a-peer", "2000-01-01 00:00:00", "supersedes"),
-        )
+        .apply_pulled(&arriving(
+            1,
+            "rel-from-a-peer",
+            "2000-01-01 00:00:00",
+            "supersedes",
+        ))
         .unwrap();
     assert_eq!(rows(&store), 1, "an older word on the pair is dropped");
     let kept = store.get_relation(&here).unwrap();
     assert_eq!(kept.source_id, second.sync_id, "{kept:?}");
 
     store
-        .apply_pulled_sync_mutation(
-            "cloud",
-            &arriving(2, "rel-from-a-peer", "2999-01-01 00:00:00", "supersedes"),
-        )
+        .apply_pulled(&arriving(
+            2,
+            "rel-from-a-peer",
+            "2999-01-01 00:00:00",
+            "supersedes",
+        ))
         .unwrap();
     assert_eq!(rows(&store), 1, "a newer one updates the row, not a second");
     let turned = store.get_relation(&here).unwrap();
@@ -2759,14 +2725,14 @@ fn a_peer_silent_about_the_directory_does_not_erase_it_and_a_relative_one_is_dro
     store.create_session("s1", "leteo", &placed).unwrap();
 
     store
-        .apply_pulled_sync_mutation(
-            "cloud",
-            &memory_arriving("obs-peer-a", serde_json::json!({ "directory": placed })),
-        )
+        .apply_pulled(&memory_arriving(
+            "obs-peer-a",
+            serde_json::json!({ "directory": placed }),
+        ))
         .unwrap();
     let mut later = memory_arriving("obs-peer-a", serde_json::json!({ "title": "Edited" }));
     later.seq = 2;
-    store.apply_pulled_sync_mutation("cloud", &later).unwrap();
+    store.apply_pulled(&later).unwrap();
     let id = peer_id(&store, "obs-peer-a");
     let kept = store.get_observation(id).unwrap();
     assert_eq!(kept.title, "Edited", "the second payload did apply");
@@ -2781,9 +2747,7 @@ fn a_peer_silent_about_the_directory_does_not_erase_it_and_a_relative_one_is_dro
         serde_json::json!({ "directory": "../somewhere/else" }),
     );
     relative.seq = 3;
-    store
-        .apply_pulled_sync_mutation("cloud", &relative)
-        .unwrap();
+    store.apply_pulled(&relative).unwrap();
     assert_eq!(
         store
             .get_observation(peer_id(&store, "obs-peer-b"))
@@ -2832,4 +2796,77 @@ fn journal_of(store: &Store, sync_id: &str) -> Vec<String> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+/// The pull's second line of defence: the server answers a page, and the peer
+/// writes only the projects it asked to replicate.
+///
+/// The cursor is the half that has to be got right. A refused mutation is not
+/// retried — the server was never asked to send it again and the row is not
+/// wanted — so it must be walked past, or the next pull asks for the same
+/// sequence, refuses it again, and never reaches the project the peer does
+/// replicate.
+#[test]
+fn a_pull_refuses_an_unenrolled_project_and_still_walks_the_cursor_past_it() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "/tmp/leteo").unwrap();
+    store.create_session("s2", "otro", "/tmp/otro").unwrap();
+    let pulled = |seq: i64, project: &str| SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: format!("obs-{seq}"),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": format!("obs-{seq}"),
+            "session_id": if project == "leteo" { "s1" } else { "s2" },
+            "type": "decision",
+            "title": format!("memory {seq}"),
+            "content": "body",
+            "project": project,
+            "scope": "project",
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: project.to_owned(),
+        occurred_at: "2026-08-02T10:00:00Z".to_owned(),
+        acked_at: None,
+    };
+    let enrolled = vec!["leteo".to_owned()];
+
+    // A server that ignored the projects asked for sends another project's
+    // memory first.
+    assert!(
+        !store
+            .apply_pulled_sync_mutation("cloud", &pulled(1, "otro"), &enrolled)
+            .unwrap(),
+        "a refused mutation is not applied"
+    );
+    assert_eq!(
+        store.get_sync_state("cloud").unwrap().last_pulled_seq,
+        1,
+        "and the cursor advances past it"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("otro"), Some(10), true)
+            .unwrap()
+            .len(),
+        0,
+        "nothing of the refused project is written"
+    );
+
+    // The page after it is still reached.
+    assert!(
+        store
+            .apply_pulled_sync_mutation("cloud", &pulled(2, "leteo"), &enrolled)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("leteo"), Some(10), true)
+            .unwrap()
+            .len(),
+        1
+    );
 }

@@ -276,8 +276,7 @@ fn a_version_replicates_byte_for_byte_and_a_replay_is_a_no_op() {
         .expect("an upsert that replaced content queues its version");
 
     let (_peer_temp, mut peer) = store();
-    peer.apply_pulled_sync_mutation("cloud", &version_mutation)
-        .unwrap();
+    peer.apply_pulled(&version_mutation).unwrap();
 
     let local = source.observation_versions(&saved.sync_id).unwrap();
     let remote = peer.observation_versions(&saved.sync_id).unwrap();
@@ -298,7 +297,7 @@ fn a_version_replicates_byte_for_byte_and_a_replay_is_a_no_op() {
     // the unique index rather than storing a second copy.
     let mut replay = version_mutation;
     replay.seq += 1;
-    peer.apply_pulled_sync_mutation("cloud", &replay).unwrap();
+    peer.apply_pulled(&replay).unwrap();
     assert_eq!(
         peer.observation_versions(&saved.sync_id).unwrap().len(),
         1,
@@ -393,9 +392,7 @@ fn a_replicated_version_is_redacted_and_bounded_like_a_local_one() {
         occurred_at: "2026-08-05 04:00:00".to_owned(),
         acked_at: None,
     };
-    store
-        .apply_pulled_sync_mutation("cloud", &mutation)
-        .unwrap();
+    store.apply_pulled(&mutation).unwrap();
 
     let versions = store.observation_versions("obs-replicated").unwrap();
     assert_eq!(versions.len(), 1);
@@ -672,7 +669,7 @@ fn a_find_and_replace_reaches_the_peer_as_an_upsert() {
 
     let (_peer_temp, mut peer) = store();
     peer.create_session("s1", "leteo", "C:/repo").unwrap();
-    peer.apply_pulled_sync_mutation("cloud", &upsert).unwrap();
+    peer.apply_pulled(&upsert).unwrap();
 
     let (content, revision_count): (String, i64) = peer
         .connection
@@ -810,7 +807,7 @@ fn a_hard_delete_applied_from_another_machine_removes_the_versions_it_holds() {
 
     let (_peer_temp, mut peer) = store();
     for mutation in &queued {
-        peer.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+        peer.apply_pulled(mutation).unwrap();
     }
     assert_eq!(
         version_rows(&peer, &saved.sync_id),
@@ -828,7 +825,7 @@ fn a_hard_delete_applied_from_another_machine_removes_the_versions_it_holds() {
                 && mutation.op == crate::sync::OP_DELETE
         })
         .expect("a hard delete queues a delete");
-    peer.apply_pulled_sync_mutation("cloud", &delete).unwrap();
+    peer.apply_pulled(&delete).unwrap();
 
     assert_eq!(version_rows(&peer, &saved.sync_id), 0);
 }
@@ -895,7 +892,7 @@ fn a_redacted_journal_still_applies_on_a_peer_and_ends_with_nothing() {
 
     let (_peer_temp, mut peer) = store();
     for mutation in &queued {
-        peer.apply_pulled_sync_mutation("cloud", mutation).unwrap();
+        peer.apply_pulled(mutation).unwrap();
     }
 
     assert_eq!(version_rows(&peer, &saved.sync_id), 0);
@@ -948,10 +945,10 @@ fn a_version_that_arrives_after_the_hard_delete_does_not_come_back() {
         occurred_at: "2026-08-05 04:00:00".to_owned(),
         acked_at: None,
     };
-    peer.apply_pulled_sync_mutation("cloud", &delete).unwrap();
+    peer.apply_pulled(&delete).unwrap();
     for (offset, mut version) in versions.into_iter().enumerate() {
         version.seq = 100 + offset as i64;
-        peer.apply_pulled_sync_mutation("cloud", &version).unwrap();
+        peer.apply_pulled(&version).unwrap();
     }
 
     assert_eq!(version_rows(&peer, &saved.sync_id), 0);
@@ -981,9 +978,7 @@ fn a_version_for_a_memory_that_has_not_arrived_is_still_kept() {
         occurred_at: "2026-08-05 04:00:00".to_owned(),
         acked_at: None,
     };
-    store
-        .apply_pulled_sync_mutation("cloud", &mutation)
-        .unwrap();
+    store.apply_pulled(&mutation).unwrap();
     assert_eq!(version_rows(&store, "obs-not-yet"), 1);
 }
 

@@ -301,12 +301,12 @@ fn a_memory_pulled_from_a_peer_is_stemmed() {
         acked_at: None,
     };
     store
-        .apply_pulled_sync_mutation("cloud", &mutation(1, "El cron ejecuta la conciliación."))
+        .apply_pulled(&mutation(1, "El cron ejecuta la conciliación."))
         .unwrap();
     assert_eq!(strict(&store, "ejecutaron"), ["Nota remota"]);
 
     store
-        .apply_pulled_sync_mutation("cloud", &mutation(2, "El cron sincroniza los saldos."))
+        .apply_pulled(&mutation(2, "El cron sincroniza los saldos."))
         .unwrap();
     assert_eq!(strict(&store, "sincronizaron"), ["Nota remota"]);
     assert!(strict(&store, "ejecutaron").is_empty());
@@ -570,15 +570,11 @@ fn a_replicated_update_that_only_moves_the_project_keeps_the_language() {
         occurred_at: "2026-01-01 00:00:00".to_owned(),
         acked_at: None,
     };
-    store
-        .apply_pulled_sync_mutation("cloud", &mutation(1, "leteo"))
-        .unwrap();
+    store.apply_pulled(&mutation(1, "leteo")).unwrap();
     drop(store);
 
     let mut store = reopen_in(&temp, Interface::English);
-    store
-        .apply_pulled_sync_mutation("cloud", &mutation(2, "otro"))
-        .unwrap();
+    store.apply_pulled(&mutation(2, "otro")).unwrap();
 
     assert_eq!(language_of(&store, "Nota remota"), "es");
     let options = SearchOptions {

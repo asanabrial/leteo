@@ -427,9 +427,7 @@ fn a_replicated_prompt_is_redacted_capped_and_filed_like_a_typed_one() {
         occurred_at: "2026-08-05 04:00:00".to_owned(),
         acked_at: None,
     };
-    store
-        .apply_pulled_sync_mutation("cloud", &mutation)
-        .unwrap();
+    store.apply_pulled(&mutation).unwrap();
 
     let stored = store
         .connection

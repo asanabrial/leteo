@@ -305,7 +305,11 @@ impl<'a> Autosync<'a> {
         loop {
             let response = self
                 .remote
-                .pull_mutations(cursor, self.config.pull_batch_size)
+                .pull_mutations(
+                    cursor,
+                    self.config.pull_batch_size,
+                    &self.config.allowed_projects,
+                )
                 .await?;
             if response.has_more && response.mutations.is_empty() {
                 return Err(AutosyncError::Protocol(
@@ -357,8 +361,11 @@ impl<'a> Autosync<'a> {
                     occurred_at: mutation.occurred_at,
                     acked_at: None,
                 };
-                self.store
-                    .apply_pulled_sync_mutation(&self.config.target_key, &local)?;
+                self.store.apply_pulled_sync_mutation(
+                    &self.config.target_key,
+                    &local,
+                    &self.config.allowed_projects,
+                )?;
                 cursor = mutation.seq;
             }
             if !continue_pulling(response.has_more, cursor_before, cursor)? {
@@ -665,6 +672,117 @@ mod tests {
             "the error has to say what the server did wrong: {error}"
         );
         assert_eq!(cursor, 10);
+    }
+
+    /// A cloud that holds two projects and records the query each pull asked
+    /// with, so a test can see whether the peer narrowed its own page.
+    async fn two_project_server() -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::{Json, Router, extract::RawQuery, routing::get};
+
+        let queries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&queries);
+        let app = Router::new().route(
+            "/sync/mutations/pull",
+            get(move |RawQuery(raw): RawQuery| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    seen.lock()
+                        .expect("the query log is not poisoned")
+                        .push(raw.unwrap_or_default());
+                    let mutation = |seq: i64, project: &str| {
+                        serde_json::json!({
+                            "seq": seq,
+                            "entity": "observation",
+                            "entity_key": format!("obs-{project}-{seq}"),
+                            "op": "upsert",
+                            "payload": {
+                                "sync_id": format!("obs-{project}-{seq}"),
+                                "session_id": "s1",
+                                "type": "decision",
+                                "title": format!("memory of {project}"),
+                                "content": "body",
+                                "project": project,
+                                "scope": "project",
+                            },
+                            "project": project,
+                            "occurred_at": "2026-08-02T10:00:00Z",
+                        })
+                    };
+                    Json(serde_json::json!({
+                        "mutations": [
+                            mutation(1, "proj-a"),
+                            mutation(2, "proj-b"),
+                            mutation(3, "proj-a"),
+                        ],
+                        "has_more": false,
+                        "latest_seq": 3,
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (address, queries)
+    }
+
+    /// The issue's acceptance case: the server holds `proj-a` and `proj-b` and
+    /// the peer enrolled only `proj-a`. It also covers a server that ignores
+    /// the projects asked for, which is what an older one does — the rows it
+    /// should not have sent are refused at the apply door, and the cursor walks
+    /// past them so the page after them is still reached.
+    #[tokio::test]
+    async fn a_pull_writes_no_row_of_a_project_the_peer_did_not_enrol() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut store =
+            Store::open(crate::store::StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+        store.enroll_project("proj-a").unwrap();
+        store.create_session("s1", "proj-a", "/tmp/proj-a").unwrap();
+
+        let (address, queries) = two_project_server().await;
+        let remote =
+            RemoteClient::new(&format!("http://{address}"), "a-token-that-is-long-enough").unwrap();
+        let config = AutosyncConfig {
+            allowed_projects: vec!["proj-a".to_owned()],
+            ..AutosyncConfig::default()
+        };
+        let outcome = {
+            let mut autosync = Autosync::new(&mut store, remote, config).unwrap();
+            tokio::time::timeout(Duration::from_secs(10), autosync.pull_remote())
+                .await
+                .expect("pull_remote terminated")
+        };
+        assert!(outcome.is_ok(), "{outcome:?}");
+
+        assert_eq!(
+            store
+                .recent_observations(Some("proj-a"), Some(10), true)
+                .unwrap()
+                .len(),
+            2,
+            "every mutation of an enrolled project is applied"
+        );
+        assert_eq!(
+            store
+                .recent_observations(Some("proj-b"), Some(10), true)
+                .unwrap()
+                .len(),
+            0,
+            "a project this peer did not enrol never reaches the local store"
+        );
+        assert_eq!(
+            store.get_sync_state("cloud").unwrap().last_pulled_seq,
+            3,
+            "the cursor advances past the refused mutation instead of stalling on it"
+        );
+
+        let asked = queries.lock().expect("the query log is not poisoned");
+        assert!(
+            asked.iter().any(|query| query.contains("projects=proj-a")),
+            "the pull tells the server which projects to send: {asked:?}"
+        );
     }
 
     #[test]

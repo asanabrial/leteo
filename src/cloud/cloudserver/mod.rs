@@ -374,6 +374,37 @@ async fn push_mutations(
 struct MutationPullQuery {
     since_seq: Option<i64>,
     limit: Option<usize>,
+    /// The projects the peer enrolled, comma-separated.
+    ///
+    /// A wildcard grant reads every project on the server, so a peer that asked
+    /// for one project would otherwise receive all of them. This narrows the
+    /// page to the intersection of the grant and this list; omitting it keeps
+    /// the old behaviour for a client that does not know about it.
+    projects: Option<String>,
+}
+
+/// What one pull page may contain: what the token is granted, narrowed to what
+/// the peer says it enrolled.
+///
+/// `None` still means "no scope at all" — a wildcard grant and a client that
+/// asked for nothing — and an empty vector means the peer enrolled nothing, so
+/// the page is empty rather than unfiltered.
+fn narrow_pull_scope(granted: Option<Vec<String>>, requested: Option<&str>) -> Option<Vec<String>> {
+    let requested = requested.map(super::config::parse_projects);
+    match (granted, requested) {
+        (None, None) => None,
+        (None, Some(requested)) => Some(requested),
+        (granted, None) => granted,
+        (Some(granted), Some(requested)) => {
+            let granted = granted.into_iter().collect::<BTreeSet<_>>();
+            Some(
+                requested
+                    .into_iter()
+                    .filter(|project| granted.contains(project))
+                    .collect(),
+            )
+        }
+    }
 }
 
 async fn pull_mutations(
@@ -382,19 +413,20 @@ async fn pull_mutations(
     Query(query): Query<MutationPullQuery>,
 ) -> Result<Response, ApiError> {
     let principal = authenticate(&state, &headers).await?;
-    let allowed = state
+    let granted = state
         .auth
         .enrolled_projects(&state.store, &principal)
         .await?;
+    let scope = narrow_pull_scope(granted, query.projects.as_deref());
     let (mutations, has_more, latest_seq) = state
         .store
         .list_mutations_since(
             query.since_seq.unwrap_or_default().max(0),
             query.limit.unwrap_or(MAX_MUTATION_BATCH_SIZE),
-            allowed.as_deref(),
+            scope.as_deref(),
         )
         .await?;
-    let project = allowed
+    let project = scope
         .as_ref()
         .and_then(|projects| projects.first())
         .cloned()
@@ -606,4 +638,60 @@ async fn browse_search(
         results.as_ref(),
     ))
     .into_response())
+}
+
+#[cfg(test)]
+mod pull_scope_tests {
+    use super::narrow_pull_scope;
+
+    fn scope(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_wildcard_grant_follows_the_projects_the_peer_asked_for() {
+        assert_eq!(
+            narrow_pull_scope(None, Some("leteo")).unwrap(),
+            scope(&["leteo"]),
+            "a token granted * is narrowed by what the peer enrolled"
+        );
+        assert_eq!(
+            narrow_pull_scope(None, Some("leteo,otro")).unwrap(),
+            scope(&["leteo", "otro"]),
+            "and by every project in the list"
+        );
+    }
+
+    #[test]
+    fn a_client_that_asks_for_nothing_keeps_the_old_answer() {
+        assert_eq!(narrow_pull_scope(None, None), None);
+        assert_eq!(
+            narrow_pull_scope(Some(scope(&["leteo"])), None).unwrap(),
+            scope(&["leteo"]),
+            "a server that has not been told a scope still sends what the grant allows"
+        );
+    }
+
+    #[test]
+    fn a_granted_project_is_never_widened_by_the_request() {
+        assert_eq!(
+            narrow_pull_scope(Some(scope(&["leteo"])), Some("leteo,otro")).unwrap(),
+            scope(&["leteo"]),
+            "asking for another tenant's project yields nothing of it"
+        );
+        assert_eq!(
+            narrow_pull_scope(Some(scope(&["leteo"])), Some("otro")).unwrap(),
+            Vec::<String>::new(),
+            "and an empty page when it is the only one asked for"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_is_an_empty_page_rather_than_no_scope() {
+        assert_eq!(
+            narrow_pull_scope(None, Some("")).unwrap(),
+            Vec::<String>::new(),
+            "a peer that enrolled nothing receives nothing, not everything"
+        );
+    }
 }

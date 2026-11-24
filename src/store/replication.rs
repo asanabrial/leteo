@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// Whether a pulled mutation names a project this peer replicates.
+///
+/// `allowed_projects` is the same list the push filters by and the pull asks
+/// the server for, so a mutation the server was not asked to send is not
+/// written either. An empty project is allowed: it is how a mutation that
+/// belongs to no single project is filed, and there is no project to refuse.
+fn replicating_for_pull(allowed_projects: &[String], project: &str) -> bool {
+    let project = normalize::project(project);
+    project.is_empty()
+        || allowed_projects
+            .iter()
+            .any(|allowed| normalize::project(allowed) == project)
+}
+
 impl Store {
     pub fn list_deferred(
         &self,
@@ -242,6 +256,7 @@ impl Store {
         &mut self,
         target_key: &str,
         mutation: &SyncMutation,
+        allowed_projects: &[String],
     ) -> Result<bool, StoreError> {
         let target_key = require_sync_target(target_key)?;
         if mutation.seq <= 0 {
@@ -261,8 +276,22 @@ impl Store {
         if mutation.seq <= cursor {
             return Ok(false);
         }
-        apply_sync_mutation_tx(&tx, mutation, max_content_bytes)?;
-        replay_deferred_relations_tx(&tx, max_content_bytes)?;
+        // The page is the server's choice, and the server is not this peer's
+        // enrolment: a wildcard token reads every project on it, and a server
+        // older than the filter in `pull_mutations` ignores the projects asked
+        // for. So the door refuses what this peer never asked to replicate,
+        // rather than writing a project the user chose to keep off this
+        // machine.
+        //
+        // The cursor still advances past a refusal. Leaving it behind would ask
+        // for the same mutation on every cycle and never reach the ones after
+        // it, which is the same permanent stall the ordered-page check exists
+        // to prevent.
+        let enrolled = replicating_for_pull(allowed_projects, &mutation.project);
+        if enrolled {
+            apply_sync_mutation_tx(&tx, mutation, max_content_bytes)?;
+            replay_deferred_relations_tx(&tx, max_content_bytes)?;
+        }
         tx.execute(
             "UPDATE sync_state
              SET last_pulled_seq = ?2, lifecycle = 'pulling', updated_at = datetime('now')
@@ -270,7 +299,7 @@ impl Store {
             params![target_key, mutation.seq],
         )?;
         tx.commit()?;
-        Ok(true)
+        Ok(enrolled)
     }
 
     pub fn mark_sync_failure(

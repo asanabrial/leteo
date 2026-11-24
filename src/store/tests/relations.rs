@@ -1257,10 +1257,10 @@ fn a_confidence_outside_the_range_arrives_as_no_confidence() {
         acked_at: None,
     };
     store
-        .apply_pulled_sync_mutation("cloud", &sent(3, "rel-impossible", &first.sync_id, 5.0))
+        .apply_pulled(&sent(3, "rel-impossible", &first.sync_id, 5.0))
         .unwrap();
     store
-        .apply_pulled_sync_mutation("cloud", &sent(4, "rel-ordinary", &third.sync_id, 0.75))
+        .apply_pulled(&sent(4, "rel-ordinary", &third.sync_id, 0.75))
         .unwrap();
 
     let confidence_of = |sync_id: &str| -> Option<f64> {
@@ -1366,11 +1366,7 @@ fn a_judgment_is_redacted_and_bounded_on_both_paths() {
         occurred_at: "2026-08-05 10:00:00".to_owned(),
         acked_at: None,
     };
-    assert!(
-        store
-            .apply_pulled_sync_mutation("cloud", &mutation)
-            .unwrap()
-    );
+    assert!(store.apply_pulled(&mutation).unwrap());
     let replicated = store
         .get_relation(&relation.sync_id)
         .unwrap()

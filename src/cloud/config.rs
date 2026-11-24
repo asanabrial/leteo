@@ -158,7 +158,7 @@ where
         .filter(|value| value > &T::default())
 }
 
-fn parse_projects(value: &str) -> Vec<String> {
+pub(super) fn parse_projects(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(crate::memory::normalize::project)

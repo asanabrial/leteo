@@ -477,6 +477,34 @@ impl App {
         }
     }
 
+    /// Takes text the terminal delivered as a paste.
+    ///
+    /// A paste is one thing somebody copied, not a sequence of commands: the
+    /// newlines a wrapped line carries fold to spaces, and the words go into
+    /// the query, where every list narrows on them. Nothing here reaches
+    /// `handle_key`, which is what made a multi-line paste execute `d` and `y`
+    /// on whatever the cursor was over.
+    ///
+    /// Only the dashboard listens. The other pages have no text input, and the
+    /// setup flow reads keys rather than lines, so a paste there is dropped
+    /// rather than typed into a query row that is not on screen.
+    pub(super) fn paste(&mut self, text: &str) -> Action {
+        if self.page != Page::Dashboard {
+            return Action::None;
+        }
+        let folded = fold_to_one_line(text);
+        if folded.is_empty() {
+            return Action::None;
+        }
+        if !self.query.is_empty() && !self.query.ends_with(char::is_whitespace) {
+            self.query.push(' ');
+        }
+        self.query.push_str(&folded);
+        self.focus = Focus::Query;
+        self.status = None;
+        self.narrowed()
+    }
+
     /// The query changed: back to the top of every list, and re-read them.
     ///
     /// To the top because the rows are not the rows any more. Row eleven of the
@@ -930,4 +958,31 @@ impl App {
         self.session_selected = clamp_index(self.session_selected, self.sessions.len());
         self.prompt_selected = clamp_index(self.prompt_selected, self.prompts.len());
     }
+}
+
+/// Pasted text as one line.
+///
+/// A paste arrives with the line breaks and the tabs the copied text had, and
+/// the query is a line: each break, and the whitespace that follows it, becomes
+/// the single space between two words. Otherwise a wrapped paragraph types a
+/// run of spaces into the row and the store searches for the empty word between
+/// them.
+fn fold_to_one_line(text: &str) -> String {
+    let mut folded = String::with_capacity(text.len());
+    let mut breaking = false;
+    for character in text.chars() {
+        if matches!(character, '\r' | '\n' | '\t') {
+            breaking = true;
+            continue;
+        }
+        if breaking {
+            if character.is_whitespace() {
+                continue;
+            }
+            folded.push(' ');
+            breaking = false;
+        }
+        folded.push(character);
+    }
+    folded.trim().to_owned()
 }

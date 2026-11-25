@@ -259,3 +259,139 @@ fn deleting_a_project_takes_its_sessions_memories_and_prompts() {
     assert_eq!(app.recent.len(), 1);
     assert_eq!(app.recent[0].title, "Elsewhere");
 }
+
+/// A paste is one thing somebody copied, and none of it is a command.
+///
+/// A terminal that does not support bracketed paste delivers a paste as the
+/// keystrokes it was copied from, which is how a bug report pasted into the
+/// dashboard deleted the memory under the cursor: the first newline was Enter,
+/// which steps out of the query line, then `d` raised the delete window and `y`
+/// answered it.
+#[test]
+fn a_pasted_question_is_text_and_never_a_command() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+    assert_eq!(app.focus, Focus::List);
+
+    let burst = [
+        Event::Key(key(KeyCode::Char('m'))),
+        Event::Key(key(KeyCode::Char('e'))),
+        Event::Key(key(KeyCode::Char('m'))),
+        Event::Key(key(KeyCode::Enter)),
+        Event::Key(key(KeyCode::Char('d'))),
+        Event::Key(key(KeyCode::Char('y'))),
+    ];
+    let action = handle_terminal_event(&mut app, burst[0].clone(), burst[1..].to_vec());
+    assert_eq!(
+        action,
+        Action::Narrow,
+        "the lists narrow on the pasted words"
+    );
+    apply_action(&mut app, &mut store, action);
+
+    assert_eq!(
+        store.count_observations(None).unwrap(),
+        1,
+        "the memory under the cursor is still there"
+    );
+    assert_eq!(app.query, "mem dy");
+    assert_eq!(
+        app.focus,
+        Focus::Query,
+        "the words went into the query line"
+    );
+    assert!(
+        app.pending.is_none(),
+        "nothing in a paste raises a confirmation"
+    );
+}
+
+/// One key with nothing behind it is still a key, or the dashboard would have
+/// no commands left.
+#[test]
+fn a_lone_key_is_still_a_command() {
+    let mut app = test_app();
+
+    assert_eq!(
+        handle_terminal_event(&mut app, Event::Key(key(KeyCode::Char('d'))), Vec::new()),
+        Action::Confirm {
+            what: Target::Observation(1),
+            hard: false
+        }
+    );
+    assert!(app.query.is_empty());
+}
+
+/// The bracketed form is what a terminal that supports the mode sends: one
+/// event carrying the newlines, which fold rather than switching focus.
+#[test]
+fn a_bracketed_paste_keeps_the_words_and_folds_the_newlines() {
+    let mut app = test_app();
+
+    assert_eq!(
+        handle_terminal_event(
+            &mut app,
+            Event::Paste("first line\r\nsecond line".to_owned()),
+            Vec::new()
+        ),
+        Action::Narrow
+    );
+    assert_eq!(app.query, "first line second line");
+    assert_eq!(app.focus, Focus::Query);
+    assert!(app.pending.is_none());
+}
+
+/// The confirmation is not merely spared the paste: a `y` that arrives with the
+/// `d` that would raise it is text, because the delivery is one paste and never
+/// a list of keys.
+#[test]
+fn a_confirming_key_in_the_same_burst_as_the_delete_raises_nothing() {
+    let mut app = test_app();
+
+    assert_eq!(
+        handle_terminal_event(
+            &mut app,
+            Event::Key(key(KeyCode::Char('d'))),
+            vec![Event::Key(key(KeyCode::Char('y')))]
+        ),
+        Action::Narrow
+    );
+    assert_eq!(app.query, "dy");
+    assert!(
+        app.pending.is_none(),
+        "the delete never went up for agreement"
+    );
+    assert_eq!(app.focus, Focus::Query);
+}
+
+/// A tab is a word boundary in pasted text, the same as a line break.
+#[test]
+fn a_pasted_tab_separates_words_instead_of_disappearing() {
+    let mut app = test_app();
+
+    handle_terminal_event(
+        &mut app,
+        Event::Paste("first\tsecond".to_owned()),
+        Vec::new(),
+    );
+    assert_eq!(app.query, "first second");
+}
+
+/// The setup flow and the detail pages have no query row, so a paste there has
+/// nowhere to go and changes nothing.
+#[test]
+fn a_paste_on_a_page_without_a_query_line_is_dropped() {
+    let mut app = test_app();
+    app.navigate(Page::Help);
+
+    assert_eq!(
+        handle_terminal_event(
+            &mut app,
+            Event::Paste("deleted by accident".to_owned()),
+            Vec::new()
+        ),
+        Action::None
+    );
+    assert!(app.query.is_empty());
+    assert_eq!(app.page, Page::Help, "the paste did not move the screen");
+}

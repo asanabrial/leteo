@@ -51,6 +51,7 @@ LLM_END = "<!-- END GENERATED: compare.py --tier llm -->"
 
 sys.path.insert(0, str(HERE))
 from comparison_corpus import corpus, queries  # noqa: E402  (path must be set first)
+import quality  # noqa: E402
 from scoring import summarise  # noqa: E402
 import llm_report  # noqa: E402
 
@@ -82,14 +83,14 @@ def git_head():
 
 
 def search_limit():
-    """The limit bench_engines.py asks at, read from it rather than retyped.
+    """The limit the comparison asks at, as `quality.py` defines it.
 
-    The page states the limit as method; reading it here is what keeps that
-    sentence true when somebody changes the harness's own number.
+    The page states the limit as method; reading the same constant the harness
+    asks at is what keeps that sentence true when somebody changes it. It used
+    to be read out of `bench_engines.py`'s source, which stopped being where the
+    number lived the moment a second script needed it.
     """
-    src = (HERE / "bench_engines.py").read_text()
-    m = re.search(r"^LIMIT\s*=\s*(\d+)", src, re.M)
-    return m.group(1) if m else "?"
+    return str(quality.PUBLISHED_LIMIT)
 
 
 def kinds_of(engines):

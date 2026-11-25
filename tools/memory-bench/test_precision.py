@@ -1,0 +1,199 @@
+"""Self-checks for the paired comparison: the pairing, the two drops, the resolution.
+
+    python3 -m unittest discover -s tools/memory-bench -p 'test_*.py'
+
+No binary is needed for the comparison itself: every case builds the two runs'
+rows by hand. The one test that starts a binary — the product's default row
+count against what a search with no `limit` returns — skips when `LETEO_BIN`
+is unset, because the fallback is whatever `leteo` is on PATH and a check
+against an installed release is not a check of this build.
+"""
+import argparse
+import json
+import os
+import tempfile
+import unittest
+
+os.environ.setdefault("BENCH_STATE", os.path.join(tempfile.gettempdir(), "leteo-precision-selfcheck"))
+
+import quality  # noqa: E402
+from precision import (  # noqa: E402
+    CannotRun,
+    compare,
+    corpora_from,
+    limits_from,
+    rank_worse,
+    resolution,
+)
+
+
+def row(limit=10, kind="short", q="a question", project="alpha-api", rank=1, size=100):
+    return dict(kind=kind, q=q, project=project, limit=limit, rank=rank, results=20, bytes=size)
+
+
+def questions(count=4, limit=10, rank=None):
+    """`count` questions, all at `rank` unless `rank` is a list."""
+    ranks = rank if isinstance(rank, list) else [rank] * count
+    return [row(limit=limit, q=f"question {index}", rank=ranks[index]) for index in range(count)]
+
+
+class Pairing(unittest.TestCase):
+    def test_two_runs_that_answered_different_questions_are_refused(self):
+        base = questions(3)
+        head = base[:-1]
+        with self.assertRaises(CannotRun) as raised:
+            compare("ratchet", base, head, (10,))
+        self.assertIn("do not answer the same questions", str(raised.exception))
+
+    def test_a_question_answered_twice_in_one_run_is_refused(self):
+        base = questions(2)
+        with self.assertRaises(CannotRun) as raised:
+            compare("ratchet", base + [base[0]], questions(2), (10,))
+        self.assertIn("twice", str(raised.exception))
+
+    def test_a_limit_nobody_measured_is_refused_rather_than_read_as_no_drop(self):
+        with self.assertRaises(CannotRun) as raised:
+            compare("ratchet", questions(2, limit=10), questions(2, limit=10), (10, 20))
+        self.assertIn("limit 20", str(raised.exception))
+
+
+class Drops(unittest.TestCase):
+    def test_a_lost_first_place_fails_both_measures_at_the_default_limit(self):
+        base = questions(4, rank=[1, 1, 1, 1])
+        head = questions(4, rank=[3, 1, 1, 1])
+        report = compare("ratchet", base, head, (10,))
+        self.assertEqual(len(report["drops"]), 2, report["drops"])
+        self.assertTrue(all("limit 10" in drop for drop in report["drops"]), report["drops"])
+
+    def test_a_fall_below_first_place_fails_mrr_alone(self):
+        base = questions(4, rank=[1, 1, 1, 3])
+        head = questions(4, rank=[1, 1, 1, 4])
+        report = compare("ratchet", base, head, (10,))
+        self.assertEqual(len(report["drops"]), 1, report["drops"])
+        self.assertIn("MRR at limit 10", report["drops"][0])
+
+    def test_a_gain_passes_and_is_still_shown(self):
+        base = questions(4, rank=[4, 1, 1, 1])
+        head = questions(4, rank=[1, 1, 1, 1])
+        report = compare("ratchet", base, head, (10,))
+        self.assertEqual(report["drops"], [])
+        self.assertEqual(len(report["moved"]), 1, report["moved"])
+        self.assertTrue(rank_worse(4, 1) is False)
+
+    def test_a_fall_at_twenty_is_judged_even_when_ten_did_not_move(self):
+        base = questions(2, limit=10) + questions(2, limit=20, rank=1)
+        head = questions(2, limit=10) + questions(2, limit=20, rank=[2, 1])
+        report = compare("ratchet", base, head, (10, 20))
+        self.assertEqual(len(report["drops"]), 2, report["drops"])
+        self.assertTrue(all("limit 20" in drop for drop in report["drops"]), report["drops"])
+
+    def test_a_lost_answer_and_a_worse_place_are_both_worse(self):
+        self.assertTrue(rank_worse(1, None))
+        self.assertFalse(rank_worse(None, 3))
+        self.assertFalse(rank_worse(3, 3))
+        self.assertTrue(rank_worse(4, 5))
+
+    def test_reply_bytes_are_reported_and_never_a_drop(self):
+        base = [row(rank=1, size=400)]
+        head = [row(rank=1, size=100)]
+        report = compare("ratchet", base, head, (10,))
+        self.assertEqual(report["drops"], [])
+        self.assertEqual(report["limits"][0]["base_bytes"], 400)
+        self.assertEqual(report["limits"][0]["head_bytes"], 100)
+
+
+class CommandLine(unittest.TestCase):
+    def test_limits_are_deduplicated_and_a_zero_is_refused(self):
+        self.assertEqual(limits_from("10,20,10"), (10, 20))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            limits_from("0")
+        with self.assertRaises(argparse.ArgumentTypeError):
+            limits_from("")
+
+    def test_a_corpus_is_named_at_least_once_and_only_from_the_list(self):
+        self.assertEqual(corpora_from("ratchet,ratchet"), ("ratchet",))
+        with self.assertRaises(argparse.ArgumentTypeError) as raised:
+            corpora_from("")
+        self.assertIn("at least one corpus", str(raised.exception))
+        with self.assertRaises(argparse.ArgumentTypeError) as raised:
+            corpora_from("ratchet,imaginary")
+        self.assertIn("imaginary", str(raised.exception))
+
+
+class Resolution(unittest.TestCase):
+    def test_one_query_is_the_smallest_change_a_corpus_can_show(self):
+        self.assertEqual(resolution(117), 1 / 117)
+        self.assertEqual(resolution(56), 1 / 56)
+        self.assertEqual(resolution(0), 0.0)
+
+    def test_the_scored_limits_start_at_the_products_default(self):
+        limits = quality.scored_limits()
+        self.assertEqual(limits[0], quality.default_limit(), limits)
+        self.assertIn(quality.PUBLISHED_LIMIT, limits, limits)
+
+    def test_the_default_is_read_from_the_constant_the_binary_declares(self):
+        self.assertGreater(quality.default_limit(), 0)
+
+    def test_a_source_that_no_longer_declares_the_default_says_where(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False) as source:
+            source.write("pub(crate) const SOMETHING_ELSE: usize = 10;\n")
+        try:
+            original = quality.SEARCH_RS
+            quality.SEARCH_RS = source.name
+            with self.assertRaises(RuntimeError) as raised:
+                quality.default_limit()
+            self.assertIn("DEFAULT_SEARCH_LIMIT", str(raised.exception))
+        finally:
+            quality.SEARCH_RS = original
+            os.unlink(source.name)
+
+    def test_a_missing_source_names_the_path_it_could_not_read(self):
+        original = quality.SEARCH_RS
+        quality.SEARCH_RS = os.path.join(tempfile.gettempdir(), "no-such-search.rs")
+        try:
+            with self.assertRaises(RuntimeError) as raised:
+                quality.default_limit()
+            self.assertIn("no-such-search.rs", str(raised.exception))
+        finally:
+            quality.SEARCH_RS = original
+
+
+@unittest.skipUnless(os.environ.get("LETEO_BIN"), "LETEO_BIN is not set, so the binary under test is not the one on PATH")
+class TheDefaultTheBinaryApplies(unittest.TestCase):
+    """The parsed number, held to the binary's own behaviour.
+
+    `quality` reads the constant from source, which is a claim about what the
+    code says. This is the observation: a search that names no `limit` returns
+    as many rows as the harness will ask for when it names the default. A change
+    that moves the constant while leaving the applied default behind is caught
+    here rather than by a report that measured the wrong configuration.
+    """
+
+    def test_a_search_with_no_limit_returns_the_number_the_harness_reads(self):
+        from mcpclient import MCP, call_json
+
+        limit = quality.default_limit()
+        state = tempfile.mkdtemp(prefix="leteo-default-limit-")
+        home = os.path.join(state, "lhome")
+        os.makedirs(home)
+        server = MCP("leteo", "alpha-api", home=home)
+        try:
+            for index in range(limit + 3):
+                reply, _, _ = call_json(
+                    server,
+                    "mem_save",
+                    {
+                        "title": f"Guarded memory {index}",
+                        "content": f"the shared word appears in body {index}",
+                        "type": "discovery",
+                    },
+                )
+                self.assertEqual(reply.get("status"), "inserted", json.dumps(reply)[:300])
+            reply, _, _ = call_json(server, "mem_search", {"query": "shared word"})
+        finally:
+            server.close()
+        self.assertEqual(len(reply.get("results") or []), limit, json.dumps(reply)[:300])
+
+
+if __name__ == "__main__":
+    unittest.main()

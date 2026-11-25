@@ -1128,6 +1128,13 @@ fn validate_cross_project_guard(
     Ok((source_project, target_project))
 }
 
+/// The spellings a source's words produce, before anyone asks whether they are
+/// projects of their own.
+///
+/// Candidates, not the final set: `my_app` next to `my-app` is a project, and
+/// folding it took its memories and its enrolment while the reply named only
+/// `my-app`. The merge filters these through the liveness read in
+/// `merge_source_names`.
 fn project_merge_variants(raw: &str, normalized: &str, canonical: &str) -> BTreeSet<String> {
     let mut variants = BTreeSet::new();
     let raw = raw.trim().to_lowercase();

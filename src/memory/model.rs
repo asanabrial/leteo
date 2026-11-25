@@ -1006,6 +1006,14 @@ pub struct SyncStatus {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MergeResult {
     pub canonical: String,
+    /// Every name the merge moved, not only the spelling the caller typed, in
+    /// lexicographic order.
+    ///
+    /// A merge also folds the separator variants of a source that no store
+    /// uses as a project of its own, and the caller has to be able to see that
+    /// it happened: merging `my-app` used to take a live `my_app` with it,
+    /// memories and enrolment both, and this list was the only place the
+    /// second project could have shown up.
     pub sources_merged: Vec<String>,
     pub observations_updated: i64,
     pub sessions_updated: i64,

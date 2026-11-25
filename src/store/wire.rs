@@ -1692,10 +1692,16 @@ fn apply_project_rename_tx(
 }
 
 pub(super) fn is_enrolled_tx(tx: &Transaction<'_>, project: &str) -> Result<bool, StoreError> {
+    is_enrolled(tx, project)
+}
+
+/// Whether `project` is replicated, read without a transaction so a preview
+/// and the merge itself can ask the same question.
+pub(super) fn is_enrolled(connection: &Connection, project: &str) -> Result<bool, StoreError> {
     if project.is_empty() {
         return Ok(true);
     }
-    Ok(tx.query_row(
+    Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_enrolled_projects WHERE project = ?1)",
         [project],
         |row| row.get(0),

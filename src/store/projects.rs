@@ -723,11 +723,11 @@ impl Store {
     /// nothing else.
     ///
     /// What a hook may do on its own. [`Self::merge_project`] moves every row
-    /// under a name, wherever it was recorded, and adds the spellings joined by
-    /// space, hyphen and underscore; a project called `api` recorded from two
-    /// checkouts lost the other one's memories to whichever opened a session
-    /// first, with no prompt and no report. Neither the rest of the name nor its
-    /// variants are touched here.
+    /// under a name, wherever it was recorded, and also the spellings joined by
+    /// space, hyphen and underscore that are not projects of their own; a
+    /// project called `api` recorded from two checkouts lost the other one's
+    /// memories to whichever opened a session first, with no prompt and no
+    /// report. Neither the rest of the name nor its variants are touched here.
     ///
     /// Returns the result of the move and how many sessions under `source` were
     /// recorded elsewhere and stayed. The directory comparison is
@@ -764,18 +764,8 @@ impl Store {
         }
 
         let tx = self.write_transaction()?;
-        let canonical_existed: bool = tx.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
-                 UNION ALL
-                 SELECT 1 FROM observations
-                 WHERE LOWER(TRIM(ifnull(project, ''))) = ?1 AND deleted_at IS NULL
-                 UNION ALL
-                 SELECT 1 FROM prompts WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
-             )",
-            [&canonical],
-            |row| row.get(0),
-        )?;
+        let canonical_existed: bool =
+            tx.query_row(PROJECT_LIVE_ROWS_SQL, [&canonical], |row| row.get(0))?;
 
         let mut session_ids = Vec::new();
         let mut left_behind = 0_i64;
@@ -916,6 +906,25 @@ impl Store {
         Ok((result, left_behind))
     }
 
+    /// The names a merge of `sources` into `canonical` would move.
+    ///
+    /// Read-only, and the same read [`Self::merge_projects`] performs inside
+    /// its transaction, so `projects consolidate`'s preview cannot promise a
+    /// different set from the one the answer names.
+    pub fn project_merge_scope(
+        &self,
+        sources: &[String],
+        canonical: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let canonical = normalize::project(canonical);
+        if canonical.is_empty() {
+            return Err(invalid_parameter(crate::project::EMPTY_NAME));
+        }
+        Ok(merge_scope(&self.connection, sources, &canonical)?
+            .into_iter()
+            .collect())
+    }
+
     pub fn merge_projects(
         &mut self,
         sources: &[String],
@@ -926,54 +935,36 @@ impl Store {
             return Err(invalid_parameter(crate::project::EMPTY_NAME));
         }
         let tx = self.write_transaction()?;
-        let canonical_existed: bool = tx.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
-                 UNION ALL
-                 SELECT 1 FROM observations
-                 WHERE LOWER(TRIM(ifnull(project, ''))) = ?1 AND deleted_at IS NULL
-                 UNION ALL
-                 SELECT 1 FROM prompts WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
-             )",
-            [&canonical],
-            |row| row.get(0),
-        )?;
+        let canonical_existed: bool =
+            tx.query_row(PROJECT_LIVE_ROWS_SQL, [&canonical], |row| row.get(0))?;
         let mut result = MergeResult {
             canonical: canonical.clone(),
             ..MergeResult::default()
         };
-        let mut seen = BTreeSet::new();
 
-        for source_input in sources {
-            let source = normalize::project(source_input);
-            if source.is_empty() || source == canonical || !seen.insert(source.clone()) {
-                continue;
-            }
-            let variants = project_merge_variants(source_input, &source, &canonical);
+        let names = merge_scope(&tx, sources, &canonical)?;
+        if !names.is_empty() {
             let mut observation_ids = BTreeSet::new();
             let mut session_ids = BTreeSet::new();
             let mut prompt_ids = BTreeSet::new();
-            for variant in &variants {
+            for name in &names {
                 observation_ids.extend(query_column::<i64>(
                     &tx,
                     "SELECT id FROM observations
                      WHERE LOWER(TRIM(ifnull(project, ''))) = ?1",
-                    variant,
+                    name,
                 )?);
                 session_ids.extend(query_column::<String>(
                     &tx,
                     "SELECT id FROM sessions WHERE LOWER(TRIM(project)) = ?1",
-                    variant,
+                    name,
                 )?);
                 prompt_ids.extend(query_column::<i64>(
                     &tx,
                     "SELECT id FROM prompts
                      WHERE LOWER(TRIM(ifnull(project, ''))) = ?1",
-                    variant,
+                    name,
                 )?);
-            }
-            if observation_ids.is_empty() && session_ids.is_empty() && prompt_ids.is_empty() {
-                continue;
             }
             // Replication follows the memories, and it has to be arranged
             // before they are queued below rather than after.
@@ -989,8 +980,6 @@ impl Store {
             // of it: `enqueue_observation` and the two `enqueue_mutation`
             // calls under this block ask `is_enrolled_tx` and return quietly
             // when the answer is no.
-            let mut names = variants.clone();
-            names.insert(source.clone());
             if move_enrolment_tx(&tx, &names, &canonical)? {
                 result.enrolment_moved = true;
             }
@@ -1036,11 +1025,12 @@ impl Store {
                     &canonical,
                 )?;
             }
-            // And the name that is now empty stops being replicated. Its unsent
-            // mutations do not go with it: see `carry_unsent_mutations_tx` for
-            // what is dropped and what moves to the canonical name.
+            // And the names that are now empty stop being replicated. Their
+            // unsent mutations do not go with them: see
+            // `carry_unsent_mutations_tx` for what is dropped and what moves to
+            // the canonical name.
             retire_project_names_tx(&tx, &names, &canonical)?;
-            result.sources_merged.push(source);
+            result.sources_merged = names.into_iter().collect();
         }
 
         // What the merge left sharing a name.
@@ -1065,6 +1055,117 @@ impl Store {
         tx.commit()?;
         Ok(result)
     }
+}
+
+/// Whether any row of a person's is filed under `?1`: a session, a prompt, or
+/// a memory that is not soft-deleted.
+///
+/// One statement, because the merge's "did the canonical exist" question, the
+/// directory move's and the liveness test below all have to ask it the same
+/// way. `project_exists` is deliberately not one of them: it counts only the
+/// sessions a caller declared, and an empty hook session must not turn a
+/// directory's name into a project an agent can write to.
+const PROJECT_LIVE_ROWS_SQL: &str = "SELECT EXISTS(
+     SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
+     UNION ALL
+     SELECT 1 FROM observations
+     WHERE LOWER(TRIM(ifnull(project, ''))) = ?1 AND deleted_at IS NULL
+     UNION ALL
+     SELECT 1 FROM prompts WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
+ )";
+
+/// The same, without the deletion filter.
+///
+/// A name holding only soft-deleted memories is not a live project, so a merge
+/// folds it like any other spelling — but it still holds rows that have to move
+/// with the name, and this is what says the source contributes something.
+const PROJECT_ROWS_SQL: &str = "SELECT EXISTS(
+     SELECT 1 FROM sessions WHERE LOWER(TRIM(project)) = ?1
+     UNION ALL
+     SELECT 1 FROM observations
+     WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
+     UNION ALL
+     SELECT 1 FROM prompts WHERE LOWER(TRIM(ifnull(project, ''))) = ?1
+ )";
+
+fn project_holds_any_row(connection: &Connection, project: &str) -> Result<bool, StoreError> {
+    Ok(connection.query_row(PROJECT_ROWS_SQL, [project], |row| row.get(0))?)
+}
+
+/// Whether a name is a project in its own right rather than a spelling of the
+/// one being merged.
+///
+/// Enrolment or a row of its own is what makes it one. `my-app` and `my_app`
+/// are separate projects everywhere else — listing, deleting, existence, all
+/// read the name literally — and joining them took an unrelated project's
+/// memories and stopped it replicating, while the reply named only the project
+/// the caller typed.
+fn project_is_live(connection: &Connection, project: &str) -> Result<bool, StoreError> {
+    if is_enrolled(connection, project)? {
+        return Ok(true);
+    }
+    Ok(connection.query_row(PROJECT_LIVE_ROWS_SQL, [project], |row| row.get(0))?)
+}
+
+/// The names folding one source would move: the spelling the caller typed, its
+/// normalized form, and every separator variant that is not a live project.
+fn merge_source_names(
+    connection: &Connection,
+    source_input: &str,
+    source: &str,
+    canonical: &str,
+) -> Result<BTreeSet<String>, StoreError> {
+    let typed = source_input.trim().to_lowercase();
+    let mut candidates = project_merge_variants(source_input, source, canonical);
+    candidates.insert(source.to_owned());
+    let mut names = BTreeSet::new();
+    for name in candidates {
+        // The spelling the caller typed is the name they asked to merge, and it
+        // moves however alive it is. Only a spelling they did not name has to
+        // prove it is not a project of its own.
+        if name == source || name == typed || !project_is_live(connection, &name)? {
+            names.insert(name);
+        }
+    }
+    Ok(names)
+}
+
+/// Every name a merge of `sources` into `canonical` moves.
+///
+/// The one read that decides it, shared by [`Store::merge_projects`] and
+/// [`Store::project_merge_scope`] so the answer and the preview cannot drift.
+fn merge_scope(
+    connection: &Connection,
+    sources: &[String],
+    canonical: &str,
+) -> Result<BTreeSet<String>, StoreError> {
+    let mut seen = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    for source_input in sources {
+        let source = normalize::project(source_input);
+        if source.is_empty() || source == canonical || !seen.insert(source.clone()) {
+            continue;
+        }
+        let source_names = merge_source_names(connection, source_input, &source, canonical)?;
+        // Only a name with a row of its own is moved. A name nobody filed
+        // anything under is a spelling no store has ever held: moving it would
+        // invent an event, and reporting it would name a project that never
+        // existed. A source the caller enrolled but never wrote to has nothing
+        // to move either, which is what the merge did before it had a scope to
+        // report. The caller's own spelling is added once the source moves
+        // something, because that is the name they asked to merge.
+        let mut moved = BTreeSet::new();
+        for name in &source_names {
+            if project_holds_any_row(connection, name)? {
+                moved.insert(name.clone());
+            }
+        }
+        if !moved.is_empty() {
+            moved.insert(source.clone());
+            names.extend(moved);
+        }
+    }
+    Ok(names)
 }
 
 /// One project's counts and last activity, answered by seek rather than by

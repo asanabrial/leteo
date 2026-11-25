@@ -377,7 +377,8 @@ fn join_or_open_manual_session(
             // to resolve to another name, and filing under the new one splits
             // the project in two.
             if filing == Filing::Detection {
-                let recorded = store.drifted_projects(&detection)?;
+                let recorded =
+                    store.drifted_projects(&detection, crate::mcp::is_manual_session_id)?;
                 if !recorded.is_empty() {
                     anyhow::bail!(
                         "this directory's sessions were recorded under {}, but it now resolves \

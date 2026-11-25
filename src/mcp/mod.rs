@@ -525,7 +525,9 @@ impl LeteoMcpServer {
         detection: &ProjectDetection,
     ) -> Result<Option<ProjectDetection>, CallToolResult> {
         let detected = normalize::project(&detection.project);
-        let recorded = store.drifted_projects(detection).map_err(store_error)?;
+        let recorded = store
+            .drifted_projects(detection, is_manual_session_id)
+            .map_err(store_error)?;
         if recorded.is_empty() {
             return Ok(None);
         }

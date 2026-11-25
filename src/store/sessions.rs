@@ -28,31 +28,35 @@ impl Store {
     /// The projects this directory's sessions were recorded under, when it does
     /// not resolve to the same one now.
     ///
-    /// Every name the directory's sessions carry is read, the detected one
-    /// included: a directory whose history already holds the name it resolves
-    /// to is that project's directory, and a session under another name is a
-    /// conversation about somewhere else rather than a rename. Reading the
-    /// history with the detected name excluded turned one stray row into a
-    /// drift the whole directory then had to answer for, and #405 stopped new
-    /// rows of that kind without healing the stores already holding one.
+    /// The directory's own bucket clears the question; a session that merely
+    /// visited does not. One stray row — what the session door used to write
+    /// when it opened a session here for another project — used to make the
+    /// whole directory disputed for ever (#405 stopped new ones, not the
+    /// stores holding one). But any row naming the detected project is too
+    /// wide: a hook records the directory before anybody has said it is
+    /// theirs, so after a rename it would answer the question the rename
+    /// exists to ask.
     ///
     /// The MCP door refused the silent pick and `leteo save` filed it under the
     /// name detection now reads, so the same directory accepted a memory
     /// through one door and rejected it through the other. Two questions let
     /// the two answers drift apart; there is one, and both doors ask it.
+    ///
+    /// `is_manual` is the caller's because the id vocabulary lives with the
+    /// door that mints it; the store does not learn a prefix here.
     pub fn drifted_projects(
         &self,
         detection: &crate::project::ProjectDetection,
+        is_manual: impl Fn(&str) -> bool,
     ) -> Result<Vec<String>, StoreError> {
         let detected = normalize::project(&detection.project);
         if detected.is_empty() {
             return Ok(Vec::new());
         }
-        let recorded = self.recent_projects_in_directory(&detection.path, "")?;
-        if recorded.iter().any(|project| project == &detected) {
+        if self.directory_has_manual_session(&detection.path, &detected, is_manual)? {
             return Ok(Vec::new());
         }
-        Ok(recorded)
+        self.recent_projects_in_directory(&detection.path, &detected)
     }
 
     /// The projects of sessions recorded in exactly this directory, most recent
@@ -104,6 +108,44 @@ impl Store {
             }
         }
         Ok(projects)
+    }
+
+    /// Whether `directory` holds the manual session a silent save joins under
+    /// `project` — the directory used under that name, not merely visited.
+    ///
+    /// The predicate is the caller's because the id vocabulary lives with the
+    /// door that mints it; the store does not learn a prefix here.
+    pub fn directory_has_manual_session(
+        &self,
+        directory: &str,
+        project: &str,
+        is_manual: impl Fn(&str) -> bool,
+    ) -> Result<bool, StoreError> {
+        let project = normalize::project(project);
+        if project.is_empty() {
+            return Ok(false);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT id, project, directory FROM sessions
+             WHERE directory IS NOT NULL AND trim(directory) <> ''",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, recorded_project, recorded) = row?;
+            if !is_manual(&id) || normalize::project(&recorded_project) != project {
+                continue;
+            }
+            if crate::project::same_directory(&recorded, Path::new(directory)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Takes `directory` away from every session recorded in it under a project

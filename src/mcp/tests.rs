@@ -1156,18 +1156,19 @@ fn a_session_started_for_another_project_leaves_the_directory_to_its_own() {
     );
 }
 
-/// A directory already holding the stray session is not in drift.
-///
-/// #405 stopped new sessions of that shape from recording the directory, and
-/// stores written before it still hold the row. Reading the history without the
-/// name the directory resolves to turned that one row into a rename the whole
-/// directory then had to answer for, so the silent pick is allowed when the
-/// detected name is among the recorded ones.
+/// A directory already holding the stray session is not in drift: the bucket a
+/// silent save lands in is there, which is the directory saying it is used under
+/// its own name. #405 stopped new stray rows; stores written before it still
+/// hold one.
 #[test]
 fn a_directory_that_holds_the_detected_project_is_not_drifted() {
     let (_temp, server) = test_server(McpOptions::default());
     let mut store = server.lock_store().unwrap();
-    store.create_session("mine", "here", "C:/repo").unwrap();
+    // The bucket a silent save joins, which is the directory saying it is used
+    // under this name.
+    store
+        .create_session(&manual_session_id("here"), "here", "C:/repo")
+        .unwrap();
     // Newer than the row above, and the shape #405 stopped writing.
     store
         .create_session("stray", "side-quest", "C:/repo")
@@ -1185,6 +1186,27 @@ fn a_directory_that_holds_the_detected_project_is_not_drifted() {
         .resolve_write_project(&store, None, &detection, ProjectChoice::default())
         .expect("the directory's own project is already recorded here");
     assert_eq!(project, "here");
+
+    // A visit does not clear a rename the same way: `new-remote` is only a
+    // hook session there, and the question still has to be asked.
+    store
+        .create_session(&manual_session_id("old-remote"), "old-remote", "C:/other")
+        .unwrap();
+    store
+        .create_session("hook-visit", "new-remote", "C:/other")
+        .unwrap();
+    let renamed = ProjectDetection {
+        project: "new-remote".to_owned(),
+        source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+        path: "C:/other".to_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    };
+    let error = server
+        .resolve_write_project(&store, None, &renamed, ProjectChoice::default())
+        .expect_err("a visit is not an answer to the rename");
+    assert_eq!(error_payload(&error)["error"]["code"], "ambiguous_project");
 }
 
 /// A session whose recorded directory is relative names no place, so it is

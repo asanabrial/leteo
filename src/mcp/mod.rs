@@ -525,12 +525,7 @@ impl LeteoMcpServer {
         detection: &ProjectDetection,
     ) -> Result<Option<ProjectDetection>, CallToolResult> {
         let detected = normalize::project(&detection.project);
-        if detected.is_empty() {
-            return Ok(None);
-        }
-        let recorded = store
-            .recent_projects_in_directory(&detection.path, &detected)
-            .map_err(store_error)?;
+        let recorded = store.drifted_projects(detection).map_err(store_error)?;
         if recorded.is_empty() {
             return Ok(None);
         }

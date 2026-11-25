@@ -287,6 +287,18 @@ pub(super) struct WriteSession {
     pub(super) directory: Option<String>,
 }
 
+/// Whether a write files under the project detection answers with.
+///
+/// Only then does this directory's recorded history matter: a directory whose
+/// sessions were recorded under another name would file this write on the other
+/// side of a split. A consolidation files where its sources are, so where it is
+/// run from decides nothing and the walk through the sources owns the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Filing {
+    Detection,
+    Elsewhere,
+}
+
 /// Resolves the session a CLI write belongs to: the one named, else the
 /// project's live session as `mem_save` joins it, else the stable manual
 /// session.
@@ -294,6 +306,7 @@ pub(super) fn resolve_write_session(
     store: &mut Store,
     session_id: Option<String>,
     explicit_project: Option<String>,
+    filing: Filing,
 ) -> Result<WriteSession> {
     if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
         let session = store.get_session(&id)?;
@@ -326,6 +339,7 @@ pub(super) fn resolve_write_session(
     join_or_open_manual_session(
         store,
         explicit_project,
+        filing,
         crate::project::detect_current_project(),
     )
 }
@@ -335,6 +349,7 @@ pub(super) fn resolve_write_session(
 fn join_or_open_manual_session(
     store: &mut Store,
     explicit_project: Option<String>,
+    filing: Filing,
     detection: crate::project::ProjectDetection,
 ) -> Result<WriteSession> {
     let project = match explicit_project {
@@ -355,6 +370,23 @@ fn join_or_open_manual_session(
                         .as_deref()
                         .unwrap_or("cannot determine the current project")
                 );
+            }
+            // What the MCP door refuses, so the same directory cannot take a
+            // memory through one door and reject it through the other: the
+            // sessions already recorded here are evidence this directory used
+            // to resolve to another name, and filing under the new one splits
+            // the project in two.
+            if filing == Filing::Detection {
+                let recorded = store.drifted_projects(&detection)?;
+                if !recorded.is_empty() {
+                    anyhow::bail!(
+                        "this directory's sessions were recorded under {}, but it now resolves \
+                         to {project:?}; pass --project PROJECT (one of the recorded names) to \
+                         save under that name, or run `leteo projects consolidate` if the two \
+                         names are one project",
+                        recorded.join(", ")
+                    );
+                }
             }
             project
         }
@@ -520,13 +552,100 @@ mod tests {
             error_hint: None,
         };
 
-        let crossed =
-            join_or_open_manual_session(&mut store, Some("other".to_owned()), standing_in("here"))
-                .unwrap();
+        let crossed = join_or_open_manual_session(
+            &mut store,
+            Some("other".to_owned()),
+            Filing::Detection,
+            standing_in("here"),
+        )
+        .unwrap();
         assert_eq!(store.get_session(&crossed.id).unwrap().directory, "");
 
-        let own = join_or_open_manual_session(&mut store, None, standing_in("here")).unwrap();
+        let own =
+            join_or_open_manual_session(&mut store, None, Filing::Detection, standing_in("here"))
+                .unwrap();
         assert_eq!(own.project, "here");
         assert_eq!(store.get_session(&own.id).unwrap().directory, "C:/here");
+    }
+
+    /// The command line asks what the MCP door asks.
+    ///
+    /// `leteo save` filed the memory under the name detection reads now, while
+    /// `mem_save` refused the same write with the recorded projects named.
+    /// Adding a remote, renaming it, or pointing the repository at a fork
+    /// changes what the directory resolves to, and the memories already there
+    /// stay under the old name — so a silent save splits the project in two.
+    #[test]
+    fn a_save_in_a_drifted_directory_is_refused_with_the_recorded_projects_named() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store =
+            Store::open(crate::store::StoreConfig::new(temp.path().join("cli.db"))).unwrap();
+        store
+            .create_session("old", "old-remote", "C:/here")
+            .unwrap();
+        let standing_in = |project: &str| crate::project::ProjectDetection {
+            project: project.to_owned(),
+            source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+            path: "C:/here".to_owned(),
+            available_projects: Vec::new(),
+            warning: None,
+            error_hint: None,
+        };
+
+        let refusal = match join_or_open_manual_session(
+            &mut store,
+            None,
+            Filing::Detection,
+            standing_in("new-remote"),
+        ) {
+            Ok(session) => panic!(
+                "saved under {:?} instead of asking which project this is",
+                session.project
+            ),
+            Err(error) => error,
+        };
+        let refusal = refusal.to_string();
+        assert!(refusal.contains("old-remote"), "{refusal}");
+        assert!(refusal.contains("new-remote"), "{refusal}");
+        assert!(
+            refusal.contains("--project"),
+            "there is no recovery token here, so the refusal names the flag: {refusal}"
+        );
+
+        for chosen in ["old-remote", "new-remote"] {
+            let session = join_or_open_manual_session(
+                &mut store,
+                Some(chosen.to_owned()),
+                Filing::Detection,
+                standing_in("new-remote"),
+            )
+            .unwrap_or_else(|error| panic!("--project {chosen} was refused: {error}"));
+            assert_eq!(session.project, chosen);
+        }
+    }
+
+    /// A consolidation files where its sources are, so the directory's recorded
+    /// names decide nothing: refusing here would block a merge that mis-files
+    /// nothing, and `leteo consolidate` has no `--project` to get past it.
+    #[test]
+    fn a_consolidation_in_a_drifted_directory_is_not_refused_for_the_detected_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store =
+            Store::open(crate::store::StoreConfig::new(temp.path().join("cli.db"))).unwrap();
+        store
+            .create_session("old", "old-remote", "C:/here")
+            .unwrap();
+        let detection = crate::project::ProjectDetection {
+            project: "new-remote".to_owned(),
+            source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+            path: "C:/here".to_owned(),
+            available_projects: Vec::new(),
+            warning: None,
+            error_hint: None,
+        };
+
+        let session =
+            join_or_open_manual_session(&mut store, None, Filing::Elsewhere, detection).unwrap();
+        assert_eq!(session.project, "new-remote");
     }
 }

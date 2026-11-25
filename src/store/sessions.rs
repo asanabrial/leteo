@@ -25,6 +25,24 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// The projects this directory's sessions were recorded under, when it does
+    /// not resolve to the same one now.
+    ///
+    /// The MCP door refused the silent pick and `leteo save` filed it under the
+    /// name detection now reads, so the same directory accepted a memory
+    /// through one door and rejected it through the other. Two questions let
+    /// the two answers drift apart; there is one, and both doors ask it.
+    pub fn drifted_projects(
+        &self,
+        detection: &crate::project::ProjectDetection,
+    ) -> Result<Vec<String>, StoreError> {
+        let detected = normalize::project(&detection.project);
+        if detected.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.recent_projects_in_directory(&detection.path, &detected)
+    }
+
     /// The projects of sessions recorded in exactly this directory, most recent
     /// first, excluding `exclude`.
     ///

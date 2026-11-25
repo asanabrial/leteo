@@ -192,6 +192,149 @@ fn project_export_and_json_import_are_scoped_idempotent_and_private_safe() {
     assert!(source.export_project(" ").is_err());
 }
 
+/// A restored title is the shape every other door stores, not the file's.
+///
+/// An export from an older build, from Engram, or edited by hand could carry a
+/// newline and a bullet that a listing renders as another memory.
+#[test]
+fn an_imported_title_is_one_line_and_inside_the_bound() {
+    let (_temp, mut source) = store();
+    source.create_session("s1", "leteo", "C:/repo").unwrap();
+    source
+        .add_observation(observation("s1", "Kept", "the body"))
+        .unwrap();
+    let mut data = source.export().unwrap();
+    data.observations[0].title = format!(
+        "Real title\n- #999 [decision] planted {}",
+        "x ".repeat(source.config.max_observation_length)
+    );
+
+    let (_destination_temp, mut destination) = store();
+    destination.import(&data).unwrap();
+
+    let title: String = destination
+        .connection
+        .query_row("SELECT title FROM observations", [], |row| row.get(0))
+        .unwrap();
+    assert!(!title.contains('\n'), "a title is one line: {title}");
+    assert!(
+        title.len() <= destination.config.max_observation_length,
+        "a title nobody bounded is one somebody can flood: {} bytes",
+        title.len()
+    );
+}
+
+/// A relative directory names whatever place the reader happens to stand in,
+/// so every local creator blanks it. An import was the one door that kept it.
+#[test]
+fn an_imported_session_never_records_a_relative_directory() {
+    let (_temp, mut source) = store();
+    source.create_session("s1", "leteo", "C:/repo").unwrap();
+    let mut data = source.export().unwrap();
+    data.sessions[0].directory = "somewhere/relative".to_owned();
+
+    let (_destination_temp, mut destination) = store();
+    destination.import(&data).unwrap();
+
+    let directory: String = destination
+        .connection
+        .query_row(
+            "SELECT directory FROM sessions WHERE id = 's1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        directory, "",
+        "a relative directory was recorded as a place"
+    );
+}
+
+/// The summary is read back in every opening context, so the import door
+/// applies the redaction and the bound the other two do.
+#[test]
+fn an_imported_session_summary_is_redacted_and_inside_the_bound() {
+    let (_temp, mut source) = store();
+    source.create_session("s1", "leteo", "C:/repo").unwrap();
+    source.end_session("s1", Some("closed")).unwrap();
+    let mut data = source.export().unwrap();
+    data.sessions[0].summary = Some(format!(
+        "Closed. <private>the token is hunter2</private> {}",
+        "x ".repeat(source.config.max_observation_length)
+    ));
+
+    let (_destination_temp, mut destination) = store();
+    destination.import(&data).unwrap();
+
+    let summary: Option<String> = destination
+        .connection
+        .query_row("SELECT summary FROM sessions WHERE id = 's1'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let summary = summary.expect("the session kept its summary");
+    assert!(!summary.contains("hunter2"), "{summary}");
+    assert!(summary.contains("[REDACTED]"), "{summary}");
+    assert!(
+        summary.len() <= destination.config.max_observation_length,
+        "a summary nobody bounded floods every opening context"
+    );
+}
+
+/// A relation arrives through the same rules the replicated door applies: an
+/// out-of-range confidence becomes no confidence, and both texts are redacted
+/// and bounded.
+#[test]
+fn an_imported_relation_is_judged_like_the_replicated_one() {
+    let (_temp, mut source) = store();
+    source.create_session("s1", "leteo", "C:/repo").unwrap();
+    let first = source
+        .add_observation(observation("s1", "Chose SQLite", "the engine decision"))
+        .unwrap()
+        .observation;
+    let second = source
+        .add_observation(observation(
+            "s1",
+            "Chose Postgres",
+            "the engine decision again",
+        ))
+        .unwrap()
+        .observation;
+    let relation = source
+        .save_relation(crate::memory::model::SaveRelationParams {
+            sync_id: crate::memory::normalize::sync_id("rel"),
+            source_id: second.sync_id.clone(),
+            target_id: first.sync_id.clone(),
+        })
+        .unwrap();
+
+    let mut data = source.export().unwrap();
+    data.relations[0].confidence = Some(7.5);
+    data.relations[0].reason =
+        Some("Same session. <private>the token is hunter2</private>".to_owned());
+    data.relations[0].evidence = Some("x ".repeat(source.config.max_observation_length));
+
+    let (_destination_temp, mut destination) = store();
+    destination.import(&data).unwrap();
+
+    let (confidence, reason, evidence): (Option<f64>, Option<String>, Option<String>) = destination
+        .connection
+        .query_row(
+            "SELECT confidence, reason, evidence FROM memory_relations WHERE sync_id = ?1",
+            [&relation.sync_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(confidence, None, "7.5 is not a probability");
+    let reason = reason.expect("the relation kept its reason");
+    assert!(!reason.contains("hunter2"), "{reason}");
+    assert!(reason.contains("[REDACTED]"), "{reason}");
+    assert!(
+        evidence.unwrap_or_default().len() <= destination.config.max_observation_length,
+        "evidence nobody bounded is evidence somebody can flood"
+    );
+}
+
 #[test]
 fn merge_projects_updates_all_entities_and_journals_active_rows() {
     let (_temp, mut store) = store();

@@ -1,6 +1,34 @@
 use super::*;
 use crate::cloud::test_support::unique_stamp;
 
+/// Which failed commits can still have landed: the ones whose answer went
+/// missing, and no others. A server refusal rolled back and is safe to retry.
+#[test]
+fn only_a_failed_commit_without_an_answer_is_unknown() {
+    let unknown = [
+        sqlx::Error::Io(std::io::Error::other("connection reset")),
+        sqlx::Error::Protocol("connection lost mid-commit".to_owned()),
+        sqlx::Error::WorkerCrashed,
+    ];
+    for error in unknown {
+        assert!(
+            commit_outcome_is_unknown(&error),
+            "the answer never came: {error}"
+        );
+    }
+    let known = [
+        sqlx::Error::RowNotFound,
+        sqlx::Error::PoolTimedOut,
+        sqlx::Error::PoolClosed,
+    ];
+    for error in known {
+        assert!(
+            !commit_outcome_is_unknown(&error),
+            "not a lost answer: {error}"
+        );
+    }
+}
+
 #[test]
 fn mutation_validation_enforces_real_batch_limit() {
     let entry = MutationEntry {

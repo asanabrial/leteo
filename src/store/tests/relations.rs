@@ -1869,3 +1869,263 @@ fn a_manual_supersedes_verdict_that_names_no_memory_is_refused_with_what_to_send
         "a refused verdict leaves the pair waiting"
     );
 }
+
+fn supersede(
+    store: &mut Store,
+    source: &Observation,
+    target: &Observation,
+) -> Result<String, StoreError> {
+    store.judge_by_semantic(JudgeBySemanticParams {
+        source_id: source.sync_id.clone(),
+        target_id: target.sync_id.clone(),
+        relation: RELATION_SUPERSEDES.to_owned(),
+        confidence: None,
+        reasoning: None,
+        model: None,
+    })
+}
+
+/// A relation needs two memories, and one memory is not two.
+///
+/// `mem_compare` accepted the same id twice and the pair stored, so a judged
+/// `supersedes` hid the memory it was filed about: `not_superseded` hides every
+/// target, and the target was the source. The refusal is in the store so every
+/// door shares it, and it names `not_conflict`, the one verdict about a pair of
+/// one memory that hides nothing.
+#[test]
+fn a_relation_needs_two_memories_and_one_memory_is_refused_at_the_door() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = store
+        .add_observation(observation("s1", "Cache layer", "the cache is Redis"))
+        .unwrap()
+        .observation;
+
+    for verb in [
+        RELATION_SUPERSEDES,
+        RELATION_CONFLICTS_WITH,
+        RELATION_RELATED,
+        RELATION_COMPATIBLE,
+        RELATION_SCOPED,
+    ] {
+        let message = supersede(&mut store, &memory, &memory)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("not_conflict"),
+            "{verb} on one memory was refused without the answer to give instead: {message}"
+        );
+    }
+
+    let message = store
+        .save_relation(SaveRelationParams {
+            sync_id: normalize::sync_id("rel"),
+            source_id: memory.sync_id.clone(),
+            target_id: memory.sync_id.clone(),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("not_conflict"), "{message}");
+
+    assert_eq!(
+        store
+            .count_relations(ListRelationsOptions::default())
+            .unwrap(),
+        0,
+        "none of the refusals filed a row"
+    );
+    assert_eq!(
+        listed_titles(&store),
+        vec![memory.title.clone()],
+        "and the memory is still reachable"
+    );
+}
+
+/// A verdict that would close a cycle is refused, and the refusal names the
+/// memories already on it.
+///
+/// `not_superseded` hides every target of a judged `supersedes`, so A→B→C→A
+/// hides all three and no listing shows any of them. An agent told only that a
+/// cycle exists has to guess which pair to answer, and guessing wrong hides a
+/// fourth memory, so the walk carries its path into the message.
+#[test]
+fn a_supersedes_verdict_that_would_close_a_cycle_is_refused_with_the_cycle_named() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let first = store
+        .add_observation(observation("s1", "First", "the first body"))
+        .unwrap()
+        .observation;
+    let second = store
+        .add_observation(observation("s1", "Second", "the second body"))
+        .unwrap()
+        .observation;
+    let third = store
+        .add_observation(observation("s1", "Third", "the third body"))
+        .unwrap()
+        .observation;
+
+    supersede(&mut store, &second, &first).unwrap();
+    supersede(&mut store, &third, &second).unwrap();
+
+    let message = supersede(&mut store, &first, &third)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains(&format!(
+            "{} -> {} -> {} -> {}",
+            third.id, second.id, first.id, third.id
+        )),
+        "the refusal has to name every memory on the cycle, in order: {message}"
+    );
+    assert_eq!(
+        store
+            .count_relations(ListRelationsOptions::default())
+            .unwrap(),
+        2,
+        "the refused verdict filed nothing"
+    );
+    assert!(
+        listed_titles(&store).contains(&third.title),
+        "and the memory it would have hidden is still listed"
+    );
+}
+
+/// The same cycle refused through the manual door, where the direction is the
+/// one the agent names rather than the one the row was filed in.
+#[test]
+fn a_manual_supersedes_verdict_that_would_close_a_cycle_is_refused() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let first = store
+        .add_observation(observation("s1", "First", "the first body"))
+        .unwrap()
+        .observation;
+    let second = store
+        .add_observation(observation("s1", "Second", "the second body"))
+        .unwrap()
+        .observation;
+    let third = store
+        .add_observation(observation("s1", "Third", "the third body"))
+        .unwrap()
+        .observation;
+    supersede(&mut store, &second, &first).unwrap();
+    supersede(&mut store, &third, &second).unwrap();
+
+    let pending = store
+        .save_relation(SaveRelationParams {
+            sync_id: normalize::sync_id("rel"),
+            source_id: first.sync_id.clone(),
+            target_id: third.sync_id.clone(),
+        })
+        .unwrap();
+    let message = store
+        .judge_relation(manual_supersedes(&pending.sync_id, Some(first.id)))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains(&format!(
+            "{} -> {} -> {} -> {}",
+            third.id, second.id, first.id, third.id
+        )),
+        "{message}"
+    );
+    assert_eq!(
+        store
+            .get_relation(&pending.sync_id)
+            .unwrap()
+            .judgment_status,
+        JUDGMENT_STATUS_PENDING,
+        "a refused verdict leaves the pair waiting"
+    );
+
+    // `not_conflict` hides nothing, so it is the answer the refusal named and
+    // the one this pair can still take.
+    let judged = store
+        .judge_relation(JudgeRelationParams {
+            judgment_id: pending.sync_id,
+            relation: RELATION_NOT_CONFLICT.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..JudgeRelationParams::default()
+        })
+        .unwrap();
+    assert_eq!(judged.relation, RELATION_NOT_CONFLICT);
+    assert!(listed_titles(&store).contains(&third.title));
+}
+
+/// Two memories superseding a third, and one superseding both, is not a cycle.
+///
+/// The walk follows edges out of the target and asks whether it reaches the
+/// source; a shared descendant and a shared ancestor are both legal graphs, and
+/// refusing them would make the verdict the agent should give unreachable.
+#[test]
+fn a_chain_that_does_not_return_to_its_start_is_not_a_cycle() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let root = store
+        .add_observation(observation("s1", "Root", "the shared ancestor"))
+        .unwrap()
+        .observation;
+    let left = store
+        .add_observation(observation("s1", "Left", "one branch"))
+        .unwrap()
+        .observation;
+    let right = store
+        .add_observation(observation("s1", "Right", "the other branch"))
+        .unwrap()
+        .observation;
+    let leaf = store
+        .add_observation(observation("s1", "Leaf", "the shared descendant"))
+        .unwrap()
+        .observation;
+
+    supersede(&mut store, &root, &left).unwrap();
+    supersede(&mut store, &root, &right).unwrap();
+    supersede(&mut store, &left, &leaf).unwrap();
+    supersede(&mut store, &right, &leaf).unwrap();
+
+    assert_eq!(
+        store
+            .count_relations(ListRelationsOptions::default())
+            .unwrap(),
+        4,
+        "a diamond is a graph a supersedes chain can have"
+    );
+}
+
+/// A backup from a build that allowed a self-pair carries one into this one
+/// unless the import drops it, and a dropped one is counted rather than
+/// vanished.
+#[test]
+fn a_backup_holding_a_relation_to_a_memory_itself_is_counted_and_skipped() {
+    let (_source_temp, mut source) = store();
+    source.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = source
+        .add_observation(observation("s1", "Cache layer", "the cache is Redis"))
+        .unwrap()
+        .observation;
+    // Past the door, because that is the only way a backup can hold one now:
+    // it was written before the door refused it.
+    source
+        .connection
+        .execute(
+            "INSERT INTO memory_relations
+                 (sync_id, source_id, target_id, relation, judgment_status)
+                 VALUES ('rel-self', ?1, ?1, 'supersedes', 'judged')",
+            [&memory.sync_id],
+        )
+        .unwrap();
+    let json = source.export_json(None).unwrap();
+
+    let (_temp, mut restored) = store();
+    let result = restored.import_json(&json).unwrap();
+
+    assert_eq!(result.relations_imported, 0);
+    assert_eq!(result.relations_skipped, 1);
+    assert_eq!(
+        listed_titles(&restored),
+        vec![memory.title],
+        "the memory the pair would have hidden came back reachable"
+    );
+}

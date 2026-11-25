@@ -6,6 +6,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A memory can no longer supersede itself, directly or through a cycle.**
+  `mem_compare` took the same id twice and the pair stored, and nothing refused
+  a `supersedes` that walked back to its own source. `not_superseded` hides
+  every target of a judged `supersedes`, so either shape made the memories
+  vanish from search, from the context block and from the prompt hint, with no
+  listing that could show them again. The self-pair is now refused in the
+  store, which every door shares — `mem_compare`, `mem_judge`, `save_relation`,
+  import and replication — and a verdict that would close a cycle is refused
+  with the memories already on it named in order. A backup or a peer that holds
+  a self-pair has it dropped and counted rather than restored, and `leteo
+  doctor` reports a supersession cycle or a self-pair an older build left in the
+  store, since answering `not_conflict` on one of its pairs is the way out.
 - **Uninstalling no longer takes the migration backups with it.** Both fallback
   scripts removed `leteo.db*` and `store.db*`, which is every
   `leteo.db.bak-before-migrate` and `leteo.db.pre-schema-N` beside the store —

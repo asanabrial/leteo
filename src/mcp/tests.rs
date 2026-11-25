@@ -9321,3 +9321,62 @@ fn naming_the_detected_project_without_a_token_settles_nothing() {
     assert_eq!(named.project, "here");
     assert_eq!(store.get_session("planted").unwrap().directory, "C:/here");
 }
+
+/// `mem_compare` takes two ids, and the same id twice is one memory.
+///
+/// The refusal is the store's, so this drives the tool door onto it: a judged
+/// `supersedes` filed here would hide the memory from search and from the
+/// context, and the reply has to name `not_conflict` so the next call is the
+/// corrected one rather than a second guess.
+#[test]
+fn mem_compare_refuses_a_memory_compared_against_itself() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let memory = {
+        let mut store = server.lock_store().unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        store
+            .add_observation(crate::memory::model::AddObservation {
+                session_id: "s1".to_owned(),
+                kind: "discovery".to_owned(),
+                title: "Cache layer".to_owned(),
+                content: "the cache is Redis".to_owned(),
+                tool_name: None,
+                project: Some("leteo".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap()
+            .observation
+    };
+
+    let refusal = match server.mem_compare(Parameters(
+        serde_json::from_value(json!({
+            "memory_id_a": memory.id,
+            "memory_id_b": memory.id,
+            "relation": "supersedes",
+        }))
+        .unwrap(),
+    )) {
+        Ok(_) => panic!("a memory is not a pair"),
+        Err(refusal) => refusal,
+    };
+    let reply = serde_json::to_value(&refusal).unwrap();
+    let text = reply["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the refusal lost its text: {reply}"));
+    assert!(
+        text.contains("invalid_params") && text.contains("not_conflict"),
+        "a refusal has to keep its code and name the answer: {text}"
+    );
+
+    let store = server.lock_store().unwrap();
+    assert_eq!(
+        store
+            .recent_observations(Some("leteo"), None, false)
+            .unwrap()
+            .len(),
+        1,
+        "the memory is still reachable"
+    );
+}

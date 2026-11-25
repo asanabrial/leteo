@@ -3076,3 +3076,77 @@ fn pulled_memory(seq: i64, project: &str, session: &str) -> SyncMutation {
         acked_at: None,
     }
 }
+
+/// A peer's relation between a memory and itself is dropped, not deferred.
+///
+/// It is the one payload this store will never accept, so keeping it would
+/// replay it on every sync for ever, and failing the pull would back the
+/// stream off over a row that is a bug on the other side rather than a memory
+/// arriving out of order.
+#[test]
+fn a_pulled_relation_that_joins_a_memory_to_itself_is_dropped() {
+    let (_temp, mut store) = bare_store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = SyncMutation {
+        seq: 1,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: "obs-sola".to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": "obs-sola",
+            "session_id": "s1",
+            "type": "decision",
+            "title": "One memory",
+            "content": "Its own body.",
+            "project": "leteo",
+            "scope": "project",
+            "created_at": "2026-01-01 00:00:00",
+            "updated_at": "2026-01-01 00:00:00",
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-01-01 00:00:00".to_owned(),
+        acked_at: None,
+    };
+    store.apply_pulled(&memory).unwrap();
+    let relation = SyncMutation {
+        seq: 2,
+        entity: "relation".to_owned(),
+        entity_key: "rel-self".to_owned(),
+        payload: serde_json::json!({
+            "sync_id": "rel-self",
+            "source_id": "obs-sola",
+            "target_id": "obs-sola",
+            "relation": "supersedes",
+            "judgment_status": "judged",
+            "created_at": "2026-01-01 00:00:00",
+        })
+        .to_string(),
+        ..memory
+    };
+
+    assert!(
+        store.apply_pulled(&relation).unwrap(),
+        "a refused payload is handled rather than failing the pull"
+    );
+    assert_eq!(
+        store
+            .count_relations(ListRelationsOptions::default())
+            .unwrap(),
+        0
+    );
+    assert!(
+        store.get_deferred("rel-self").is_err(),
+        "and it is not left waiting for a second memory that will never come"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("leteo"), None, false)
+            .unwrap()
+            .len(),
+        1,
+        "the memory is still reachable"
+    );
+}

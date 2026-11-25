@@ -356,6 +356,7 @@ impl Store {
     }
 
     pub fn save_relation(&mut self, input: SaveRelationParams) -> Result<Relation, StoreError> {
+        refuse_self_pair(&input.source_id, &input.target_id)?;
         self.connection.execute(
             "INSERT INTO memory_relations
              (sync_id, source_id, target_id, relation, judgment_status, created_at, updated_at)
@@ -421,6 +422,17 @@ impl Store {
         } else {
             (current.source_id.clone(), current.target_id.clone())
         };
+        // A row filed before this rule existed can still join a memory to
+        // itself. Answering `not_conflict` on it is the way out — it hides
+        // nothing — so that verdict is the one a self-pair row may take, and
+        // every other one is refused as the creation doors refuse it.
+        if source_id == target_id {
+            if input.relation != RELATION_NOT_CONFLICT {
+                refuse_self_pair(&source_id, &target_id)?;
+            }
+        } else if input.relation == RELATION_SUPERSEDES {
+            refuse_supersedes_cycle_tx(&tx, &source_id, &target_id)?;
+        }
         let marked_by_model = input
             .marked_by_model
             .filter(|value| !value.trim().is_empty());
@@ -769,6 +781,91 @@ impl Store {
     }
 }
 
+/// Refuses a relation whose two ends are one memory.
+///
+/// A self-pair stores happily and then hides the memory it joins: a judged
+/// `supersedes` hides its target, and here the target is the source. Nothing
+/// downstream can tell that from a memory somebody chose to retire, so the
+/// refusal lives at the store's doors rather than in the first tool that could
+/// reach them.
+pub(super) fn refuse_self_pair(source_id: &str, target_id: &str) -> Result<(), StoreError> {
+    if source_id != target_id {
+        return Ok(());
+    }
+    Err(invalid_parameter(
+        "a relation needs two different memories, and both ends are the same one; \
+         answer not_conflict on the pair instead",
+    ))
+}
+
+/// Refuses a `supersedes` verdict that would close a cycle.
+///
+/// `not_superseded` hides every target of a judged `supersedes`, so A→B→C→A
+/// hides all three and no listing shows any of them. The walk follows judged
+/// edges from the new target towards the new source; a pending row hides
+/// nothing and is refused when somebody tries to judge it into the cycle. The
+/// path is carried so the refusal can name the memories already on it: "a
+/// cycle" told to an agent that cannot see the other edges leaves it guessing
+/// which pair to answer, and guessing wrong hides a fourth memory.
+///
+/// The visited check rather than `UNION` is what keeps the walk finite on a
+/// store that already holds a cycle — `UNION` would deduplicate on the path
+/// column too, and two routes to one memory are two different paths.
+pub(super) fn refuse_supersedes_cycle_tx(
+    tx: &Transaction<'_>,
+    source_id: &str,
+    target_id: &str,
+) -> Result<(), StoreError> {
+    let path: Option<String> = tx
+        .query_row(
+            "WITH RECURSIVE chain(sync_id, path) AS (
+                 SELECT target_id, source_id || ' -> ' || target_id
+                   FROM memory_relations
+                  WHERE source_id = ?1 AND relation = ?3 AND judgment_status = 'judged'
+                 UNION ALL
+                 SELECT r.target_id, c.path || ' -> ' || r.target_id
+                   FROM chain c
+                   JOIN memory_relations r ON r.source_id = c.sync_id
+                  WHERE r.relation = ?3 AND r.judgment_status = 'judged'
+                    AND instr(c.path || ' -> ', r.target_id || ' -> ') = 0
+             )
+             SELECT path FROM chain WHERE sync_id = ?2 LIMIT 1",
+            params![target_id, source_id, RELATION_SUPERSEDES],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(path) = path else {
+        return Ok(());
+    };
+    // The walk runs on `sync_id`, which is what a relation stores; the agent
+    // that will answer `not_conflict` holds `id`, which is what a tool takes.
+    let mut named = Vec::new();
+    for sync_id in path.split(" -> ") {
+        let id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM observations WHERE sync_id = ?1",
+                [sync_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        named.push(match id {
+            Some(id) => id.to_string(),
+            None => sync_id.to_owned(),
+        });
+    }
+    let closed = format!(
+        "{} -> {}",
+        named.join(" -> "),
+        named.first().cloned().unwrap_or_default()
+    );
+    Err(invalid_parameter(format!(
+        "this supersedes verdict would close a cycle: the judged verdicts already reach \
+         {closed}, so every memory on it would supersede itself, and a memory that supersedes \
+         itself is hidden from search and from the context; answer not_conflict on one pair of \
+         the cycle instead"
+    )))
+}
+
 /// The source and target a `supersedes` verdict is stored under, from the id
 /// of the memory the agent says supersedes.
 ///
@@ -829,7 +926,11 @@ pub(super) fn judge_relation_tx(
     reasoning: Option<String>,
     model: Option<String>,
 ) -> Result<Relation, StoreError> {
+    refuse_self_pair(source_id, target_id)?;
     let (source_project, target_project) = validate_cross_project_guard(tx, source_id, target_id)?;
+    if relation == RELATION_SUPERSEDES {
+        refuse_supersedes_cycle_tx(tx, source_id, target_id)?;
+    }
     let existing = tx
         .query_row(
             "SELECT sync_id FROM memory_relations

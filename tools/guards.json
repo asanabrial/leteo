@@ -3002,5 +3002,35 @@
     "file": "src/cloud/cloudserver/mod.rs",
     "old": ".concurrency_limit(bounds.max_in_flight)",
     "new": ".concurrency_limit(bounds.max_in_flight * 2)"
+  },
+  {
+    "name": "relations: a memory can be related to itself",
+    "file": "src/store/relations.rs",
+    "old": "    if source_id != target_id {\n        return Ok(());\n    }",
+    "new": "    if true {\n        return Ok(());\n    }"
+  },
+  {
+    "name": "relations: a supersedes verdict closes a cycle without a word",
+    "file": "src/store/relations.rs",
+    "old": "    Err(invalid_parameter(format!(\n        \"this supersedes verdict would close a cycle:",
+    "new": "    if named.first().is_some() {\n        return Ok(());\n    }\n    Err(invalid_parameter(format!(\n        \"this supersedes verdict would close a cycle:"
+  },
+  {
+    "name": "doctor: a cycle or a self-pair reads as a healthy graph",
+    "file": "src/store/diagnostics.rs",
+    "old": "    Ok((self_pairs, cycles))\n}",
+    "new": "    let _ = (self_pairs, cycles);\n    Ok((0, 0))\n}"
+  },
+  {
+    "name": "import: a relation to a memory itself is restored",
+    "file": "src/store/diagnostics.rs",
+    "old": "            if source_id == target_id {\n                result.relations_skipped += 1;\n                continue;\n            }",
+    "new": "            if false && source_id == target_id {\n                result.relations_skipped += 1;\n                continue;\n            }"
+  },
+  {
+    "name": "replication: a relation to a memory itself waits for ever",
+    "file": "src/store/wire.rs",
+    "old": "    if payload.source_id == payload.target_id {",
+    "new": "    if false && payload.source_id == payload.target_id {"
   }
 ]

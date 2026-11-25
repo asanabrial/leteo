@@ -518,13 +518,23 @@ fn a_mutation_filed_under_one_key_may_not_be_about_another() {
     let mut crossed = mutation(
         crate::sync::ENTITY_OBSERVATION,
         crate::sync::OP_UPSERT,
-        json!({ "sync_id": "obs-a" }),
+        json!({
+            "sync_id": "obs-a",
+            "session_id": "session-1",
+            "type": "note",
+            "title": "a title",
+            "content": "a body",
+            "scope": "project",
+        }),
     );
     crossed.entity_key = "obs-b".to_owned();
 
     let error = validate_mutation_entries(&[crossed]).unwrap_err();
 
-    assert!(format!("{error:?}").contains("must be the entity_key"));
+    assert!(
+        format!("{error:?}").contains("does not match payload key"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -557,6 +567,138 @@ fn a_payload_that_never_names_itself_is_refused() {
     anonymous.payload.as_object_mut().unwrap().remove("sync_id");
 
     assert!(validate_mutation_entries(&[anonymous]).is_err());
+}
+
+/// One wire format has one payload rule, and neither door may answer differently.
+///
+/// The server refused a session whose directory is empty while the codec
+/// accepted it, and the local store writes those rows on purpose. Because push
+/// precedes pull, the refused row headed every batch and the peer stopped
+/// replicating in both directions. These cases are the rule, so a validator
+/// that gains or loses one of them fails here instead of on somebody's machine.
+#[test]
+fn the_push_endpoint_and_the_chunk_codec_accept_the_same_mutation_payloads() {
+    let agrees = |entry: &MutationEntry| {
+        let server = validate_mutation_entries(std::slice::from_ref(entry));
+        let codec = canonicalize_for_project(
+            &serde_json::to_vec(&json!({
+                "mutations": [{
+                    "entity": entry.entity,
+                    "entity_key": entry.entity_key,
+                    "op": entry.op,
+                    "payload": entry.payload.to_string(),
+                }],
+            }))
+            .unwrap(),
+            &entry.project,
+        );
+        assert_eq!(
+            server.is_ok(),
+            codec.is_ok(),
+            "{} {}: the server said {:?}, the codec said {:?}",
+            entry.entity,
+            entry.payload,
+            server.map_err(|error| format!("{error:?}")),
+            codec.map_err(|error| error.to_string()),
+        );
+        server.is_ok()
+    };
+
+    let payloads = [
+        ("session", json!({ "id": "s1", "directory": "" })),
+        ("session", json!({ "id": "s1", "directory": "/tmp/s1" })),
+        (
+            "observation",
+            json!({
+                "sync_id": "obs-1", "session_id": "s1", "type": "note",
+                "title": "a title", "content": "a body", "scope": "project",
+            }),
+        ),
+        (
+            "observation",
+            json!({
+                "sync_id": "obs-1", "session_id": "s1", "type": "note",
+                "title": "", "content": "a body", "scope": "project",
+            }),
+        ),
+        (
+            "prompt",
+            json!({ "sync_id": "p-1", "session_id": "s1", "content": "q" }),
+        ),
+        (
+            "prompt",
+            json!({ "sync_id": "p-1", "session_id": "", "content": "q" }),
+        ),
+        (
+            "relation",
+            json!({
+                "sync_id": "rel-1", "source_id": "obs-a", "target_id": "obs-b",
+                "relation": "related", "judgment_status": "judged",
+                "marked_by_actor": "agent", "marked_by_kind": "system",
+            }),
+        ),
+        (
+            "relation",
+            json!({
+                "sync_id": "rel-1", "source_id": "obs-a", "target_id": "obs-b",
+                "relation": "related", "judgment_status": "judged",
+                "marked_by_kind": "system",
+            }),
+        ),
+        (
+            "project_rename",
+            json!({ "sync_id": "rename-1", "sources": ["old"] }),
+        ),
+        (
+            "project_rename",
+            json!({ "sync_id": "rename-1", "sources": [] }),
+        ),
+        ("session", json!(["not", "an", "object"])),
+    ];
+    for (entity, payload) in payloads {
+        agrees(&mutation(entity, crate::sync::OP_UPSERT, payload));
+    }
+
+    // The key a mutation is filed under and the identifier inside it have to
+    // name the same thing: the server orders by one and every peer applies by
+    // the other, so a disagreement is a change stored against one memory and
+    // applied to another.
+    let mut crossed = mutation(
+        crate::sync::ENTITY_OBSERVATION,
+        crate::sync::OP_UPSERT,
+        json!({
+            "sync_id": "obs-1", "session_id": "s1", "type": "note",
+            "title": "a title", "content": "a body", "scope": "project",
+        }),
+    );
+    crossed.entity_key = "obs-other".to_owned();
+    assert!(
+        !agrees(&crossed),
+        "a mutation filed under a key its payload does not name was accepted"
+    );
+    let mut crossed_session = mutation(
+        crate::sync::ENTITY_SESSION,
+        crate::sync::OP_UPSERT,
+        json!({ "id": "s1", "directory": "" }),
+    );
+    crossed_session.entity_key = "session-other".to_owned();
+    assert!(
+        !agrees(&crossed_session),
+        "a session filed under a key its payload does not name was accepted"
+    );
+
+    // An entity or operation the codec does not know is not made valid by
+    // arriving at the other door.
+    assert!(!agrees(&mutation(
+        "unknown",
+        crate::sync::OP_UPSERT,
+        json!({})
+    )));
+    assert!(!agrees(&mutation(
+        crate::sync::ENTITY_RELATION,
+        crate::sync::OP_DELETE,
+        json!({})
+    )));
 }
 
 /// Every route is guarded, or is named here as deliberately open.

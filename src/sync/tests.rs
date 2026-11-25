@@ -162,6 +162,40 @@ fn mismatched_entity_key_is_rejected() {
     assert!(error.to_string().contains("does not match payload key"));
 }
 
+/// The store records a session with no directory on purpose, and the codec has
+/// to let it through.
+///
+/// `recordable_directory` blanks a relative path and `release_directory_to`
+/// blanks a session whose directory moved to another project, so a queued
+/// session upsert can carry `"directory": ""`. Refusing it made the server
+/// reject that row on every attempt, and because push precedes pull the peer
+/// stopped replicating in both directions. No placeholder is substituted: a
+/// peer would then hold a directory the writer never recorded.
+#[test]
+fn a_session_upsert_may_record_no_directory() {
+    let raw = br#"{
+            "mutations":[{
+                "entity":"session",
+                "entity_key":"manual-save-other",
+                "op":"upsert",
+                "payload":"{\"id\":\"manual-save-other\",\"directory\":\"\"}"
+            }]
+        }"#;
+
+    let canonical = canonicalize_for_project(raw, "proj-a").unwrap();
+    let value: Value = serde_json::from_slice(&canonical).unwrap();
+    let payload: Value =
+        serde_json::from_str(value["mutations"][0]["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["id"], "manual-save-other");
+    assert!(
+        payload
+            .get("directory")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty),
+        "the codec invented a directory the store never recorded: {payload}"
+    );
+}
+
 #[test]
 fn a_mutation_missing_what_makes_it_a_memory_is_refused_at_the_wire() {
     // These are the doors a peer's payload comes through: a chunk pulled from
@@ -186,14 +220,6 @@ fn a_mutation_missing_what_makes_it_a_memory_is_refused_at_the_wire() {
         )
         .contains("id is required"),
         "a session with no id belongs to nothing"
-    );
-    assert!(
-        refused(
-            "session",
-            crate::sync::OP_UPSERT,
-            serde_json::json!({"id": "s1", "directory": " "})
-        )
-        .contains("directory is required")
     );
     for missing in ["title", "content", "scope"] {
         let mut body = serde_json::json!({

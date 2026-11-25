@@ -527,8 +527,12 @@ fn the_insert_budget_is_what_the_request_has_left() {
         push_budget(Duration::from_millis(300)),
         REQUEST_TIMEOUT - Duration::from_millis(300) - MUTATION_PUSH_MARGIN
     );
-    assert_eq!(push_budget(REQUEST_TIMEOUT), Duration::ZERO);
-    assert_eq!(push_budget(Duration::from_secs(600)), Duration::ZERO);
+    let boundary = REQUEST_TIMEOUT - MUTATION_PUSH_MARGIN;
+    assert_eq!(push_budget(boundary), Duration::ZERO);
+    assert_eq!(
+        push_budget(boundary - Duration::from_millis(1)),
+        Duration::from_millis(1)
+    );
 }
 
 /// The stamp has to be there before anything queues, and it has to be reachable
@@ -555,6 +559,24 @@ async fn the_router_stamps_arrival_before_the_handler_runs() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert_eq!(&body[..], b"0", "the stamp is this request's own arrival");
+}
+
+/// A push the queue left without time is answered retryably, and its insert is
+/// never polled: nothing has been written, so a retry cannot duplicate it.
+#[tokio::test]
+async fn a_push_with_no_budget_left_is_retryable_and_starts_no_insert() {
+    let refused = insert_mutations_within(Duration::ZERO, async {
+        panic!("a push with no budget left must not start its insert")
+    })
+    .await
+    .unwrap_err()
+    .into_response();
+
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        refused.headers().get(header::RETRY_AFTER).cloned(),
+        Some(HeaderValue::from(error::RETRY_AFTER_SECONDS))
+    );
 }
 
 #[test]

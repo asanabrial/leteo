@@ -381,6 +381,10 @@ async fn insert_mutations_within(
     budget: Duration,
     insert: impl std::future::Future<Output = Result<Vec<i64>, CloudStoreError>>,
 ) -> Result<Vec<i64>, ApiError> {
+    // Nothing was written, so this one is safe to send again.
+    if budget.is_zero() {
+        return Err(ApiError::busy("the request has no time left"));
+    }
     match tokio::time::timeout(budget, insert).await {
         Ok(result) => result.map_err(ApiError::from),
         Err(_) => {
@@ -415,16 +419,13 @@ async fn push_mutations(
         )
         .await?;
     }
-    // What is left of the request's own bound, not a fresh one. Nothing has
-    // been written yet, so a request with nothing left is safe to send again.
-    let budget = push_budget(arrival.0.elapsed());
-    if budget.is_zero() {
-        return Err(ApiError::busy(
-            "the request has no time left; retry shortly",
-        ));
-    }
-    let accepted_seqs =
-        insert_mutations_within(budget, state.store.insert_mutations(&request.entries)).await?;
+    // What is left of the request's own bound, not a fresh one: a push that
+    // waited for a slot has spent it.
+    let accepted_seqs = insert_mutations_within(
+        push_budget(arrival.0.elapsed()),
+        state.store.insert_mutations(&request.entries),
+    )
+    .await?;
     let project = request
         .entries
         .first()

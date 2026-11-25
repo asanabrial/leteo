@@ -244,10 +244,35 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
+      # `latest` moved the binary under this job, which holds `id-token: write`:
+      # whatever that release served on the day ran with the identity that
+      # publishes to the registry. The version and the digests are recorded
+      # here, read off the v1.8.16 release's assets and confirmed by running the
+      # extracted binary: a bumped version is a change somebody reviews, and an
+      # asset replaced under the same tag stops the job instead of publishing.
       - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER: "1.8.16"
+          SHA256_LINUX_AMD64: "6e2f799550cf843c6fd3350498d56cc49be3dc0af1e6237eb0e6435c7a9d5c05"
+          SHA256_LINUX_ARM64: "5a967e51a24389b496f65e02fc9ce6bb187763c1de59e37a8f3018323e295a6a"
+          SHA256_DARWIN_AMD64: "436db8b8da772d833307352652e8d47eebe33f76e5e56e52cba8c3bb45fe9bb0"
+          SHA256_DARWIN_ARM64: "5193b2c55627027cbda652ae8577aa3221fcff9ad743a011f830e81f361fa061"
         run: |
           set -euo pipefail
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          case "$os/$arch" in
+            linux/amd64) digest="$SHA256_LINUX_AMD64" ;;
+            linux/arm64) digest="$SHA256_LINUX_ARM64" ;;
+            darwin/amd64) digest="$SHA256_DARWIN_AMD64" ;;
+            darwin/arm64) digest="$SHA256_DARWIN_ARM64" ;;
+            *) echo "::error::No sha256 recorded for mcp-publisher $MCP_PUBLISHER on $os/$arch."; exit 1 ;;
+          esac
+          archive="mcp-publisher_${os}_${arch}.tar.gz"
+          curl -fsSLO "https://github.com/modelcontextprotocol/registry/releases/download/v$MCP_PUBLISHER/$archive"
+          printf '%s  %s\n' "$digest" "$archive" | sha256sum -c -
+          tar -xzf "$archive" mcp-publisher
+          ./mcp-publisher --version
       # The registry believes this repository owns `io.github.asanabrial/leteo`
       # because the OIDC token says which repository the job is running in.
       - run: ./mcp-publisher login github-oidc

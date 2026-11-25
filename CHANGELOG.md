@@ -23,6 +23,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Releases no longer run whatever `mcp-publisher` `latest` serves that day.**
+  The registry job holds `id-token: write`, so the binary it piped out of a
+  `releases/latest/download` URL ran with the identity that publishes
+  `io.github.asanabrial/leteo`. The step now names v1.8.16 and checks the
+  archive against a sha256 recorded in the workflow for each platform the step
+  supports, and stops on a mismatch or an unknown `uname` pair rather than
+  extracting anything. Bumping the publisher is now a reviewed change (#437).
 - **A memory can no longer supersede itself, directly or through a cycle.**
   `mem_compare` took the same id twice and the pair stored, and nothing refused
   a `supersedes` that walked back to its own source. `not_superseded` hides

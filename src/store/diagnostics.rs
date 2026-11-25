@@ -70,6 +70,16 @@ impl Store {
         for session in &data.sessions {
             let project = normalize::project(&session.project);
             let started_at = nonempty_or_now(&session.started_at);
+            // The summary is read back in every `mem_context`, so the import
+            // door applies the same redaction and bound the local and
+            // replicated doors do. Without it a `<private>` span planted in a
+            // handwritten or older export came back in every opening context.
+            let summary = normalize::session_summary(session.summary.as_deref(), max_length);
+            // A relative directory names whatever place the reader stands in,
+            // so every local creator blanks it; the import door was the one
+            // that did not, and the drift check then resolved it against
+            // wherever the agent happened to run.
+            let directory = crate::project::recordable_directory(&session.directory);
             result.sessions_imported += tx.execute(
                 "INSERT OR IGNORE INTO sessions
                  (id, project, directory, started_at, ended_at, summary)
@@ -77,10 +87,10 @@ impl Store {
                 params![
                     session.id,
                     project,
-                    session.directory,
+                    directory,
                     started_at,
                     session.ended_at,
-                    session.summary
+                    summary
                 ],
             )? as i64;
         }
@@ -91,7 +101,11 @@ impl Store {
             } else {
                 observation.sync_id.trim().to_owned()
             };
-            let title = normalize::strip_private(&observation.title);
+            // A title is one line and inside the published bound on every door.
+            // This one stripped the private span and stopped there, so an
+            // export could plant a newline followed by a bullet that a later
+            // listing renders as if it were another memory.
+            let title = normalize::title(&observation.title, max_length);
             let content = normalize::truncate_content(
                 normalize::strip_private(&observation.content),
                 max_length,
@@ -231,6 +245,16 @@ impl Store {
                 result.relations_skipped += 1;
                 continue;
             }
+            // The same rules the local and replicated doors apply to a judged
+            // relation: an out-of-range confidence is stored as no confidence,
+            // and both texts are redacted and bounded. `judge_relation` and
+            // `apply_relation_tx` already did this; an import could put back
+            // whatever a handsomer file held.
+            let confidence = relation
+                .confidence
+                .filter(|value| crate::memory::rules::is_confidence(*value));
+            let reason = normalize::judgment_text(relation.reason.as_deref(), max_length);
+            let evidence = normalize::judgment_text(relation.evidence.as_deref(), max_length);
             let inserted = tx.execute(
                 &format!(
                     "INSERT INTO memory_relations ({RELATION_INSERT_COLUMNS})
@@ -244,9 +268,9 @@ impl Store {
                     relation.source_id.trim(),
                     relation.target_id.trim(),
                     relation.relation,
-                    relation.reason,
-                    relation.evidence,
-                    relation.confidence,
+                    reason,
+                    evidence,
+                    confidence,
                     relation.judgment_status,
                     relation.marked_by_actor,
                     relation.marked_by_kind,

@@ -528,20 +528,23 @@ impl LeteoMcpServer {
         if detected.is_empty() {
             return Ok(None);
         }
-        // Every name the directory's sessions carry, the detected one included:
-        // a directory whose history already holds the name it resolves to is
-        // that project's directory, and a session under another name is a
-        // conversation about somewhere else rather than a rename. Reading the
-        // history without the detected name turned the one stray row into a
-        // drift the whole directory then had to answer for, and #405 stopped
-        // new rows of that kind without healing the stores already holding
-        // one.
-        let recorded = store
-            .recent_projects_in_directory(&detection.path, "")
+        // The directory's own bucket clears the question; a session that merely
+        // visited does not. One stray row — what the session door used to write
+        // when it opened a session here for another project — used to make the
+        // whole directory disputed for ever (#405 stopped new ones, not the
+        // stores holding one). But any row naming the detected project is too
+        // wide: a hook records the directory before anybody has said it is
+        // theirs, so after a rename it would answer the question the rename
+        // exists to ask.
+        let manual_here = store
+            .directory_has_manual_session(&detection.path, &detected, is_manual_session_id)
             .map_err(store_error)?;
-        if recorded.iter().any(|project| project == &detected) {
+        if manual_here {
             return Ok(None);
         }
+        let recorded = store
+            .recent_projects_in_directory(&detection.path, &detected)
+            .map_err(store_error)?;
         if recorded.is_empty() {
             return Ok(None);
         }

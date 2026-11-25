@@ -31,7 +31,14 @@ services:
       - "5432"
 
   leteo:
-    build: .
+    # The context is the repository root, not this directory: the Dockerfile
+    # copies Cargo.toml, src, migrations and the Pi package from there. With
+    # `.`, the first COPY looked for docker/Cargo.toml, so `docker compose up`
+    # could not build the image at all while CI — which passes `context: .`
+    # itself — stayed green.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     image: leteo:local
     restart: unless-stopped
     depends_on:

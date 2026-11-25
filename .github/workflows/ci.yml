@@ -450,8 +450,12 @@ jobs:
   # and lose partial-word or paraphrase queries, and the same goes for a preview
   # or a default that quietly doubles what an agent is sent per call. This job
   # runs the release binary over the corpus in `tools/memory-bench` and fails
-  # when a query kind's MRR falls below, or a reply grows past, the numbers in
-  # `tools/memory-bench/floors.json`.
+  # when a query kind's hit@1 or MRR falls below — at twenty rows and at the
+  # limit an agent gets when it names none — or a reply grows past, the numbers
+  # in `tools/memory-bench/floors.json`. `precision_gate.py` then asks the same
+  # questions of the merge base's binary and this one: a drop that the floors
+  # leave room for still fails, and the answer names each question whose rank
+  # moved.
   #
   # Linux only, like `cloud-tests`: ranking transfers between SQLite builds and
   # timing does not, so nothing here gates on time.
@@ -475,11 +479,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The precision gate builds the merge base in a worktree, and a
+          # shallow clone has no commit to check out.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
       - run: cargo build --release --locked
+      # The harness's own tests are pure Python and start no engine. They run
+      # here because this is the only job whose subject is the harness: a
+      # table that misreports a pass would make every figure below meaningless.
+      - run: python3 -m unittest discover -s tools/memory-bench -p 'test_*.py'
+      - name: Build the merge base
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          base=$(git merge-base HEAD "origin/$BASE_REF")
+          # On a push to the base branch the merge base is this commit, and the
+          # head binary already is it.
+          if [ "$base" = "$(git rev-parse HEAD)" ]; then
+            echo "PRECISION_BASE_BIN=target/release/leteo" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          worktree="$RUNNER_TEMP/precision-base"
+          git worktree add "$worktree" "$base"
+          (cd "$worktree" && cargo build --release --locked)
+          echo "PRECISION_BASE_BIN=$worktree/target/release/leteo" >> "$GITHUB_ENV"
+      # The same questions through the merge base and the change, at the limit
+      # an agent gets when it names none. It fails on a drop in hit@1 or MRR
+      # that the fixed floors can absorb, and prints the pair per question so
+      # a loss and a gain on two questions is visible rather than averaged.
+      - run: python3 tools/memory-bench/precision_gate.py --base "$PRECISION_BASE_BIN" --head target/release/leteo
+        env:
+          LETEO_MODEL_DIR: ${{ github.workspace }}/assets/model
       - run: python3 tools/memory-bench/ratchet.py
         env:
           LETEO_BIN: ${{ github.workspace }}/target/release/leteo

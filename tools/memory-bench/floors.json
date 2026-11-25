@@ -10,6 +10,38 @@
     "spanish": 0.968,
     "typo": 1.0
   },
+  "hit1": {
+    "ALL": 0.905,
+    "longnl": 0.75,
+    "multiword": 1.0,
+    "paraphrase": 0.842,
+    "partial": 0.923,
+    "short": 0.937,
+    "spanish": 0.937,
+    "typo": 1.0
+  },
+  "default": {
+    "mrr": {
+      "ALL": 0.922,
+      "longnl": 0.791,
+      "multiword": 1.0,
+      "paraphrase": 0.87,
+      "partial": 0.923,
+      "short": 0.937,
+      "spanish": 0.968,
+      "typo": 1.0
+    },
+    "hit1": {
+      "ALL": 0.905,
+      "longnl": 0.75,
+      "multiword": 1.0,
+      "paraphrase": 0.842,
+      "partial": 0.923,
+      "short": 0.937,
+      "spanish": 0.937,
+      "typo": 1.0
+    }
+  },
   "bytes": {
     "context": 6600,
     "search_latency": 10700,

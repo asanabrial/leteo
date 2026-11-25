@@ -205,8 +205,9 @@ which words a stemmer folds together.
 
 `ratchet.py` needs nothing but Leteo and stock `python3`. It saves the corpus
 into a fresh store in a temporary directory through `mem_save`, runs every query
-through `mem_search` at limit 20, and compares mean reciprocal rank per kind and
-overall, and the bytes of twenty-result searches and of `mem_context`,
+at limit 20 and again with no limit at all — the default an agent gets — and
+compares hit@1 and mean reciprocal rank per kind and overall, at both
+configurations, and the bytes of twenty-result searches and of `mem_context`,
 against `floors.json`. CI runs it as the `search-quality` job.
 
 ```bash
@@ -216,6 +217,28 @@ LETEO_BIN=target/release/leteo python3 tools/memory-bench/ratchet.py
 
 `LETEO_BIN` has no default here, because `leteo` on `PATH` is usually an
 installed release and not the build under test.
+
+`precision_gate.py` is the answer to "did this change make the search worse than
+the code it replaces", which fixed floors cannot give: a drop on a kind with
+room, or one question traded for another, passes them. It writes the same corpus
+into two isolated stores, asks both binaries every question with no limit, and
+prints the base rank, the head rank and the reply bytes of each question beside
+per-kind hit@1 and MRR. It exits 1 when the second binary's hit@1 or MRR is
+lower on any kind or overall.
+
+```bash
+LOCAL=target/release/leteo
+git worktree add /tmp/leteo-base origin/main
+(cd /tmp/leteo-base && cargo build --release)
+python3 tools/memory-bench/precision_gate.py \
+  --base /tmp/leteo-base/target/release/leteo --head "$LOCAL"
+```
+
+The corpus has 117 questions, so one question is 0.85 points of hit@1 — the
+smallest change this gate can see. (The comparison corpus's 56 questions put one
+at 1.79 points; growing the ratchet's Spanish half is a separate change.) CI
+builds the merge base in a worktree and runs this against the head before the
+ratchet.
 
 It exits 1 and names every breach with its measured value and its floor. It
 exits 2 if it could not run at all — a missing binary, a tool error, a save that

@@ -19,12 +19,17 @@ os.makedirs(BENCH, exist_ok=True)
 # carrying its own copy of the variable name and value.
 ENGRAM_QUIET_ENV = {"ENGRAM_NO_UPDATE_CHECK": "1"}
 
-def engine_cmd(engine, project, home=None):
+def engine_cmd(engine, project, home=None, binary=None):
+    # A relative path passed by the gate has the same problem the module-level
+    # path had: the server is spawned from `cwd` below, where it will not
+    # resolve. A bare name stays a PATH lookup.
+    if binary is not None and (os.sep in binary or (os.altsep and os.altsep in binary)):
+        binary = os.path.abspath(binary)
     cwd = os.path.join(BENCH, "work", project)
     os.makedirs(cwd, exist_ok=True)
     if engine == "engram":
         home = os.path.join(BENCH, "ehome")
-        return [ENGRAM, "mcp"], cwd, dict(os.environ, HOME=home, ENGRAM_DATA_DIR=os.path.join(home, "data"), **ENGRAM_QUIET_ENV)
+        return [binary or ENGRAM, "mcp"], cwd, dict(os.environ, HOME=home, ENGRAM_DATA_DIR=os.path.join(home, "data"), **ENGRAM_QUIET_ENV)
     home = home or os.path.join(BENCH, "lhome")
     os.makedirs(home, exist_ok=True)
     env = dict(os.environ, HOME=home, LETEO_DATA_DIR=home)
@@ -34,7 +39,10 @@ def engine_cmd(engine, project, home=None):
     # `LETEO_MODEL_DIR=assets/model` made a run measure the lexical search alone.
     if env.get("LETEO_MODEL_DIR"):
         env["LETEO_MODEL_DIR"] = os.path.abspath(env["LETEO_MODEL_DIR"])
-    return [LETEO, "mcp", "--database", os.path.join(home, "leteo.db")], cwd, env
+    # `binary` is how the two-binary gate starts a specific build; the module
+    # name is the one a caller that names none has always used, and the path
+    # resolution above happens at import for it only.
+    return [binary or LETEO, "mcp", "--database", os.path.join(home, "leteo.db")], cwd, env
 
 class MCP:
     def __init__(self, engine, project, home=None, launch=None):

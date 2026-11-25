@@ -24,6 +24,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLOORS = os.path.join(HERE, "floors.json")
 PROJECTS = ("alpha-api", "beta-web")
 SEARCH_LIMIT = 20
+# The two configurations the answers are scored in. `None` sends no limit at
+# all, so the number is whatever the binary under test gives an agent that asks
+# for none: writing 10 here would measure the harness's copy of the default and
+# keep passing after a change to the real one. `SEARCH_LIMIT` stays because the
+# byte ceilings and the empty-answer ceiling were measured at it, and a stage
+# that only adds rows past the default is a change this catches.
+LIMITS = {"default": None, "wide": SEARCH_LIMIT}
 # The first two match many short bodies; the third is a disjunction over words
 # that sit in the long ones, because the preview is the thing most likely to
 # change a reply's size and short bodies never reach it.
@@ -58,25 +65,33 @@ def measure():
         if len(set(ids.values())) != len(members):
             raise CannotRun("two corpus memories were given the same id")
 
-        ranks = defaultdict(list)
-        # How many questions came back with nothing at all. MRR alone cannot
-        # say it: a question answered wrongly and a question not answered both
-        # score zero, and an agent is told very different things by the two.
+        ranks = {name: defaultdict(list) for name in LIMITS}
+        # How many questions came back with nothing at all, at the wide limit.
+        # MRR alone cannot say it: a question answered wrongly and a question
+        # not answered both score zero, and an agent is told very different
+        # things by the two.
         empty = defaultdict(int)
         millis = []
         for q in wanted:
-            reply, _, dt = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": SEARCH_LIMIT})
-            found = [r["id"] for r in reply.get("results") or []]
-            target = ids[q["target"]]
-            rank = found.index(target) + 1 if target in found else None
-            ranks[q["kind"]].append(rank)
-            ranks["ALL"].append(rank)
-            if not found:
-                empty[q["kind"]] += 1
-                empty["ALL"] += 1
-            millis.append(dt * 1000)
-        if len(ranks["ALL"]) != len(wanted) or len(wanted) == 0:
-            raise CannotRun(f"{len(ranks['ALL'])} queries were evaluated and the corpus defines {len(wanted)}")
+            for name, limit in LIMITS.items():
+                args = {"query": q["q"]}
+                if limit is not None:
+                    args["limit"] = limit
+                reply, _, dt = call_json(servers[q["project"]], "mem_search", args)
+                found = [r["id"] for r in reply.get("results") or []]
+                target = ids[q["target"]]
+                rank = found.index(target) + 1 if target in found else None
+                ranks[name][q["kind"]].append(rank)
+                ranks[name]["ALL"].append(rank)
+                if limit == SEARCH_LIMIT:
+                    if not found:
+                        empty[q["kind"]] += 1
+                        empty["ALL"] += 1
+                    millis.append(dt * 1000)
+        for name in LIMITS:
+            if len(ranks[name]["ALL"]) != len(wanted) or len(wanted) == 0:
+                raise CannotRun(f"{len(ranks[name]['ALL'])} queries were evaluated at {name} "
+                                f"and the corpus defines {len(wanted)}")
 
         alpha = servers["alpha-api"]
         sizes = {}
@@ -119,14 +134,22 @@ def measure():
             except Exception:
                 m.p.kill()
 
-    mrr = {k: sum(1 / r for r in rs if r) / len(rs) for k, rs in ranks.items()}
-    hit1 = {k: sum(r == 1 for r in rs) / len(rs) for k, rs in ranks.items()}
+    def at(name):
+        return {
+            "mrr": {k: sum(1 / r for r in rs if r) / len(rs) for k, rs in ranks[name].items()},
+            "hit1": {k: sum(r == 1 for r in rs) / len(rs) for k, rs in ranks[name].items()},
+            "counts": {k: len(v) for k, v in ranks[name].items()},
+        }
+
+    wide, default = at("wide"), at("default")
     # Their own stores, one per language, because the language a memory is stemmed
     # in is the store's setting; they are not part of `ALL`, whose kinds are
     # measured in one store written in Spanish.
     strict = inflection.measure(STATE)
-    return dict(mrr=mrr, hit1=hit1, inflection=strict, counts={k: len(v) for k, v in ranks.items()}, bytes=sizes,
-                empty={k: empty[k] for k in ranks}, median_ms=statistics.median(millis), no_answer=no_answer_stats)
+    return dict(mrr=wide["mrr"], hit1=wide["hit1"], counts=wide["counts"], default=default,
+                inflection=strict, bytes=sizes,
+                empty={k: empty[k] for k in ranks["wide"]}, median_ms=statistics.median(millis),
+                no_answer=no_answer_stats)
 
 
 def ceiling(measured):
@@ -141,10 +164,19 @@ def ceiling(measured):
     return (measured // 100 + 2) * 100
 
 
+def floors_of(measured):
+    return {k: math.floor(measured[k] * 1000 + 1e-9) / 1000 for k in sorted(measured)}
+
+
 def propose(got):
     return {
         "raise_margin": 0.02,
-        "mrr": {k: math.floor(got["mrr"][k] * 1000 + 1e-9) / 1000 for k in sorted(got["mrr"])},
+        "mrr": floors_of(got["mrr"]),
+        "hit1": floors_of(got["hit1"]),
+        # The limit an agent gets when it names none. Its own floors, because a
+        # change to the default can move what the first ten rows contain while
+        # the twenty-row figures stay where they were.
+        "default": {"mrr": floors_of(got["default"]["mrr"]), "hit1": floors_of(got["default"]["hit1"])},
         "bytes": {k: ceiling(v) for k, v in sorted(got["bytes"].items())},
         "empty": {"ALL": got["empty"]["ALL"]},
         "inflection": {k: math.floor(v["mrr"] * 1000 + 1e-9) / 1000 for k, v in sorted(got["inflection"].items())},
@@ -156,10 +188,27 @@ def propose(got):
     }
 
 
+def check_floors(label, measured, floors, margin, breaches, raisable):
+    """Compare one section, and refuse a floor set that names other questions.
+
+    A floor on a kind the run did not measure would pass for ever, and so would
+    a kind the run measures that nobody wrote a floor for: the second is a
+    corpus change that quietly stopped being gated.
+    """
+    if set(floors) != set(measured):
+        breaches.append(f"{label} kinds differ: floors name {sorted(floors)}, measured {sorted(measured)}")
+        return
+    for kind, floor in floors.items():
+        value = measured[kind]
+        if value < floor:
+            breaches.append(f"{label} {kind}: measured {value:.3f}, floor {floor:.3f}")
+        elif value - floor >= margin:
+            raisable.append(f"{label} {kind}: measured {value:.3f} is {value - floor:.3f} above its floor {floor:.3f}")
+
+
 def judge(got, floors):
     breaches, raisable = [], []
-    if set(floors["mrr"]) != set(got["mrr"]):
-        breaches.append(f"kinds differ: floors name {sorted(floors['mrr'])}, the corpus has {sorted(got['mrr'])}")
+    margin = floors["raise_margin"]
     if set(floors["bytes"]) != set(got["bytes"]):
         breaches.append(f"byte measurements differ: floors name {sorted(floors['bytes'])}, measured {sorted(got['bytes'])}")
     if set(floors["inflection"]) != set(got["inflection"]):
@@ -169,16 +218,18 @@ def judge(got, floors):
         value = got["inflection"].get(code, {}).get("mrr")
         if value is not None and value < floor:
             breaches.append(f"strict-pass MRR {code}: measured {value:.3f}, floor {floor:.3f}")
-        elif value is not None and value - floor >= floors["raise_margin"]:
+        elif value is not None and value - floor >= margin:
             raisable.append(f"strict-pass MRR {code}: measured {value:.3f} is {value - floor:.3f} above its floor {floor:.3f}")
-    for kind, floor in floors["mrr"].items():
-        value = got["mrr"].get(kind)
-        if value is None:
-            continue
-        if value < floor:
-            breaches.append(f"MRR {kind}: measured {value:.3f}, floor {floor:.3f}")
-        elif value - floor >= floors["raise_margin"]:
-            raisable.append(f"MRR {kind}: measured {value:.3f} is {value - floor:.3f} above its floor {floor:.3f}")
+    check_floors("MRR", got["mrr"], floors["mrr"], margin, breaches, raisable)
+    # hit@1 beside MRR: a change that trades first place for a slightly better
+    # average is exactly what MRR alone lets through.
+    check_floors("hit@1", got["hit1"], floors["hit1"], margin, breaches, raisable)
+    if "default" not in floors:
+        raise CannotRun("floors.json has no default-limit section; the limit an agent gets is not gated")
+    check_floors("default-limit MRR", got["default"]["mrr"], floors["default"]["mrr"],
+                 margin, breaches, raisable)
+    check_floors("default-limit hit@1", got["default"]["hit1"], floors["default"]["hit1"],
+                 margin, breaches, raisable)
     # A ceiling and not a floor: the count of questions answered with nothing
     # can only be allowed to fall. Only the total is gated; the per-kind
     # counts are printed, because a kind of eight questions moves by one.
@@ -227,7 +278,13 @@ def main():
     n = got["counts"]["ALL"]
     print(f"{n} queries evaluated, median warm search {got['median_ms']:.1f} ms (printed, not gated)")
     for k in sorted(got["mrr"]):
-        print(f"  {k:10} n={got['counts'][k]:3}  hit@1 {got['hit1'][k]:.3f}  MRR {got['mrr'][k]:.3f}  floor {floors['mrr'].get(k, float('nan')):.3f}  empty {got['empty'][k]:3}")
+        print(f"  {k:10} n={got['counts'][k]:3}  hit@1 {got['hit1'][k]:.3f}  MRR {got['mrr'][k]:.3f}  "
+              f"floors h@1 {floors['hit1'].get(k, float('nan')):.3f} MRR {floors['mrr'].get(k, float('nan')):.3f}  "
+              f"empty {got['empty'][k]:3}")
+    for k in sorted(got["default"]["mrr"]):
+        print(f"  default {k:10}  hit@1 {got['default']['hit1'][k]:.3f}  MRR {got['default']['mrr'][k]:.3f}  "
+              f"floors h@1 {floors['default']['hit1'].get(k, float('nan')):.3f} "
+              f"MRR {floors['default']['mrr'].get(k, float('nan')):.3f}")
     for k, v in sorted(got["inflection"].items()):
         print(f"  strict {k:3}  n={v['n']:3}  hit@1 {v['hit1']:.3f}  MRR {v['mrr']:.3f}  floor {floors['inflection'].get(k, float('nan')):.3f}")
     for k, v in sorted(got["bytes"].items()):

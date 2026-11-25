@@ -54,6 +54,9 @@ include = [
     "/NOTICE",
     # The hashes the binary pins are held to this file by a test.
     "/tools/semantic/checksums.json",
+    # The digest of each generated block on the comparison page, read by the
+    # guard that refuses a block edited by hand.
+    "/docs/comparison.generated.json",
 ]
 
 # Where `cargo binstall` finds the release binary, said rather than guessed.

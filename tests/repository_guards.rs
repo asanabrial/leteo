@@ -1543,6 +1543,75 @@ fn a_commit_does_not_change_the_comparison_corpus_with_the_search_it_scores() {
     );
 }
 
+/// The comparison page's generated blocks are the bytes `compare.py` wrote.
+///
+/// The numbers come from a run of every engine — Engram, basic-memory,
+/// server-memory, mem0, claude-mem — and no CI machine can repeat that run: half
+/// of those engines need a local model, and none of them is installed on a
+/// runner. So nothing here can regenerate the page and compare, which is what
+/// the page says of itself ("generated from the harness so they cannot drift"):
+/// a refresh in #407 typed its own sentences over the table, and one of them
+/// said "Engram and two other engines" beside a table holding four.
+///
+/// What can be held is the bytes. `compare.py` records the digest of each block
+/// in `docs/comparison.generated.json` from the same call that writes it, so the
+/// page and its digest move together or not at all: a digit typed into a block
+/// stops matching, and only a regeneration passes. It proves the page is the one
+/// the generator wrote, never that the run was faithful — this repository has no
+/// way to know that second thing, and saying so here is the difference between a
+/// guard and a claim.
+#[test]
+fn the_generated_comparison_blocks_are_the_ones_the_generator_wrote() {
+    use sha2::{Digest, Sha256};
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let recorded_path = root.join("docs").join("comparison.generated.json");
+    let shown = recorded_path.display();
+    let recorded =
+        std::fs::read_to_string(&recorded_path).unwrap_or_else(|error| panic!("{shown}: {error}"));
+    let blocks: serde_json::Value = serde_json::from_str(&recorded)
+        .unwrap_or_else(|error| panic!("{shown} is not JSON: {error}"));
+    let blocks = blocks
+        .as_array()
+        .unwrap_or_else(|| panic!("{shown} should hold a list of generated blocks"));
+    assert!(
+        !blocks.is_empty(),
+        "{shown} names no block, so this guard is watching nothing"
+    );
+
+    let mut offenders = Vec::new();
+    for block in blocks {
+        let field = |key: &str| -> &str {
+            block[key]
+                .as_str()
+                .unwrap_or_else(|| panic!("{shown} has a block with no `{key}`"))
+        };
+        let (file, begin, end, expected) =
+            (field("file"), field("begin"), field("end"), field("sha256"));
+        let text = std::fs::read_to_string(root.join(file))
+            .unwrap_or_else(|error| panic!("{file}: {error}"));
+        let after_begin = text.find(begin).unwrap_or_else(|| {
+            panic!("{file} carries no `{begin}`, and {shown} names it as a generated block")
+        }) + begin.len();
+        let rest = &text[after_begin..];
+        let length = rest
+            .find(end)
+            .unwrap_or_else(|| panic!("{file} opens `{begin}` and never closes it"));
+        let digest = hex::encode(Sha256::digest(&rest.as_bytes()[..length]));
+        if digest != expected {
+            offenders.push(format!("{file} between `{begin}` and `{end}`"));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these generated blocks are not the bytes the generator wrote: {offenders:?}. \
+         Edit the prose around a block freely; a number inside one is regenerated with \
+         `tools/memory-bench/compare.py`, which writes the page and its digest in \
+         `docs/comparison.generated.json` together."
+    );
+}
+
 /// The harness does not come back under the directory it was renamed out of.
 ///
 /// `tools/engram-bench` was the harness's home until it moved to

@@ -812,11 +812,18 @@ impl LeteoMcpServer {
             params.project.or_else(|| self.default_project.clone()),
             &detection,
         )?;
-        let directory = requested_directory.unwrap_or(detection.path);
+        let directory = requested_directory.unwrap_or_else(|| detection.path.clone());
+        // A session opened here under another project is a conversation about
+        // somewhere else, and recording this directory as its own put the
+        // directory under two names: every later silent write was then refused
+        // as a rename nobody made. The manual-session doors have been routed
+        // through this since #405; this one still stamped the directory, which
+        // is the door `SERVER_INSTRUCTIONS` names first.
+        let recorded = crate::project::session_directory(&project, &detection, &directory);
         let session = if declared {
-            store.create_declared_session(&params.id, &project, &directory)
+            store.create_declared_session(&params.id, &project, recorded)
         } else {
-            store.create_session(&params.id, &project, &directory)
+            store.create_session(&params.id, &project, recorded)
         }
         .map_err(store_error)?;
 

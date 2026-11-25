@@ -397,14 +397,16 @@ fn entries_or_report(dir: &Path) -> Vec<PathBuf> {
 ///
 /// The longest hook budget is about nine seconds (§`HookEvent::store_wait`), so
 /// a minute is past any drain that is still running. This is the second answer
-/// for a pid check that cannot tell, and an unprobed platform answers "alive".
+/// for a pid check that cannot tell: a process killed and left a zombie answers
+/// `kill -0`, and a platform without a probe falls back to "alive".
 const CLAIM_STALE_MILLIS: i64 = 60_000;
 
 /// The original name of a claimed entry, the process that claimed it, and when.
 ///
-/// [`claim`] renames `<entry>.json` to `<entry>.json.claimed-<pid>-<millis>`;
-/// a name without a numeric pid is not one of ours. A claim from a build
-/// before the time was recorded has none, so it is optional.
+/// [`claim`] renames `<entry>.json` to `<entry>.json.claimed-<pid>-<millis>`.
+/// A name that does not carry a numeric pid is not one of ours, so it is left
+/// alone. The time is absent in a claim written by a build before it was
+/// recorded, which is why it is optional rather than required.
 fn claimed(path: &Path) -> Option<(PathBuf, u32, Option<i64>)> {
     let name = path.file_name()?.to_str()?;
     let (original, rest) = name.rsplit_once(".claimed-")?;
@@ -446,9 +448,11 @@ fn claims(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// `doctor` counted it as nothing waiting. Returning it to its own name is what
 /// the next drain needs; a live owner's claim is left exactly where it is.
 ///
-/// The age comes from the claim's own name, because a claim is a rename and a
-/// rename leaves the mtime of an entry that waited reading as abandoned the
-/// moment a live drainer took it.
+/// The age comes from the claim's own name, not from the file's mtime: the
+/// claim is a rename, and a rename does not touch the mtime, so an entry that
+/// waited a minute before it was claimed would read as an abandoned claim the
+/// moment a live drainer took it. A name written before the time was recorded
+/// has none, and is answered by the pid alone.
 fn release_abandoned_claims(dir: &Path) {
     let Ok(found) = claims(dir) else {
         return;
@@ -459,10 +463,12 @@ fn release_abandoned_claims(dir: &Path) {
             continue;
         };
         let old = claimed_at.is_some_and(|at| now.saturating_sub(at) > CLAIM_STALE_MILLIS);
-        // A lost rename leaves the file where it is. It cannot replace a
-        // capture: a claim takes the entry's only name, and an entry name is
-        // unique to its write, so the original being taken means another drain
-        // already returned this claim and this call's source is gone.
+        // The release can never replace a capture with another one: a claim
+        // takes the entry's only name, and an entry name is unique to its
+        // write, so once the original is taken it is either this entry
+        // returned by another drain — in which case this call's source is gone
+        // and the rename fails — or nothing. A failed rename leaves the file
+        // where it is.
         if old || !process_is_alive(pid) {
             let _ = fs::rename(&path, &original);
             // The marker outlives the kill and fences the claim that would
@@ -477,9 +483,11 @@ fn release_abandoned_claims(dir: &Path) {
 /// Whether a process still exists, without signalling it.
 ///
 /// `ps -p <pid> -o pid=` prints the number for a process that exists and
-/// nothing for one that does not, in any locale and for another user's process;
-/// its text is never read. A probe that cannot run answers "alive": taking a
-/// live drainer's claim back would replay one capture twice.
+/// nothing at all for one that does not, in every locale and for a process the
+/// caller does not own. Its messages are never read: only the empty output is.
+/// A probe that cannot run at all answers "alive", because taking a live
+/// drainer's claim back would replay one capture twice — worse than the age
+/// bound below, which releases a claim no drain could still be holding.
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     match std::process::Command::new("ps")
@@ -493,9 +501,11 @@ fn process_is_alive(pid: u32) -> bool {
 
 /// The same question on Windows, through `tasklist`.
 ///
-/// A pid that no longer exists is not listed. The number has to be a whole
-/// field, not a substring, or a short pid could match another process's or a
-/// column that happens to contain it. A probe that cannot run answers "alive".
+/// A pid that no longer exists is not listed, so its own number does not appear
+/// in the output. The number has to be a whole field of a line rather than a
+/// substring, or a short pid could match another process's pid or a column that
+/// happens to contain it. A probe that cannot run answers "alive", for the same
+/// reason the Unix one does.
 #[cfg(windows)]
 fn process_is_alive(pid: u32) -> bool {
     let Ok(output) = std::process::Command::new("tasklist")

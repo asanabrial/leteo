@@ -4208,13 +4208,9 @@ fn spooled_entry(data_dir: &Path) -> PathBuf {
         .expect("the capture was spooled")
 }
 
-fn now_millis() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 /// The claim is a rename, and a hook killed between it and its marker cleanup
-/// leaves the entry under a name `entries` does not read, with its marker still
-/// standing. The next drain has to find the capture again and clear the fence.
+/// leaves the entry under a name `entries` does not read. It is the subagent's
+/// only copy, so the next drain has to find it again.
 #[test]
 fn a_claim_left_by_a_dead_process_is_replayed_by_the_next_drain() {
     let (_temp, mut store) = store();
@@ -4235,7 +4231,7 @@ fn a_claim_left_by_a_dead_process_is_replayed_by_the_next_drain() {
         "{}.claimed-{}-{}",
         entry.file_name().unwrap().to_string_lossy(),
         pid_that_has_exited(),
-        now_millis()
+        chrono::Utc::now().timestamp_millis()
     ));
     std::fs::rename(&entry, &claimed).unwrap();
 
@@ -4322,7 +4318,9 @@ fn a_live_claim_is_left_for_its_owner() {
 }
 
 /// The age bound answers a pid probe that cannot tell. It has to measure the
-/// claim, not the entry, because claiming is a rename and the mtime stays.
+/// claim, not the entry: claiming is a rename, and a rename does not touch the
+/// mtime, so an entry that had waited past the bound would be taken from a live
+/// drainer the moment it was claimed, and two drains would replay it.
 #[test]
 fn a_claim_past_the_age_bound_is_released_from_a_live_owner() {
     let (_temp, mut store) = store();
@@ -4337,11 +4335,15 @@ fn a_claim_past_the_age_bound_is_released_from_a_live_owner() {
     };
     spool::spool(&data_dir, "SubagentStop", &capture, "C:/repo").unwrap();
     let entry = spooled_entry(&data_dir);
+    let an_hour_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        - 3_600_000;
     let claimed = entry.with_file_name(format!(
-        "{}.claimed-{}-{}",
+        "{}.claimed-{}-{an_hour_ago}",
         entry.file_name().unwrap().to_string_lossy(),
-        std::process::id(),
-        now_millis() - 3_600_000
+        std::process::id()
     ));
     std::fs::rename(&entry, &claimed).unwrap();
 

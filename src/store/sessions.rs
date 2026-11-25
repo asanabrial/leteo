@@ -76,6 +76,44 @@ impl Store {
         Ok(projects)
     }
 
+    /// Whether `directory` holds the manual session a silent save joins under
+    /// `project` — the directory used under that name, not merely visited.
+    ///
+    /// The predicate is the caller's because the id vocabulary lives with the
+    /// door that mints it; the store does not learn a prefix here.
+    pub fn directory_has_manual_session(
+        &self,
+        directory: &str,
+        project: &str,
+        is_manual: impl Fn(&str) -> bool,
+    ) -> Result<bool, StoreError> {
+        let project = normalize::project(project);
+        if project.is_empty() {
+            return Ok(false);
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT id, project, directory FROM sessions
+             WHERE directory IS NOT NULL AND trim(directory) <> ''",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, recorded_project, recorded) = row?;
+            if !is_manual(&id) || normalize::project(&recorded_project) != project {
+                continue;
+            }
+            if crate::project::same_directory(&recorded, Path::new(directory)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Takes `directory` away from every session recorded in it under a project
     /// other than `keep`, and returns how many sessions that was.
     ///

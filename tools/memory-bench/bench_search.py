@@ -2,6 +2,7 @@ import json, os, statistics as st
 from collections import defaultdict
 from comparison_corpus import no_answer, queries
 from mcpclient import MCP, BENCH, call_json
+from quality import PUBLISHED_LIMIT
 keymap = json.load(open(os.path.join(BENCH, "keymap_engram.json")))  # Leteo adoption keeps ids (checked: same id+sync_id)
 
 
@@ -18,7 +19,7 @@ def measure():
                 # and read as a question the engine could not answer. An engine
                 # fault is not a no-answer, and counting it as one improves the
                 # no-answer figures this script exists to compare.
-                reply, text, dt = call_json(m, "mem_search", {"query": q["q"], "limit": 20})
+                reply, text, dt = call_json(m, "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
                 ids = [r["id"] for r in reply.get("results") or []]
                 tgt = keymap[q["target"]]
                 rank = ids.index(tgt) + 1 if tgt in ids else None
@@ -33,7 +34,7 @@ def measure():
             m = MCP(engine, project)
             m.call("mem_search", {"query": "warmup"})
             for q in [q for q in no_answer() if q["project"] == project]:
-                reply, text, dt = call_json(m, "mem_search", {"query": q["q"], "limit": 20})
+                reply, text, dt = call_json(m, "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
                 na.append(dict(q, n=len(reply.get("results") or []), bytes=len(text.encode()),
                                caveat=bool(reply.get("hint")), ms=dt * 1000))
             m.close()

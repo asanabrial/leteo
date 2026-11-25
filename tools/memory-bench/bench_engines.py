@@ -19,11 +19,12 @@ import time
 from adapters import DETERMINISTIC, Skipped
 from comparison_corpus import corpus, no_answer, queries
 from mcpclient import BENCH
+from quality import PUBLISHED_LIMIT as LIMIT
 
-# The limit every engine is asked at. An engine with no limit parameter returns
-# what it returns and the harness keeps the first LIMIT, so no engine is scored
-# on more than the others were.
-LIMIT = 20
+# The limit every engine is asked at, defined with the other instruments' in
+# `quality.py`. An engine with no limit parameter returns what it returns and the
+# harness keeps the first LIMIT, so no engine is scored on more than the others
+# were.
 
 
 def measure(adapter, members):

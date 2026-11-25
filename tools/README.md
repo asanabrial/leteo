@@ -247,6 +247,49 @@ each kind came back empty for, beside its MRR: a question answered wrongly and a
 question not answered both score zero, and an agent is told different things by the
 two.
 
+### Did this change cost an answer the last one found?
+
+The ratchet gates fixed floors, and a fixed floor cannot answer that. It was set
+once, a drop smaller than the distance between it and the measurement passes,
+and it says nothing about the limit an agent actually gets: both the ratchet and
+the comparison ask at twenty, while `mem_search` without a `limit` returns ten.
+
+```bash
+cargo build --release
+git worktree add ../leteo-base <the commit to compare against>
+cargo build --release --manifest-path ../leteo-base/Cargo.toml
+python3 tools/memory-bench/precision.py \
+  --base ../leteo-base/target/release/leteo --head target/release/leteo
+```
+
+It loads both corpora — the ratchet's 117 questions and the held-out comparison
+corpus's 56 — into a store per binary, asks the same questions at the default
+limit and at twenty, and pairs them per question. A question that fell from first
+to fourth is printed beside one that rose, so a drop the means cancel is still
+visible. It exits 1 when hit@1 or MRR is lower on the head binary at either
+limit, 2 when it could not run at all, and 0 when nothing fell. Reply bytes are
+reported and not judged: a smaller reply is what most of these changes are for,
+and the ceilings in `floors.json` already bound it.
+
+One query is 1/117 = 0.86 points of hit@1 on the ratchet corpus and 1/56 = 1.79
+points on the comparison corpus. The report prints both, because a difference
+smaller than a corpus's own resolution is not evidence from that corpus. CI
+builds the merge base of every pull request and runs this beside the ratchet.
+
+The default limit is not restated in the harness. `quality.py` reads
+`DEFAULT_SEARCH_LIMIT` out of `src/store/search.rs`, and `test_precision.py`
+holds the number to the binary's own behaviour — a search that names no `limit`
+returns that many rows — so a change to the default is measured by the next run
+instead of leaving the harness asking at a limit nobody gets. `quality.py` is
+also where the twenty lives now; the scripts that used to spell it out import it.
+
+Each check was broken on its own and failed the test that claims it: the hit@1
+comparison, the MRR comparison, the refusal of a pair of runs that answered
+different questions, and the parsed default (returned one row too many, which
+the binary-behaviour test caught). The command itself was run both ways: against
+the same binary under the same model it exits 0, and with the semantic model
+taken away from the second one it named eight drops and exited 1.
+
 The second use is the comparison with other memory engines, on a **held-out**
 corpus: `tools/memory-bench/comparison_corpus.py` is a different corpus from the
 one the ratchet gates on, so the ratchet cannot tune against the corpus that
@@ -291,7 +334,10 @@ drifted; the individual scripts (`bench_engines.py` for the head-to-head,
 `load_engram.py`, `load_leteo.sh`, `bench_search.py`, `bench_any.py`,
 `bench_cost.py`) still run on their own, and `compare.py` skips a step it cannot
 run and says so. `python3 -m unittest discover -s tools/memory-bench -p
-'test_*.py'` checks the hit mapping, the isolation and the skip handling.
+'test_*.py'` checks the hit mapping, the isolation, the skip handling and the
+paired comparison's two drops; `python3 -m pytest tools/memory-bench` collects
+the same tests where pytest is installed, and CI runs the discovery form
+because the runner has no pytest.
 
 `compare.py --tier llm` is the one opt-in flag for the engines that need a local
 model, and it is never run by CI. It measures mem0 (two rows, `infer=False` and

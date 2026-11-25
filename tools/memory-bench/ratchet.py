@@ -8,7 +8,8 @@ STATE = tempfile.mkdtemp(prefix="leteo-ratchet-")
 os.environ["BENCH_STATE"] = STATE
 
 from corpus import corpus, no_answer, queries
-from mcpclient import MCP, call_json
+from mcpclient import MCP, call_json, save_corpus
+from quality import PUBLISHED_LIMIT
 import inflection
 
 # The language the corpus's memories are written in, as the product reads it from
@@ -23,7 +24,6 @@ with open(os.path.join(LETEO_HOME, "settings.json"), "w") as settings:
 HERE = os.path.dirname(os.path.abspath(__file__))
 FLOORS = os.path.join(HERE, "floors.json")
 PROJECTS = ("alpha-api", "beta-web")
-SEARCH_LIMIT = 20
 # The first two match many short bodies; the third is a disjunction over words
 # that sit in the long ones, because the preview is the thing most likely to
 # change a reply's size and short bodies never reach it.
@@ -43,20 +43,7 @@ def measure():
     wanted = queries()
     servers = {p: MCP("leteo", p) for p in PROJECTS}
     try:
-        ids = {}
-        for mem in members:
-            args = dict(title=mem["title"], content=mem["content"], type=mem["type"])
-            if mem["topic"]:
-                args["topic_key"] = mem["topic"]
-            reply, _, _ = call_json(servers[mem["project"]], "mem_save", args)
-            # A save that merged into an earlier memory would leave a target
-            # without an id of its own, and every query for it would then be
-            # scored against the wrong row.
-            if reply.get("status") != "inserted" or reply.get("project") != mem["project"]:
-                raise CannotRun(f"{mem['key']} was not inserted into {mem['project']}: {json.dumps(reply)[:300]}")
-            ids[mem["key"]] = reply["observation"]["id"]
-        if len(set(ids.values())) != len(members):
-            raise CannotRun("two corpus memories were given the same id")
+        ids = save_corpus(servers, members)
 
         ranks = defaultdict(list)
         # How many questions came back with nothing at all. MRR alone cannot
@@ -65,7 +52,7 @@ def measure():
         empty = defaultdict(int)
         millis = []
         for q in wanted:
-            reply, _, dt = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": SEARCH_LIMIT})
+            reply, _, dt = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
             found = [r["id"] for r in reply.get("results") or []]
             target = ids[q["target"]]
             rank = found.index(target) + 1 if target in found else None
@@ -81,11 +68,11 @@ def measure():
         alpha = servers["alpha-api"]
         sizes = {}
         for name, extra in BYTE_QUERIES.items():
-            reply, text, _ = call_json(alpha, "mem_search", dict(extra, limit=SEARCH_LIMIT))
+            reply, text, _ = call_json(alpha, "mem_search", dict(extra, limit=PUBLISHED_LIMIT))
             # Fewer than the limit would measure a smaller reply than the
             # ceiling is meant to bound, and pass.
-            if len(reply.get("results") or []) != SEARCH_LIMIT:
-                raise CannotRun(f"{name} returned {len(reply.get('results') or [])} results, not {SEARCH_LIMIT}")
+            if len(reply.get("results") or []) != PUBLISHED_LIMIT:
+                raise CannotRun(f"{name} returned {len(reply.get('results') or [])} results, not {PUBLISHED_LIMIT}")
             sizes[name] = len(text.encode())
         _, text, _ = call_json(alpha, "mem_context", {})
         sizes["context"] = len(text.encode())
@@ -99,7 +86,7 @@ def measure():
         asked = no_answer()
         answered, confident, no_answer_bytes = 0, 0, []
         for q in asked:
-            reply, text, _ = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": SEARCH_LIMIT})
+            reply, text, _ = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
             if not (reply.get("results") or []):
                 continue
             answered += 1

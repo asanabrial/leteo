@@ -270,6 +270,26 @@ fn apply_observation_upsert_tx(
             "observation sync payload requires sync_id and session_id",
         ));
     }
+    // A hard delete is the whole answer for this memory, whoever pushes last.
+    //
+    // The tombstone is written when a peer applies the delete — even for a
+    // memory that peer never held — so a stale upsert queued before it can be
+    // recognised here. Applying it instead would put the text back (hard delete
+    // is what somebody reaches for after saving a secret) or, for a payload the
+    // delete already redacted, create a live memory with an empty title and
+    // body. And when the same delete took the session with it, the insert would
+    // fail the foreign key and stall every later pull on that mutation.
+    //
+    // A re-save creates a new `sync_id`, so nothing a person wrote after the
+    // delete is named here.
+    let hard_deleted: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM observation_deletions WHERE sync_id = ?1)",
+        [payload.sync_id.trim()],
+        |row| row.get(0),
+    )?;
+    if hard_deleted {
+        return Ok(());
+    }
     let existing = tx
         .query_row(
             "SELECT id, revision_count, duplicate_count, last_seen_at, created_at, updated_at

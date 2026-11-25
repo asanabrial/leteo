@@ -1019,3 +1019,177 @@ fn doctor_counts_orphan_versions_and_repair_removes_them() {
     let (report, _) = store.doctor_scoped(Some("orphan_versions"), None).unwrap();
     assert!(report.checks[0].ok, "{report:?}");
 }
+
+fn observation_rows(store: &Store, sync_id: &str) -> i64 {
+    store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM observations WHERE sync_id = ?1",
+            [sync_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// The delete redacts the journal entry of the memory itself, not only its
+/// versions. A peer that applied the delete first must not put the redacted
+/// entry back as a live memory with an empty title and body.
+#[test]
+fn a_redacted_upsert_arriving_after_the_delete_creates_no_row() {
+    let (_source_temp, mut source) = store();
+    let (saved, _neighbour) = memory_with_two_versions(&mut source);
+    source.delete_observation(saved.id, None, true).unwrap();
+    let queued = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 100)
+        .unwrap();
+    let of_the_memory = |op: &str| {
+        queued
+            .iter()
+            .find(|mutation| {
+                mutation.entity == crate::sync::ENTITY_OBSERVATION
+                    && mutation.entity_key == saved.sync_id
+                    && mutation.op == op
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("no {op} mutation for the deleted memory"))
+    };
+    let mut upsert = of_the_memory(crate::sync::OP_UPSERT);
+    let mut delete = of_the_memory(crate::sync::OP_DELETE);
+    let carried: serde_json::Value = serde_json::from_str(&upsert.payload).unwrap();
+    assert!(
+        carried.get("title").is_none() && carried.get("content").is_none(),
+        "the journal entry has to be redacted for the test to mean anything: {carried}"
+    );
+
+    let (_peer_temp, mut peer) = store();
+    delete.seq = 1;
+    upsert.seq = 2;
+    peer.apply_pulled(&delete).unwrap();
+    peer.apply_pulled(&upsert).unwrap();
+
+    assert_eq!(
+        observation_rows(&peer, &saved.sync_id),
+        0,
+        "a redacted upsert is not a memory"
+    );
+}
+
+/// The other half of the same guard: when the delete took the session with it,
+/// inserting the memory again fails the foreign key and the pull stops there.
+#[test]
+fn an_upsert_for_a_deleted_memory_whose_session_is_gone_completes() {
+    let (_temp, mut peer) = store();
+    let sync_id = "obs-deleted-with-session";
+    let delete = SyncMutation {
+        seq: 1,
+        target_key: "cloud".to_owned(),
+        entity: crate::sync::ENTITY_OBSERVATION.to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: crate::sync::OP_DELETE.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": sync_id,
+            "session_id": "gone-with-the-delete",
+            "project": "leteo",
+            "hard_delete": true,
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-08-05 04:00:00".to_owned(),
+        acked_at: None,
+    };
+    assert!(peer.apply_pulled(&delete).unwrap());
+    let upsert = SyncMutation {
+        seq: 2,
+        entity: crate::sync::ENTITY_OBSERVATION.to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": sync_id,
+            "session_id": "gone-with-the-delete",
+            "type": "decision",
+            "title": "Pensaba subirlo",
+            "content": "y el otro equipo borro",
+            "project": "leteo",
+            "scope": "project",
+        })
+        .to_string(),
+        ..delete.clone()
+    };
+    let applied = peer.apply_pulled(&upsert);
+    assert!(
+        applied.is_ok(),
+        "a pull must not stall on a session the delete removed: {applied:?}"
+    );
+    assert_eq!(observation_rows(&peer, sync_id), 0);
+}
+
+/// The decision the issue left open, with its test: a hard delete wins over an
+/// edit that arrives after it, because the person who deleted the memory cannot
+/// know which other machine still holds a copy.
+#[test]
+fn a_full_upsert_after_the_hard_delete_does_not_bring_the_text_back() {
+    let (_temp, mut peer) = store();
+    peer.create_session("s1", "leteo", "/tmp/leteo").unwrap();
+    let sync_id = "obs-deleted-while-edited";
+    let mutation = |seq: i64, op: &str, payload: serde_json::Value| SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: crate::sync::ENTITY_OBSERVATION.to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: op.to_owned(),
+        payload: payload.to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-08-05 04:00:00".to_owned(),
+        acked_at: None,
+    };
+    let text = |body: &str| {
+        serde_json::json!({
+            "sync_id": sync_id,
+            "session_id": "s1",
+            "type": "decision",
+            "title": "Donde deje la clave",
+            "content": body,
+            "project": "leteo",
+            "scope": "project",
+        })
+    };
+
+    assert!(
+        peer.apply_pulled(&mutation(
+            1,
+            crate::sync::OP_UPSERT,
+            text("la clave esta en la caja")
+        ))
+        .unwrap()
+    );
+    assert_eq!(observation_rows(&peer, sync_id), 1);
+    assert!(
+        peer.apply_pulled(&mutation(
+            2,
+            crate::sync::OP_DELETE,
+            serde_json::json!({
+                "sync_id": sync_id,
+                "session_id": "s1",
+                "project": "leteo",
+                "hard_delete": true,
+            }),
+        ))
+        .unwrap()
+    );
+    assert_eq!(observation_rows(&peer, sync_id), 0);
+
+    // The peer that had been editing it pushes after the delete.
+    let applied = peer.apply_pulled(&mutation(
+        3,
+        crate::sync::OP_UPSERT,
+        text("la clave esta en la caja, revisada"),
+    ));
+    assert!(applied.is_ok(), "{applied:?}");
+    assert_eq!(
+        observation_rows(&peer, sync_id),
+        0,
+        "delete wins: the text a person removed does not come back"
+    );
+}

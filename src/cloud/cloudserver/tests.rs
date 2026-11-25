@@ -475,6 +475,50 @@ async fn a_push_with_no_connection_to_acquire_answers_503_with_retry_after() {
     drop(held);
 }
 
+/// The request deadline above the handler cancels the insert and lets the
+/// layer answer `503` with `Retry-After`, which duplicates a batch whose commit
+/// was in flight. The handler's own bound answers first, saying so.
+#[tokio::test]
+async fn a_push_that_outlives_its_budget_is_answered_as_an_unknown_outcome() {
+    // Ten seconds against ten milliseconds, so only a scheduler stalled for
+    // seconds can reach the sleep first. A never-completing future would be
+    // just as deterministic, and would hang the suite instead of failing it
+    // when the bound is removed.
+    let late = insert_mutations_within(Duration::from_millis(10), async {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Err(CloudStoreError::Invalid(
+            "the insert returned after its budget".to_owned(),
+        ))
+    })
+    .await
+    .unwrap_err()
+    .into_response();
+    assert_eq!(
+        late.status(),
+        StatusCode::CONFLICT,
+        "not the deadline's 503"
+    );
+    assert!(late.headers().get(header::RETRY_AFTER).is_none());
+    let body = to_bytes(late.into_body(), usize::MAX).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error_code"], "commit_outcome_unknown");
+    assert_eq!(body["error_class"], "unknown");
+
+    // The same bound leaves an insert that answers on time alone, including
+    // the refused acquisition that is safe to send again.
+    let refused = insert_mutations_within(Duration::from_secs(5), async {
+        Err(CloudStoreError::Database(sqlx::Error::PoolTimedOut))
+    })
+    .await
+    .unwrap_err()
+    .into_response();
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        refused.headers().get(header::RETRY_AFTER).unwrap(),
+        &HeaderValue::from(error::RETRY_AFTER_SECONDS)
+    );
+}
+
 #[test]
 fn dashboard_cookie_is_http_only_and_conditionally_secure() {
     let cookie = dashboard_cookie("signed", false);

@@ -54,6 +54,13 @@ pub(super) const DASHBOARD_COOKIE: &str = "leteo_dashboard";
 /// acquire timeout, which a request already holding a connection never met.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// How long the mutation push itself may take, inside the request's bound.
+///
+/// The request deadline cancels the handler and the layer above answers `503`
+/// with `Retry-After`, which for a commit in flight tells the client to append
+/// the batch twice. This fires first, in the handler, which can say so.
+const MUTATION_PUSH_TIMEOUT: Duration = REQUEST_TIMEOUT.saturating_sub(Duration::from_secs(1));
+
 /// How many requests run at once; the next ones wait for a slot, for as long
 /// as `REQUEST_TIMEOUT` leaves them, and are then answered `503`.
 ///
@@ -331,6 +338,26 @@ struct MutationPushRequest {
     created_by: String,
 }
 
+/// Runs the mutation insert under a bound the handler can answer for.
+///
+/// A future cancelled by the request deadline leaves no handler behind to
+/// answer: the timeout layer above says `503`, and a client that retries
+/// appends the batch a second time when the commit had already landed. This
+/// bound fires first, so the answer is the one that says the outcome is
+/// unknown.
+async fn insert_mutations_within(
+    budget: Duration,
+    insert: impl std::future::Future<Output = Result<Vec<i64>, CloudStoreError>>,
+) -> Result<Vec<i64>, ApiError> {
+    match tokio::time::timeout(budget, insert).await {
+        Ok(result) => result.map_err(ApiError::from),
+        Err(_) => {
+            tracing::warn!("a mutation push outlived its budget with the commit in flight");
+            Err(ApiError::outcome_unknown())
+        }
+    }
+}
+
 async fn push_mutations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -355,7 +382,11 @@ async fn push_mutations(
         )
         .await?;
     }
-    let accepted_seqs = state.store.insert_mutations(&request.entries).await?;
+    let accepted_seqs = insert_mutations_within(
+        MUTATION_PUSH_TIMEOUT,
+        state.store.insert_mutations(&request.entries),
+    )
+    .await?;
     let project = request
         .entries
         .first()

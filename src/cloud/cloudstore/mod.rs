@@ -1,5 +1,11 @@
 use std::{collections::BTreeSet, time::Duration};
 
+#[cfg(test)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,12 +25,24 @@ use super::{MAX_MUTATION_BATCH_SIZE, auth::ManagedToken};
 #[derive(Debug, Clone)]
 pub struct CloudStore {
     pool: PgPool,
+    /// A mutation push whose commit nobody hears about, armed by a test.
+    ///
+    /// A lost commit cannot be produced from outside without cutting a
+    /// connection mid-protocol, which makes a test either racy or dependent on
+    /// a proxy. Nothing in a production build can set this.
+    #[cfg(test)]
+    lose_commit: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Error)]
 pub enum CloudStoreError {
     #[error("postgres error: {0}")]
     Database(#[from] sqlx::Error),
+    /// The batch was sent and the answer never came back, so it may already be
+    /// in the stream. Distinct from [`Self::Database`] because a retry there is
+    /// safe and a retry here appends the batch a second time.
+    #[error("the commit outcome is unknown")]
+    OutcomeUnknown,
     #[error("invalid cloud data: {0}")]
     Invalid(String),
     #[error("cloud chunk not found")]
@@ -121,7 +139,11 @@ impl CloudStore {
             .acquire_timeout(Duration::from_secs(5))
             .connect(database_url)
             .await?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            #[cfg(test)]
+            lose_commit: Arc::new(AtomicBool::new(false)),
+        };
         store.migrate().await?;
         Ok(store)
     }
@@ -293,8 +315,31 @@ impl CloudStore {
         let mut transaction = self.pool.begin().await?;
         let sequences = insert_mutations_tx(&mut transaction, entries).await?;
         materialize_mutation_chunks(&mut transaction, entries).await?;
-        transaction.commit().await?;
-        Ok(sequences)
+        #[cfg(test)]
+        let commit = if self.lose_commit.swap(false, Ordering::SeqCst) {
+            // The error a commit whose answer never arrived produces; the
+            // transaction drops, rolling its writes back, and the match below
+            // is the production classification.
+            drop(transaction);
+            Err(sqlx::Error::Io(std::io::Error::other(
+                "the commit's answer was lost",
+            )))
+        } else {
+            transaction.commit().await
+        };
+        #[cfg(not(test))]
+        let commit = transaction.commit().await;
+        match commit {
+            Ok(()) => Ok(sequences),
+            Err(error) if commit_outcome_is_unknown(&error) => Err(CloudStoreError::OutcomeUnknown),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Arms [`CloudStoreError::OutcomeUnknown`] for the next mutation push.
+    #[cfg(test)]
+    pub(crate) fn lose_next_commit(&self) {
+        self.lose_commit.store(true, Ordering::SeqCst);
     }
 
     pub async fn list_mutations_since(
@@ -868,6 +913,23 @@ fn like_pattern(term: &str) -> String {
     }
     pattern.push('%');
     pattern
+}
+
+/// Whether a failed commit can still have landed.
+///
+/// Only the answer went missing: a connection that died mid-commit, a broken
+/// TLS stream, a protocol violation, or a background worker that crashed. A
+/// `Database` error is the server's own refusal and the transaction rolled
+/// back, so that batch is safe to send again, and the pool errors cannot occur
+/// once a connection is held.
+fn commit_outcome_is_unknown(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Io(_)
+            | sqlx::Error::Tls(_)
+            | sqlx::Error::Protocol(_)
+            | sqlx::Error::WorkerCrashed
+    )
 }
 
 fn require_project(project: &str) -> Result<String, CloudStoreError> {

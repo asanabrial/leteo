@@ -97,6 +97,21 @@ impl ApiError {
         }
     }
 
+    /// The batch was sent and the answer never came back, so it may already be
+    /// in the mutation stream.
+    ///
+    /// Deliberately not a `503`: that status is answered with `Retry-After`,
+    /// and a client that does what that header says appends the batch a second
+    /// time. The caller has to read the stream before deciding.
+    pub(super) fn outcome_unknown() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "unknown",
+            "commit_outcome_unknown",
+            "the batch may already be stored; read the mutation stream before retrying",
+        )
+    }
+
     pub(super) fn with_project(mut self, project: &str) -> Self {
         self.body.project = Some(project.to_owned());
         self.body.project_source = Some("request_body");
@@ -149,6 +164,7 @@ impl From<CloudStoreError> for ApiError {
                 "chunk_not_found",
                 error.to_string(),
             ),
+            CloudStoreError::OutcomeUnknown => Self::outcome_unknown(),
             CloudStoreError::Database(ref failure) if database_is_busy(failure) => {
                 tracing::warn!(%error, "cloud database is busy or unreachable");
                 Self::busy("the database is busy; retry shortly")

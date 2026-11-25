@@ -257,6 +257,224 @@ async fn a_tenant_can_never_reach_another_tenants_project() {
     );
 }
 
+/// A mutation push whose commit answer was lost may already be in the stream,
+/// so its answer must not be one a client reads as "retry".
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_mutation_push_whose_commit_was_lost_answers_without_retry_after() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+    let stamp = unique_stamp();
+    let project = format!("lost-commit-{stamp}");
+    let token = mint_admin(
+        &server,
+        &config.token_pepper,
+        &format!("lost-{stamp}"),
+        &project,
+    )
+    .await;
+    let key = format!("lost-{stamp}");
+    let body = json!({
+        "created_by": "test",
+        "entries": [{
+            "project": project.clone(),
+            "entity": "observation",
+            "entity_key": key.clone(),
+            "op": crate::sync::OP_UPSERT,
+            "payload": {
+                "sync_id": key,
+                "session_id": format!("session-{stamp}"),
+                "project": project,
+                "type": "note",
+                "title": "probe",
+                "content": "a batch whose commit nobody heard",
+                "scope": "project",
+            },
+        }],
+    });
+
+    server.state.store.lose_next_commit();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/sync/mutations/push")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let response = server.router().oneshot(request).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "a 503 would tell the client to send the batch again"
+    );
+    assert!(
+        response.headers().get(header::RETRY_AFTER).is_none(),
+        "Retry-After is the instruction that duplicates the batch"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error_code"], "commit_outcome_unknown");
+    assert_eq!(body["error_class"], "unknown");
+
+    let (mutations, _, _) = server
+        .state
+        .store
+        .list_mutations_since(0, 100, Some(std::slice::from_ref(&project)))
+        .await
+        .unwrap();
+    assert!(
+        mutations.is_empty(),
+        "the simulated lost commit left nothing behind: {mutations:?}"
+    );
+}
+
+/// The chunk endpoint deduplicates by canonical chunk id, so a retry of a chunk
+/// whose answer was lost is safe: it materializes the same mutations once.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn an_identical_chunk_push_materializes_its_mutations_once() {
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+    let stamp = unique_stamp();
+    let project = format!("chunk-replay-{stamp}");
+    let token = mint_admin(
+        &server,
+        &config.token_pepper,
+        &format!("chunk-{stamp}"),
+        &project,
+    )
+    .await;
+    let rename = format!("rename-{stamp}");
+    let chunk = crate::sync::ChunkData {
+        mutations: vec![crate::sync::SyncMutation {
+            entity: crate::sync::ENTITY_PROJECT_RENAME.to_owned(),
+            entity_key: rename.clone(),
+            op: crate::sync::OP_UPSERT.to_owned(),
+            payload: json!({
+                "sync_id": rename,
+                "sources": [format!("old-{stamp}")],
+                "project": project,
+            })
+            .to_string(),
+            ..crate::sync::SyncMutation::default()
+        }],
+        ..crate::sync::ChunkData::default()
+    };
+    let body = json!({"project": project, "created_by": "test", "data": chunk});
+
+    async fn push(server: &CloudServer, token: &str, body: &Value) -> (StatusCode, String) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/sync/push")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(body).unwrap()))
+            .unwrap();
+        let response = server.router().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let chunk_id = body["chunk_id"].as_str().unwrap_or_default().to_owned();
+        (status, chunk_id)
+    }
+
+    let first = push(&server, &token, &body).await;
+    let second = push(&server, &token, &body).await;
+
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(second.0, StatusCode::OK);
+    assert_eq!(first.1, second.1, "the canonical chunk id is the same");
+    let (mutations, _, _) = server
+        .state
+        .store
+        .list_mutations_since(0, 100, Some(std::slice::from_ref(&project)))
+        .await
+        .unwrap();
+    assert_eq!(
+        mutations.len(),
+        1,
+        "the second push replayed the chunk, not its mutations: {mutations:?}"
+    );
+}
+
+/// End to end: a pool with no connection left refuses the push, retryably.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_push_with_no_connection_to_acquire_answers_503_with_retry_after() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        max_pool: 1,
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+    let stamp = unique_stamp();
+    let project = format!("pool-refused-{stamp}");
+    let token = mint_admin(
+        &server,
+        &config.token_pepper,
+        &format!("pool-{stamp}"),
+        &project,
+    )
+    .await;
+    let body = json!({
+        "entries": [{
+            "project": project,
+            "entity": crate::sync::ENTITY_PROJECT_RENAME,
+            "entity_key": format!("pool-{stamp}"),
+            "op": crate::sync::OP_UPSERT,
+            "payload": {
+                "sync_id": format!("pool-{stamp}"),
+                "sources": [format!("old-{stamp}")],
+                "project": project,
+            },
+        }],
+    });
+
+    // The pool has one connection and the test holds it, so the push meets the
+    // acquire timeout instead of a connection.
+    let held = server.state.store.pool().acquire().await.unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/sync/mutations/push")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let response = server.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers().get(header::RETRY_AFTER).cloned(),
+        Some(HeaderValue::from(error::RETRY_AFTER_SECONDS)),
+        "an acquisition that never happened is safe to retry"
+    );
+    drop(held);
+}
+
 #[test]
 fn dashboard_cookie_is_http_only_and_conditionally_secure() {
     let cookie = dashboard_cookie("signed", false);

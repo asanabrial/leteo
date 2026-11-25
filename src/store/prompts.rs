@@ -391,42 +391,80 @@ impl Store {
     pub fn delete_prompt(&mut self, id: i64) -> Result<(), StoreError> {
         let tx = self.write_transaction()?;
         let prompt = get_prompt_tx(&tx, id)?;
-        let deleted_at = sqlite_now();
+        erase_deleted_prompt_tx(
+            &tx,
+            &prompt.sync_id,
+            &prompt.session_id,
+            &prompt.project,
+            None,
+        )?;
         let changed = tx.execute("DELETE FROM prompts WHERE id = ?1", [id])?;
         if changed == 0 {
             return Err(StoreError::PromptNotFound(id));
         }
-        tx.execute(
-            "INSERT INTO prompt_deletions (sync_id, session_id, project, deleted_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(sync_id) DO UPDATE SET session_id = excluded.session_id,
-                 project = excluded.project, deleted_at = excluded.deleted_at",
-            params![
-                prompt.sync_id,
-                prompt.session_id,
-                prompt.project,
-                deleted_at
-            ],
-        )?;
-        let payload = serde_json::json!({
-            "sync_id": prompt.sync_id,
-            "session_id": prompt.session_id,
-            "project": prompt.project,
-            "deleted": true,
-            "deleted_at": deleted_at,
-            "hard_delete": true,
-        });
-        enqueue_mutation(
-            &tx,
-            "prompt",
-            &prompt.sync_id,
-            crate::sync::OP_DELETE,
-            &payload,
-            &prompt.project,
-        )?;
+        enqueue_prompt_delete_tx(&tx, &prompt)?;
         tx.commit()?;
         Ok(())
     }
+}
+
+/// The keys of a journalled prompt that survive its deletion.
+///
+/// What a peer needs to place the mutation and to apply it without failing the
+/// pull: the identifiers, the date the prompt was said, and the delete flags.
+/// Everything else in the payload is the prompt's own words.
+const JOURNAL_KEYS_KEPT_AFTER_PROMPT_DELETE: &[&str] = &[
+    "sync_id",
+    "session_id",
+    "project",
+    "created_at",
+    "deleted",
+    "deleted_at",
+    "hard_delete",
+];
+
+/// Records a prompt's tombstone and takes its words out of the journal.
+///
+/// Only `delete_prompt` wrote a tombstone before #455, and no path touched the
+/// journal. So a session or a project delete took the rows and left nothing that
+/// refused the prompt coming back on a peer's backfill or a re-import, and the
+/// text of a prompt somebody had deleted stayed in `sync_mutations` — pushed to
+/// the cloud if it had not been acknowledged yet. A prompt is where a pasted
+/// secret ends up, and deleting the session is how a person removes it.
+///
+/// The observation side had this shape already (`erase_hard_deleted_observation_tx`);
+/// this is its sibling, and every path that removes a prompt row calls it before
+/// it queues its own delete, so the delete's payload is never the thing being
+/// redacted.
+pub(super) fn erase_deleted_prompt_tx(
+    tx: &Transaction<'_>,
+    sync_id: &str,
+    session_id: &str,
+    project: &str,
+    deleted_at: Option<&str>,
+) -> Result<(), StoreError> {
+    if sync_id.trim().is_empty() {
+        return Ok(());
+    }
+    super::journal::redact_journal_tx(
+        tx,
+        &[crate::sync::ENTITY_PROMPT],
+        sync_id,
+        JOURNAL_KEYS_KEPT_AFTER_PROMPT_DELETE,
+    )?;
+    let deleted_at = deleted_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(sqlite_now);
+    tx.execute(
+        "INSERT INTO prompt_deletions (sync_id, session_id, project, deleted_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(sync_id) DO UPDATE SET session_id = excluded.session_id,
+             project = excluded.project, deleted_at = excluded.deleted_at",
+        params![sync_id, session_id, project, deleted_at],
+    )?;
+    Ok(())
 }
 
 /// Seconds within which the same words in the same session are one prompt.

@@ -1196,6 +1196,8 @@ mod rows;
 pub(crate) mod schema;
 mod wire;
 
+mod journal;
+
 use rows::*;
 use schema::*;
 pub(crate) use schema::{SCHEMA_VERSION, SUMMARY_HEADLINE_CHARS};

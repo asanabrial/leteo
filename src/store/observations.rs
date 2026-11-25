@@ -309,56 +309,15 @@ fn redact_observation_journal_tx(
     tx: &Transaction<'_>,
     observation_sync_id: &str,
 ) -> Result<(), StoreError> {
-    let rows: Vec<(i64, String)> = {
-        let mut statement = tx.prepare(
-            "SELECT seq, payload FROM sync_mutations
-              WHERE entity_key = ?1 AND entity IN (?2, ?3)",
-        )?;
-        statement
-            .query_map(
-                params![
-                    observation_sync_id,
-                    crate::sync::ENTITY_OBSERVATION,
-                    crate::sync::ENTITY_OBSERVATION_VERSION
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?
-            .collect::<Result<_, _>>()?
-    };
-    for (seq, payload) in rows {
-        let redacted = redact_journal_payload(&payload, observation_sync_id);
-        if redacted != payload {
-            tx.execute(
-                "UPDATE sync_mutations SET payload = ?1 WHERE seq = ?2",
-                params![redacted, seq],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// A payload cut down to [`JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE`].
-///
-/// A payload that is not a JSON object — including one the journal wrapped as a
-/// JSON string, which the apply path also accepts — is replaced by the
-/// identifier alone instead of being left in place: an unreadable payload is
-/// exactly the one nobody can show holds no text.
-fn redact_journal_payload(payload: &str, observation_sync_id: &str) -> String {
-    let mut value: serde_json::Value = serde_json::from_str(payload.trim()).unwrap_or_default();
-    if let serde_json::Value::String(inner) = &value {
-        value = serde_json::from_str(inner).unwrap_or_default();
-    }
-    let mut kept = serde_json::Map::new();
-    if let serde_json::Value::Object(object) = value {
-        for (key, field) in object {
-            if JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE.contains(&key.as_str()) {
-                kept.insert(key, field);
-            }
-        }
-    }
-    kept.entry("sync_id")
-        .or_insert_with(|| serde_json::Value::String(observation_sync_id.to_owned()));
-    serde_json::Value::Object(kept).to_string()
+    super::journal::redact_journal_tx(
+        tx,
+        &[
+            crate::sync::ENTITY_OBSERVATION,
+            crate::sync::ENTITY_OBSERVATION_VERSION,
+        ],
+        observation_sync_id,
+        JOURNAL_KEYS_KEPT_AFTER_HARD_DELETE,
+    )
 }
 
 impl Store {

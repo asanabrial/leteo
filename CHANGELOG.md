@@ -23,6 +23,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Deleting a session or a project now takes a prompt's words with it, and
+  refuses to let a peer bring them back.** Only a single prompt delete wrote a
+  tombstone, and none of the five paths touched `sync_mutations`, where the full
+  text of every earlier write sits until the journal is pruned: a prompt deleted
+  with its session or its project returned on a peer's backfill or on re-import,
+  and its words — a pasted secret is where this bites — stayed in the journal
+  and were pushed to the cloud if nobody had acknowledged them yet. All five now
+  call one function that writes the tombstone and rewrites each journalled
+  payload to its identifiers, its date and the delete flags, the way a
+  hard-deleted memory already did; the pulled session delete does the same for
+  the prompts it takes. The redaction moved into `store/journal.rs`, so the two
+  entities share one implementation of it (#455).
 - **The README's benchmark numbers say what the document says, and the
   comparison page's generated block cannot be edited by hand.** Three sentences
   written in the pull request that refreshed the benchmarks described a page

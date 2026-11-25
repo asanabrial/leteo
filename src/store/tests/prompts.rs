@@ -564,3 +564,242 @@ fn a_question_asked_in_another_sitting_is_not_what_a_memory_answers() {
         "a conversation's own question does not expire with the clock"
     );
 }
+
+/// A prompt whose words are distinctive enough to look for in the journal.
+fn ask_once(store: &mut Store) -> Prompt {
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "la clave del proxy es swordfish-42".to_owned(),
+            project: Some("leteo".to_owned()),
+        })
+        .unwrap()
+}
+
+fn journal_payloads_for(store: &Store, sync_id: &str) -> Vec<String> {
+    let mut statement = store
+        .connection
+        .prepare("SELECT payload FROM sync_mutations WHERE entity_key = ?1 ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([sync_id], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// The two marks a deleted prompt must leave, whatever took it away.
+///
+/// #455: `delete_prompt` wrote a tombstone and the four path-shaped deletes did
+/// not, so a prompt deleted with its session or its project came back on the
+/// next backfill; and none of the five touched the journal, so the words stayed
+/// in `sync_mutations` and were pushed to the cloud if nobody had acknowledged
+/// them yet. A prompt is where a pasted secret ends up.
+fn assert_deleted_cleanly(store: &Store, prompt: &Prompt, path: &str) {
+    let tombstones: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM prompt_deletions WHERE sync_id = ?1",
+            [&prompt.sync_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        tombstones, 1,
+        "{path} left no tombstone, so a peer's backfill or an older export brings the prompt back"
+    );
+    let payloads = journal_payloads_for(store, &prompt.sync_id);
+    assert!(
+        !payloads.is_empty(),
+        "{path} left nothing in the journal, so this is watching nothing"
+    );
+    for payload in &payloads {
+        assert!(
+            !payload.contains("swordfish-42"),
+            "{path} left the prompt's words in the journal: {payload}"
+        );
+    }
+}
+
+#[test]
+fn deleting_one_prompt_leaves_a_tombstone_and_no_text_in_the_journal() {
+    let (_temp, mut store) = store();
+    let asked = ask_once(&mut store);
+    assert!(
+        journal_payloads_for(&store, &asked.sync_id)
+            .iter()
+            .any(|payload| payload.contains("swordfish-42"))
+    );
+
+    store.delete_prompt(asked.id).unwrap();
+
+    assert_deleted_cleanly(&store, &asked, "delete_prompt");
+}
+
+#[test]
+fn deleting_a_session_leaves_a_tombstone_and_no_text_in_the_journal() {
+    let (_temp, mut store) = store();
+    let asked = ask_once(&mut store);
+
+    store.delete_session("s1").unwrap();
+
+    assert_deleted_cleanly(&store, &asked, "delete_session");
+}
+
+#[test]
+fn deleting_a_session_and_its_contents_leaves_a_tombstone_and_no_text() {
+    let (_temp, mut store) = store();
+    let asked = ask_once(&mut store);
+
+    store.delete_session_and_contents("s1", true).unwrap();
+
+    assert_deleted_cleanly(&store, &asked, "delete_session_and_contents");
+}
+
+#[test]
+fn pruning_a_project_leaves_a_tombstone_and_no_text_in_the_journal() {
+    let (_temp, mut store) = store();
+    let asked = ask_once(&mut store);
+
+    store.prune_project("leteo").unwrap();
+
+    assert_deleted_cleanly(&store, &asked, "prune_project");
+}
+
+#[test]
+fn deleting_a_project_leaves_a_tombstone_and_no_text_in_the_journal() {
+    let (_temp, mut store) = store();
+    let asked = ask_once(&mut store);
+
+    store.delete_project("leteo", true).unwrap();
+
+    assert_deleted_cleanly(&store, &asked, "delete_project");
+}
+
+/// The tombstone is what refuses the peer, and a session delete used to write
+/// none for the prompts it took with it.
+///
+/// The delete here keeps the session row — a soft session delete takes the
+/// prompts and leaves it — because a hard one takes the session too and the
+/// prompt insert then fails its foreign key whatever the tombstone says. The
+/// first version of this test used the hard delete and passed on the unfixed
+/// tree for exactly that reason, which is a test that proves nothing; the
+/// `assert` below is what keeps it from going back to that.
+#[test]
+fn an_upsert_of_a_prompt_deleted_with_its_session_is_refused() {
+    let (_temp, mut store) = store();
+    let asked = ask_once(&mut store);
+    store.delete_session_and_contents("s1", false).unwrap();
+    assert!(
+        store.get_session("s1").is_ok(),
+        "the session has to survive for the tombstone to be the only thing refusing the peer"
+    );
+
+    // A peer replaying the prompt it pulled before the delete: older than the
+    // tombstone, which is the shape a backfill arrives in.
+    store
+        .apply_pulled(&SyncMutation {
+            seq: 7,
+            target_key: "cloud".to_owned(),
+            entity: "prompt".to_owned(),
+            entity_key: asked.sync_id.clone(),
+            op: crate::sync::OP_UPSERT.to_owned(),
+            payload: serde_json::json!({
+                "sync_id": asked.sync_id,
+                "session_id": "s1",
+                "content": "la clave del proxy es swordfish-42",
+                "project": "leteo",
+                "created_at": "2026-08-05 04:00:00",
+            })
+            .to_string(),
+            source: "remote".to_owned(),
+            project: "leteo".to_owned(),
+            occurred_at: "2026-08-05 04:00:00".to_owned(),
+            acked_at: None,
+        })
+        .unwrap();
+
+    let rows: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM prompts WHERE sync_id = ?1",
+            [&asked.sync_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "the deleted prompt came back from the peer");
+}
+
+/// The prompt deletes an origin queues travel before the session's own, but a
+/// peer that joined late may never see them, and this path takes the rows
+/// itself.
+#[test]
+fn a_pulled_session_delete_leaves_tombstones_for_the_prompts_it_takes() {
+    let (_temp, mut store) = store();
+    store
+        .apply_pulled(&SyncMutation {
+            seq: 1,
+            target_key: "cloud".to_owned(),
+            entity: "session".to_owned(),
+            entity_key: "s1".to_owned(),
+            op: crate::sync::OP_UPSERT.to_owned(),
+            payload: serde_json::json!({
+                "id": "s1", "project": "leteo", "directory": "C:/repo",
+                "started_at": "2026-08-05 04:00:00",
+            })
+            .to_string(),
+            source: "remote".to_owned(),
+            project: "leteo".to_owned(),
+            occurred_at: "2026-08-05 04:00:00".to_owned(),
+            acked_at: None,
+        })
+        .unwrap();
+    store
+        .apply_pulled(&SyncMutation {
+            seq: 2,
+            target_key: "cloud".to_owned(),
+            entity: "prompt".to_owned(),
+            entity_key: "prompt-from-a-peer".to_owned(),
+            op: crate::sync::OP_UPSERT.to_owned(),
+            payload: serde_json::json!({
+                "sync_id": "prompt-from-a-peer", "session_id": "s1",
+                "content": "la clave del proxy es swordfish-42",
+                "project": "leteo", "created_at": "2026-08-05 04:00:00",
+            })
+            .to_string(),
+            source: "remote".to_owned(),
+            project: "leteo".to_owned(),
+            occurred_at: "2026-08-05 04:00:00".to_owned(),
+            acked_at: None,
+        })
+        .unwrap();
+
+    store
+        .apply_pulled(&SyncMutation {
+            seq: 3,
+            target_key: "cloud".to_owned(),
+            entity: "session".to_owned(),
+            entity_key: "s1".to_owned(),
+            op: crate::sync::OP_DELETE.to_owned(),
+            payload: serde_json::json!({ "id": "s1", "hard_delete": true }).to_string(),
+            source: "remote".to_owned(),
+            project: "leteo".to_owned(),
+            occurred_at: "2026-08-05 05:00:00".to_owned(),
+            acked_at: None,
+        })
+        .unwrap();
+
+    let tombstones: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM prompt_deletions WHERE sync_id = 'prompt-from-a-peer'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        tombstones, 1,
+        "the session delete took the prompt without a tombstone, so a backfill brings it back"
+    );
+}

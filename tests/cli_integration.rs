@@ -536,6 +536,8 @@ fn cli_consolidates_similar_projects_into_one_canonical_name() {
     );
     assert_eq!(preview["dry_run"], json!(true));
     assert_eq!(preview["groups"][0]["canonical"], json!("leteo"));
+    // The preview reads the same scope the merge will, so a name whose rows
+    // move appears here too; folding is proved at the store level.
     assert_eq!(preview["groups"][0]["sources"], json!(["leteo-old"]));
     assert_eq!(preview["groups"][0]["result"], Value::Null);
 
@@ -548,7 +550,10 @@ fn cli_consolidates_similar_projects_into_one_canonical_name() {
     assert_eq!(grouped["dry_run"], json!(true));
     assert_eq!(grouped["groups"].as_array().expect("groups").len(), 1);
     assert_eq!(grouped["groups"][0]["canonical"], json!("leteo"));
-    assert_eq!(grouped["groups"][0]["sources"], json!(["leteo-old"]));
+    assert_eq!(
+        grouped["groups"][0]["sources"],
+        preview["groups"][0]["sources"]
+    );
 
     let applied = run_json(
         leteo(&database)
@@ -561,6 +566,10 @@ fn cli_consolidates_similar_projects_into_one_canonical_name() {
     assert_eq!(
         applied["groups"][0]["result"]["observations_updated"],
         json!(1)
+    );
+    assert_eq!(
+        applied["groups"][0]["result"]["sources_merged"], preview["groups"][0]["sources"],
+        "the preview and the apply have to name the same projects"
     );
 
     let projects = run_json(leteo(&database).arg("projects").arg("list"));

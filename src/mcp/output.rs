@@ -645,6 +645,11 @@ impl CapturePassiveOutput {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MergeProjectsOutput {
     pub(super) canonical: String,
+    /// Every name the merge moved, not only the spelling the caller typed.
+    ///
+    /// A separator variant that no store uses as a project of its own is
+    /// folded with its source, and the caller has to be able to see that it
+    /// happened without counting rows.
     pub(super) sources_merged: Vec<String>,
     pub(super) observations_updated: i64,
     pub(super) sessions_updated: i64,

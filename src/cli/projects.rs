@@ -21,14 +21,20 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
                 }
             };
             let mut merges = Vec::new();
-            for (canonical, sources) in &groups {
+            for (canonical, candidates) in &groups {
+                // The preview and the merge read the same scope, so what the
+                // dry run lists is what the answer will name. Passing the
+                // scope back to the merge also keeps the fold closed: asking
+                // to merge the names the preview showed moves the same set
+                // again and no more.
+                let sources = store.project_merge_scope(candidates, canonical)?;
                 let mut entry = serde_json::json!({
                     "canonical": canonical,
                     "sources": sources,
                 });
                 if apply {
                     entry["result"] =
-                        serde_json::to_value(store.merge_projects(sources, canonical)?)?;
+                        serde_json::to_value(store.merge_projects(&sources, canonical)?)?;
                 }
                 merges.push(entry);
             }

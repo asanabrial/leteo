@@ -211,14 +211,6 @@ fn merge_projects_updates_all_entities_and_journals_active_rows() {
             project: Some("old-project".to_owned()),
         })
         .unwrap();
-    store
-        .connection
-        .execute_batch(
-            "UPDATE observations SET project = 'old_project';
-                 UPDATE sessions SET project = 'old_project';
-                 UPDATE prompts SET project = 'old_project';",
-        )
-        .unwrap();
     let before: i64 = store
         .connection
         .query_row("SELECT COUNT(*) FROM sync_mutations", [], |row| row.get(0))
@@ -231,6 +223,10 @@ fn merge_projects_updates_all_entities_and_journals_active_rows() {
         )
         .unwrap();
     assert_eq!(result.canonical, "canonical-project");
+    // Only the spelling that holds the rows, plus the name the caller asked
+    // for, which is the same one here. The other separator spellings hold
+    // nothing and were never projects; reporting them would name something no
+    // store has ever held.
     assert_eq!(result.sources_merged, ["old-project"]);
     assert_eq!(result.observations_updated, 1);
     assert_eq!(result.sessions_updated, 1);
@@ -284,6 +280,140 @@ fn merge_projects_updates_all_entities_and_journals_active_rows() {
         "an emptied project stops being replicated"
     );
     assert!(store.merge_projects(&[], "").is_err());
+}
+
+#[test]
+fn merging_a_name_leaves_a_live_spelling_of_it_alone() {
+    // `my-app` and `my_app` are different projects: listing, deleting and
+    // `project_exists` all read the name literally. The merge alone joined
+    // them, so the underscore project's memory moved into the canonical one
+    // and the underscore project stopped replicating, while the reply named
+    // `my-app` as the only source.
+    //
+    // The two spellings cover the two ways a name is a project of its own:
+    // `my_app` holds a live memory without being enroled, and `my app` is
+    // enroled while its only memory is soft-deleted. Either check alone would
+    // let one of them fold.
+    let (_temp, mut store) = store();
+    for project in ["my-app", "my app"] {
+        store.enroll_project(project).unwrap();
+    }
+    store
+        .create_session("underscore", "my_app", "C:/underscore")
+        .unwrap();
+    let mut memory = observation("underscore", "The underscore project's memory", "body");
+    memory.project = Some("my_app".to_owned());
+    let saved = store.add_observation(memory).unwrap().observation;
+    let mut deleted = observation("underscore", "The spaced project's memory", "gone");
+    deleted.project = Some("my app".to_owned());
+    let deleted = store.add_observation(deleted).unwrap().observation;
+    store.delete_observation(deleted.id, None, false).unwrap();
+    store.create_session("dash", "my-app", "C:/dash").unwrap();
+
+    let result = store.merge_projects(&["my-app".to_owned()], "web").unwrap();
+
+    assert_eq!(
+        result.sources_merged,
+        ["my-app"],
+        "a live spelling was moved or reported"
+    );
+    assert_eq!(
+        store.get_observation(saved.id).unwrap().project.as_deref(),
+        Some("my_app"),
+        "the memory belongs to the project that is not being merged"
+    );
+    assert_eq!(store.get_session("underscore").unwrap().project, "my_app");
+    let deleted_project: String = store
+        .connection
+        .query_row(
+            "SELECT project FROM observations WHERE id = ?1",
+            [deleted.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        deleted_project, "my app",
+        "an enroled project is a project even when its only memory is deleted"
+    );
+    let enrolled = store.enrolled_projects().unwrap();
+    assert!(
+        enrolled.contains(&"my app".to_owned()),
+        "a live project that was not merged stopped replicating: {enrolled:?}"
+    );
+    assert_eq!(
+        store.get_session("dash").unwrap().project,
+        "web",
+        "and the project the caller did name still moves"
+    );
+    assert!(!enrolled.contains(&"my-app".to_owned()));
+}
+
+#[test]
+fn merging_an_enroled_name_that_holds_nothing_changes_nothing() {
+    // Nothing to move is not an event. This is the merge's behaviour before it
+    // had a scope to report, and moving the enrolment instead would retire a
+    // project nobody asked to stop replicating.
+    let (_temp, mut store) = store();
+    store.enroll_project("empty-project").unwrap();
+
+    let result = store
+        .merge_projects(&["empty-project".to_owned()], "canonical")
+        .unwrap();
+
+    assert!(result.sources_merged.is_empty(), "{result:?}");
+    assert!(!result.canonical_created);
+    assert!(
+        store
+            .enrolled_projects()
+            .unwrap()
+            .contains(&"empty-project".to_owned()),
+        "the enrolment moved for a merge that moved nothing"
+    );
+}
+
+#[test]
+fn a_merge_reports_every_name_it_moves_and_the_preview_asks_the_same_read() {
+    let (_temp, mut store) = store();
+    store
+        .create_session("widget", "widget-app", "C:/widget")
+        .unwrap();
+    store
+        .add_observation(observation("widget", "The widget", "body"))
+        .unwrap();
+    // A spelling that holds nothing live but still has a row of its own to
+    // carry. It is not a project of its own, so the merge folds it, and the
+    // preview and the reply both have to say so.
+    let mut legacy = observation("widget", "The legacy spelling", "gone");
+    legacy.project = Some("widget_app".to_owned());
+    let legacy = store.add_observation(legacy).unwrap().observation;
+    store.delete_observation(legacy.id, None, false).unwrap();
+
+    let preview = store
+        .project_merge_scope(&["widget-app".to_owned()], "widgets")
+        .unwrap();
+    assert!(
+        preview.contains(&"widget-app".to_owned()),
+        "the project the caller named is missing from the preview: {preview:?}"
+    );
+    assert!(
+        preview.contains(&"widget_app".to_owned()),
+        "the fold the merge performs is missing from the preview: {preview:?}"
+    );
+    assert!(
+        !preview.contains(&"widget app".to_owned()),
+        "a spelling that holds nothing was reported as moved: {preview:?}"
+    );
+
+    let result = store
+        .merge_projects(&["widget-app".to_owned()], "widgets")
+        .unwrap();
+    assert_eq!(
+        result.sources_merged, preview,
+        "the reply and the preview must name the same projects"
+    );
+    let mut sorted = preview.clone();
+    sorted.sort();
+    assert_eq!(preview, sorted, "the reply is documented in sorted order");
 }
 
 #[test]
@@ -1881,18 +2011,23 @@ fn a_rename_that_names_only_unshared_projects_enrols_nothing() {
 
 /// What was waiting under another spelling of the name is carried too.
 ///
-/// The merge moves the rows of `old project` and `old_project` along with
-/// `old-project`, and it only carried the unsent mutations of the name it was
-/// asked about, so a delete waiting under a spelling stayed filed under a name
-/// that now holds nothing.
+/// The merge folds `old_project` along with `old-project`, and it only carried
+/// the unsent mutations of the name it was asked about, so a delete waiting
+/// under a spelling stayed filed under a name that now holds nothing.
+///
+/// The spelling is not a live project here: its only memory is soft-deleted
+/// and it was unenroled after the delete was queued. A spelling a store still
+/// replicates or still holds a live row under is a project, and the merge
+/// leaves it alone.
 #[test]
 fn merging_a_project_carries_what_was_waiting_under_its_other_spellings() {
     let (_temp, mut store) = enrolled_store(&["old_project", "canonical-project"]);
-    store.create_session("s1", "old_project", "C:/old").unwrap();
+    store.create_session("s1", "old-project", "C:/old").unwrap();
     let mut memory = observation("s1", "Removed under a spelling", "gone");
     memory.project = Some("old_project".to_owned());
     let removed = store.add_observation(memory).unwrap().observation;
     store.delete_observation(removed.id, None, false).unwrap();
+    store.unenroll_project("old_project").unwrap();
 
     store
         .merge_projects(&["old-project".to_owned()], "canonical-project")

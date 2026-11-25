@@ -780,4 +780,52 @@ fn the_plugin_protocols_give_the_recall_rule_the_rust_protocol_gives() {
             "{plugin} sends the agent to mem_context as its first step"
         );
     }
+
+    // The three skill bundles are the other hand-written copy of this rule,
+    // and the three that install on the clients where the hook has already
+    // delivered the block. They carried the same two sentences, so the same
+    // two are held: the recall order, and what follows a compaction.
+    for skill in [
+        "plugin/claude-code/skills/memory/SKILL.md",
+        "plugin/codex/skills/memory/SKILL.md",
+        "plugin/zcode/skills/memory/SKILL.md",
+    ] {
+        let source = std::fs::read_to_string(repository_root().join(skill))
+            .unwrap_or_else(|error| panic!("read {skill}: {error}"));
+        let recall = document_section(&source, "WHEN TO SEARCH");
+        let search = recall.find("`mem_search` with the words the memory would carry");
+        let fetch = recall.find("`mem_get_observation` for the whole text");
+        assert!(
+            matches!((search, fetch), (Some(search), Some(fetch)) if search < fetch),
+            "{skill} no longer searches before it fetches: {recall}"
+        );
+        assert!(
+            recall.contains("not as the first step of looking something up"),
+            "{skill} does not say when mem_context is the right door: {recall}"
+        );
+        assert!(
+            !recall.contains("mem_context` first"),
+            "{skill} sends the agent to mem_context first, and the hook already delivered the block"
+        );
+        let after = document_section(&source, "AFTER COMPACTION");
+        assert!(
+            after.contains("If it did not arrive, call `mem_context` to restore it."),
+            "{skill} tells the agent to recover context the compaction hook delivers: {after}"
+        );
+        assert!(
+            !source.contains("ALWAYS ACTIVE"),
+            "{skill} still opens by shouting a rule it does not hold to"
+        );
+    }
+}
+
+/// One `##` section of a markdown document, whitespace collapsed.
+fn document_section(document: &str, heading: &str) -> String {
+    let marker = format!("## {heading}");
+    let start = document
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the document has no {heading:?} section"));
+    let rest = &document[start + marker.len()..];
+    let body = rest.find("\n## ").map_or(rest, |end| &rest[..end]);
+    body.split_whitespace().collect::<Vec<_>>().join(" ")
 }

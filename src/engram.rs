@@ -314,6 +314,10 @@ fn translate(
     snapshot: &Path,
     target: &Path,
 ) -> Result<(Vec<Dropped>, Counts)> {
+    // Read before the write transaction borrows the store: every normaliser
+    // below bounds text by the same number the local door uses.
+    let max_content_bytes = store.max_observation_length();
+
     // `ATTACH` cannot run inside a transaction, so it comes first — and before
     // the write lock, so the lock is held for the copy rather than the attach.
     store
@@ -389,7 +393,10 @@ fn translate(
     }
     let dropped = dropped_tables(&tx)?;
     normalize_projects(&tx, &carried_a_project)?;
-    normalize_observations(&tx)?;
+    normalize_sessions(&tx, max_content_bytes)?;
+    normalize_observations(&tx, max_content_bytes)?;
+    normalize_prompts(&tx, max_content_bytes)?;
+    normalize_relations(&tx, max_content_bytes)?;
 
     // Against the snapshot, not the live source: the snapshot is the bytes that
     // were copied, and the live file may have moved on since. A row an `INSERT
@@ -428,27 +435,39 @@ fn translate(
 /// a healthy-looking store holding memories no filtered search can reach. The
 /// project fold above is the same act for a different column.
 ///
+/// The text was copied unread for as long as the type was. A `<private>` span
+/// Engram had not redacted came across verbatim and was then printed into every
+/// context block and preview, and a body over the published bound was stored at
+/// whatever size Engram held — the JSON import has applied both since #412, and
+/// this was the remaining door. The title fold matters for the same reason it
+/// does at the other doors: a newline in one ends the bullet it is printed in
+/// and starts another, and what follows reads as a memory that does not exist.
+///
 /// The two derived values are recomputed here for the same reason, because the
 /// copy carries Engram's: `review_after`, a function of the type and the day
 /// the memory was written, and `normalized_hash`, taken of the body as the
-/// store holds it, which is what dedupe compares.
-fn normalize_observations(connection: &Connection) -> Result<()> {
-    let rows: Vec<(i64, String, String, Option<String>)> = {
-        let mut statement =
-            connection.prepare("SELECT id, type, content, created_at FROM main.observations")?;
+/// store holds it, which is what dedupe compares. The hash is taken after the
+/// text has been cut and redacted, so two runs of the same adoption agree and a
+/// memory Engram duplicated is still seen as one.
+fn normalize_observations(connection: &Connection, max_content_bytes: usize) -> Result<()> {
+    let rows: Vec<(i64, String, String, String, Option<String>)> = {
+        let mut statement = connection
+            .prepare("SELECT id, type, title, content, created_at FROM main.observations")?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
-    for (id, kind, content, created_at) in rows {
+    for (id, kind, title, content, created_at) in rows {
         let kind = crate::memory::normalize::kind(&kind);
-        let hash = crate::memory::normalize::normalized_hash(&content);
+        let title = crate::memory::normalize::title(&title, max_content_bytes);
+        let (content, hash) = crate::memory::normalize::stored_content(&content, max_content_bytes);
         let from = created_at
             .as_deref()
             .and_then(crate::timestamp::parse)
@@ -456,9 +475,119 @@ fn normalize_observations(connection: &Connection) -> Result<()> {
         let review = crate::memory::rules::review_after(&kind, from).map(crate::timestamp::format);
         connection.execute(
             "UPDATE main.observations
-                SET type = ?1, normalized_hash = ?2, review_after = ?3
+                SET type = ?1, title = ?2, content = ?3, normalized_hash = ?4, review_after = ?5
+              WHERE id = ?6",
+            rusqlite::params![kind, title, content, hash, review, id],
+        )?;
+    }
+    Ok(())
+}
+
+/// The sessions an adoption carried, held to the rules their summaries and
+/// directories get at every other door.
+///
+/// A summary is read back in every `mem_context`, which is why the JSON import
+/// redacts and bounds it; a summary adopted here was copied as Engram held it,
+/// so a token somebody had wrapped in the private marker was printed to every
+/// agent that opened the project afterwards.
+///
+/// The directory is the sibling the import door already fixed: a relative
+/// spelling names whatever place the reader happens to stand in, and the drift
+/// check then resolves it against the wrong project. Engram writes an absolute
+/// path today, so this changes nothing it produced and closes the case for a
+/// store that did not.
+fn normalize_sessions(connection: &Connection, max_content_bytes: usize) -> Result<()> {
+    let rows: Vec<(String, Option<String>, String)> = {
+        let mut statement =
+            connection.prepare("SELECT id, summary, directory FROM main.sessions")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, summary, directory) in rows {
+        let summary =
+            crate::memory::normalize::session_summary(summary.as_deref(), max_content_bytes);
+        let directory = crate::project::recordable_directory(&directory);
+        connection.execute(
+            "UPDATE main.sessions SET summary = ?1, directory = ?2 WHERE id = ?3",
+            rusqlite::params![summary, directory, id],
+        )?;
+    }
+    Ok(())
+}
+
+/// The prompts an adoption carried, through the same helper the local and
+/// replicated doors use.
+///
+/// A prompt is where a secret is most likely to be typed, so redaction is the
+/// part that matters: a promise that only holds on the machine the prompt was
+/// typed on is not one, and an adopted store held the span Engram had kept.
+/// The project fold is repeated here rather than assumed from
+/// `normalize_projects`, because that function skips a spelling its own fold
+/// leaves alone and this one is one call for both fields.
+fn normalize_prompts(connection: &Connection, max_content_bytes: usize) -> Result<()> {
+    let rows: Vec<(i64, String, Option<String>)> = {
+        let mut statement = connection.prepare("SELECT id, content, project FROM main.prompts")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, content, project) in rows {
+        let (content, project) = crate::memory::normalize::prompt_fields(
+            &content,
+            project.as_deref(),
+            max_content_bytes,
+        );
+        connection.execute(
+            "UPDATE main.prompts SET content = ?1, project = ?2 WHERE id = ?3",
+            rusqlite::params![content, project, id],
+        )?;
+    }
+    Ok(())
+}
+
+/// The relation verdicts an adoption carried, under the rules `judge_relation`
+/// and `apply_relation_tx` already hold their writers to.
+///
+/// A confidence outside zero and one is stored as no confidence rather than as
+/// a number no reader can interpret, and both texts are redacted and bounded:
+/// a reason is printed beside the memory it is about, and an adopted one could
+/// carry a `<private>` span that the original verdict had already lost.
+fn normalize_relations(connection: &Connection, max_content_bytes: usize) -> Result<()> {
+    type Row = (i64, Option<String>, Option<String>, Option<f64>);
+    let rows: Vec<Row> = {
+        let mut statement = connection
+            .prepare("SELECT id, reason, evidence, confidence FROM main.memory_relations")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<f64>>(3)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, reason, evidence, confidence) in rows {
+        let reason = crate::memory::normalize::judgment_text(reason.as_deref(), max_content_bytes);
+        let evidence =
+            crate::memory::normalize::judgment_text(evidence.as_deref(), max_content_bytes);
+        let confidence = confidence.filter(|value| crate::memory::rules::is_confidence(*value));
+        connection.execute(
+            "UPDATE main.memory_relations
+                SET reason = ?1, evidence = ?2, confidence = ?3
               WHERE id = ?4",
-            rusqlite::params![kind, hash, review, id],
+            rusqlite::params![reason, evidence, confidence, id],
         )?;
     }
     Ok(())
@@ -1492,6 +1621,123 @@ mod tests {
             crate::memory::rules::review_after("decision", from).map(crate::timestamp::format);
         assert!(expected.is_some(), "a decision has a window");
         assert_eq!(review("obs-decision"), expected);
+    }
+
+    /// A `<private>` span, a body over the bound and a title spanning lines are
+    /// things the local and import doors have not stored since #412. Adoption
+    /// copied all three through from a program Leteo does not control.
+    #[test]
+    fn adopted_content_passes_the_same_normalisers_as_every_other_door() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("engram.db");
+        let target = temp.path().join("leteo.db");
+        let bound = crate::store::StoreConfig::new(target.clone()).max_observation_length;
+        engram_database_for(&source, 0, "proj");
+        {
+            let source = Connection::open(&source).unwrap();
+            source
+                .execute_batch(
+                    "DELETE FROM observations;
+                     DELETE FROM user_prompts;
+                     ALTER TABLE memory_relations ADD COLUMN reason TEXT;
+                     ALTER TABLE memory_relations ADD COLUMN evidence TEXT;
+                     ALTER TABLE memory_relations ADD COLUMN confidence REAL;
+                     UPDATE sessions
+                        SET summary = 'closing <private>token</private> note',
+                            directory = 'relative/place';",
+                )
+                .unwrap();
+            source
+                .execute(
+                    "INSERT INTO observations (sync_id, session_id, type, title, content, project)
+                     VALUES ('obs-private', 's1', 'decision', '  A
+folded   title  ', 'kept <private>secret</private> visible', 'proj')",
+                    [],
+                )
+                .unwrap();
+            let long = format!("{}tail", "x".repeat(bound + 500));
+            source
+                .execute(
+                    "INSERT INTO observations (sync_id, session_id, type, title, content, project)
+                     VALUES ('obs-long', 's1', 'decision', 'A long body', ?1, 'proj')",
+                    [&long],
+                )
+                .unwrap();
+            source
+                .execute(
+                    "INSERT INTO user_prompts (session_id, content, project)
+                     VALUES ('s1', 'why <private>token</private> here?', 'proj')",
+                    [],
+                )
+                .unwrap();
+            source
+                .execute(
+                    "INSERT INTO memory_relations
+                        (sync_id, source_id, target_id, relation, judgment_status, reason,
+                         evidence, confidence)
+                     VALUES ('rel-private', 'obs-private', 'obs-long', 'related', 'judged',
+                             'because <private>secret</private>', 'saw <private>secret</private>', 42.0)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        adopt(&source, &target, false).unwrap();
+
+        let connection = Connection::open(&target).unwrap();
+        let (title, content, hash): (String, String, String) = connection
+            .query_row(
+                "SELECT title, content, normalized_hash FROM observations WHERE sync_id = 'obs-private'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "A folded title", "one line, whitespace folded");
+        assert_eq!(content, "kept [REDACTED] visible");
+        assert_eq!(
+            hash,
+            crate::memory::normalize::normalized_hash(&content),
+            "dedupe hashes the body the store actually holds"
+        );
+
+        let long: String = connection
+            .query_row(
+                "SELECT content FROM observations WHERE sync_id = 'obs-long'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(long.len(), bound, "cut to the published bound");
+        assert!(long.ends_with("... [truncated]"), "{long}");
+
+        let (summary, directory): (String, String) = connection
+            .query_row(
+                "SELECT summary, directory FROM sessions WHERE id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(summary, "closing [REDACTED] note");
+        assert_eq!(directory, "", "a relative directory names no fixed place");
+
+        let prompt: String = connection
+            .query_row("SELECT content FROM prompts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(prompt, "why [REDACTED] here?");
+
+        let (reason, evidence, confidence): (String, String, Option<f64>) = connection
+            .query_row(
+                "SELECT reason, evidence, confidence FROM memory_relations WHERE sync_id = 'rel-private'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(reason, "because [REDACTED]");
+        assert_eq!(evidence, "saw [REDACTED]");
+        assert_eq!(
+            confidence, None,
+            "a confidence outside zero and one is no confidence"
+        );
     }
 
     /// A copy that loses a row to the target's own constraints is not committed.

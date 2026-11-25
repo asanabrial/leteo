@@ -5486,10 +5486,12 @@ fn mem_search_labels_what_was_found_by_meaning_and_the_setting_turns_it_off() {
 
     let here = ask(false);
     assert_eq!(here.count, 0, "the memory is in another project");
-    let hint = here.hint.unwrap_or_default();
-    assert!(
-        hint.contains("elsewhere") && hint.contains("all_projects"),
-        "the retry runs the stage, so it finds what `all_projects` would: {hint:?}"
+    let hint = here.hint.clone().unwrap_or_default();
+    assert_eq!(
+        hint,
+        crate::mcp::output::NO_MATCH_HINT,
+        "the words matched nothing: the row `all_projects` finds is one the stage guessed, \
+         and the elsewhere count is the strict pass only, so it counts no other project"
     );
 
     let database = server.lock_store().unwrap().database_path().to_owned();

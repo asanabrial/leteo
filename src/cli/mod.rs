@@ -623,28 +623,19 @@ pub async fn run(cli: Cli) -> Result<()> {
             // The extra query is paid only on an empty answer, and only when
             // nobody named a project.
             if found.is_empty() {
+                // The strict pass again, unnarrowed, and nothing else: the whole
+                // search used to run twice here, and its relaxed stages counted
+                // as matches. One function now answers for both doors.
                 let elsewhere = scoped
                     .inferred
-                    .then(|| {
-                        store.search(
-                            &query,
-                            SearchOptions {
-                                project: None,
-                                ..options
-                            },
-                        )
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
-                match (scoped.project.as_deref(), elsewhere.is_empty()) {
-                    (Some(project), false) => eprintln!(
+                    .then(|| store.strict_matches_unnarrowed(&query, options, cap_asked))
+                    .transpose()?;
+                match (scoped.project.as_deref(), elsewhere) {
+                    (Some(project), Some(elsewhere)) if elsewhere > 0 => eprintln!(
                         "leteo search: {}",
-                        // Contra el mismo tope con el que se contó: la lista
-                        // vuelve topada al límite de quien preguntó, así que el
-                        // número no puede pasar de ahí y lo dice.
                         crate::mcp::no_match_here_hint(
                             project,
-                            elsewhere.len(),
+                            elsewhere,
                             cap_asked,
                             "--all-projects",
                         )

@@ -28,6 +28,14 @@ impl Store {
     /// The projects this directory's sessions were recorded under, when it does
     /// not resolve to the same one now.
     ///
+    /// Every name the directory's sessions carry is read, the detected one
+    /// included: a directory whose history already holds the name it resolves
+    /// to is that project's directory, and a session under another name is a
+    /// conversation about somewhere else rather than a rename. Reading the
+    /// history with the detected name excluded turned one stray row into a
+    /// drift the whole directory then had to answer for, and #405 stopped new
+    /// rows of that kind without healing the stores already holding one.
+    ///
     /// The MCP door refused the silent pick and `leteo save` filed it under the
     /// name detection now reads, so the same directory accepted a memory
     /// through one door and rejected it through the other. Two questions let
@@ -40,7 +48,11 @@ impl Store {
         if detected.is_empty() {
             return Ok(Vec::new());
         }
-        self.recent_projects_in_directory(&detection.path, &detected)
+        let recorded = self.recent_projects_in_directory(&detection.path, "")?;
+        if recorded.iter().any(|project| project == &detected) {
+            return Ok(Vec::new());
+        }
+        Ok(recorded)
     }
 
     /// The projects of sessions recorded in exactly this directory, most recent

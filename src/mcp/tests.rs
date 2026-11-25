@@ -1068,6 +1068,125 @@ fn a_remote_that_changed_makes_the_session_door_ask_too() {
     assert_eq!(chosen.0.session.project, "old-remote");
 }
 
+/// A session opened for another project must not put the directory under two
+/// names.
+///
+/// The reproduction is the documented way to create a project: save, then
+/// `mem_session_start` for the new project, then save again. The declared
+/// session recorded the directory, so from then on the directory resolved to
+/// one name and held a session under another, and every silent write was
+/// refused as a rename nobody had made. The four tools that can write here have
+/// to agree afterwards, and the session has to keep its project.
+#[test]
+fn a_session_started_for_another_project_leaves_the_directory_to_its_own() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let detection = crate::project::detect_current_project();
+    let detected = detection.project.clone();
+    assert!(!detected.is_empty(), "the fixture needs a detected project");
+
+    let first = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "title": "before the other session",
+                "content": "a memory in this directory's own project",
+            }))
+            .unwrap(),
+        ))
+        .expect("the ordinary save resolves the directory")
+        .0;
+    assert_eq!(first.project_context.project, detected);
+
+    let started = server
+        .mem_session_start(Parameters(
+            serde_json::from_value(json!({
+                "id": "k-side",
+                "project": "side-quest",
+                "directory": detection.path,
+            }))
+            .unwrap(),
+        ))
+        .expect("naming a project is a valid start")
+        .0;
+    assert_eq!(started.session.project, "side-quest");
+    assert_eq!(
+        started.session.directory, "",
+        "a conversation about another project records no claim to this directory"
+    );
+
+    let second = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "title": "after the other session",
+                "content": "the directory is still its own project",
+            }))
+            .unwrap(),
+        ))
+        .expect("the stray session is not a rename")
+        .0;
+    assert_eq!(second.project_context.project, detected);
+
+    let prompt = server
+        .mem_save_prompt(Parameters(
+            serde_json::from_value(json!({ "content": "why did the directory stay" })).unwrap(),
+        ))
+        .expect("a prompt is filed where a save is")
+        .0;
+    assert_eq!(prompt.project_context.project, detected);
+
+    let summary = server
+        .mem_session_summary(Parameters(
+            serde_json::from_value(json!({ "content": "the directory kept its name" })).unwrap(),
+        ))
+        .expect("a summary is filed where a save is")
+        .0;
+    assert_eq!(summary.project_context.project, detected);
+
+    let captured = server
+        .mem_capture_passive(Parameters(
+            serde_json::from_value(json!({
+                "content": "## Key Learnings\n- the stray session changed nothing",
+            }))
+            .unwrap(),
+        ))
+        .expect("passive capture files where the directory's history lives")
+        .0;
+    assert_eq!(
+        captured.project_context.project, detected,
+        "all four doors answer with one project"
+    );
+}
+
+/// A directory already holding the stray session is not in drift.
+///
+/// #405 stopped new sessions of that shape from recording the directory, and
+/// stores written before it still hold the row. Reading the history without the
+/// name the directory resolves to turned that one row into a rename the whole
+/// directory then had to answer for, so the silent pick is allowed when the
+/// detected name is among the recorded ones.
+#[test]
+fn a_directory_that_holds_the_detected_project_is_not_drifted() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let mut store = server.lock_store().unwrap();
+    store.create_session("mine", "here", "C:/repo").unwrap();
+    // Newer than the row above, and the shape #405 stopped writing.
+    store
+        .create_session("stray", "side-quest", "C:/repo")
+        .unwrap();
+    let detection = ProjectDetection {
+        project: "here".to_owned(),
+        source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+        path: "C:/repo".to_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    };
+
+    let (project, _) = server
+        .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .expect("the directory's own project is already recorded here");
+    assert_eq!(project, "here");
+}
+
 /// A session whose recorded directory is relative names no place, so it is
 /// never evidence of drift.
 ///

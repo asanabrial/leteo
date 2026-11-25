@@ -406,6 +406,36 @@ impl Store {
             .clamp(1, self.config.max_search_results)
     }
 
+    /// How many memories the strict pass finds when the project narrowing is
+    /// lifted, counted to `cap`.
+    ///
+    /// An empty answer used to be explained by running the whole search again —
+    /// prefix, substring, nearest and semantic included — and counting the page
+    /// that came back. Two things were wrong with it. It paid for every stage
+    /// twice on the answer that had already paid once, and it counted memories
+    /// the nearest stage had guessed at: that stage answers 67.9% of questions
+    /// the store cannot answer, so "3 elsewhere" named rows that shared one
+    /// word. The count is now the strict pass only, which is the claim an agent
+    /// can act on: widening the project will find these.
+    ///
+    /// Only ever called when the narrowed pass found nothing, so every match it
+    /// counts is in another project; the project is still lifted here rather
+    /// than assumed, because that is the query it runs.
+    pub fn strict_matches_unnarrowed(
+        &self,
+        query: &str,
+        mut options: SearchOptions,
+        cap: usize,
+    ) -> Result<usize, StoreError> {
+        if query.trim().is_empty() {
+            return Err(StoreError::EmptySearch);
+        }
+        options.project = None;
+        let any = options.mode == SearchMode::Any;
+        let matched = self.fused_observations(&normalize::fts_terms(query), any, &options, cap)?;
+        Ok(matched.len())
+    }
+
     pub fn search(
         &self,
         query: &str,

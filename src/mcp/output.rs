@@ -989,12 +989,15 @@ pub(crate) const NO_MATCH_HINT: &str = "No memory matched those words. Full-text
 ///
 /// Two callers ask this and they measure differently. The opening block and
 /// `mem_context` count memories outside the project up to [`ELSEWHERE_CAP`], so
-/// a hundred means "a hundred or more". A search runs itself again with the
-/// project narrowing lifted and counts the page that comes back, which is the
-/// caller's own limit — so on a query matching 332 memories in other projects
-/// it said "1 elsewhere" at `limit: 1`, "3" at 3, "10" at 10 and "20" at 20.
-/// The number was the question restated, and an agent reading "10 elsewhere"
-/// has been told that widening yields ten.
+/// a hundred means "a hundred or more". A search counts the strict pass with the
+/// project narrowing lifted, capped at the caller's own limit — the words have
+/// to be there, so every row it counts is one `--all-projects` will show. It
+/// used to run the whole search again and count the page that came back, nearest
+/// and semantic stages included: on a query matching 332 memories in other
+/// projects that said "1" at `limit: 1`, "3" at 3, "10" at 10 and "20" at 20 —
+/// the number was the question restated — and the rows it counted were the
+/// nearest stage's guesses, which answer 67.9% of questions the store cannot
+/// answer.
 ///
 /// It cannot say more than its cap either way, so what it says is that: `N` for
 /// a number the cap did not touch, and `N or more` for one it did.

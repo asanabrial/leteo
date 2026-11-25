@@ -481,23 +481,19 @@ impl LeteoMcpServer {
         };
         let store = self.lock_store()?;
         let cap = store.max_search_results();
-        let kind = params.kind.clone();
-        let scope = params.scope.clone();
         let limit = params.limit;
         let mode = params.match_mode.into();
         let semantic = crate::settings::load_beside(store.database_path()).semantic_search();
+        let search_options = SearchOptions {
+            kind: params.kind.clone(),
+            project,
+            scope: params.scope.clone(),
+            limit,
+            mode,
+            semantic,
+        };
         let (results, more, corrections) = store
-            .search_with_more_and_corrections(
-                &params.query,
-                SearchOptions {
-                    kind: params.kind,
-                    project,
-                    scope: params.scope,
-                    limit: params.limit,
-                    mode,
-                    semantic,
-                },
-            )
+            .search_with_more_and_corrections(&params.query, search_options.clone())
             .map_err(store_error)?;
         let clamped = more && results.len() >= cap;
         let named: Vec<String> = results
@@ -508,25 +504,13 @@ impl LeteoMcpServer {
         let inferred = params.project.is_none() && !params.all_projects;
         let elsewhere = match (results.is_empty() && inferred, fallback.as_ref()) {
             (true, Some((project, _))) => store
-                .search(
+                .strict_matches_unnarrowed(
                     &params.query,
-                    SearchOptions {
-                        project: None,
-                        kind: kind.clone(),
-                        scope: scope.clone(),
-                        limit,
-                        mode,
-                        semantic,
-                    },
+                    search_options,
+                    store.effective_search_limit(limit),
                 )
                 .ok()
-                .map(|found| {
-                    (
-                        project.clone(),
-                        found.len(),
-                        store.effective_search_limit(limit),
-                    )
-                }),
+                .map(|found| (project.clone(), found, store.effective_search_limit(limit))),
             _ => None,
         };
 

@@ -77,11 +77,11 @@ pub(super) struct SaveOutput {
     /// The session this went to, said only when no session_id was passed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) session_id: Option<String>,
-    /// What the relation graph says about the memory this save resolved to,
-    /// present only when that memory already existed. A deduplicated or
-    /// revised save names a memory some later one may have overturned, and the
-    /// reply would otherwise present it as standing; a fresh insert has no
-    /// relations yet and says nothing.
+    /// What the relation graph says about the memory this save resolved to, or
+    /// about the hidden copy whose text it repeated. A save that names an older
+    /// memory — deduplicated, revised, or inserted beside a superseded one —
+    /// would otherwise present it as standing, so `caveats` says what a later
+    /// memory ruled. Absent when nothing older is involved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) caveats: Vec<CaveatOutput>,
 }
@@ -113,6 +113,11 @@ pub(super) fn append_hint(hint: &mut Option<String>, note: Option<String>) {
 /// only when that memory was there before the save, with the note to add to
 /// the hint when the lookup failed.
 ///
+/// An insert can carry them too. When the only memory whose text this save
+/// repeated was one a judged relation hides, the save inserts rather than
+/// writing where nothing reads, and `overturned` names that hidden copy: the
+/// reply then says what happened to the text instead of presenting it as new.
+///
 /// One function for `mem_save` and `mem_session_summary`, so the two cannot
 /// disagree about when a reply speaks for an older memory. A store that cannot
 /// answer costs the caveats rather than the save, which has already landed.
@@ -120,10 +125,15 @@ pub(super) fn save_caveats(
     store: &crate::store::Store,
     outcome: &AddOutcome,
 ) -> (Vec<CaveatOutput>, Option<String>) {
-    if outcome.kind == AddOutcomeKind::Inserted {
-        return (Vec::new(), None);
-    }
-    let (caveats, note) = read_caveats_of(store, &outcome.observation.sync_id);
+    let named: &str = if outcome.kind == AddOutcomeKind::Inserted {
+        match outcome.overturned.as_deref() {
+            Some(overturned) => overturned,
+            None => return (Vec::new(), None),
+        }
+    } else {
+        outcome.observation.sync_id.as_str()
+    };
+    let (caveats, note) = read_caveats_of(store, named);
     (caveats.into_iter().map(Into::into).collect(), note)
 }
 

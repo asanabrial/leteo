@@ -929,6 +929,51 @@ fn a_learning_that_had_a_span_redacted_is_still_captured_only_once() {
 }
 
 #[test]
+fn a_superseded_learning_is_captured_again() {
+    // Passive capture's duplicate check is the same question with no window
+    // under it, and it answered the same way: the only row holding the learning
+    // was one every listing hides, so a subagent's finding was reported as a
+    // duplicate and never stored at all.
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let input = PassiveCapture {
+        session_id: "s1".to_owned(),
+        content: "## Key Learnings:\n- The retry budget is per host\n".to_owned(),
+        project: "leteo".to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    assert_eq!(store.passive_capture(input.clone()).unwrap().saved, 1);
+
+    let stored = store
+        .recent_memories(Some("leteo"), None, 10)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the learning was stored");
+    let newer = store
+        .add_observation(observation("s1", "Retry budget revised", "per request"))
+        .unwrap()
+        .observation;
+    store
+        .judge_by_semantic(crate::memory::model::JudgeBySemanticParams {
+            source_id: newer.sync_id.clone(),
+            target_id: stored.sync_id.clone(),
+            relation: "supersedes".to_owned(),
+            confidence: Some(0.9),
+            reasoning: Some("replaced".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let again = store.passive_capture(input).unwrap();
+    assert_eq!(
+        again.saved, 1,
+        "a learning whose only copy was superseded is stored again"
+    );
+    assert_eq!(again.duplicates, 0);
+}
+
+#[test]
 fn a_deleted_memory_is_not_revived_by_saving_under_its_topic_key() {
     // A topic key makes the next save a revision of the last one, which is
     // what stops an evolving decision becoming forty near-copies. It must not
@@ -961,6 +1006,129 @@ fn a_deleted_memory_is_not_revived_by_saving_under_its_topic_key() {
             .deleted_at
             .is_some(),
         "the deleted one stays deleted"
+    );
+}
+
+#[test]
+fn a_superseded_memory_is_not_revised_by_saving_under_its_topic_key() {
+    // A judged `supersedes` hides the target from every listing, so revising it
+    // writes the new text where nothing reads: the save answered `Revised` and
+    // the memory was unreachable from then on. The same narrowing the listings
+    // apply has to reach the lookup that decides what this save revises.
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let mut first = observation("s1", "Rate limits per API key", "token bucket in Redis");
+    first.topic_key = Some("architecture/rate-limit".to_owned());
+    let superseded = store.add_observation(first).unwrap().observation;
+
+    let newer = store
+        .add_observation(observation(
+            "s1",
+            "Rate limits revised",
+            "sliding window now",
+        ))
+        .unwrap()
+        .observation;
+    store
+        .judge_by_semantic(crate::memory::model::JudgeBySemanticParams {
+            source_id: newer.sync_id.clone(),
+            target_id: superseded.sync_id.clone(),
+            relation: "supersedes".to_owned(),
+            confidence: Some(0.9),
+            reasoning: Some("replaced".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let mut second = observation("s1", "Rate limits per tenant", "sliding window in Redis");
+    second.topic_key = Some("architecture/rate-limit".to_owned());
+    let outcome = store.add_observation(second).unwrap();
+
+    assert_eq!(
+        outcome.kind,
+        AddOutcomeKind::Inserted,
+        "a superseded memory must not be revised into more hidden text"
+    );
+    assert_ne!(outcome.observation.id, superseded.id);
+    assert_eq!(
+        outcome.overturned.as_deref(),
+        Some(superseded.sync_id.as_str()),
+        "the reply still names the hidden copy whose text this repeated"
+    );
+    assert_eq!(
+        store.get_observation(superseded.id).unwrap().content,
+        "token bucket in Redis",
+        "the superseded memory's text is left alone"
+    );
+    let found = store
+        .search(&outcome.observation.title, SearchOptions::default())
+        .unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|hit| hit.observation.id == outcome.observation.id),
+        "the memory the save returned is one a search can find: {found:?}"
+    );
+}
+
+#[test]
+fn a_superseded_memory_does_not_swallow_an_identical_save() {
+    // The dedupe window is the second lookup in the same save, and it answered
+    // the same way: a superseded row is live in the table, so an identical save
+    // inside the window landed on it and only moved its `duplicate_count`,
+    // where no listing will ever show it.
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let superseded = store
+        .add_observation(observation("s1", "Retries cap at three", "per host"))
+        .unwrap()
+        .observation;
+    let newer = store
+        .add_observation(observation("s1", "Retries revised", "per request"))
+        .unwrap()
+        .observation;
+    store
+        .judge_by_semantic(crate::memory::model::JudgeBySemanticParams {
+            source_id: newer.sync_id.clone(),
+            target_id: superseded.sync_id.clone(),
+            relation: "supersedes".to_owned(),
+            confidence: Some(0.9),
+            reasoning: Some("replaced".to_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let outcome = store
+        .add_observation(observation("s1", "Retries cap at three", "per host"))
+        .unwrap();
+
+    assert_eq!(
+        outcome.kind,
+        AddOutcomeKind::Inserted,
+        "an identical save must not be folded into a memory nothing lists"
+    );
+    assert_ne!(outcome.observation.id, superseded.id);
+    assert_eq!(
+        outcome.overturned.as_deref(),
+        Some(superseded.sync_id.as_str()),
+        "the reply still names the hidden copy whose text this repeated"
+    );
+    assert_eq!(
+        store
+            .get_observation(superseded.id)
+            .unwrap()
+            .duplicate_count,
+        1,
+        "the superseded memory does not count a duplicate it never showed"
+    );
+    let found = store
+        .search("Retries cap at three", SearchOptions::default())
+        .unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|hit| hit.observation.id == outcome.observation.id),
+        "the memory the save returned is one a search can find: {found:?}"
     );
 }
 

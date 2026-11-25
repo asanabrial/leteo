@@ -79,8 +79,7 @@ pub fn run(store: &mut Store) -> anyhow::Result<Exit> {
     loop {
         terminal.draw(|frame| render(frame, &app))?;
         let event = event::read()?;
-        let action = handle_terminal_event(&mut app, event, queued_events());
-        if apply_action(&mut app, store, action) {
+        if deliver(&mut app, store, delivery(event, queued_events()?)) {
             break;
         }
     }
@@ -88,7 +87,7 @@ pub fn run(store: &mut Store) -> anyhow::Result<Exit> {
     Ok(app.exit)
 }
 
-/// How much of a queued burst is taken as text.
+/// How much of a queued burst is taken at once.
 ///
 /// A paste can be long, and taking all of it is the point; the bound is here so
 /// that a terminal which keeps reporting input cannot keep the loop from
@@ -96,80 +95,115 @@ pub fn run(store: &mut Store) -> anyhow::Result<Exit> {
 const BURST_LIMIT: usize = 8192;
 
 /// Everything the terminal had already sent when the last event was read.
-fn queued_events() -> Vec<Event> {
+///
+/// A read error is the loop's, not this function's: swallowing it would leave
+/// the dashboard running against a terminal that has stopped answering.
+fn queued_events() -> io::Result<Vec<Event>> {
     let mut queued = Vec::new();
     while queued.len() < BURST_LIMIT {
-        match event::poll(Duration::ZERO) {
-            Ok(true) => match event::read() {
-                Ok(next) => queued.push(next),
-                Err(_) => break,
-            },
-            _ => break,
+        if !event::poll(Duration::ZERO)? {
+            break;
         }
+        queued.push(event::read()?);
     }
-    queued
+    Ok(queued)
 }
 
-/// What one thing the terminal sent does to the dashboard.
+/// One thing the terminal sent, and how the dashboard reads it.
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery {
+    /// Text somebody pasted: it goes into the query and nowhere else.
+    Paste(String),
+    /// Keys, in the order they arrived, each handled as a key.
+    Keys(Vec<KeyEvent>),
+}
+
+/// What one delivery from the terminal does, applied in the order it arrived.
 ///
-/// A paste is one event where the terminal supports bracketed paste, and a
-/// burst of key events where it does not. Without this, the second kind is
-/// executed: a newline is Enter, which steps out of the query line, and the
+/// Returns whether the dashboard should close. A key can raise a confirmation
+/// or leave the page, and the key behind it has to see that, so the actions are
+/// applied as they are produced rather than collected first.
+fn deliver(app: &mut App, store: &mut Store, delivery: Delivery) -> bool {
+    match delivery {
+        Delivery::Paste(text) => {
+            let action = app.paste(&text);
+            apply_action(app, store, action)
+        }
+        Delivery::Keys(keys) => {
+            for key in keys {
+                let action = app.handle_key(key);
+                if apply_action(app, store, action) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Reads one delivery: text if somebody pasted, otherwise the keys it holds.
+///
+/// A paste is one `Event::Paste` where the terminal supports bracketed paste,
+/// and a burst of key presses where it does not. Without this, the second kind
+/// is executed: a newline is Enter, which steps out of the query line, and the
 /// words after it are dashboard keys — `d` raises the delete window and `y`
 /// answers it, so pasting a bug report deleted the memory under the cursor.
 ///
-/// So a burst is text: everything printable in it, newlines folded, goes into
-/// the query and nothing in it reaches the key handler. A single event with
-/// nothing behind it is still a key, which is what makes `d` a command when a
-/// person presses it.
-fn handle_terminal_event(app: &mut App, event: Event, waiting: Vec<Event>) -> Action {
-    if let Some(text) = pasted(&event, &waiting) {
-        return app.paste(&text);
+/// Two text-bearing presses in one delivery cannot be a person: the loop is
+/// between them. Everything else is keys, in order, so a held arrow or a press
+/// with its release behind it still does what it says.
+fn delivery(event: Event, waiting: Vec<Event>) -> Delivery {
+    let mut events = Vec::with_capacity(waiting.len() + 1);
+    events.push(event);
+    events.extend(waiting);
+
+    let mut presses = 0;
+    let mut labelled = false;
+    for event in &events {
+        match event {
+            Event::Paste(_) => labelled = true,
+            Event::Key(key) if carries_text(key) => presses += 1,
+            _ => {}
+        }
     }
-    match event {
-        Event::Key(key) => app.handle_key(key),
-        _ => Action::None,
+    if labelled || presses > 1 {
+        return Delivery::Paste(pasted_text(&events));
     }
+    Delivery::Keys(
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Key(key) if key.kind != KeyEventKind::Release => Some(key),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
-/// The text a terminal delivery carries, when it is a paste rather than a key.
+/// Whether a key is a character a paste would have carried.
 ///
-/// `None` means "this was one key, handle it as one". A delivery with anything
-/// waiting behind it is a paste — a person cannot press two keys inside the
-/// time the loop takes to draw one frame — and so is the one event a bracketed
-/// terminal labels as such.
-fn pasted(event: &Event, waiting: &[Event]) -> Option<String> {
-    if let Event::Paste(text) = event {
-        return Some(text.clone());
-    }
-    if waiting.is_empty() {
-        return None;
-    }
-    let mut events = vec![event.clone()];
-    events.extend_from_slice(waiting);
-    let text = pasted_text(&events);
-    if text.is_empty() { None } else { Some(text) }
+/// Only a press: a release and a held key's repeat are the same character
+/// arriving again, and counting them would turn one press into a paste.
+fn carries_text(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && match key.code {
+            KeyCode::Char(_) => !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT),
+            KeyCode::Enter | KeyCode::Tab => true,
+            _ => false,
+        }
 }
 
-/// The printable text in a burst of events, with every line break and tab kept
-/// as the one character `fold_to_one_line` reads.
-///
-/// Escape sequences, arrows and function keys are dropped rather than typed:
-/// what a paste carries is characters, and a burst that turns out to be
-/// something else is not the dashboard's to guess at.
+/// The text in a delivery that was taken as a paste, with every line break and
+/// tab kept as the character `fold_to_one_line` reads.
 fn pasted_text(events: &[Event]) -> String {
     let mut text = String::new();
     for event in events {
         match event {
             Event::Paste(part) => text.push_str(part),
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Char(character)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    text.push(character);
-                }
+            Event::Key(key) if carries_text(key) => match key.code {
+                KeyCode::Char(character) => text.push(character),
                 KeyCode::Enter => text.push('\n'),
                 KeyCode::Tab => text.push('\t'),
                 _ => {}

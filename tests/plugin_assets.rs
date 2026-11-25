@@ -271,36 +271,158 @@ fn every_bundle_ships_a_memory_skill_with_frontmatter() {
     }
 }
 
+fn skill_path(bundle: &str) -> PathBuf {
+    repository_root()
+        .join("plugin")
+        .join(bundle)
+        .join("skills/memory/SKILL.md")
+}
+
+fn read_skill(bundle: &str) -> String {
+    let path = skill_path(bundle);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+/// The body under one `## ` heading, up to the next one.
+///
+/// A real heading is preceded by a blank line. `## Key Learnings:` sits inside
+/// the subagent example's fenced block with no blank line above it, and taking
+/// it for a heading would cut that section a block short.
+fn skill_section<'a>(skill: &'a str, heading: &str) -> &'a str {
+    let start = skill
+        .find(heading)
+        .unwrap_or_else(|| panic!("no {heading:?} section"));
+    let rest = &skill[start + heading.len()..];
+    let end = rest.find("\n\n## ").map_or(rest.len(), |end| end + 1);
+    &rest[..end]
+}
+
+/// The hook slugs the bundle's own manifest registers.
+///
+/// `the_plugin_bundles_register_the_hooks_the_binary_writes` in the crate holds
+/// this file equal to the adapter's `hook_registrations`, so a skill checked
+/// against the manifest is checked against what the binary actually writes.
+fn registered_hook_slugs(bundle: &str) -> BTreeSet<String> {
+    let path = repository_root()
+        .join("plugin")
+        .join(bundle)
+        .join("hooks/hooks.json");
+    let manifest = read_json(&path);
+    let mut slugs = BTreeSet::new();
+    for groups in manifest["hooks"]
+        .as_object()
+        .expect("a hooks manifest has a hooks object")
+        .values()
+    {
+        for group in groups.as_array().expect("a list of matcher groups") {
+            for hook in group["hooks"].as_array().expect("a list of handlers") {
+                let command = hook["command"].as_str().expect("a command");
+                let slug = command
+                    .rsplit_once("leteo hook ")
+                    .map(|(_, slug)| slug)
+                    .unwrap_or_else(|| panic!("{bundle} runs something else: {command}"));
+                slugs.insert(slug.to_owned());
+            }
+        }
+    }
+    slugs
+}
+
+/// The tool profile the bundle's own MCP manifest asks the binary for.
+fn installed_tool_profile(bundle: &str) -> String {
+    let path = repository_root()
+        .join("plugin")
+        .join(bundle)
+        .join(".mcp.json");
+    let manifest = read_json(&path);
+    manifest["mcpServers"]["leteo"]["args"]
+        .as_array()
+        .expect("the server entry carries arguments")
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|argument| argument.strip_prefix("--tools="))
+        .unwrap_or_else(|| panic!("{bundle} asks for no tool profile"))
+        .to_owned()
+}
+
 #[test]
-fn the_memory_skills_differ_only_in_the_setup_command() {
+fn the_memory_skills_keep_one_protocol_beside_the_bundle_sections() {
     // They are the same protocol, kept as one file per bundle because each
     // bundle ships its own. Editing one and forgetting the others is the
     // obvious failure, and nothing else would notice.
     //
-    // Held pairwise against the first while there were two of them, which is a
-    // rule that stops being one list the moment a third arrives. Every bundle
-    // is now normalised to the same text and they are compared as a set: a
-    // fourth is a line in `BUNDLES`, not a new comparison somebody has to
-    // remember to write.
+    // Two sections may differ, and only because a hook registration decides
+    // what they can claim: the closing step, and what a subagent's output is
+    // worth. `the_memory_skills_describe_the_hooks_their_bundle_registers`
+    // holds those two to their bundle; this holds the rest together.
     let normalised: BTreeSet<String> = BUNDLES
         .iter()
         .map(|bundle| {
-            let path = repository_root()
-                .join("plugin")
-                .join(bundle)
-                .join("skills/memory/SKILL.md");
-            let skill = std::fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-            skill.replace(&format!("leteo setup {bundle}"), "leteo setup <agent>")
+            let skill = read_skill(bundle);
+            let mut text = skill.replace(&format!("leteo setup {bundle}"), "leteo setup <agent>");
+            for heading in ["## AT THE END OF A SESSION", "## SUBAGENTS"] {
+                let body = skill_section(&skill, heading).to_owned();
+                text = text.replace(&body, " <bundle-dependent>\n");
+            }
+            text
         })
         .collect();
     assert_eq!(
         normalised.len(),
         1,
-        "the memory skills have drifted apart: {} distinct texts across {:?}",
+        "the memory skills have drifted apart outside the sections a hook decides: {} distinct texts across {:?}",
         normalised.len(),
         BUNDLES
     );
+}
+
+#[test]
+fn the_memory_skills_describe_the_hooks_their_bundle_registers() {
+    // The skill is the only place an agent learns whether a hook will do a step
+    // for it. Two of the five registrations carry work the agent would
+    // otherwise repeat or skip: `session-stop` writes the session row, and
+    // `subagent-stop` harvests a closing `## Key Learnings:` block. ZCode fires
+    // neither, and a sentence promising one leaves its agent waiting for a step
+    // that never comes.
+    for bundle in BUNDLES {
+        let registered = registered_hook_slugs(bundle);
+        let skill = read_skill(bundle);
+
+        let closing = skill_section(&skill, "## AT THE END OF A SESSION");
+        assert!(
+            closing.contains("mem_session_summary"),
+            "{bundle} skill's closing section must still tell the agent to summarise the session"
+        );
+        if registered.contains("session-stop") {
+            assert!(
+                closing.contains("stop hook"),
+                "{bundle} fires session-stop, so its closing section has to say the stop hook records the session"
+            );
+        } else {
+            assert!(
+                !closing.contains("hook"),
+                "{bundle} fires no session-end hook and its closing section names one: {closing:?}"
+            );
+        }
+
+        let subagents = skill_section(&skill, "## SUBAGENTS");
+        if registered.contains("subagent-stop") {
+            assert!(
+                subagents.contains("A hook reads"),
+                "{bundle} fires subagent-stop, so it has to say a hook reads the subagent's closing message"
+            );
+        } else {
+            assert!(
+                !subagents.contains("hook"),
+                "{bundle} fires no subagent-stop hook and its subagent section names one: {subagents:?}"
+            );
+            assert!(
+                subagents.contains("mem_save"),
+                "{bundle} fires no subagent-stop hook, so it has to tell the agent to save what the subagent returned"
+            );
+        }
+    }
 }
 
 /// Every `mem_…` name a document mentions.
@@ -325,11 +447,10 @@ fn tools_named_in(text: &str) -> BTreeSet<String> {
 }
 
 #[test]
-fn the_skill_names_the_tools_the_binary_has_and_no_others() {
-    // The skill is the one document agents read and obey. A tool renamed
-    // leaves it teaching a call that fails; a tool added and never written up
-    // is one no agent learns to use. Neither is a compile error and neither
-    // shows in any other test — the shipped file is data.
+fn the_skill_names_no_tool_the_binary_lacks() {
+    // The skill is the one document agents read and obey, and the shipped file
+    // is data: a tool renamed leaves it teaching a call that fails, and no
+    // compiler sees it.
     let declared = tools_named_in(
         &std::fs::read_to_string(repository_root().join("src/mcp/tools.rs"))
             .expect("read tools.rs"),
@@ -338,58 +459,14 @@ fn the_skill_names_the_tools_the_binary_has_and_no_others() {
         declared.len() > 15,
         "the scanner found only {declared:?}, so it has stopped matching tools.rs"
     );
-    // Every tool an agent is given by default has to be taught.
-    let offered: BTreeSet<String> = leteo::mcp::PROFILE_AGENT
-        .iter()
-        .map(|tool| (*tool).to_owned())
-        .collect();
 
     for bundle in BUNDLES {
-        let path = repository_root()
-            .join("plugin")
-            .join(bundle)
-            .join("skills/memory/SKILL.md");
-        let named = tools_named_in(
-            &std::fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
-        );
-
+        let named = tools_named_in(&read_skill(bundle));
         let phantom: Vec<&String> = named.difference(&declared).collect();
         assert!(
             phantom.is_empty(),
             "{bundle} skill tells agents to call tools that do not exist: {phantom:?}"
         );
-        let untaught: Vec<&String> = offered.difference(&named).collect();
-        assert!(
-            untaught.is_empty(),
-            "{bundle} skill never mentions these, so no agent learns they exist: {untaught:?}"
-        );
-
-        // And the count it gives for the deferred ones is that many.
-        //
-        // The skill says "only the three that change or count the whole store
-        // are deferred" and then names them. Three is a hand-written number
-        // beside a list the binary owns: a fourth admin tool would be named in
-        // that sentence, pass the two checks above because it is mentioned,
-        // and leave the word wrong on the page every agent reads first.
-        let deferred = leteo::mcp::PROFILE_ADMIN.len();
-        let spelled = match deferred {
-            2 => "two",
-            3 => "three",
-            4 => "four",
-            other => panic!("nobody has written the word for {other} deferred tools"),
-        };
-        let text = std::fs::read_to_string(&path).expect("read the skill again");
-        assert!(
-            text.contains(&format!("Only the {spelled} that")),
-            "{bundle} skill counts the deferred tools by hand and there are {deferred}"
-        );
-        for tool in leteo::mcp::PROFILE_ADMIN {
-            assert!(
-                text.contains(tool),
-                "{bundle} skill never names the deferred tool {tool}"
-            );
-        }
     }
 }
 
@@ -480,64 +557,43 @@ fn the_skill_teaches_the_kinds_the_tool_schema_asks_for() {
 }
 
 #[test]
-fn the_skill_says_which_tools_are_there_and_which_need_fetching() {
-    // Naming a tool somewhere in the document is not the same as telling an
-    // agent it can call it. Five tools of the agent profile were listed under
-    // "Admin tools are deferred; reach for `ToolSearch`" — `mem_timeline`,
-    // `mem_doctor`, `mem_capture_passive`, `mem_judge` and `mem_compare` are
-    // all loaded from the first message. An agent believing that wastes a
-    // round-trip at best, and at worst reads `mem_judge` as out of reach while
-    // the same skill tells it to judge every candidate.
-    //
-    // The earlier guard passed through all of it, because it only asked
-    // whether each name appeared. This asks where.
-    let agent: BTreeSet<String> = leteo::mcp::PROFILE_AGENT
-        .iter()
-        .map(|tool| (*tool).to_owned())
-        .collect();
-    let admin: BTreeSet<String> = leteo::mcp::PROFILE_ADMIN
-        .iter()
-        .map(|tool| (*tool).to_owned())
-        .collect();
-
+fn the_skill_offers_the_tools_its_profile_installs() {
+    // The bundle's `.mcp.json` is what the client launches, so it decides which
+    // tools exist. A tool a profile removes is absent, not deferred: `ToolSearch`
+    // reaches tools a loaded server declined to expose eagerly, and a tool the
+    // server never registered is not one of them. The skill described the three
+    // admin tools as deferred and sent every agent looking for tools that were
+    // not there to find.
     for bundle in BUNDLES {
-        let path = repository_root()
-            .join("plugin")
-            .join(bundle)
-            .join("skills/memory/SKILL.md");
-        let skill = std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        let split = skill
-            .find("are deferred")
-            .unwrap_or_else(|| panic!("{bundle} skill no longer says what is deferred"));
-        let present = tools_named_in(&skill[..split]);
-        // That sentence and no further. Taking the whole rest of the document
-        // as "deferred" was the same mistake this test exists to catch: every
-        // tool the skill goes on to teach would land in it. `mem_context` did.
-        let rest = &skill[split..];
-        let paragraph = rest
-            .find(
-                "
+        let profile = installed_tool_profile(bundle);
+        let served: BTreeSet<String> = match leteo::mcp::resolve_tools(&profile) {
+            Ok(Some(tools)) => tools,
+            Ok(None) => leteo::mcp::PROFILE_AGENT
+                .iter()
+                .chain(leteo::mcp::PROFILE_ADMIN)
+                .map(|tool| (*tool).to_owned())
+                .collect(),
+            Err(error) => panic!("{bundle} names an unreadable profile {profile:?}: {error}"),
+        };
+        let skill = read_skill(bundle);
+        let section = skill_section(&skill, "## AVAILABLE TOOLS");
+        let named = tools_named_in(section);
 
-",
-            )
-            .map_or(rest, |end| &rest[..end]);
-        let deferred = tools_named_in(paragraph);
-
-        for tool in &agent {
+        assert!(
+            !section.contains("ToolSearch") && !section.contains("deferred"),
+            "{bundle} sends an agent after a tool its profile does not install: {section:?}"
+        );
+        for tool in &served {
             assert!(
-                present.contains(tool),
-                "{bundle} skill does not list {tool} among the tools already there"
-            );
-            assert!(
-                !deferred.contains(tool),
-                "{bundle} skill sends an agent to ToolSearch for {tool}, which is already loaded"
+                named.contains(tool),
+                "{bundle} profile {profile:?} installs {tool} and the skill never mentions it"
             );
         }
-        for tool in &admin {
+        let unserved: Vec<&String> = named.difference(&served).collect();
+        if !unserved.is_empty() {
             assert!(
-                deferred.contains(tool),
-                "{bundle} skill does not say {tool} has to be fetched"
+                section.contains("not installed"),
+                "{bundle} names {unserved:?}, which its profile {profile:?} does not serve, and never says so"
             );
         }
     }

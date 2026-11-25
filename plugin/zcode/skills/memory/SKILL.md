@@ -11,8 +11,8 @@ activate on demand.
 
 ## AVAILABLE TOOLS
 
-The plugin registers Leteo with the `agent` tool profile, so the everyday tools
-are present from the first message — no `ToolSearch` needed.
+The plugin registers Leteo with the `agent` tool profile, so these are present
+from the first message:
 
 - `mem_save`, `mem_search`, `mem_context`, `mem_session_summary`
 - `mem_get_observation`, `mem_timeline`, `mem_suggest_topic_key`, `mem_update`
@@ -20,8 +20,9 @@ are present from the first message — no `ToolSearch` needed.
 - `mem_current_project`, `mem_pin`, `mem_unpin`, `mem_review`
 - `mem_judge`, `mem_consolidate`, `mem_compare`, `mem_capture_passive`, `mem_doctor`
 
-Only the three that change or count the whole store are deferred; reach for
-`ToolSearch` when you need one: `mem_stats`, `mem_delete`, `mem_merge_projects`.
+The three that change or count the whole store — `mem_stats`, `mem_delete`,
+`mem_merge_projects` — are not installed under this profile: no tool this client
+offers can call them. Install them beside the everyday set when you need one: `leteo setup zcode --tools=agent,admin`.
 
 **If the tools are missing**, run `leteo setup zcode` and restart the
 client. Verify the store itself with `leteo doctor`.
@@ -179,8 +180,9 @@ memory whose answer has changed is a `mem_update` or a new save under the same
 
 ## AT THE END OF A SESSION
 
-Call `mem_session_summary` before you say you are done. The stop hook records
-the session, but the summary is what makes the next one useful.
+Call `mem_session_summary` before you say you are done. This client fires no
+event when a session ends, so nothing closes the session for you: without the
+call the session has no summary, and no later step will write one.
 
 ## HOW TO REPORT MEMORY WORK
 
@@ -259,22 +261,23 @@ message of a session if it refers to the project, a feature, or a problem.
 
 ## SUBAGENTS
 
-When you hand work to a subagent, ask it to end with this section:
+Nothing reads a subagent's final message when it stops here, so anything you
+want kept has to come back in its reply and be written by you. Ask it to end
+with this section:
 
 ```
 ## Key Learnings:
 1. [Something worth remembering, in one sentence of at least four words]
 ```
 
-A hook reads the subagent's final message when it stops and keeps those lines
-as memories on their own, filed under the subagent's name. Nothing else in its
-output is kept, so this is the only way work done in a subagent reaches the
-store — without it the subagent finishes, its context is discarded, and what it
-found is gone.
+Then save those lines yourself with `mem_save`, naming the subagent in the
+**Where** field. Nothing else in its output reaches the store, so this is the
+only way work done in a subagent survives — without it the subagent finishes,
+its context is discarded, and what it found is gone.
 
 Ask only when there is something to learn. A subagent that read three files to
 answer one question has no learnings, and an empty section is better than an
-invented one: these are saved without review.
+invented one.
 
 ## AFTER COMPACTION
 

@@ -11,8 +11,8 @@ activate on demand.
 
 ## AVAILABLE TOOLS
 
-The plugin registers Leteo with the `agent` tool profile, so the everyday tools
-are present from the first message — no `ToolSearch` needed.
+The plugin registers Leteo with the `agent` tool profile, so these are present
+from the first message:
 
 - `mem_save`, `mem_search`, `mem_context`, `mem_session_summary`
 - `mem_get_observation`, `mem_timeline`, `mem_suggest_topic_key`, `mem_update`
@@ -20,8 +20,9 @@ are present from the first message — no `ToolSearch` needed.
 - `mem_current_project`, `mem_pin`, `mem_unpin`, `mem_review`
 - `mem_judge`, `mem_consolidate`, `mem_compare`, `mem_capture_passive`, `mem_doctor`
 
-Only the three that change or count the whole store are deferred; reach for
-`ToolSearch` when you need one: `mem_stats`, `mem_delete`, `mem_merge_projects`.
+The three that change or count the whole store — `mem_stats`, `mem_delete`,
+`mem_merge_projects` — are not installed under this profile: no tool this client
+offers can call them. Install them beside the everyday set when you need one: `leteo setup codex --tools=agent,admin`.
 
 **If the tools are missing**, run `leteo setup codex` and restart the
 client. Verify the store itself with `leteo doctor`.

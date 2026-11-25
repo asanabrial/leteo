@@ -255,6 +255,19 @@ fn apply_session_delete_tx(tx: &Transaction<'_>, session_id: &str) -> Result<(),
     if session_id.is_empty() {
         return Ok(());
     }
+    // The origin queues a prompt delete before the session's, so this usually
+    // finds nothing — but a peer that joined late, or an origin whose prompt
+    // deletes were pruned from its journal, would otherwise lose rows that
+    // nothing refuses to bring back on the next backfill.
+    for prompt in &collect_prompts_for_session_tx(tx, session_id)? {
+        prompts::erase_deleted_prompt_tx(
+            tx,
+            &prompt.sync_id,
+            &prompt.session_id,
+            &prompt.project,
+            None,
+        )?;
+    }
     tx.execute("DELETE FROM prompts WHERE session_id = ?1", [session_id])?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
     Ok(())
@@ -618,25 +631,14 @@ fn apply_prompt_delete_tx(
     if payload.sync_id.trim().is_empty() {
         return Ok(());
     }
-    tx.execute("DELETE FROM prompts WHERE sync_id = ?1", [&payload.sync_id])?;
-    let deleted_at = payload
-        .deleted_at
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(sqlite_now);
-    tx.execute(
-        "INSERT INTO prompt_deletions (sync_id, session_id, project, deleted_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(sync_id) DO UPDATE SET
-             session_id = excluded.session_id,
-             project = excluded.project,
-             deleted_at = excluded.deleted_at",
-        params![
-            payload.sync_id,
-            payload.session_id,
-            payload.project.unwrap_or_default(),
-            deleted_at
-        ],
+    prompts::erase_deleted_prompt_tx(
+        tx,
+        &payload.sync_id,
+        &payload.session_id,
+        payload.project.as_deref().unwrap_or_default(),
+        payload.deleted_at.as_deref(),
     )?;
+    tx.execute("DELETE FROM prompts WHERE sync_id = ?1", [&payload.sync_id])?;
     Ok(())
 }
 
@@ -958,7 +960,7 @@ pub(super) fn enqueue_prompt_delete_tx(
 ) -> Result<(), StoreError> {
     enqueue_mutation(
         tx,
-        "prompt",
+        crate::sync::ENTITY_PROMPT,
         &prompt.sync_id,
         crate::sync::OP_DELETE,
         &serde_json::json!({

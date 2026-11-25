@@ -588,6 +588,13 @@ impl Store {
             ..PruneResult::default()
         };
         for prompt in &prompts {
+            prompts::erase_deleted_prompt_tx(
+                &tx,
+                &prompt.sync_id,
+                &prompt.session_id,
+                &prompt.project,
+                None,
+            )?;
             enqueue_prompt_delete_tx(&tx, prompt)?;
         }
         result.prompts_deleted = tx.execute(
@@ -679,6 +686,13 @@ impl Store {
         }
 
         for prompt in &collect_prompts_tx(&tx, &project)? {
+            prompts::erase_deleted_prompt_tx(
+                &tx,
+                &prompt.sync_id,
+                &prompt.session_id,
+                &prompt.project,
+                None,
+            )?;
             enqueue_prompt_delete_tx(&tx, prompt)?;
         }
         result.prompts_deleted = tx.execute(

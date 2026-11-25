@@ -449,6 +449,13 @@ impl Store {
         }
         let project = normalize::project(&session.project);
         for prompt in &collect_prompts_for_session_tx(&tx, id)? {
+            prompts::erase_deleted_prompt_tx(
+                &tx,
+                &prompt.sync_id,
+                &prompt.session_id,
+                &prompt.project,
+                None,
+            )?;
             enqueue_prompt_delete_tx(&tx, prompt)?;
         }
         tx.execute("DELETE FROM prompts WHERE session_id = ?1", [id])?;
@@ -548,6 +555,13 @@ impl Store {
         }
 
         for prompt in &collect_prompts_for_session_tx(&tx, id)? {
+            prompts::erase_deleted_prompt_tx(
+                &tx,
+                &prompt.sync_id,
+                &prompt.session_id,
+                &prompt.project,
+                None,
+            )?;
             enqueue_prompt_delete_tx(&tx, prompt)?;
         }
         result.prompts_deleted =

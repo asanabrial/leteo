@@ -253,13 +253,6 @@ it is what a session opens with where the hook ran. Call it when the session
 did not open with a block, when you have lost it, or for another project; not
 as the first step of looking something up.
 
-   Assume the answer is not in what you were handed. A memory here runs to
-   about two thousand characters, and the names, paths, numbers and error
-   strings — the part written to be worth keeping — are in the body, never in
-   a title and rarely in a preview. Fetch before answering from either;
-   guessing from one is how a version number turns into the wrong version
-   number.
-
 Search proactively too: before starting something that may have been done
 before, when the user names a topic you have no context on, and on their first
 message of a session if it refers to the project, a feature, or a problem.

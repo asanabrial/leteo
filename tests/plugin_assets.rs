@@ -803,6 +803,13 @@ fn the_plugin_protocols_give_the_recall_rule_the_rust_protocol_gives() {
             recall.contains("not as the first step of looking something up"),
             "{skill} does not say when mem_context is the right door: {recall}"
         );
+        assert_eq!(
+            recall
+                .matches("Assume the answer is not in what you were handed")
+                .count(),
+            1,
+            "{skill} repeats the fetch paragraph, which is how it grew while it was meant to shrink"
+        );
         assert!(
             !recall.contains("mem_context` first"),
             "{skill} sends the agent to mem_context first, and the hook already delivered the block"
@@ -821,7 +828,9 @@ fn the_plugin_protocols_give_the_recall_rule_the_rust_protocol_gives() {
 
 /// One `##` section of a markdown document, whitespace collapsed.
 fn document_section(document: &str, heading: &str) -> String {
-    let marker = format!("## {heading}");
+    // With the newline, so a `###` heading that begins with the same words is
+    // not the one this reads.
+    let marker = format!("\n## {heading}");
     let start = document
         .find(&marker)
         .unwrap_or_else(|| panic!("the document has no {heading:?} section"));

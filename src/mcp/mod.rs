@@ -528,9 +528,20 @@ impl LeteoMcpServer {
         if detected.is_empty() {
             return Ok(None);
         }
+        // Every name the directory's sessions carry, the detected one included:
+        // a directory whose history already holds the name it resolves to is
+        // that project's directory, and a session under another name is a
+        // conversation about somewhere else rather than a rename. Reading the
+        // history without the detected name turned the one stray row into a
+        // drift the whole directory then had to answer for, and #405 stopped
+        // new rows of that kind without healing the stores already holding
+        // one.
         let recorded = store
-            .recent_projects_in_directory(&detection.path, &detected)
+            .recent_projects_in_directory(&detection.path, "")
             .map_err(store_error)?;
+        if recorded.iter().any(|project| project == &detected) {
+            return Ok(None);
+        }
         if recorded.is_empty() {
             return Ok(None);
         }

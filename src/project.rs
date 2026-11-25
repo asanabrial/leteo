@@ -1119,9 +1119,12 @@ pub(crate) fn recordable_directory(directory: &str) -> &str {
 /// `.leteo/config.json`, says what a directory is called firmly enough for a
 /// save under another name to be a save about somewhere else.
 ///
-/// A session an agent opens with `mem_session_start`, or a hook opens for it,
-/// does not pass through here: that is a conversation held in the directory,
-/// and under a project the caller declared it is the evidence the gate wants.
+/// A session an agent opens with `mem_session_start` passes through here too,
+/// and that is the door this rule used to exempt: the brief names it first, so
+/// a session opened for another project stamped the directory and every silent
+/// write after it was refused as a rename. A hook opening a session for the
+/// directory's own project still records it — detection and the project agree,
+/// which is the case this keeps.
 pub(crate) fn session_directory<'a>(
     project: &str,
     detection: &ProjectDetection,

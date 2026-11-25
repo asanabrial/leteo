@@ -2,7 +2,7 @@
 
 When I put this project in front of people, I ended the post with the one thing I could not test on my own: *does the recall help, or does it just add noise to your context?* Nobody answered it, and neither did I. This is the answer, and it is not the one I was hoping to write.
 
-The short version: **on questions the code already answers, the saving is not distinguishable from noise. On questions the code cannot answer, the agent without memory spends more and still answers something else, confidently.** What you buy is not tokens — the token figures are too noisy to sell. It is not being wrong.
+The short version: **on questions the code already answers, the saving is not distinguishable from noise. On questions the code cannot answer, the agent without memory spends more and never gets an answer: in August it answered something else, confidently, and in November it said it could not find it.** What you buy is not tokens — the token figures are too noisy to sell. It is not being wrong.
 
 The experiment was run again in November on the current release, [with Leteo](#the-same-two-questions-again-in-november) and then [with five other engines beside it](#six-engines-one-command). Every engine got the store-only question right every time, where the agent without one never did; on tokens Leteo is in the middle of the six, and the difference between its own two sets of runs is larger than most of the gaps between engines.
 
@@ -148,7 +148,7 @@ Thirty-six runs cost $23.34.
 
 ## What it costs to have it at all
 
-A session pays this before anyone asks anything, and some of it again every time the context is compacted. Everything here is what the model is sent, measured by running the shipped hooks and the MCP server over a copy of a store and counting the text they return, with tiktoken's `cl100k_base` as a proxy for the model's tokenizer. It is a proxy: the real count differs, and what it is good for is setting two engines side by side under the same ruler.
+A session pays the schemas and the instructions before anyone asks anything, and some of it again every time the context is compacted; the session totals at the end of each table add the replies and the per-prompt hook to that. Everything here is what the model is sent, measured by running the shipped hooks and the MCP server over a copy of a store and counting the text they return, with tiktoken's `cl100k_base` as a proxy for the model's tokenizer. It is a proxy: the real count differs, and what it is good for is setting two engines side by side under the same ruler.
 
 Conditions, because the figures are meaningless without them: **2026-10-13**, Leteo 0.3.0 at the head of this branch (`394d997`) and Engram 3.4.0, each over a copy of the same 1,048-memory store (1,017 of them in the project the session runs in), `--tools=agent` for both servers, a 20-prompt session, and a fixed mix of one `mem_context`, six `mem_search` and three `mem_save` calls. The prompts, queries and saves came from the project the store was copied from, so they are not published; the committed ones are synthetic and give different absolute numbers.
 
@@ -191,6 +191,8 @@ The same session that morning, before the changes between then and this page, wa
   one session, schemas upfront    20,204    15,152     +33.3%
   one session, schemas deferred   14,281     8,512     +67.8%
 ```
+
+**Of Leteo's 20,204, the fixed part is 5,923** — `tools/list` 5,498 and server instructions 425 — **or 7,910 with the 1,987 of session start.** The rest is the replies (10,211: one `mem_context`, three `mem_save` and six `mem_search`), the per-prompt hook (947) and the block after a compaction (1,136). The earlier, October table is the same sum over its own store and rows.
 
 **Leteo is the more expensive engine in this session, by a third upfront and two thirds deferred, and one row is the whole of it.** Six searches cost Leteo 6,294 tokens and Engram 538, a difference of 5,756 against a gap of 5,052 between the upfront totals. Without that row Leteo is the cheaper of the two.
 

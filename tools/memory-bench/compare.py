@@ -31,6 +31,7 @@ harness the moment either moved. A generated block has one source of truth.
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -44,6 +45,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 PAGE = ROOT / "docs" / "comparison.md"
+DIGESTS = PAGE.with_name("comparison.generated.json")
 BEGIN = "<!-- BEGIN GENERATED: compare.py -->"
 END = "<!-- END GENERATED: compare.py -->"
 LLM_BEGIN = "<!-- BEGIN GENERATED: compare.py --tier llm -->"
@@ -374,13 +376,38 @@ def run_optional(cmd, env, cwd=HERE):
     return True, r.stdout, ""
 
 
-def replace_block(begin, end, text):
+def write_generated(begin, end, text):
+    """Write one generated block, and record the digest of what was written.
+
+    The blocks are written from a run of every engine, and no CI machine can
+    repeat that run: half of those engines need a local model. What a test can
+    hold is the bytes, and it needs them recorded somewhere a hand edit to the
+    page does not reach. This file is written by the same call that writes the
+    block, so the page and its digest move together or not at all — a digit
+    typed into the page matches neither, and only a regeneration, which writes
+    both, passes. It says the page is the one the generator wrote; it cannot
+    say the run was faithful, and nothing in this repository could.
+    """
     page = PAGE.read_text()
     if begin not in page or end not in page:
         sys.exit(f"{PAGE} does not carry the generated-block markers {begin}")
     before, rest = page.split(begin, 1)
     _, after = rest.split(end, 1)
-    PAGE.write_text(before + begin + "\n" + text + "\n" + end + after)
+    written = "\n" + text + "\n"
+    PAGE.write_text(before + begin + written + end + after)
+
+    recorded = json.loads(DIGESTS.read_text()) if DIGESTS.exists() else []
+    recorded = [block for block in recorded if block["begin"] != begin]
+    recorded.append(
+        {
+            "file": str(PAGE.relative_to(ROOT)),
+            "begin": begin,
+            "end": end,
+            "sha256": hashlib.sha256(written.encode()).hexdigest(),
+        }
+    )
+    recorded.sort(key=lambda block: (block["file"], block["begin"]))
+    DIGESTS.write_text(json.dumps(recorded, indent=2) + "\n")
 
 
 def llm_block(engines, harness_date, head):
@@ -424,7 +451,7 @@ def llm_main(args):
             sys.exit(f"bench_engines.py failed ({r.returncode}); the page was not rewritten")
         with open(os.path.join(state, "results_llm.json")) as f:
             engines = json.load(f)["engines"]
-        replace_block(LLM_BEGIN, LLM_END, llm_block(engines, harness_date, head))
+        write_generated(LLM_BEGIN, LLM_END, llm_block(engines, harness_date, head))
         print(f"\nwrote the LLM section of {PAGE.relative_to(ROOT)}", file=sys.stderr)
     finally:
         if not os.environ.get("BENCH_STATE"):
@@ -570,12 +597,7 @@ def main(argv):
         out.append("")
         block = "\n".join(out)
 
-        page = PAGE.read_text()
-        if BEGIN not in page or END not in page:
-            sys.exit(f"{PAGE} does not carry the generated-block markers")
-        before, rest = page.split(BEGIN, 1)
-        _, after = rest.split(END, 1)
-        PAGE.write_text(before + BEGIN + "\n" + block + "\n" + END + after)
+        write_generated(BEGIN, END, block)
 
         print(f"\nwrote {PAGE.relative_to(ROOT)}", file=sys.stderr)
         print(f"{', '.join(e['label'] + ' ' + e['version'] for e in measured)}; {len(qs)} queries", file=sys.stderr)

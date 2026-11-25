@@ -324,6 +324,50 @@ fn exposes_exactly_twenty_three_tools_with_output_schemas() {
     assert!(tools.iter().all(|tool| tool.output_schema.is_some()));
 }
 
+/// The README badge's tool count is the router's, not a number typed beside it.
+///
+/// It said 22 while the router served 23: the count was written when the badge
+/// was added, and nothing held it to the list it names — the same way three
+/// README sentences about the benchmarks described a table the page no longer
+/// held. Both halves of the badge carry the count, the `alt` text a screen
+/// reader gets and the shields URL that draws the picture, so both are read: a
+/// change that fixes one and not the other is the copy this exists to catch.
+#[test]
+fn the_readme_badge_names_the_tools_the_router_registers() {
+    let served = LeteoMcpServer::router().list_all().len();
+    let readme =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+            .expect("read README.md");
+    let badge = readme
+        .lines()
+        .find(|line| line.contains("img.shields.io/badge/MCP-"))
+        .expect("README.md should carry the MCP badge");
+
+    let alt = badge
+        .split_once("alt=\"MCP: ")
+        .and_then(|(_, rest)| rest.split_once(" tools\""))
+        .map(|(count, _)| count)
+        .expect("the MCP badge's alt text should say `MCP: N tools`");
+    let url = badge
+        .split_once("badge/MCP-")
+        .and_then(|(_, rest)| rest.split_once("%20tools-"))
+        .map(|(count, _)| count)
+        .expect("the MCP badge's shields URL should say `MCP-N%20tools`");
+
+    assert_eq!(
+        alt.parse::<usize>()
+            .expect("the alt text's count is not a number"),
+        served,
+        "README.md's badge says {alt} tools and the router serves {served}"
+    );
+    assert_eq!(
+        url.parse::<usize>()
+            .expect("the shields URL's count is not a number"),
+        served,
+        "README.md's badge draws {url} tools and the router serves {served}"
+    );
+}
+
 #[test]
 fn initialize_metadata_identifies_leteo_package() {
     let temp = tempfile::tempdir().unwrap();

@@ -329,7 +329,11 @@ LETEO_BIN=target/release/leteo python3 tools/memory-bench/compare.py
 
 It regenerates [`docs/comparison.md`](../docs/comparison.md), which carries each
 engine's measured version, the run date, the Leteo commit and the per-kind
-numbers. The numbers live there rather than here, where they were dated prose and
+numbers. Beside it, in the same call, it records the digest of each block it
+wrote in [`docs/comparison.generated.json`](../docs/comparison.generated.json);
+`cargo test` fails when a block stops matching, so a number typed into the page
+by hand is caught and only a regeneration, which writes both, passes. The
+numbers live there rather than here, where they were dated prose and
 drifted; the individual scripts (`bench_engines.py` for the head-to-head,
 `load_engram.py`, `load_leteo.sh`, `bench_search.py`, `bench_any.py`,
 `bench_cost.py`) still run on their own, and `compare.py` skips a step it cannot

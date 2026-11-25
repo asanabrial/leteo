@@ -14,7 +14,7 @@
   <a href="https://github.com/asanabrial/leteo/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/asanabrial/leteo/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg" /></a>
   <a href="https://www.rust-lang.org"><img alt="Rust 1.97+" src="https://img.shields.io/badge/rust-1.97%2B-orange.svg" /></a>
-  <a href="#mcp"><img alt="MCP: 22 tools" src="https://img.shields.io/badge/MCP-22%20tools-purple.svg" /></a>
+  <a href="#mcp"><img alt="MCP: 23 tools" src="https://img.shields.io/badge/MCP-23%20tools-purple.svg" /></a>
   <a href="#install"><img alt="Linux, macOS, Windows" src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg" /></a>
 </p>
 
@@ -41,7 +41,8 @@ and once without:
 of three.** That finding has now held twice, and it is not Leteo's alone: five
 other memory engines, given the same memories, got it right every time too. The
 tokens are the noisier half. [Every run is here](docs/does-memory-save-tokens.md)
-— all six engines, both months, the fixed cost of about 20,200 tokens a session,
+— all six engines, both months, the 20,204 tokens one modelled session adds up
+to (5,923 of them schemas and instructions, paid before anyone asks anything),
 and the three engines that spent less than Leteo did.
 
 **Works with:** Claude Code · ZCode · Codex · Cursor · Gemini CLI · OpenCode · Windsurf ·
@@ -86,8 +87,10 @@ Where Leteo does lead is in finding the right memory on the first try, which is
 engine and 0.64 for Engram.
 
 [*does memory save tokens?*](docs/does-memory-save-tokens.md) shows every run of
-both months and all six engines, both baselines, the fixed per-session cost of
-about 20,200 tokens, and where the numbers are weak. The honest summary is that
+both months and all six engines, both baselines, what a session costs before the
+first prompt (5,923 tokens of schemas and instructions, 7,910 with the session
+start) and what one modelled session adds up to (20,204), and where the numbers
+are weak. The honest summary is that
 it does not reliably save you tokens — it has the answer that never reached the
 code, and so does any engine you put the same memories in.
 
@@ -676,15 +679,16 @@ The second is [*does memory save tokens?*](docs/does-memory-save-tokens.md),
 which asks the question this project was launched with and answers it against
 itself: on questions the repository already answers the saving is inside the
 noise, on questions it cannot answer the agent without memory spends more and
-still gets it wrong three times out of three, and six of eleven sampled memories
+never gets an answer — in August it answered something else, confidently, and in
+November it said it could not find it — and six of eleven sampled memories
 from the opening block turn out to be recoverable from the repository anyway —
 code, specs, tests and the git history together.
 
 The third is [*Leteo against other memory engines, measured*](docs/comparison.md):
-the same synthetic corpus saved into Engram and two other engines as well as
-Leteo, the same queries asked of each engine's own search, and the numbers one run
-produced — generated from the harness so they cannot drift, with each engine's
-measured version beside it.
+the same synthetic corpus saved into Engram, basic-memory, server-memory, mem0
+and claude-mem as well as Leteo, the same queries asked of each engine's own
+search, and the numbers one run produced — generated from the harness so they
+cannot drift, with each engine's measured version beside it.
 
 ## Environment
 

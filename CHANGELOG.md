@@ -23,6 +23,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **The README's benchmark numbers say what the document says, and the
+  comparison page's generated block cannot be edited by hand.** Three sentences
+  written in the pull request that refreshed the benchmarks described a page
+  that had moved: the 20,204-token session was called "the fixed cost" (5,923 of
+  it is schemas and instructions, 7,910 with the session start), the August
+  finding that the agent without memory answers confidently was stated as
+  November's, when it said it could not find it, and "Engram and two other
+  engines" faced a table holding four. The MCP badge said 22 tools where the
+  router serves 23, and a test now reads both halves of it against
+  `list_all()`. `compare.py` records the digest of each block it writes in
+  `docs/comparison.generated.json`, and a guard refuses a page whose block is
+  not the one it wrote (#453).
 - **Releases no longer run whatever `mcp-publisher` `latest` serves that day.**
   The registry job holds `id-token: write`, so the binary it piped out of a
   `releases/latest/download` URL ran with the identity that publishes

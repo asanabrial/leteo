@@ -1,0 +1,14 @@
+[
+  {
+    "file": "docs/comparison.md",
+    "begin": "<!-- BEGIN GENERATED: compare.py -->",
+    "end": "<!-- END GENERATED: compare.py -->",
+    "sha256": "3eca7052ff2224a286e27d3482cb5dfc0bdbebba200ce2e68150ec7a70546743"
+  },
+  {
+    "file": "docs/comparison.md",
+    "begin": "<!-- BEGIN GENERATED: compare.py --tier llm -->",
+    "end": "<!-- END GENERATED: compare.py --tier llm -->",
+    "sha256": "06c432a73f285947842191bb280a48561ddc0a8b8e4d62706b1c3825c8a4c9dd"
+  }
+]

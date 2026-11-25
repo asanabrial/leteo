@@ -519,6 +519,66 @@ async fn a_push_that_outlives_its_budget_is_answered_as_an_unknown_outcome() {
     );
 }
 
+/// A push spends its own deadline, not a fresh one: a request that waited for a
+/// slot has nothing left to insert with.
+#[test]
+fn the_insert_budget_is_what_the_request_has_left() {
+    assert_eq!(
+        push_budget(Duration::from_millis(300)),
+        REQUEST_TIMEOUT - Duration::from_millis(300) - MUTATION_PUSH_MARGIN
+    );
+    let boundary = REQUEST_TIMEOUT - MUTATION_PUSH_MARGIN;
+    assert_eq!(push_budget(boundary), Duration::ZERO);
+    assert_eq!(
+        push_budget(boundary - Duration::from_millis(1)),
+        Duration::from_millis(1)
+    );
+}
+
+/// The stamp has to be there before anything queues, and it has to be reachable
+/// from a handler through the layers: a missing one is a 500 from the extractor.
+#[tokio::test]
+async fn the_router_stamps_arrival_before_the_handler_runs() {
+    use tower::ServiceExt;
+
+    let router = bounded(
+        Router::new().route(
+            "/probe",
+            get(|Extension(arrival): Extension<RequestArrival>| async move {
+                arrival.0.elapsed().as_secs().to_string()
+            }),
+        ),
+        Bounds::PUBLISHED,
+    );
+    let request = axum::http::Request::builder()
+        .uri("/probe")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(&body[..], b"0", "the stamp is this request's own arrival");
+}
+
+/// A push the queue left without time is answered retryably, and its insert is
+/// never polled: nothing has been written, so a retry cannot duplicate it.
+#[tokio::test]
+async fn a_push_with_no_budget_left_is_retryable_and_starts_no_insert() {
+    let refused = insert_mutations_within(Duration::ZERO, async {
+        panic!("a push with no budget left must not start its insert")
+    })
+    .await
+    .unwrap_err()
+    .into_response();
+
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        refused.headers().get(header::RETRY_AFTER).cloned(),
+        Some(HeaderValue::from(error::RETRY_AFTER_SECONDS))
+    );
+}
+
 #[test]
 fn dashboard_cookie_is_http_only_and_conditionally_secure() {
     let cookie = dashboard_cookie("signed", false);

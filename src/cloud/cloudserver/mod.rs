@@ -1,10 +1,14 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     BoxError, Json, Router,
     body::Body,
     error_handling::HandleErrorLayer,
-    extract::{DefaultBodyLimit, Form, Path, Query, State},
+    extract::{DefaultBodyLimit, Extension, Form, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -54,12 +58,30 @@ pub(super) const DASHBOARD_COOKIE: &str = "leteo_dashboard";
 /// acquire timeout, which a request already holding a connection never met.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 
-/// How long the mutation push itself may take, inside the request's bound.
+/// How much of the request's deadline the mutation push must leave for its own
+/// answer.
 ///
 /// The request deadline cancels the handler and the layer above answers `503`
 /// with `Retry-After`, which for a commit in flight tells the client to append
-/// the batch twice. This fires first, in the handler, which can say so.
-const MUTATION_PUSH_TIMEOUT: Duration = REQUEST_TIMEOUT.saturating_sub(Duration::from_secs(1));
+/// the batch twice. The insert's own bound fires first, in the handler, which
+/// can say so; this is the time that answer needs to be written.
+const MUTATION_PUSH_MARGIN: Duration = Duration::from_secs(1);
+
+/// When the request reached the router, stamped before it queues for a slot.
+///
+/// A push that spent most of its deadline waiting cannot spend a fresh one
+/// inserting: the outer deadline would cancel the commit first and answer the
+/// retry that duplicates it.
+#[derive(Clone, Copy)]
+struct RequestArrival(Instant);
+
+/// What the insert may still take: the request's own bound, less the time the
+/// request has already spent, less the margin its answer needs.
+fn push_budget(spent: Duration) -> Duration {
+    REQUEST_TIMEOUT
+        .saturating_sub(spent)
+        .saturating_sub(MUTATION_PUSH_MARGIN)
+}
 
 /// How many requests run at once; the next ones wait for a slot, for as long
 /// as `REQUEST_TIMEOUT` leaves them, and are then answered `503`.
@@ -103,6 +125,16 @@ impl Bounds {
 fn bounded(router: Router, bounds: Bounds) -> Router {
     let router = router.layer(
         ServiceBuilder::new()
+            // Outside the deadline on purpose: this is arrival, and the
+            // deadline it feeds is spent by queueing for a slot.
+            .layer(axum::middleware::map_request(
+                |mut request: axum::extract::Request| async move {
+                    request
+                        .extensions_mut()
+                        .insert(RequestArrival(Instant::now()));
+                    request
+                },
+            ))
             .layer(HandleErrorLayer::new(|_: BoxError| async {
                 ApiError::busy("the request took too long; retry shortly")
             }))
@@ -349,6 +381,10 @@ async fn insert_mutations_within(
     budget: Duration,
     insert: impl std::future::Future<Output = Result<Vec<i64>, CloudStoreError>>,
 ) -> Result<Vec<i64>, ApiError> {
+    // Nothing was written, so this one is safe to send again.
+    if budget.is_zero() {
+        return Err(ApiError::busy("the request has no time left"));
+    }
     match tokio::time::timeout(budget, insert).await {
         Ok(result) => result.map_err(ApiError::from),
         Err(_) => {
@@ -360,6 +396,7 @@ async fn insert_mutations_within(
 
 async fn push_mutations(
     State(state): State<Arc<AppState>>,
+    Extension(arrival): Extension<RequestArrival>,
     headers: HeaderMap,
     Json(mut request): Json<MutationPushRequest>,
 ) -> Result<Response, ApiError> {
@@ -382,8 +419,10 @@ async fn push_mutations(
         )
         .await?;
     }
+    // What is left of the request's own bound, not a fresh one: a push that
+    // waited for a slot has spent it.
     let accepted_seqs = insert_mutations_within(
-        MUTATION_PUSH_TIMEOUT,
+        push_budget(arrival.0.elapsed()),
         state.store.insert_mutations(&request.entries),
     )
     .await?;

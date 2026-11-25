@@ -141,7 +141,7 @@ fn uninstall_everything_for(
 /// notes asked a person to use. A migration's `leteo.db.pre-schema-N` copy is
 /// left as well, for the same reason: it is the only way back from a one-way
 /// migration, which is the whole point of taking it.
-const DATA_DIR_FILES: &[&str] = &[
+pub const DATA_DIR_FILES: &[&str] = &[
     "leteo.db",
     "leteo.db-wal",
     "leteo.db-shm",
@@ -153,8 +153,8 @@ const DATA_DIR_FILES: &[&str] = &[
     "store.db-shm",
     "store.db-journal",
 ];
-const DATA_DIR_PREFIXES: &[&str] = &["backup-"];
-const DATA_DIR_SUBDIRECTORIES: &[&str] = &["hooks"];
+pub const DATA_DIR_PREFIXES: &[&str] = &["backup-"];
+pub const DATA_DIR_SUBDIRECTORIES: &[&str] = &["hooks"];
 
 fn remove_data_directory(removed: &mut Removal, data_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(data_dir) else {

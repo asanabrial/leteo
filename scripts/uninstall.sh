@@ -17,6 +17,12 @@ BINARY="$INSTALL_DIR/leteo"
 # The model's files by name, once. tests/model_names.rs checks this line against
 # MODEL_FILES in src/semantic/mod.rs, which a shell script cannot read.
 MODEL_FILES="config.json model.safetensors tokenizer.json.gz"
+# Everything `leteo uninstall` owns in the data directory, by name.
+# tests/uninstall_files.rs checks this line against DATA_DIR_FILES in
+# src/setup/removal/mod.rs. A `leteo.db*` glob would take a
+# `leteo.db.bak-before-migrate` or a `leteo.db.pre-schema-N` with it, and those
+# copies are the only way back from a one-way migration.
+DATA_DIR_FILES="leteo.db leteo.db-wal leteo.db-shm leteo.db-journal settings.json cloud.json store.db store.db-wal store.db-shm store.db-journal"
 
 YES=0
 DRY_RUN=0
@@ -134,8 +140,9 @@ fi
 # `rm -rf` on a path `LETEO_DATA_DIR` may point anywhere.
 if [ -d "$DATA_DIR" ] && [ "$handled" -eq 0 ]; then
     say "  removing Leteo's files from $DATA_DIR"
-    rm -f "$DATA_DIR"/leteo.db* "$DATA_DIR"/store.db* \
-          "$DATA_DIR/settings.json" "$DATA_DIR/cloud.json"
+    for own in $DATA_DIR_FILES; do
+        rm -f "$DATA_DIR/$own"
+    done
     rm -rf "$DATA_DIR/hooks" "$DATA_DIR"/backup-*
     # `leteo model install` writes here by default.
     if [ "$ran" -eq 0 ]; then

@@ -1538,6 +1538,24 @@
     "new": "@('config.json', 'model.safetensors')"
   },
   {
+    "name": "uninstall: a data-directory name the scripts never learn about",
+    "file": "src/setup/removal/mod.rs",
+    "old": "    \"leteo.db-journal\",\n    \"settings.json\",",
+    "new": "    \"leteo.db-journal\",\n    \"leteo.db-extra\",\n    \"settings.json\","
+  },
+  {
+    "name": "uninstall.sh: globs the store again",
+    "file": "scripts/uninstall.sh",
+    "old": "    for own in $DATA_DIR_FILES; do",
+    "new": "    rm -f \"$DATA_DIR\"/leteo.db*; for own in $DATA_DIR_FILES; do"
+  },
+  {
+    "name": "uninstall.ps1: removes fewer data files than the binary names",
+    "file": "scripts/uninstall.ps1",
+    "old": "'settings.json', 'cloud.json', 'store.db'",
+    "new": "'settings.json', 'store.db'"
+  },
+  {
     "name": "uninstall: a file with a model's name and another hash is deleted",
     "file": "src/setup/removal/mod.rs",
     "old": "    Ok(crate::semantic::sha256_hex(&std::fs::read(file)?) == pin)",

@@ -36,6 +36,12 @@ $binary = Join-Path $installDir 'leteo.exe'
 # The model's files by name, once. tests/model_names.rs checks this line against
 # MODEL_FILES in src/semantic/mod.rs, which a script cannot read.
 $modelFiles = @('config.json', 'model.safetensors', 'tokenizer.json.gz')
+# Everything `leteo uninstall` owns in the data directory, by name.
+# tests/uninstall_files.rs checks this line against DATA_DIR_FILES in
+# src/setup/removal/mod.rs. A `leteo.db*` glob would take a
+# `leteo.db.bak-before-migrate` or a `leteo.db.pre-schema-N` with it, and those
+# copies are the only way back from a one-way migration.
+$dataDirFiles = @('leteo.db', 'leteo.db-wal', 'leteo.db-shm', 'leteo.db-journal', 'settings.json', 'cloud.json', 'store.db', 'store.db-wal', 'store.db-shm', 'store.db-journal')
 
 function Say($text) { Write-Host $text }
 
@@ -162,7 +168,7 @@ if (Test-Path $binary) {
 # `LETEO_DATA_DIR` points wherever somebody chose it to.
 if ((Test-Path $dataDir) -and -not $handled) {
     Say "  removing Leteo's files from $dataDir"
-    foreach ($own in @('leteo.db*', 'store.db*', 'settings.json', 'cloud.json', 'backup-*')) {
+    foreach ($own in $dataDirFiles + @('backup-*')) {
         Remove-Item -Force -Recurse (Join-Path $dataDir $own) -ErrorAction SilentlyContinue
     }
     Remove-Item -Force -Recurse (Join-Path $dataDir 'hooks') -ErrorAction SilentlyContinue

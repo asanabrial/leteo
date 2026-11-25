@@ -147,7 +147,10 @@ pub enum ConfigFormat {
 }
 
 pub use agents::AgentAdapter;
-pub use removal::{AgentRemoval, Removal, UNINSTALL_STARTED, uninstall_everything};
+pub use removal::{
+    AgentRemoval, DATA_DIR_FILES, DATA_DIR_PREFIXES, DATA_DIR_SUBDIRECTORIES, Removal,
+    UNINSTALL_STARTED, uninstall_everything,
+};
 
 pub fn supported_agents() -> &'static [AgentAdapter] {
     agents::REGISTRY

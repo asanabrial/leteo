@@ -6,6 +6,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Uninstalling no longer takes the migration backups with it.** Both fallback
+  scripts removed `leteo.db*` and `store.db*`, which is every
+  `leteo.db.bak-before-migrate` and `leteo.db.pre-schema-N` beside the store —
+  the copies `leteo uninstall` itself deliberately keeps, and the only way back
+  from a one-way migration. Each script now names the files the binary owns, and
+  `tests/uninstall_files.rs` fails when the list and a script disagree or a
+  script reaches for the glob again.
 - **Enrolling a project no longer queues relations the server refuses.** The
   enrolment backfill selected every relation but an `orphaned` one, which
   includes the `pending` candidates `find_candidates` files for an agent to rule

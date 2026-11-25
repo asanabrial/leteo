@@ -63,83 +63,31 @@ pub(super) fn validate_mutation_entries(entries: &[MutationEntry]) -> Result<(),
         )));
     }
     for (index, entry) in entries.iter().enumerate() {
-        if entry.project.trim().is_empty()
-            || entry.entity_key.trim().is_empty()
-            || !matches!(
-                entry.entity.as_str(),
-                "session"
-                    | "observation"
-                    | "observation_version"
-                    | "prompt"
-                    | "relation"
-                    | "project_rename"
-            )
-        {
+        // The project and the entity key are the entry's own routing fields,
+        // not part of the payload: the server files, orders and deduplicates by
+        // them, so an empty one is not a mutation it can place.
+        if entry.project.trim().is_empty() || entry.entity_key.trim().is_empty() {
             return Err(ApiError::bad_request(format!(
-                "entries[{index}] has invalid project, entity, or entity_key"
+                "entries[{index}] has invalid project or entity_key"
             )));
         }
-        let supported_operation = match entry.entity.as_str() {
-            crate::sync::ENTITY_RELATION | crate::sync::ENTITY_PROJECT_RENAME => {
-                entry.op == crate::sync::OP_UPSERT
-            }
-            _ => matches!(
-                entry.op.as_str(),
-                crate::sync::OP_UPSERT | crate::sync::OP_DELETE
-            ),
-        };
-        if !supported_operation || !entry.payload.is_object() {
-            return Err(ApiError::bad_request(format!(
-                "entries[{index}] has invalid operation or payload"
-            )));
-        }
-        // The key a mutation is filed under and the identifier inside it have
-        // to name the same thing. This server orders and deduplicates by
-        // `entity_key`; every peer applies by the identifier in the payload.
-        // One where they disagree is stored and served as being about one
-        // memory and applied to another — the same change arriving twice, or
-        // landing on a memory the server believes untouched.
-        //
-        // Leteo's own sender builds both from one value, at all five places
-        // that queue a mutation, so this only ever catches a client that has
-        // drifted from the format.
-        let identifier = match entry.entity.as_str() {
-            crate::sync::ENTITY_SESSION => "id",
-            _ => "sync_id",
-        };
-        if entry
-            .payload
-            .get(identifier)
-            .and_then(Value::as_str)
-            .is_none_or(|value| value.trim() != entry.entity_key.trim())
-        {
-            return Err(ApiError::bad_request(format!(
-                "entries[{index}].payload.{identifier} must be the entity_key {:?}",
-                entry.entity_key
-            )));
-        }
-        if entry.entity == "relation" {
-            for field in [
-                "sync_id",
-                "source_id",
-                "target_id",
-                "relation",
-                "judgment_status",
-                "marked_by_actor",
-                "marked_by_kind",
-            ] {
-                if entry
-                    .payload
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .is_none_or(|value| value.trim().is_empty())
-                {
-                    return Err(ApiError::bad_request(format!(
-                        "entries[{index}].payload.{field} is required"
-                    )));
-                }
-            }
-        }
+        // Everything the payload itself has to say is the codec's rule, read
+        // here rather than copied. The two copies disagreed about a session
+        // with an empty directory — which the local store writes on purpose —
+        // so the server refused it on every attempt while the codec accepted
+        // it, and push preceding pull stalled the peer in both directions.
+        let document = serde_json::json!({
+            "mutations": [{
+                "entity": entry.entity,
+                "entity_key": entry.entity_key,
+                "op": entry.op,
+                "payload": entry.payload.to_string(),
+            }],
+        });
+        let encoded = serde_json::to_vec(&document)
+            .map_err(|error| ApiError::bad_request(format!("entries[{index}]: {error}")))?;
+        canonicalize_for_project(&encoded, entry.project.trim())
+            .map_err(|error| ApiError::bad_request(format!("entries[{index}]: {error}")))?;
     }
     Ok(())
 }

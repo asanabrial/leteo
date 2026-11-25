@@ -62,12 +62,15 @@ pub(super) fn normalize_mutation_payload(
         "session" => {
             let mut body: SessionMutationPayload = decode_mutation_payload(payload)?;
             body.id = body.id.trim().to_owned();
+            // An empty directory is a state the store writes on purpose —
+            // `recordable_directory` blanks a relative path and
+            // `release_directory_to` blanks a session that moved — and it means
+            // "not recorded". Inventing a value here would reach every peer as
+            // a directory nobody ever wrote from, which is what the drift check
+            // reads as evidence.
             body.directory = body.directory.trim().to_owned();
             if body.id.is_empty() {
                 return Err(invalid("session payload id is required"));
-            }
-            if op == OP_UPSERT && body.directory.is_empty() {
-                return Err(invalid("session payload directory is required for upsert"));
             }
             if op == OP_DELETE {
                 body.directory.clear();

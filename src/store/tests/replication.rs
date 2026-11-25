@@ -66,6 +66,64 @@ fn a_pulled_session_never_records_a_relative_directory() {
     assert_eq!(store.get_session("remote-session").unwrap().directory, "");
 }
 
+/// A session the sender recorded without a directory is applied on the peer as
+/// one without a directory, not as a placeholder.
+///
+/// `recordable_directory` blanks a relative path and `release_directory_to`
+/// blanks a session that moved to another project, so the local store queues a
+/// session upsert whose `directory` is empty on purpose. The codec refused every
+/// one of them, and the refusal headed every batch — pending mutations are
+/// listed by `seq` and pushed before the pull — so the peer stopped in both
+/// directions. Each of these rows had been accepted by the store that wrote it.
+#[test]
+fn a_session_upsert_without_a_directory_reaches_the_peer_without_one() {
+    let (_source_temp, mut source) = store();
+    source
+        .create_session("manual-save-other", "leteo", ".")
+        .unwrap();
+    assert_eq!(
+        source.get_session("manual-save-other").unwrap().directory,
+        ""
+    );
+    let queued = source
+        .list_pending_sync_mutations("cloud", &["leteo".to_owned()], 10)
+        .unwrap();
+    let sent = queued
+        .iter()
+        .find(|mutation| mutation.entity == "session")
+        .expect("the new session is queued for replication");
+
+    let canonical = crate::sync::canonicalize_for_project(
+        &serde_json::to_vec(&serde_json::json!({ "mutations": [sent] })).unwrap(),
+        "leteo",
+    )
+    .expect("a session the store records without a directory is valid on the wire");
+    let chunk = crate::sync::decode_chunk(&canonical).unwrap();
+    let sent = &chunk.mutations[0];
+
+    let (_peer_temp, mut peer) = store();
+    assert!(
+        peer.apply_pulled(&SyncMutation {
+            seq: 1,
+            target_key: "cloud".to_owned(),
+            entity: sent.entity.clone(),
+            entity_key: sent.entity_key.clone(),
+            op: sent.op.clone(),
+            payload: sent.payload.clone(),
+            source: "remote".to_owned(),
+            project: sent.project.clone(),
+            occurred_at: "2026-08-02T10:00:00Z".to_owned(),
+            acked_at: None,
+        })
+        .unwrap()
+    );
+    assert_eq!(
+        peer.get_session("manual-save-other").unwrap().directory,
+        "",
+        "the peer invented a directory the sender never recorded"
+    );
+}
+
 #[test]
 fn replication_cannot_put_back_a_synonym_the_migration_removed() {
     let (_temp, mut store) = store();

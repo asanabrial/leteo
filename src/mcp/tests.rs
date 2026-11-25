@@ -546,6 +546,89 @@ fn listings_preview_the_body_and_only_mem_get_observation_returns_it_whole() {
     assert!(payload["results"][0].get("content_truncated").is_none());
 }
 
+/// A full search page carries bodies for its leading rows and titles for the
+/// rest, and the JSON says which is which.
+///
+/// The body on every row was the largest thing this tool sent — a full page of
+/// ten 400-byte previews, measured at 1,049 tokens per search on a real store.
+/// The rows below the cut keep everything an agent needs to choose one: title,
+/// type and id. `content` is absent rather than empty, so a client that reads
+/// the schema knows the body is elsewhere.
+#[test]
+fn a_full_search_page_previews_only_its_leading_rows() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let total = SEARCH_PREVIEW_ROWS + 3;
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("page", "leteo", "C:/workspace")
+            .unwrap();
+        for n in 0..total {
+            store
+                .add_observation(AddObservation {
+                    session_id: "page".to_owned(),
+                    kind: "decision".to_owned(),
+                    title: format!("Paging needle {n}"),
+                    content: format!("needle in body {n}. {}", "text. ".repeat(150)),
+                    tool_name: None,
+                    project: Some("leteo".to_owned()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                })
+                .unwrap();
+        }
+    }
+
+    let searched = server
+        .mem_search(Parameters(
+            serde_json::from_value(json!({ "query": "needle", "project": "leteo", "limit": 10 }))
+                .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(searched.results.len(), total, "the fixture fills one page");
+    for (rank, result) in searched.results.iter().enumerate() {
+        let hit = &result.observation;
+        if rank < SEARCH_PREVIEW_ROWS {
+            assert!(
+                hit.content_truncated,
+                "row {rank} is one of the page's leading rows"
+            );
+            assert!(hit.content.len() < PREVIEW_BYTES + 32, "row {rank}");
+        } else {
+            assert!(hit.content.is_empty(), "row {rank} is a title row");
+            assert!(!hit.content_truncated, "row {rank}");
+            assert!(hit.title.starts_with("Paging needle"), "row {rank}");
+        }
+    }
+
+    let payload = serde_json::to_value(&searched).unwrap();
+    let rows = payload["results"].as_array().unwrap();
+    assert!(
+        rows[SEARCH_PREVIEW_ROWS - 1].get("content").is_some(),
+        "the last previewed row carries its body"
+    );
+    assert!(
+        rows[SEARCH_PREVIEW_ROWS].get("content").is_none(),
+        "the first title row omits it rather than sending an empty string"
+    );
+
+    // The published schema has to say the same, or a client that validates
+    // against it would refuse the reply this tool just sent.
+    let schema = serde_json::to_value(schemars::schema_for!(SearchOutput)).unwrap();
+    let row = &schema["$defs"]["SearchResultOutput"];
+    let required = row["required"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !required.iter().any(|field| field == "content"),
+        "a title row carries no `content`, so the schema cannot require one: {row}"
+    );
+    assert_eq!(
+        row["properties"]["content"]["type"], "string",
+        "when it is there, it is the same 400-byte-preview string as before"
+    );
+}
+
 #[test]
 fn every_listing_previews_not_just_search_and_context() {
     let (_temp, server) = test_server(McpOptions::default());
@@ -4625,6 +4708,23 @@ fn a_suggested_topic_key_is_the_key_a_search_looks_for() {
         "the key the tool gave has to be the key the search normalises to"
     );
     assert_eq!(found.results[0].observation.title, title);
+}
+
+/// The description names how many rows carry a body, and the constant is the
+/// number it names. A literal in a `#[tool]` attribute cannot read the
+/// constant, so this test is the one place the two are held together.
+#[test]
+fn the_search_description_publishes_the_row_count_the_reply_previews() {
+    let tool = LeteoMcpServer::router()
+        .list_all()
+        .into_iter()
+        .find(|tool| tool.name == "mem_search")
+        .expect("mem_search is published");
+    let description = tool.description.expect("mem_search has a description");
+    assert!(
+        description.contains(&format!("first {SEARCH_PREVIEW_ROWS} rows")),
+        "the description has to say how many rows carry a body, and it says {description:?}"
+    );
 }
 
 #[test]

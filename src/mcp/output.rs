@@ -1165,13 +1165,20 @@ impl SearchOutput {
         let envelope_project = project_context.project.clone();
         let results: Vec<SearchResultOutput> = value
             .into_iter()
-            .map(|result| {
+            .enumerate()
+            .map(|(rank, result)| {
                 let said = caveats
                     .get(&result.observation.sync_id)
                     .cloned()
                     .unwrap_or_default();
                 let (partial, semantic) = (result.partial, result.semantic);
-                let mut observation = ObservationOutput::from(result.observation).preview();
+                let mut observation = ObservationOutput::from(result.observation);
+                if rank < crate::mcp::SEARCH_PREVIEW_ROWS {
+                    observation = observation.preview();
+                } else {
+                    observation.content = String::new();
+                    observation.content_truncated = false;
+                }
                 observation.caveats = said.into_iter().map(Into::into).collect();
                 SearchResultOutput {
                     observation: SearchHit::new(observation, &envelope_project),
@@ -1242,12 +1249,21 @@ pub(super) struct SearchResultOutput {
 // nothing to a reader. `project` and `scope` are sent only when they say
 // something the reply does not already: the envelope names the project, and
 // `project` is the default scope.
+//
+// `content` is absent below the previewed rows. A body on every row made a full
+// page the largest thing this tool sent, and the tail of a page is where an
+// agent chooses between memories rather than reads them: the title, type and id
+// are what it needs, and `mem_get_observation` reads the rest.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SearchHit {
     pub(super) id: i64,
     #[serde(rename = "type")]
     pub(super) kind: String,
     pub(super) title: String,
+    /// The memory's body, for the page's leading rows, as a 400-byte preview
+    /// when it is longer; absent on the rows after them, which carry the title,
+    /// type and id only. Read one in full with mem_get_observation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(super) content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tool_name: Option<String>,

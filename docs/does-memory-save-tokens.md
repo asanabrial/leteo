@@ -200,6 +200,49 @@ The row is not Engram being terse. Its replies to five of the six queries were b
 
 What does not depend on the queries: Leteo's session start is a fifth larger than Engram's, its per-prompt hook costs twice as much over twenty prompts while speaking on 11 of them, and its block after a compaction is a third smaller. A second run of the same session gave 20,207 and 15,190 upfront, so the totals repeat to within 0.3%.
 
+### The search page, cut to its leading rows
+
+The 1,049 above is the row the cost was filed on, and most of it was one
+decision: every row of a ten-row page carried a 400-byte preview. A page now
+previews its first three rows and lists the rest as title rows — title, type,
+id, and no `content` at all — so an agent that wants the body of row seven
+reads it with `mem_get_observation`.
+
+Three was measured, not chosen. On `session_cost.py`'s own 91-memory fixture
+(two projects, its 25 committed queries, tiktoken `cl100k_base`):
+
+```
+  previewed rows    mem_search (mean)    session upfront    session deferred
+  every row (10)              367.8            12,706             6,783
+  3                           296.8            12,325             6,378
+  5                           315.6            12,394             6,448
+```
+
+A second run of the three-row session gave 12,297 and 6,351, within the 0.3%
+the earlier table repeats to.
+
+```
+cargo build --release
+python3 tools/memory-bench/session_cost.py \
+    --leteo-bin target/release/leteo --build-fixture fixture.db
+python3 tools/memory-bench/session_cost.py \
+    --leteo-bin target/release/leteo --leteo-store fixture.db \
+    --project alpha-api --workdir /tmp/sc
+```
+
+This is a different store from the table above, so 367.8 is read against the
+296.8 and 315.6 beside it and not against the 1,049. The saving per page depends
+on how many rows the queries fill: the fixture's mean page is not the private
+store's.
+
+Two things are not measured here. **The agent round was not re-run**, so this
+page does not say that a title row costs an agent one more call, or that it does
+not; what it says is that the ranked list, its order and its count are the same
+as before, because only the body after the cut was withheld, and that every row
+keeps the id and title `mem_get_observation` needs. **Five was not spent on
+anything the fixture asked for**: it buys bodies for two rows and 18.8 tokens
+per search, and no query in the fixture set reads past the third.
+
 ### The tool list, corrected
 
 An earlier version of this page put the `tools/list` array at 19 tools, 47,781 bytes and about 12,000 tokens, and called it 78% of the fixed cost. Two things were wrong. The count: the agent profile has **20** tools (the default profile has 23). And the measure: the array holds more than the model is sent. A client shows the model each tool's name, description and input schema. The **output schema** of each tool is in the array too, and the model is not sent it. Counted properly:

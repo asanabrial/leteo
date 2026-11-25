@@ -1056,6 +1056,23 @@ impl From<MatchMode> for SearchMode {
 /// characters, and the agent was told it had been shown more than it had.
 pub(crate) const PREVIEW_BYTES: usize = 400;
 
+/// How many rows of a search page carry a body.
+///
+/// A ten-row page of 400-byte previews was the whole of the gap the session
+/// measurement found against Engram: 1,049 tokens per search against 90, six
+/// to a session. A page needs enough to choose from, not enough to read, and
+/// the title, type and id already say whether a memory is the one — the body
+/// settles it for the rows most likely to be, and the rest are read whole with
+/// `mem_get_observation` when they are not.
+///
+/// Three rather than five: measured with `tools/memory-bench/session_cost.py`
+/// over its 91-memory fixture (25 queries, `cl100k_base`), the mean search cost
+/// falls from 367.8 tokens to 296.8 at three and 315.6 at five. The ranked list
+/// and its count are the same at either number and at neither, so the choice is
+/// the cheaper one; five buys bodies for two rows nothing in the fixture asked
+/// to read.
+pub(crate) const SEARCH_PREVIEW_ROWS: usize = 3;
+
 fn default_observation_type() -> String {
     "manual".to_owned()
 }

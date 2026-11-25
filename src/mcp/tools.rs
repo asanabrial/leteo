@@ -444,8 +444,10 @@ impl LeteoMcpServer {
                        filters. When the words find little or nothing it also matches \
                        by meaning, in 13 languages, and marks those results `semantic`. \
                        Answers about the current project unless you pass a project or \
-                       all_projects. Long bodies come back as a 400-byte preview marked \
-                       `content_truncated`; read one in full with mem_get_observation.",
+                       all_projects. The first 3 rows carry their body, a 400-byte \
+                       preview marked `content_truncated` when longer; the rest carry \
+                       title, type and id only, with `content` absent. Read any row in \
+                       full with mem_get_observation.",
         annotations(
             title = "Search Memory",
             read_only_hint = true,

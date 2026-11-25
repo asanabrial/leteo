@@ -1,13 +1,13 @@
 ---
 name: leteo-memory
-description: "ALWAYS ACTIVE — Persistent memory protocol. You MUST save decisions, conventions, bugs, and discoveries to Leteo proactively. Do NOT wait for the user to ask."
+description: "Persistent memory protocol. You MUST save decisions, conventions, bugs, and discoveries to Leteo proactively. Do NOT wait for the user to ask."
 ---
 
 # Leteo Persistent Memory — Protocol
 
 You have access to Leteo, a persistent memory system that survives across
-sessions and compactions. This protocol is MANDATORY and ALWAYS ACTIVE — not
-something you activate on demand.
+sessions and compactions. This protocol is mandatory — not something you
+activate on demand.
 
 ## AVAILABLE TOOLS
 
@@ -227,21 +227,31 @@ the text you store, so a memory is never an answer.
 On any reference to past work — "remember", "what did we do", "how did we solve
 it", or the same in whatever language the user writes in:
 
-1. `mem_context` first. It is the cheapest and covers recent sessions.
-2. `mem_search` if that came up short — with the words the memory would carry,
-   which are not always the words of the question. A memory is written in the
-   language the conversation was held in, or in the one `leteo setup` pinned —
-   the session context says which — and the question does not always arrive in
-   that language. `cobertura` against a store that says `coverage` returns
-   nothing at all, and an empty result never says why. Identifiers, paths,
-   numbers and error strings cross languages unchanged, so lead with those,
-   and try the same idea in the language the store holds before concluding a
-   thing was never saved.
-3. `mem_get_observation` for the whole text once something looks right. The
+1. `mem_search` with the words the memory would carry — which are not always
+   the words of the question. A memory is written in the language the
+   conversation was held in, or in the one `leteo setup` pinned — the session
+   context says which — and the question does not always arrive in that
+   language. `cobertura` against a store that says `coverage` returns nothing
+   at all, and an empty result never says why. Identifiers, paths, numbers and
+   error strings cross languages unchanged, so lead with those, and try the
+   same idea in the language the store holds before concluding a thing was
+   never saved.
+2. `mem_get_observation` for the whole text once something looks right. The
    block a session opens with is an index, not the memories themselves: every
-   entry in it, the pinned ones included, is a title alone. `mem_context` gives
-   its newest few a short preview, marked `content_truncated` when it was cut.
-   Every entry carries its `#id`, and that is what to fetch by.
+   entry in it, the pinned ones included, is a title alone. Every entry carries
+   its `#id`, and that is what to fetch by.
+
+   Assume the answer is not in what you were handed. A memory here runs to
+   about two thousand characters, and the names, paths, numbers and error
+   strings — the part written to be worth keeping — are in the body, never in
+   a title and rarely in a preview. Fetch before answering from either;
+   guessing from one is how a version number turns into the wrong version
+   number.
+
+`mem_context` answers a different question — everything a project holds — and
+it is what a session opens with where the hook ran. Call it when the session
+did not open with a block, when you have lost it, or for another project; not
+as the first step of looking something up.
 
    Assume the answer is not in what you were handed. A memory here runs to
    about two thousand characters, and the names, paths, numbers and error
@@ -279,7 +289,8 @@ When you see a compaction notice:
 
 1. Call `mem_session_summary` with the compacted summary **first**. Without it,
    everything from before the compaction is lost to memory as well as context.
-2. Call `mem_context` to recover what earlier sessions knew.
+2. The post-compaction block carries what earlier sessions knew. If it did not
+   arrive, call `mem_context` to restore it.
 3. Only then carry on with the work.
 
 ## SESSION SUMMARY SHAPE

@@ -1644,7 +1644,9 @@ mod tests {
                      ALTER TABLE memory_relations ADD COLUMN confidence REAL;
                      UPDATE sessions
                         SET summary = 'closing <private>token</private> note',
-                            directory = 'relative/place';",
+                            directory = 'relative/place';
+                     INSERT INTO sessions (id, project, directory, started_at)
+                        VALUES ('s2', 'proj', '/tmp/absolute', datetime('now'));",
                 )
                 .unwrap();
             source
@@ -1655,12 +1657,13 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
                     [],
                 )
                 .unwrap();
-            let long = format!("{}tail", "x".repeat(bound + 500));
+            let long_body = format!("{}tail", "x".repeat(bound + 500));
+            let long_title = format!("{} title", "t".repeat(bound + 50));
             source
                 .execute(
                     "INSERT INTO observations (sync_id, session_id, type, title, content, project)
-                     VALUES ('obs-long', 's1', 'decision', 'A long body', ?1, 'proj')",
-                    [&long],
+                     VALUES ('obs-long', 's1', 'decision', ?1, ?2, 'proj')",
+                    rusqlite::params![long_title, long_body],
                 )
                 .unwrap();
             source
@@ -1672,12 +1675,27 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
                 .unwrap();
             source
                 .execute(
+                    "INSERT INTO user_prompts (session_id, content, project)
+                     VALUES ('s1', ?1, 'Leteo')",
+                    [&format!("{}tail", "y".repeat(bound + 100))],
+                )
+                .unwrap();
+            source
+                .execute(
                     "INSERT INTO memory_relations
                         (sync_id, source_id, target_id, relation, judgment_status, reason,
                          evidence, confidence)
                      VALUES ('rel-private', 'obs-private', 'obs-long', 'related', 'judged',
                              'because <private>secret</private>', 'saw <private>secret</private>', 42.0)",
                     [],
+                )
+                .unwrap();
+            source
+                .execute_batch(
+                    "INSERT INTO memory_relations
+                        (sync_id, source_id, target_id, relation, judgment_status, confidence)
+                     VALUES ('rel-good', 'obs-private', 'obs-long', 'related', 'judged', 0.5),
+                            ('rel-boundary', 'obs-private', 'obs-long', 'related', 'judged', 1.0);",
                 )
                 .unwrap();
         }
@@ -1710,6 +1728,16 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
         assert_eq!(long.len(), bound, "cut to the published bound");
         assert!(long.ends_with("... [truncated]"), "{long}");
 
+        let long_title: String = connection
+            .query_row(
+                "SELECT title FROM observations WHERE sync_id = 'obs-long'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(long_title.len(), bound, "the title is cut to the bound too");
+        assert!(long_title.ends_with("... [truncated]"), "{long_title}");
+
         let (summary, directory): (String, String) = connection
             .query_row(
                 "SELECT summary, directory FROM sessions WHERE id = 's1'",
@@ -1719,11 +1747,39 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
             .unwrap();
         assert_eq!(summary, "closing [REDACTED] note");
         assert_eq!(directory, "", "a relative directory names no fixed place");
+        let absolute: String = connection
+            .query_row(
+                "SELECT directory FROM sessions WHERE id = 's2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            absolute, "/tmp/absolute",
+            "an absolute one is kept as it is"
+        );
 
         let prompt: String = connection
-            .query_row("SELECT content FROM prompts", [], |row| row.get(0))
+            .query_row(
+                "SELECT content FROM prompts WHERE project = 'proj'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(prompt, "why [REDACTED] here?");
+        let (long_prompt, prompt_project): (String, String) = connection
+            .query_row(
+                "SELECT content, project FROM prompts WHERE project = 'leteo'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            long_prompt.len(),
+            bound,
+            "a prompt is cut to the same bound"
+        );
+        assert_eq!(prompt_project, "leteo", "the fold every query narrows by");
 
         let (reason, evidence, confidence): (String, String, Option<f64>) = connection
             .query_row(
@@ -1737,6 +1793,25 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
         assert_eq!(
             confidence, None,
             "a confidence outside zero and one is no confidence"
+        );
+        let confidence_of = |sync_id: &str| -> Option<f64> {
+            connection
+                .query_row(
+                    "SELECT confidence FROM memory_relations WHERE sync_id = ?1",
+                    [sync_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            confidence_of("rel-good"),
+            Some(0.5),
+            "a judged confidence survives"
+        );
+        assert_eq!(
+            confidence_of("rel-boundary"),
+            Some(1.0),
+            "so does the boundary"
         );
     }
 

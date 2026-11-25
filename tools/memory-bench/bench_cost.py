@@ -1,5 +1,6 @@
 import json, os, shutil, statistics as st, subprocess, time, uuid
 from mcpclient import MCP, BENCH, ENGRAM, LETEO, ENGRAM_QUIET_ENV
+from quality import PUBLISHED_LIMIT
 PORT = "17437"
 bindir = os.path.join(BENCH, "bin"); os.makedirs(bindir, exist_ok=True)
 if not os.path.exists(os.path.join(bindir, "engram")): os.symlink(ENGRAM, os.path.join(bindir, "engram"))
@@ -14,8 +15,8 @@ print("== reply bytes (project alpha-api, 85 memories) ==")
 for e in ("engram", "leteo"):
     m = MCP(e, "alpha-api")
     for q in ("service", "latency"):
-        t, _, _ = m.call("mem_search", {"query": q, "limit": 20})
-        d = json.loads(t); print(f"{e} mem_search '{q}' limit=20: {len(d.get('results') or [])} results, {len(t.encode())} bytes")
+        t, _, _ = m.call("mem_search", {"query": q, "limit": PUBLISHED_LIMIT})
+        d = json.loads(t); print(f"{e} mem_search '{q}' limit={PUBLISHED_LIMIT}: {len(d.get('results') or [])} results, {len(t.encode())} bytes")
     t, _, _ = m.call("mem_context", {}); print(f"{e} mem_context (defaults): {len(t.encode())} bytes")
     m.close()
 

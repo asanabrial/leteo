@@ -100,3 +100,29 @@ def call_json(m, tool, args):
         return json.loads(text), text, dt
     except ValueError:
         raise UnusableReply(f"{tool} answered something that is not JSON: {text[:300]}")
+
+
+def save_corpus(servers, members):
+    """Save a corpus through `mem_save` and answer each memory's id by its key.
+
+    A save that merged into an earlier memory leaves a target without an id of
+    its own, and every query for it would then be scored against the wrong row;
+    two memories given one id collapse a corpus without saying so. Both are
+    refused rather than measured, which is the same rule for the ratchet's
+    floors and the paired comparison.
+    """
+    ids = {}
+    for memory in members:
+        args = dict(title=memory["title"], content=memory["content"], type=memory["type"])
+        if memory["topic"]:
+            args["topic_key"] = memory["topic"]
+        reply, _, _ = call_json(servers[memory["project"]], "mem_save", args)
+        if reply.get("status") != "inserted" or reply.get("project") != memory["project"]:
+            raise UnusableReply(
+                f"{memory['key']} was not inserted into {memory['project']}: "
+                f"{json.dumps(reply)[:300]}"
+            )
+        ids[memory["key"]] = reply["observation"]["id"]
+    if len(set(ids.values())) != len(members):
+        raise UnusableReply("two corpus memories were given the same id")
+    return ids

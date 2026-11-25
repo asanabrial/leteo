@@ -4,6 +4,23 @@ All notable changes to Leteo are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **One command says whether a change cost a search the previous binary
+  answered.** `tools/memory-bench/precision.py` loads two corpora — the
+  ratchet's 117 questions and the held-out comparison corpus's 56 — into a
+  store per binary, asks both the same questions at the limit an agent gets and
+  at the harness's twenty, and prints the paired rank of every question that
+  moved, so a drop another query's gain cancels is still visible. It exits
+  non-zero when hit@1 or MRR is lower on the second binary at either limit, and
+  prints what one query is worth on each corpus (0.86 points on 117, 1.79 on
+  56) because a smaller difference is not evidence from that corpus. CI builds
+  the pull request's merge base and runs it beside the ratchet, and runs the
+  harness's own Python tests, which ran nowhere before. The harness no longer
+  restates the default limit: `quality.py` reads it from the product's
+  `DEFAULT_SEARCH_LIMIT` and is the one place the twenty lives, with a test
+  that holds the number to what a search with no `limit` returns (#452).
+
 ### Fixed
 
 - **A memory can no longer supersede itself, directly or through a cycle.**

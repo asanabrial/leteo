@@ -15,9 +15,9 @@ os.environ.setdefault("BENCH_STATE", tempfile.mkdtemp(prefix="leteo-inflection-"
 
 from inflection_sets import SETS
 from mcpclient import MCP
+from quality import PUBLISHED_LIMIT as LIMIT
 
 PROJECT = "alpha-api"
-LIMIT = 20
 
 
 class NotStrict(Exception):

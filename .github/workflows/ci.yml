@@ -474,7 +474,12 @@ jobs:
     name: Search Quality
     runs-on: ubuntu-latest
     steps:
+      # The whole history, because the paired comparison below builds the merge
+      # base and needs to name it: `origin/main` is a commit, not a shallow
+      # boundary, only when the clone carried its history.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -484,6 +489,32 @@ jobs:
         env:
           LETEO_BIN: ${{ github.workspace }}/target/release/leteo
           LETEO_MODEL_DIR: ${{ github.workspace }}/assets/model
+      # Build the base this change would land on, so the ranking can be compared
+      # against the binary an agent has rather than against a floor somebody set
+      # and nobody has re-measured. The base is the pull request's base commit, or
+      # on a push to `main` the event's `before` — the tip every other event
+      # leaves empty, where the merge base with `origin/main` is the base. The
+      # unit-tests job applies the same rule above, for the same reason.
+      - name: Build the merge base for the paired comparison
+        run: |
+          base="$BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=origin/main
+          fi
+          git worktree add --detach "$RUNNER_TEMP/leteo-base" "$(git merge-base HEAD "$base")"
+          cd "$RUNNER_TEMP/leteo-base"
+          cargo build --release --locked
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+      - run: python3 tools/memory-bench/precision.py --base "$RUNNER_TEMP/leteo-base/target/release/leteo" --head target/release/leteo
+        env:
+          LETEO_MODEL_DIR: ${{ github.workspace }}/assets/model
+      # The harness's own tests. They never ran anywhere before this step, and a
+      # harness whose hit mapping or skip handling broke would keep publishing
+      # numbers that looked fine.
+      - run: python3 -m pytest tools/memory-bench
+        env:
+          LETEO_BIN: ${{ github.workspace }}/target/release/leteo
       - run: python3 tools/semantic/hardset/evaluate.py target/release/leteo
         env:
           LETEO_MODEL_DIR: ${{ github.workspace }}/assets/model

@@ -334,9 +334,10 @@ drifted; the individual scripts (`bench_engines.py` for the head-to-head,
 `load_engram.py`, `load_leteo.sh`, `bench_search.py`, `bench_any.py`,
 `bench_cost.py`) still run on their own, and `compare.py` skips a step it cannot
 run and says so. `python3 -m unittest discover -s tools/memory-bench -p
-'test_*.py'`, or `python3 -m pytest tools/memory-bench`, checks the hit mapping,
-the isolation, the skip handling and the paired comparison's two drops; CI runs
-the second form in the `search-quality` job beside the ratchet.
+'test_*.py'` checks the hit mapping, the isolation, the skip handling and the
+paired comparison's two drops; `python3 -m pytest tools/memory-bench` collects
+the same tests where pytest is installed, and CI runs the discovery form
+because the runner has no pytest.
 
 `compare.py --tier llm` is the one opt-in flag for the engines that need a local
 model, and it is never run by CI. It measures mem0 (two rows, `infer=False` and

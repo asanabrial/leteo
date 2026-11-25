@@ -511,8 +511,10 @@ jobs:
           LETEO_MODEL_DIR: ${{ github.workspace }}/assets/model
       # The harness's own tests. They never ran anywhere before this step, and a
       # harness whose hit mapping or skip handling broke would keep publishing
-      # numbers that looked fine.
-      - run: python3 -m pytest tools/memory-bench
+      # numbers that looked fine. Discovery rather than pytest: the runner has
+      # no pytest, and installing one to collect unittest classes is a
+      # dependency this step does not need.
+      - run: python3 -m unittest discover -s tools/memory-bench -p 'test_*.py'
         env:
           LETEO_BIN: ${{ github.workspace }}/target/release/leteo
       - run: python3 tools/semantic/hardset/evaluate.py target/release/leteo

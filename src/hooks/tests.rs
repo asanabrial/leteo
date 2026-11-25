@@ -4038,6 +4038,148 @@ fn a_spooled_capture_without_a_session_is_stored_when_drained() {
     );
 }
 
+/// A session owns its project for the whole conversation, so a capture spooled
+/// under the payload's guess is filed where that session lives when it is
+/// replayed. The busy-open path could not ask; the replay can.
+#[test]
+fn a_replayed_capture_is_filed_under_its_session_s_project() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    store
+        .create_session("shared", "myrepo", "C:/work/wt")
+        .unwrap();
+    let capture = PassiveCapture {
+        session_id: "shared".to_owned(),
+        project: "wt-folder".to_owned(),
+        content: "## Key Learnings:
+1. Filed under the session, not the folder the busy open froze"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "C:/work/wt").unwrap();
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(report.stored, 1, "the capture is stored: {report:?}");
+    assert_eq!(
+        store.get_session("shared").unwrap().project,
+        "myrepo",
+        "the existing session kept its project"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("myrepo"), Some(10), true)
+            .unwrap()
+            .len(),
+        1,
+        "the learning reached the project the session belongs to"
+    );
+    assert!(
+        store
+            .recent_observations(Some("wt-folder"), Some(10), true)
+            .unwrap()
+            .is_empty(),
+        "and not the folder's name"
+    );
+}
+
+/// The other half the busy-open path could not do: a guess gives way to the
+/// project the directory's sessions recorded, exactly as on the live path.
+#[test]
+fn a_replayed_guess_gives_way_to_the_project_the_directory_recorded() {
+    let temp = TempDir::new().unwrap();
+    let removed = temp.path().join("wt-deleted");
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    let data_dir = store.data_dir().to_path_buf();
+    store
+        .create_session("earlier", "real-project", &removed.to_string_lossy())
+        .unwrap();
+    let capture = PassiveCapture {
+        session_id: "later".to_owned(),
+        project: "wt-deleted".to_owned(),
+        content: "## Key Learnings:
+1. The directory's sessions decide which project this is"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool_unsettled(
+        &data_dir,
+        "SubagentStop",
+        &capture,
+        &removed.to_string_lossy(),
+        spool::Unsettled {
+            guessed: true,
+            derived_session: false,
+        },
+    )
+    .unwrap();
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(report.stored, 1, "{report:?}");
+    assert_eq!(store.get_session("later").unwrap().project, "real-project");
+    assert_eq!(
+        store
+            .recent_observations(Some("real-project"), Some(10), true)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .recent_observations(Some("wt-deleted"), Some(10), true)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// When the payload named no session, the id was derived from the guess. A
+/// replay that corrects the project derives the id again, or the capture would
+/// land in a session the live path would never have opened.
+#[test]
+fn a_replayed_capture_without_a_named_session_derives_the_id_again() {
+    let temp = TempDir::new().unwrap();
+    let removed = temp.path().join("wt-deleted");
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    let data_dir = store.data_dir().to_path_buf();
+    store
+        .create_session("earlier", "real-project", &removed.to_string_lossy())
+        .unwrap();
+    let guessed = crate::mcp::manual_session_id("wt-deleted");
+    let capture = PassiveCapture {
+        session_id: guessed.clone(),
+        project: "wt-deleted".to_owned(),
+        content: "## Key Learnings:
+1. The id follows the project, not the folder"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool_unsettled(
+        &data_dir,
+        "SubagentStop",
+        &capture,
+        &removed.to_string_lossy(),
+        spool::Unsettled {
+            guessed: true,
+            derived_session: true,
+        },
+    )
+    .unwrap();
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(report.stored, 1, "{report:?}");
+    let resolved = crate::mcp::manual_session_id("real-project");
+    assert!(
+        store.get_session(&resolved).is_ok(),
+        "the session follows the corrected project"
+    );
+    assert!(
+        store.get_session(&guessed).is_err(),
+        "the guess's session was not invented"
+    );
+}
+
 /// A temporary file is not an entry, so a concurrent drain never claims one.
 ///
 /// `spool` writes to a `.tmp` name and renames it into place. If the temporary

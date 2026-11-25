@@ -219,6 +219,9 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
     let dir = directory(store.data_dir());
     let mut report = DrainReport::default();
     sweep(&dir, now_millis());
+    // Before listing: a claim whose owner died is not a capture in progress,
+    // and `entries` cannot see it under the name the dead process left.
+    release_abandoned_claims(&dir);
     for path in entries_or_report(&dir) {
         if Instant::now() >= deadline {
             break;
@@ -306,16 +309,23 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
 }
 
 /// The entries waiting in `dir`, oldest first, with the oldest entry's age.
+///
+/// A claim in progress counts. It is one of the two states a capture is in
+/// between its write and its replay, and `doctor` reads this number to say
+/// whether anything is waiting: a claim whose owner was killed sits here until
+/// the next drain releases it, and a report of zero would be the silence the
+/// issue was filed for.
 pub(crate) fn pending(dir: &Path) -> std::io::Result<Pending> {
     let now = now_millis();
-    let entries = entries(dir)?;
-    let oldest = entries
+    let mut waiting = entries(dir)?;
+    waiting.extend(claims(dir)?);
+    let oldest = waiting
         .iter()
         .filter_map(|path| entry_millis(path))
         .map(|written| Duration::from_millis(now.saturating_sub(written).max(0) as u64))
         .max();
     Ok(Pending {
-        entries: entries.len(),
+        entries: waiting.len(),
         oldest,
     })
 }
@@ -347,8 +357,8 @@ pub(crate) fn describe_age(age: Duration) -> String {
 ///
 /// A claimed file is not one, and neither is a claim's marker: the first is a
 /// name this directory made up for an entry already being replayed, ending in
-/// `.claimed-<pid>`, and the second is the `<entry>.claim` that fences the
-/// rename. Neither ends in `.json`.
+/// `.claimed-<pid>-<millis>`, and the second is the `<entry>.claim` that fences
+/// the rename. Neither ends in `.json`.
 fn entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
@@ -380,6 +390,139 @@ fn entries_or_report(dir: &Path) -> Vec<PathBuf> {
         );
         Vec::new()
     })
+}
+
+/// How long a claim may stand before the next drain takes it back whatever its
+/// pid says.
+///
+/// The longest hook budget is about nine seconds (§`HookEvent::store_wait`), so
+/// a minute is past any drain that is still running. This is the second answer
+/// for a pid check that cannot tell: a process killed and left a zombie answers
+/// `kill -0`, and a platform without a probe falls back to "alive".
+const CLAIM_STALE_MILLIS: i64 = 60_000;
+
+/// The original name of a claimed entry, the process that claimed it, and when.
+///
+/// [`claim`] renames `<entry>.json` to `<entry>.json.claimed-<pid>-<millis>`.
+/// A name that does not carry a numeric pid is not one of ours, so it is left
+/// alone. The time is absent in a claim written by a build before it was
+/// recorded, which is why it is optional rather than required.
+fn claimed(path: &Path) -> Option<(PathBuf, u32, Option<i64>)> {
+    let name = path.file_name()?.to_str()?;
+    let (original, rest) = name.rsplit_once(".claimed-")?;
+    let mut fields = rest.split('-');
+    let pid = fields.next()?;
+    if pid.is_empty() || !pid.chars().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    Some((
+        path.with_file_name(original),
+        pid.parse().ok()?,
+        fields.next().and_then(|at| at.parse().ok()),
+    ))
+}
+
+/// The claims in `dir`, whether or not their owner still runs.
+fn claims(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let read = match fs::read_dir(dir) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut found = Vec::new();
+    for entry in read {
+        let path = entry?.path();
+        if claimed(&path).is_some() {
+            found.push(path);
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Returns the entries a dead drainer left claimed.
+///
+/// The claim is a rename and the marker that fences it is removed afterwards,
+/// so a hook killed between them leaves the capture under a name only that
+/// process would ever look for. The entry is the subagent's only copy and
+/// `doctor` counted it as nothing waiting. Returning it to its own name is what
+/// the next drain needs; a live owner's claim is left exactly where it is.
+///
+/// The age comes from the claim's own name, not from the file's mtime: the
+/// claim is a rename, and a rename does not touch the mtime, so an entry that
+/// waited a minute before it was claimed would read as an abandoned claim the
+/// moment a live drainer took it. A name written before the time was recorded
+/// has none, and is answered by the pid alone.
+fn release_abandoned_claims(dir: &Path) {
+    let Ok(found) = claims(dir) else {
+        return;
+    };
+    let now = now_millis();
+    for path in found {
+        let Some((original, pid, claimed_at)) = claimed(&path) else {
+            continue;
+        };
+        let old = claimed_at.is_some_and(|at| now.saturating_sub(at) > CLAIM_STALE_MILLIS);
+        // The release can never replace a capture with another one: a claim
+        // takes the entry's only name, and an entry name is unique to its
+        // write, so once the original is taken it is either this entry
+        // returned by another drain — in which case this call's source is gone
+        // and the rename fails — or nothing. A failed rename leaves the file
+        // where it is.
+        if old || !process_is_alive(pid) {
+            let _ = fs::rename(&path, &original);
+            // The marker outlives the kill and fences the claim that would
+            // replay the entry, so it goes too, after the rename.
+            if let Some(marker) = marker_path(&original) {
+                let _ = fs::remove_file(marker);
+            }
+        }
+    }
+}
+
+/// Whether a process still exists, without signalling it.
+///
+/// `ps -p <pid> -o pid=` prints the number for a process that exists and
+/// nothing at all for one that does not, in every locale and for a process the
+/// caller does not own. Its messages are never read: only the empty output is.
+/// A probe that cannot run at all answers "alive", because taking a live
+/// drainer's claim back would replay one capture twice — worse than the age
+/// bound below, which releases a claim no drain could still be holding.
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+    {
+        Ok(output) => !String::from_utf8_lossy(&output.stdout).trim().is_empty(),
+        Err(_) => true,
+    }
+}
+
+/// The same question on Windows, through `tasklist`.
+///
+/// A pid that no longer exists is not listed, so its own number does not appear
+/// in the output. The number has to be a whole field of a line rather than a
+/// substring, or a short pid could match another process's pid or a column that
+/// happens to contain it. A probe that cannot run answers "alive", for the same
+/// reason the Unix one does.
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    let Ok(output) = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+    else {
+        return true;
+    };
+    let needle = pid.to_string();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.split_whitespace().any(|field| field == needle))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
 }
 
 /// Removes entries past their retention, and the claimed litter beside them.
@@ -434,7 +577,7 @@ pub(super) fn claim(path: &Path) -> Option<PathBuf> {
         .open(&marker)
         .ok()?;
     let mut name = path.file_name()?.to_os_string();
-    name.push(format!(".claimed-{}", std::process::id()));
+    name.push(format!(".claimed-{}-{}", std::process::id(), now_millis()));
     let claimed = path.with_file_name(name);
     let renamed = fs::rename(path, &claimed);
     // After the rename, never before: the marker has to exist for the whole of

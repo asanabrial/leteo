@@ -76,13 +76,23 @@ struct Entry {
     directory: String,
     content: String,
     source: String,
+    /// Whether `project` is a detection the busy-open path could not check
+    /// against a store. A replay finishes the resolution with the store in hand
+    /// instead of keeping the folder's name.
+    #[serde(default)]
+    guessed: bool,
+    /// Whether the session id came from the payload. When it did not, it was
+    /// derived from `project`, so a replay that corrects the project derives it
+    /// again rather than storing under the guess's session.
+    #[serde(default)]
+    derived_session: bool,
 }
 
 impl Entry {
-    fn capture(&self) -> PassiveCapture {
+    fn capture(&self, session_id: &str, project: &str) -> PassiveCapture {
         PassiveCapture {
-            session_id: self.session_id.clone(),
-            project: self.project.clone(),
+            session_id: session_id.to_owned(),
+            project: project.to_owned(),
             content: self.content.clone(),
             source: self.source.clone(),
         }
@@ -117,6 +127,15 @@ pub struct DrainReport {
     pub remaining: usize,
 }
 
+/// What the busy-open path had to leave unresolved because it had no store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Unsettled {
+    /// The project is a detection, not a name the agent gave.
+    pub guessed: bool,
+    /// The session id was derived from that detection.
+    pub derived_session: bool,
+}
+
 /// Writes one capture beside the database.
 ///
 /// Only for a capture the store refused as busy: a replay of any other failure
@@ -127,11 +146,31 @@ pub struct DrainReport {
 /// The entry is written to a temporary file in the same directory and renamed
 /// into place, so a drain running at the same time never sees half of a turn.
 /// See [`temporary_name`] for why the temporary is not a name the drain reads.
+///
+/// The project and session are settled here. A caller that has a store uses
+/// [`spool_unsettled`] with the default, and the busy-open path records what it
+/// could only guess so the replay can finish it.
 pub(crate) fn spool(
     data_dir: &Path,
     event: &str,
     capture: &PassiveCapture,
     session_directory: &str,
+) -> std::io::Result<()> {
+    spool_unsettled(
+        data_dir,
+        event,
+        capture,
+        session_directory,
+        Unsettled::default(),
+    )
+}
+
+pub(crate) fn spool_unsettled(
+    data_dir: &Path,
+    event: &str,
+    capture: &PassiveCapture,
+    session_directory: &str,
+    unsettled: Unsettled,
 ) -> std::io::Result<()> {
     let dir = directory(data_dir);
     fs::create_dir_all(&dir)?;
@@ -145,6 +184,8 @@ pub(crate) fn spool(
         directory: session_directory.to_owned(),
         content: normalize::strip_private(&capture.content),
         source: capture.source.clone(),
+        guessed: unsettled.guessed,
+        derived_session: unsettled.derived_session,
     };
     let body = serde_json::to_vec(&entry).map_err(std::io::Error::other)?;
     let name = entry_name(now_millis());
@@ -208,7 +249,21 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
         // no session row at all. Ensure it from the entry, exactly as a live
         // `subagent-stop` does, so the replay stores the learnings instead of
         // failing `SessionNotFound` and deleting the subagent's only copy.
-        match store.create_session(&entry.session_id, &entry.project, &entry.directory) {
+        //
+        // The entry carries what the busy-open path could only guess. Finishing
+        // that resolution here is the whole point: a worktree removed before
+        // the store opened files under its folder name instead of the project
+        // its sessions use, and the notes split across two names.
+        let mut project = entry.project.clone();
+        if entry.guessed {
+            project = super::recorded_project(store, project, &entry.directory);
+        }
+        let session_id = if entry.derived_session {
+            crate::mcp::manual_session_id(&project)
+        } else {
+            entry.session_id.clone()
+        };
+        match store.create_session(&session_id, &project, &entry.directory) {
             Ok(_) => {}
             Err(error) if error.is_busy() => {
                 let _ = fs::rename(&claimed, &path);
@@ -221,7 +276,14 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
                 continue;
             }
         }
-        match store.passive_capture_from(entry.capture(), Some(&entry.directory)) {
+        // A session that already exists owns its project, exactly as it does on
+        // the live path. This is the case the spool used to lose: the capture
+        // was filed under the payload's guess while its session stayed under
+        // the project the conversation had always used.
+        let project = super::session_project(store, &session_id, project);
+        match store
+            .passive_capture_from(entry.capture(&session_id, &project), Some(&entry.directory))
+        {
             Ok(result) => {
                 report.stored += result.saved;
                 let _ = fs::remove_file(&claimed);

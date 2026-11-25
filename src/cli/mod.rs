@@ -460,13 +460,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         if error.is_busy()
             && crate::hooks::HookEvent::from(*event) == crate::hooks::HookEvent::SubagentStop
             && let Some((input, _)) = &hook_input
-            && let Some((capture, directory)) = crate::hooks::pending_capture(input)
+            && let Some((capture, directory, unsettled)) = crate::hooks::pending_capture(input)
         {
-            let _ = crate::hooks::spool::spool(
+            let _ = crate::hooks::spool::spool_unsettled(
                 &data_directory,
                 crate::hooks::HookEvent::SubagentStop.hook_event_name(),
                 &capture,
                 &directory,
+                unsettled,
             );
         }
         if *verbose {

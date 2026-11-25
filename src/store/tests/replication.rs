@@ -2078,6 +2078,101 @@ fn a_backfill_queues_a_session_before_what_points_at_it() {
     }
 }
 
+#[test]
+fn a_backfill_queues_only_a_relation_somebody_judged() {
+    // `find_candidates` files a pair as `pending` so an agent can rule on it,
+    // and the live path journals a relation only where a verdict is recorded.
+    // The backfill selected everything but `orphaned`, so enrolling a store
+    // that held any unjudged pair queued a payload the server refuses for want
+    // of `marked_by_actor` and `marked_by_kind`; a refused mutation heads every
+    // batch and push precedes pull, so that peer stopped replicating.
+    let (_temp, mut store) = bare_store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let source = store
+        .add_observation(observation(
+            "s1",
+            "JWT auth session architecture",
+            "first auth decision",
+        ))
+        .unwrap()
+        .observation;
+    let target = store
+        .add_observation(observation(
+            "s1",
+            "JWT auth token architecture",
+            "second auth decision",
+        ))
+        .unwrap()
+        .observation;
+    let candidates = store
+        .find_candidates(
+            target.id,
+            CandidateOptions {
+                limit: Some(1),
+                bm25_floor: Some(0.0),
+                ..CandidateOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        !candidates.is_empty(),
+        "the pair under test was never proposed"
+    );
+    let pending = candidates[0].judgment_id.clone();
+
+    let relation_mutations = |store: &Store| -> i64 {
+        store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_mutations WHERE entity = 'relation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+
+    store.enroll_project("leteo").unwrap();
+    assert_eq!(
+        relation_mutations(&store),
+        0,
+        "a candidate pair is local-only, so enrolling it queues nothing"
+    );
+
+    store
+        .judge_relation(JudgeRelationParams {
+            judgment_id: pending,
+            relation: RELATION_RELATED.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..JudgeRelationParams::default()
+        })
+        .unwrap();
+    assert_eq!(
+        relation_mutations(&store),
+        1,
+        "the same pair, once judged, is what the journal carries"
+    );
+
+    // And the journal reads the same list, so a future caller that reaches it
+    // with a candidate cannot reintroduce the payload the backfill used to
+    // queue.
+    let candidate = store
+        .save_relation(SaveRelationParams {
+            sync_id: normalize::sync_id("rel"),
+            source_id: source.sync_id.clone(),
+            target_id: target.sync_id.clone(),
+        })
+        .unwrap();
+    let tx = store.connection().unchecked_transaction().unwrap();
+    crate::store::wire::enqueue_relation_if_enrolled(&tx, &candidate, "leteo", "leteo").unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        relation_mutations(&store),
+        1,
+        "a candidate stays local even when something asks the journal for it"
+    );
+}
+
 /// A deletion is queued as a deletion, and an acknowledged mutation is only
 /// pruned once it is old.
 #[test]

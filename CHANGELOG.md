@@ -6,6 +6,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Enrolling a project no longer queues relations the server refuses.** The
+  enrolment backfill selected every relation but an `orphaned` one, which
+  includes the `pending` candidates `find_candidates` files for an agent to rule
+  on; the server requires the provenance a verdict writes, so it refused the
+  payload on every attempt, and because push precedes pull the peer stopped
+  replicating in both directions. The backfill queues only the statuses the
+  journal carries, read from the one list both sides apply.
 - **A save never lands on a memory a later one has overtaken.** A `mem_save`
   under the topic key of a memory `mem_judge` had marked superseded rewrote
   that memory, and an identical save inside the dedupe window folded into it:

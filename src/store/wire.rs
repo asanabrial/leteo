@@ -891,6 +891,12 @@ pub(super) fn enqueue_relation_if_enrolled(
     source_project: &str,
     target_project: &str,
 ) -> Result<(), StoreError> {
+    // The journal's own answer to what it carries, so a caller that reached here
+    // with a candidate would still leave it on this machine rather than queue a
+    // payload the server refuses.
+    if !JOURNALED_JUDGMENT_STATUSES.contains(&relation.judgment_status.as_str()) {
+        return Ok(());
+    }
     let enrollment_project = if source_project.is_empty() {
         target_project
     } else {
@@ -1304,7 +1310,18 @@ pub(super) fn backfill_project_tx(tx: &Transaction<'_>, project: &str) -> Result
 /// rule `export_relation_mutations` follows — a relation to a deleted memory is
 /// not something to teach a peer.
 fn backfill_relations_tx(tx: &Transaction<'_>, project: &str) -> Result<(), StoreError> {
-    let mut statement = tx.prepare(
+    // Only what the live path journals, read from the list that decides it. A
+    // candidate pair is `pending` and stays on the machine that proposed it;
+    // the server refuses a relation payload without the provenance a verdict
+    // writes, so queueing one made every push fail, and push precedes pull — the
+    // peer stopped in both directions on the first store holding an unjudged
+    // pair, which is most of them.
+    let journaled = JOURNALED_JUDGMENT_STATUSES
+        .iter()
+        .map(|status| format!("'{status}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = tx.prepare(&format!(
         "SELECT r.sync_id, ifnull(r.source_id, ''), ifnull(r.target_id, ''), r.relation,
                 r.reason, r.evidence, r.confidence, r.judgment_status,
                 r.marked_by_actor, r.marked_by_kind, r.marked_by_model, r.session_id,
@@ -1314,11 +1331,11 @@ fn backfill_relations_tx(tx: &Transaction<'_>, project: &str) -> Result<(), Stor
            JOIN observations target ON target.sync_id = r.target_id AND target.deleted_at IS NULL
            LEFT JOIN sessions src_session ON src_session.id = src.session_id
            LEFT JOIN sessions target_session ON target_session.id = target.session_id
-          WHERE r.judgment_status != 'orphaned'
+          WHERE r.judgment_status IN ({journaled})
             AND LOWER(coalesce(nullif(src.project, ''), src_session.project, '')) = ?1
             AND LOWER(coalesce(nullif(target.project, ''), target_session.project, '')) = ?1
-          ORDER BY datetime(r.created_at), r.sync_id",
-    )?;
+          ORDER BY datetime(r.created_at), r.sync_id"
+    ))?;
     let payloads = statement
         .query_map([project], |row| {
             let sync_id: String = row.get(0)?;

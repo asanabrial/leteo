@@ -2518,6 +2518,18 @@
     "new": ""
   },
   {
+    "name": "backfill: a candidate relation is queued for a peer",
+    "file": "src/store/wire.rs",
+    "old": "WHERE r.judgment_status IN ({journaled})",
+    "new": "WHERE r.judgment_status != 'orphaned'"
+  },
+  {
+    "name": "journal: a candidate relation is written to the queue",
+    "file": "src/store/wire.rs",
+    "old": "if !JOURNALED_JUDGMENT_STATUSES.contains(&relation.judgment_status.as_str()) {",
+    "new": "if false {"
+  },
+  {
     "name": "save: an insert beside a hidden memory drops the caveat that names it",
     "file": "src/mcp/output.rs",
     "old": "        match outcome.overturned.as_deref() {",

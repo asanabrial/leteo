@@ -339,6 +339,16 @@ pub const JUDGMENT_STATUS_PENDING: &str = "pending";
 pub const JUDGMENT_STATUS_JUDGED: &str = "judged";
 pub const JUDGMENT_STATUS_ORPHANED: &str = "orphaned";
 
+/// The judgment statuses the replication journal carries.
+///
+/// The live path journals a relation where a verdict is recorded —
+/// `judge_relation_tx` is the only writer that reaches
+/// `enqueue_relation_if_enrolled` — and a `pending` candidate stays on the
+/// machine that proposed it, because the server requires the provenance a
+/// verdict writes. The journal and the enrolment backfill both read this list,
+/// so enrolling cannot queue a state the live path never would.
+pub const JOURNALED_JUDGMENT_STATUSES: [&str; 1] = [JUDGMENT_STATUS_JUDGED];
+
 pub const LOCAL_SYNC_TARGET: &str = "local";
 /// Days an acknowledged journal row is kept before it is pruned.
 const ACKED_MUTATION_RETENTION_DAYS: i64 = 7;

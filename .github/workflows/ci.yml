@@ -350,6 +350,32 @@ jobs:
           cat handshake.json
           grep -q '"serverInfo"' handshake.json
           grep -q '"mem_search"' handshake.json
+      # The documented way to keep the memories: a named volume over ~/.leteo.
+      # A fresh volume mounted over a directory the image does not have arrives
+      # root-owned, and the store cannot be created in it — which is why the
+      # image creates the directory and gives it to the `leteo` user. The save
+      # proves the write, and a second container reading it back proves the
+      # volume is what carries the store rather than the image.
+      - name: The MCP image writes to a named volume
+        run: |
+          set -o pipefail
+          volume=leteo-mcp-data
+          docker volume create "$volume"
+          trap 'docker volume rm -f "$volume"' EXIT
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mem_save","arguments":{"title":"ci volume","content":"written by the CI handshake"}}}' \
+            | timeout 120 docker run --rm -i -v "$volume:/home/leteo/.leteo" leteo-mcp:ci > save.json
+          cat save.json
+          grep -q '"status":"inserted"' save.json
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mem_search","arguments":{"query":"handshake"}}}' \
+            | timeout 120 docker run --rm -i -v "$volume:/home/leteo/.leteo" leteo-mcp:ci > search.json
+          cat search.json
+          grep -q '"title":"ci volume"' search.json
       # This build's cache scope is the one `release.yml`'s amd64 leg reads, so
       # a release can start from what a `main` run already built rather than
       # from cold. Can, not will: `docker/Dockerfile` has no dependency-only
@@ -390,6 +416,21 @@ jobs:
           file: docker/Dockerfile
           cache-from: type=gha,scope=linux/amd64
           cache-to: type=gha,mode=max,scope=linux/amd64
+      # The route the Docker section documents. CI used to hand buildx
+      # `context: .` itself and never run compose, so the compose file's own
+      # context — `docker/`, where the first `COPY Cargo.toml` fails — was only
+      # ever read by somebody following the README. Runs after the build above
+      # so the compile stage is warm in this builder and only the compose
+      # resolution is exercised. The four values are what the file's `:?`
+      # interpolations demand before it parses; `build` starts nothing, so no
+      # secret has to be one.
+      - name: The compose file builds the cloud image
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          LETEO_DASHBOARD_SECRET: ci-dashboard
+          LETEO_CLOUD_TOKEN_PEPPER: ci-pepper
+        run: docker compose -f docker/docker-compose.yml build
 
   # The half of the published image that used to be built first at tag time.
   # Since #14 the release publishes `docker/Dockerfile` for `linux/amd64` and

@@ -402,13 +402,47 @@ pub fn read_input(mut reader: impl Read) -> Result<HookInput> {
     Ok(input)
 }
 
+/// What this directory's sessions were filed under, newest first.
+///
+/// A detection is a folder's name; the sessions that already live there are
+/// evidence about which project the directory really is. The live path and a
+/// spool replay both ask this, so a capture the busy-open path had to guess can
+/// land where the conversation already lives.
+fn recorded_project(store: &Store, project: String, directory: &str) -> String {
+    match store.recent_projects_in_directory(directory, &project) {
+        Ok(recorded) => recorded.into_iter().next().unwrap_or(project),
+        Err(_) => project,
+    }
+}
+
+/// The project an existing session owns, or `project` when there is none.
+///
+/// An agent that changes directory mid-session would otherwise split one
+/// conversation's memories across two projects, and neither would be whole.
+fn session_project(store: &Store, session_id: &str, project: String) -> String {
+    match store.get_session(session_id) {
+        Ok(session) => {
+            let owned = normalize::project(&session.project);
+            if owned.is_empty() || owned == project {
+                project
+            } else {
+                owned
+            }
+        }
+        Err(_) => project,
+    }
+}
+
 /// The capture a `subagent-stop` payload describes, worked out without a store.
 ///
 /// The CLI reads the payload before it opens the store, so a capture whose open
 /// fails busy can still be spooled — and that path has no session to override
-/// the project from, because there is no store to ask. The project and session
-/// are therefore the payload's own; a replay normalises both again.
-pub(crate) fn pending_capture(input: &HookInput) -> Option<(PassiveCapture, String)> {
+/// the project from, because there is no store to ask. What it could not settle
+/// travels with the entry, so a replay finishes the same resolution with the
+/// store open rather than keeping the folder's name.
+pub(crate) fn pending_capture(
+    input: &HookInput,
+) -> Option<(PassiveCapture, String, spool::Unsettled)> {
     if input.output().trim().is_empty() {
         return None;
     }
@@ -416,9 +450,20 @@ pub(crate) fn pending_capture(input: &HookInput) -> Option<(PassiveCapture, Stri
     let detection = detect_project(&directory);
     let project = resolve_project(input, &detection);
     let session_id = resolve_session_id(input, &project);
+    let named_by_agent = !input
+        .project
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty();
+    let unsettled = spool::Unsettled {
+        guessed: !named_by_agent && detection.is_guess(),
+        derived_session: input.session_id.trim().is_empty(),
+    };
     Some((
         capture_of(input, &session_id, &project),
         directory.to_string_lossy().into_owned(),
+        unsettled,
     ))
 }
 
@@ -461,29 +506,20 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         .unwrap_or_default()
         .trim()
         .is_empty();
+    let guessed = !named_by_agent && detection.is_guess();
     // A guess is a folder's name, and what this directory's sessions were filed
     // under is evidence. It has to be settled before the session exists, because
     // the session then owns its project: a removed worktree opening one under its
     // folder name files the whole conversation there.
-    if !named_by_agent
-        && detection.is_guess()
-        && let Ok(recorded) =
-            store.recent_projects_in_directory(&directory.to_string_lossy(), &project)
-        && let Some(newest) = recorded.into_iter().next()
-    {
-        project = newest;
+    if guessed {
+        project = recorded_project(store, project, &directory.to_string_lossy());
     }
     let session_id = resolve_session_id(input, &project);
 
     // An existing session owns its project, exactly as the MCP tools treat it.
     // An agent that changes directory mid-session would otherwise split one
     // conversation's memories across two projects, and neither would be whole.
-    if let Ok(session) = store.get_session(&session_id) {
-        let session_project = normalize::project(&session.project);
-        if !session_project.is_empty() && session_project != project {
-            project = session_project;
-        }
-    }
+    project = session_project(store, &session_id, project);
     let mut outcome = HookOutcome {
         event: event.hook_event_name(),
         project: project.clone(),

@@ -3721,8 +3721,8 @@ fn a_claim_leaves_an_entry_another_drainer_has_marked() {
     assert!(claimed.exists(), "the claim renamed the entry");
     assert_eq!(
         spool::pending(&spool_dir).unwrap().entries,
-        0,
-        "and it is no longer in the spool"
+        1,
+        "and it is still waiting, under the name the claim gave it"
     );
 }
 
@@ -4178,6 +4178,180 @@ fn a_replayed_capture_without_a_named_session_derives_the_id_again() {
         store.get_session(&guessed).is_err(),
         "the guess's session was not invented"
     );
+}
+
+/// A pid that named a process which has already exited.
+///
+/// Spawned and waited instead of hard-coded, so the test does not depend on
+/// the platform's pid range or on a number that happens to be free today.
+fn pid_that_has_exited() -> u32 {
+    #[cfg(windows)]
+    let mut child = std::process::Command::new("cmd")
+        .args(["/C", "exit"])
+        .spawn()
+        .unwrap();
+    #[cfg(not(windows))]
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+/// The one `.json` entry in the spool, whatever the tests before it left.
+fn spooled_entry(data_dir: &Path) -> PathBuf {
+    let dir = spool::directory(data_dir);
+    std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.to_string_lossy().ends_with(".json"))
+        .expect("the capture was spooled")
+}
+
+fn now_millis() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// The claim is a rename, and a hook killed between it and its marker cleanup
+/// leaves the entry under a name `entries` does not read, with its marker still
+/// standing. The next drain has to find the capture again and clear the fence.
+#[test]
+fn a_claim_left_by_a_dead_process_is_replayed_by_the_next_drain() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "agent-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A capture a killed drainer left claimed"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "C:/repo").unwrap();
+    let entry = spooled_entry(&data_dir);
+    let marker = spool::marker_path(&entry).unwrap();
+    std::fs::write(&marker, "").unwrap();
+    let claimed = entry.with_file_name(format!(
+        "{}.claimed-{}-{}",
+        entry.file_name().unwrap().to_string_lossy(),
+        pid_that_has_exited(),
+        now_millis()
+    ));
+    std::fs::rename(&entry, &claimed).unwrap();
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(
+        report.stored, 1,
+        "the claimed capture was replayed: {report:?}"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("hook-project"), Some(10), true)
+            .unwrap()
+            .len(),
+        1,
+        "the learning reached the store"
+    );
+    assert!(!claimed.exists(), "the claim is not left behind");
+    assert!(!marker.exists(), "nor the marker the killed hook left");
+}
+
+/// `doctor` reads `pending`, and a claimed entry is one of the two states a
+/// capture waits in. Counting only unclaimed names said nothing was waiting
+/// while the only copy sat under a pid.
+#[test]
+fn doctor_counts_a_claimed_entry_as_waiting() {
+    let (_temp, store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "agent-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A capture waiting in a claim"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "C:/repo").unwrap();
+    let entry = spooled_entry(&data_dir);
+    let claimed = entry.with_file_name(format!(
+        "{}.claimed-{}",
+        entry.file_name().unwrap().to_string_lossy(),
+        std::process::id()
+    ));
+    std::fs::rename(&entry, &claimed).unwrap();
+
+    let pending = spool::pending(&spool::directory(&data_dir)).unwrap();
+
+    assert_eq!(pending.entries, 1, "the claim is waiting: {pending:?}");
+    assert!(pending.oldest.is_some(), "and it has an age");
+}
+
+/// A claim held by a process that is still running belongs to it. Taking it
+/// back would replay one capture twice, which is worse than waiting.
+#[test]
+fn a_live_claim_is_left_for_its_owner() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "agent-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A capture another drain is replaying right now"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "C:/repo").unwrap();
+    let entry = spooled_entry(&data_dir);
+    let claimed = spool::claim(&entry).expect("this process claims the entry");
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(report.stored, 0, "the claim was not taken: {report:?}");
+    assert!(
+        claimed.exists(),
+        "the live owner's claim is where it left it"
+    );
+    assert_eq!(
+        store
+            .recent_observations(Some("hook-project"), Some(10), true)
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+/// The age bound answers a pid probe that cannot tell. It has to measure the
+/// claim, not the entry, because claiming is a rename and the mtime stays.
+#[test]
+fn a_claim_past_the_age_bound_is_released_from_a_live_owner() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let capture = PassiveCapture {
+        session_id: "agent-session".to_owned(),
+        project: "hook-project".to_owned(),
+        content: "## Key Learnings:
+1. A capture a wedged drainer claimed an hour ago"
+            .to_owned(),
+        source: "subagent-stop".to_owned(),
+    };
+    spool::spool(&data_dir, "SubagentStop", &capture, "C:/repo").unwrap();
+    let entry = spooled_entry(&data_dir);
+    let claimed = entry.with_file_name(format!(
+        "{}.claimed-{}-{}",
+        entry.file_name().unwrap().to_string_lossy(),
+        std::process::id(),
+        now_millis() - 3_600_000
+    ));
+    std::fs::rename(&entry, &claimed).unwrap();
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(
+        report.stored, 1,
+        "the wedged claim was replayed: {report:?}"
+    );
+    assert!(!claimed.exists(), "and the claim is gone");
 }
 
 /// A temporary file is not an entry, so a concurrent drain never claims one.

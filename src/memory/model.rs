@@ -1199,6 +1199,7 @@ impl DoctorCheck {
         "observation_hash_sync",
         "observation_type_searchable",
         "topic_key_uniqueness",
+        "supersession_cycles",
         "settings_readable",
         "memory_language",
         "semantic_model",

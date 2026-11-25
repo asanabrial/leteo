@@ -657,6 +657,18 @@ pub(super) fn apply_relation_upsert_tx(
             "relation sync payload requires sync_id, source_id, and target_id",
         ));
     }
+    // A peer that joins a memory to itself is dropped rather than stored, and
+    // without an error: an error here fails the pull and backs off, so the
+    // refused payload would head every batch for ever — the class #425 and #426
+    // were. It is also the one shape the two-observation wait below cannot
+    // clear, since a self-pair names one memory and the count asks for two.
+    if payload.source_id == payload.target_id {
+        tx.execute(
+            "DELETE FROM sync_deferred_mutations WHERE sync_id = ?1",
+            [&payload.sync_id],
+        )?;
+        return Ok(());
+    }
     let observations = tx.query_row(
         "SELECT COUNT(*) FROM observations WHERE sync_id IN (?1, ?2)",
         params![payload.source_id, payload.target_id],

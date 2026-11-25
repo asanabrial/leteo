@@ -4,7 +4,7 @@
 //! renamed, a manifest that stopped being valid JSON, or a marketplace entry
 //! pointing at a directory that no longer exists.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -352,29 +352,28 @@ fn the_memory_skills_keep_one_protocol_beside_the_bundle_sections() {
     // bundle ships its own. Editing one and forgetting the others is the
     // obvious failure, and nothing else would notice.
     //
-    // Two sections may differ, and only because a hook registration decides
-    // what they can claim: the closing step, and what a subagent's output is
-    // worth. `the_memory_skills_describe_the_hooks_their_bundle_registers`
-    // holds those two to their bundle; this holds the rest together.
-    let normalised: BTreeSet<String> = BUNDLES
-        .iter()
-        .map(|bundle| {
-            let skill = read_skill(bundle);
-            let mut text = skill.replace(&format!("leteo setup {bundle}"), "leteo setup <agent>");
-            for heading in ["## AT THE END OF A SESSION", "## SUBAGENTS"] {
-                let body = skill_section(&skill, heading).to_owned();
-                text = text.replace(&body, " <bundle-dependent>\n");
-            }
-            text
-        })
-        .collect();
-    assert_eq!(
-        normalised.len(),
-        1,
-        "the memory skills have drifted apart outside the sections a hook decides: {} distinct texts across {:?}",
-        normalised.len(),
-        BUNDLES
-    );
+    // The registrations are what make two bundles legitimately differ, so the
+    // bundles are grouped by them: two bundles that fire the same hooks have no
+    // reason to word the closing step or the subagent section differently, and
+    // one that fires a different set is allowed to.
+    let mut by_hooks: BTreeMap<BTreeSet<String>, Vec<String>> = BTreeMap::new();
+    for bundle in BUNDLES {
+        let skill =
+            read_skill(bundle).replace(&format!("leteo setup {bundle}"), "leteo setup <agent>");
+        by_hooks
+            .entry(registered_hook_slugs(bundle))
+            .or_default()
+            .push(skill);
+    }
+    for (hooks, skills) in by_hooks {
+        let distinct: BTreeSet<&String> = skills.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            1,
+            "the memory skills of bundles firing {hooks:?} have drifted apart: {} distinct texts",
+            distinct.len()
+        );
+    }
 }
 
 #[test]
@@ -556,6 +555,31 @@ fn the_skill_teaches_the_kinds_the_tool_schema_asks_for() {
     }
 }
 
+/// The tools one tool profile serves, with `all` (or no profile) meaning every
+/// tool the binary publishes.
+fn tools_one_profile_serves(profile: &str, context: &str) -> BTreeSet<String> {
+    match leteo::mcp::resolve_tools(profile) {
+        Ok(Some(tools)) => tools,
+        Ok(None) => leteo::mcp::PROFILE_AGENT
+            .iter()
+            .chain(leteo::mcp::PROFILE_ADMIN)
+            .map(|tool| (*tool).to_owned())
+            .collect(),
+        Err(error) => panic!("{context} names an unreadable profile {profile:?}: {error}"),
+    }
+}
+
+/// The value of a `--tools=` flag written in a document, up to the space or
+/// backtick that ends it.
+fn profile_after_flag(text: &str, flag: &str) -> Option<String> {
+    let rest = text.split(flag).nth(1)?;
+    let profile: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '`')
+        .collect();
+    (!profile.is_empty()).then_some(profile)
+}
+
 #[test]
 fn the_skill_offers_the_tools_its_profile_installs() {
     // The bundle's `.mcp.json` is what the client launches, so it decides which
@@ -566,15 +590,7 @@ fn the_skill_offers_the_tools_its_profile_installs() {
     // not there to find.
     for bundle in BUNDLES {
         let profile = installed_tool_profile(bundle);
-        let served: BTreeSet<String> = match leteo::mcp::resolve_tools(&profile) {
-            Ok(Some(tools)) => tools,
-            Ok(None) => leteo::mcp::PROFILE_AGENT
-                .iter()
-                .chain(leteo::mcp::PROFILE_ADMIN)
-                .map(|tool| (*tool).to_owned())
-                .collect(),
-            Err(error) => panic!("{bundle} names an unreadable profile {profile:?}: {error}"),
-        };
+        let served = tools_one_profile_serves(&profile, bundle);
         let skill = read_skill(bundle);
         let section = skill_section(&skill, "## AVAILABLE TOOLS");
         let named = tools_named_in(section);
@@ -589,11 +605,46 @@ fn the_skill_offers_the_tools_its_profile_installs() {
                 "{bundle} profile {profile:?} installs {tool} and the skill never mentions it"
             );
         }
-        let unserved: Vec<&String> = named.difference(&served).collect();
+
+        // The tools the skill names outside the profile must be exactly the
+        // admin ones this profile leaves out. A narrower set means the skill
+        // forgot a tool that changes or counts the whole store; a wider one
+        // means it advertises a tool `tools.rs` does not publish, which
+        // `the_skill_names_no_tool_the_binary_lacks` catches as well but not in
+        // this section.
+        let expected_unserved: BTreeSet<String> = leteo::mcp::PROFILE_ADMIN
+            .iter()
+            .filter(|tool| !served.contains(**tool))
+            .map(|tool| (*tool).to_owned())
+            .collect();
+        let unserved: BTreeSet<String> = named.difference(&served).cloned().collect();
+        assert_eq!(
+            unserved, expected_unserved,
+            "{bundle} skill's tools section names {unserved:?}, but the only tools its profile {profile:?} leaves out are {expected_unserved:?}"
+        );
         if !unserved.is_empty() {
             assert!(
                 section.contains("not installed"),
                 "{bundle} names {unserved:?}, which its profile {profile:?} does not serve, and never says so"
+            );
+            // And the remedy it prints has to be one an agent can run: the
+            // bundle's own setup command, carrying a profile the binary
+            // resolves and one that actually serves the tools it is offered
+            // for. An instruction is worth as much as the command behind it.
+            assert!(
+                section.contains(&format!("leteo setup {bundle}")),
+                "{bundle} offers {unserved:?} to install and names no `leteo setup {bundle}` command"
+            );
+            let remedy = profile_after_flag(section, "--tools=").unwrap_or_else(|| {
+                panic!(
+                    "{bundle} offers {unserved:?} to install and names no --tools= profile that would"
+                )
+            });
+            let added = tools_one_profile_serves(&remedy, bundle);
+            let missing: Vec<&String> = unserved.difference(&added).collect();
+            assert!(
+                missing.is_empty(),
+                "{bundle} tells agents to install {unserved:?} with --tools={remedy}, which does not serve {missing:?}"
             );
         }
     }

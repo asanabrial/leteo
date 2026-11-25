@@ -20,7 +20,7 @@ from the first message:
 - `mem_current_project`, `mem_pin`, `mem_unpin`, `mem_review`
 - `mem_judge`, `mem_consolidate`, `mem_compare`, `mem_capture_passive`, `mem_doctor`
 
-The three that change or count the whole store — `mem_stats`, `mem_delete`,
+The tools that change or count the whole store — `mem_stats`, `mem_delete`,
 `mem_merge_projects` — are not installed under this profile: no tool this client
 offers can call them. Install them beside the everyday set when you need one: `leteo setup codex --tools=agent,admin`.
 

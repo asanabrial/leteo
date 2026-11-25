@@ -480,8 +480,12 @@ async fn a_push_with_no_connection_to_acquire_answers_503_with_retry_after() {
 /// was in flight. The handler's own bound answers first, saying so.
 #[tokio::test]
 async fn a_push_that_outlives_its_budget_is_answered_as_an_unknown_outcome() {
+    // Ten seconds against ten milliseconds, so only a scheduler stalled for
+    // seconds can reach the sleep first. A never-completing future would be
+    // just as deterministic, and would hang the suite instead of failing it
+    // when the bound is removed.
     let late = insert_mutations_within(Duration::from_millis(10), async {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
         Err(CloudStoreError::Invalid(
             "the insert returned after its budget".to_owned(),
         ))
@@ -495,6 +499,10 @@ async fn a_push_that_outlives_its_budget_is_answered_as_an_unknown_outcome() {
         "not the deadline's 503"
     );
     assert!(late.headers().get(header::RETRY_AFTER).is_none());
+    let body = to_bytes(late.into_body(), usize::MAX).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error_code"], "commit_outcome_unknown");
+    assert_eq!(body["error_class"], "unknown");
 
     // The same bound leaves an insert that answers on time alone, including
     // the refused acquisition that is safe to send again.

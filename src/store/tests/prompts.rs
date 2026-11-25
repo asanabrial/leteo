@@ -679,11 +679,22 @@ fn deleting_a_project_leaves_a_tombstone_and_no_text_in_the_journal() {
 
 /// The tombstone is what refuses the peer, and a session delete used to write
 /// none for the prompts it took with it.
+///
+/// The delete here keeps the session row — a soft session delete takes the
+/// prompts and leaves it — because a hard one takes the session too and the
+/// prompt insert then fails its foreign key whatever the tombstone says. The
+/// first version of this test used the hard delete and passed on the unfixed
+/// tree for exactly that reason, which is a test that proves nothing; the
+/// `assert` below is what keeps it from going back to that.
 #[test]
 fn an_upsert_of_a_prompt_deleted_with_its_session_is_refused() {
     let (_temp, mut store) = store();
     let asked = ask_once(&mut store);
-    store.delete_session("s1").unwrap();
+    store.delete_session_and_contents("s1", false).unwrap();
+    assert!(
+        store.get_session("s1").is_ok(),
+        "the session has to survive for the tombstone to be the only thing refusing the peer"
+    );
 
     // A peer replaying the prompt it pulled before the delete: older than the
     // tombstone, which is the shape a backfill arrives in.

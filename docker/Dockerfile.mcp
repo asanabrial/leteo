@@ -48,7 +48,8 @@ RUN cargo build --release --locked --bin leteo
 
 FROM debian:bookworm-slim AS runtime
 
-RUN useradd --system --create-home --uid 10001 leteo
+RUN useradd --system --create-home --uid 10001 leteo \
+    && install -d -o leteo -g leteo /home/leteo/.leteo
 
 COPY --from=build /src/target/release/leteo /usr/local/bin/leteo
 COPY LICENSE NOTICE /usr/share/doc/leteo/
@@ -68,5 +69,8 @@ WORKDIR /home/leteo
 #
 # The database lands in the default ~/.leteo, which is inside the image and
 # therefore gone when the container is. Mount a volume there, or set
-# LETEO_DATA_DIR, if the memories are meant to outlive the run.
+# LETEO_DATA_DIR, if the memories are meant to outlive the run. The directory is
+# created above and owned by the `leteo` user, so a fresh named volume mounted
+# over it is writable by the process rather than arriving root-owned — which is
+# what it did before this line existed.
 ENTRYPOINT ["leteo", "mcp"]

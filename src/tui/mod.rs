@@ -1,10 +1,14 @@
 use std::cell::Cell;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -74,49 +78,203 @@ pub fn run(store: &mut Store) -> anyhow::Result<Exit> {
 
     loop {
         terminal.draw(|frame| render(frame, &app))?;
-        match event::read()? {
-            Event::Key(key) => {
-                let action = app.handle_key(key);
-                if apply_action(&mut app, store, action) {
-                    break;
-                }
-            }
-            Event::Paste(text) if app.focus == Focus::Query => app.query.push_str(&text),
-            _ => {}
+        let event = event::read()?;
+        if deliver(&mut app, store, delivery(event, queued_events()?)) {
+            break;
         }
     }
 
     Ok(app.exit)
 }
 
-struct TerminalGuard {
-    raw_mode: bool,
-    alternate_screen: bool,
+/// How much of a queued burst is taken at once.
+///
+/// A paste can be long, and taking all of it is the point; the bound is here so
+/// that a terminal which keeps reporting input cannot keep the loop from
+/// drawing.
+const BURST_LIMIT: usize = 8192;
+
+/// Everything the terminal had already sent when the last event was read.
+///
+/// A read error is the loop's, not this function's: swallowing it would leave
+/// the dashboard running against a terminal that has stopped answering.
+fn queued_events() -> io::Result<Vec<Event>> {
+    let mut queued = Vec::new();
+    while queued.len() < BURST_LIMIT {
+        if !event::poll(Duration::ZERO)? {
+            break;
+        }
+        queued.push(event::read()?);
+    }
+    Ok(queued)
 }
+
+/// One thing the terminal sent, and how the dashboard reads it.
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery {
+    /// Text somebody pasted: it goes into the query and nowhere else.
+    Paste(String),
+    /// Keys, in the order they arrived, each handled as a key.
+    Keys(Vec<KeyEvent>),
+}
+
+/// What one delivery from the terminal does, applied in the order it arrived.
+///
+/// Returns whether the dashboard should close. A key can raise a confirmation
+/// or leave the page, and the key behind it has to see that, so the actions are
+/// applied as they are produced rather than collected first.
+fn deliver(app: &mut App, store: &mut Store, delivery: Delivery) -> bool {
+    match delivery {
+        Delivery::Paste(text) => {
+            let action = app.paste(&text);
+            apply_action(app, store, action)
+        }
+        Delivery::Keys(keys) => {
+            for key in keys {
+                let action = app.handle_key(key);
+                if apply_action(app, store, action) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Reads one delivery: text if somebody pasted, otherwise the keys it holds.
+///
+/// A paste is one `Event::Paste` where the terminal supports bracketed paste,
+/// and a burst of key presses where it does not. Without this, the second kind
+/// is executed: a newline is Enter, which steps out of the query line, and the
+/// words after it are dashboard keys — `d` raises the delete window and `y`
+/// answers it, so pasting a bug report deleted the memory under the cursor.
+///
+/// Two text-bearing presses in one delivery cannot be a person: the loop is
+/// between them. Everything else is keys, in order, so a held arrow or a press
+/// with its release behind it still does what it says.
+fn delivery(event: Event, waiting: Vec<Event>) -> Delivery {
+    let mut events = Vec::with_capacity(waiting.len() + 1);
+    events.push(event);
+    events.extend(waiting);
+
+    let mut presses = 0;
+    let mut labelled = false;
+    for event in &events {
+        match event {
+            Event::Paste(_) => labelled = true,
+            Event::Key(key) if carries_text(key) => presses += 1,
+            _ => {}
+        }
+    }
+    if labelled || presses > 1 {
+        return Delivery::Paste(pasted_text(&events));
+    }
+    Delivery::Keys(
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Key(key) if key.kind != KeyEventKind::Release => Some(key),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Whether a key is a character a paste would have carried.
+///
+/// Only a press: a release and a held key's repeat are the same character
+/// arriving again, and counting them would turn one press into a paste.
+fn carries_text(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && match key.code {
+            KeyCode::Char(_) => !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT),
+            KeyCode::Enter | KeyCode::Tab => true,
+            _ => false,
+        }
+}
+
+/// The text in a delivery that was taken as a paste, with every line break and
+/// tab kept as the character `fold_to_one_line` reads.
+fn pasted_text(events: &[Event]) -> String {
+    let mut text = String::new();
+    for event in events {
+        match event {
+            Event::Paste(part) => text.push_str(part),
+            Event::Key(key) if carries_text(key) => match key.code {
+                KeyCode::Char(character) => text.push(character),
+                KeyCode::Enter => text.push('\n'),
+                KeyCode::Tab => text.push('\t'),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    text
+}
+
+struct TerminalGuard {
+    previous_panic_hook: Option<std::sync::Arc<TerminalPanicHook>>,
+}
+
+type TerminalPanicHook = dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static;
 
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         let mut guard = Self {
-            raw_mode: true,
-            alternate_screen: false,
+            previous_panic_hook: None,
         };
         enable_raw_mode()?;
-
-        guard.alternate_screen = true;
         execute!(io::stdout(), EnterAlternateScreen)?;
+
+        // The mode that makes a paste one `Event::Paste` instead of the
+        // keystrokes it was copied from. Without it a bug report pasted into
+        // the dashboard typed its own words at the list: `d` raised the delete
+        // window and `y` answered it.
+        execute!(io::stdout(), EnableBracketedPaste)?;
+
+        // A panic prints its message before the unwind reaches the drop below,
+        // and inside the alternate screen that message is on a screen the drop
+        // then wipes: the terminal came back clean and said nothing. The hook
+        // restores the screen first, so the message lands where it can be read;
+        // the drop afterwards is a second, harmless restore.
+        let previous = std::sync::Arc::new(std::panic::take_hook());
+        let chained = std::sync::Arc::clone(&previous);
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            chained(info);
+        }));
+        guard.previous_panic_hook = Some(previous);
         Ok(guard)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        if self.raw_mode {
-            let _ = disable_raw_mode();
+        // Not while a panic is unwinding: `set_hook` panics when it is called
+        // from a panicking thread, and this drop runs on exactly that thread.
+        // The hook the panic installed is the one that restored the screen, and
+        // the process is ending anyway.
+        if !std::thread::panicking()
+            && let Some(previous) = self.previous_panic_hook.take()
+        {
+            let _ = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| previous(info)));
         }
-        if self.alternate_screen {
-            let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
-        }
+        restore_terminal();
     }
+}
+
+/// Puts the terminal back the way it was found.
+///
+/// Both the drop and the panic hook go through this, so there is one order of
+/// the steps and one place that knows them. Run twice it is harmless: leaving a
+/// screen that is not open and disabling a mode that is off are both no-ops.
+fn restore_terminal() {
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

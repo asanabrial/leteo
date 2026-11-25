@@ -259,3 +259,211 @@ fn deleting_a_project_takes_its_sessions_memories_and_prompts() {
     assert_eq!(app.recent.len(), 1);
     assert_eq!(app.recent[0].title, "Elsewhere");
 }
+
+/// A paste is one thing somebody copied, and none of it is a command.
+///
+/// A terminal that does not support bracketed paste delivers a paste as the
+/// keystrokes it was copied from, which is how a bug report pasted into the
+/// dashboard deleted the memory under the cursor: the first newline was Enter,
+/// which steps out of the query line, then `d` raised the delete window and `y`
+/// answered it.
+#[test]
+fn a_pasted_question_is_text_and_never_a_command() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+    assert_eq!(app.focus, Focus::List);
+
+    let burst = [
+        Event::Key(key(KeyCode::Char('m'))),
+        Event::Key(key(KeyCode::Char('e'))),
+        Event::Key(key(KeyCode::Char('m'))),
+        Event::Key(key(KeyCode::Enter)),
+        Event::Key(key(KeyCode::Char('d'))),
+        Event::Key(key(KeyCode::Char('y'))),
+    ];
+    let delivered = delivery(burst[0].clone(), burst[1..].to_vec());
+    assert!(
+        matches!(delivered, Delivery::Paste(_)),
+        "the burst is one paste"
+    );
+    assert!(!deliver(&mut app, &mut store, delivered));
+
+    assert_eq!(
+        store.count_observations(None).unwrap(),
+        1,
+        "the memory under the cursor is still there"
+    );
+    assert_eq!(app.query, "mem dy");
+    assert_eq!(
+        app.focus,
+        Focus::Query,
+        "the words went into the query line"
+    );
+    assert!(
+        app.pending.is_none(),
+        "nothing in a paste raises a confirmation"
+    );
+}
+
+/// One key with nothing behind it is still a key, or the dashboard would have
+/// no commands left.
+#[test]
+fn a_lone_key_is_still_a_command() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+
+    assert!(!deliver(
+        &mut app,
+        &mut store,
+        delivery(Event::Key(key(KeyCode::Char('d'))), Vec::new())
+    ));
+    let pending = app
+        .pending
+        .as_ref()
+        .expect("the delete went up for agreement");
+    assert_eq!(
+        pending.action,
+        Action::Delete {
+            what: Target::Observation(1),
+            hard: false
+        }
+    );
+    assert!(app.query.is_empty());
+}
+
+/// A press with its own release behind it, a held key's repeat, or a control
+/// chord beside a character, is still the key it is: none of them is text a
+/// paste would have carried.
+#[test]
+fn a_release_or_repeat_does_not_turn_a_press_into_text() {
+    let press = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    let release = KeyEvent::new_with_kind(
+        KeyCode::Char('d'),
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    );
+    let repeat =
+        KeyEvent::new_with_kind(KeyCode::Char('d'), KeyModifiers::NONE, KeyEventKind::Repeat);
+    let chord = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+    assert_eq!(
+        delivery(Event::Key(press), vec![Event::Key(release)]),
+        Delivery::Keys(vec![press])
+    );
+    assert_eq!(
+        delivery(Event::Key(press), vec![Event::Key(repeat)]),
+        Delivery::Keys(vec![press, repeat])
+    );
+    assert_eq!(
+        delivery(Event::Key(chord), vec![Event::Key(press)]),
+        Delivery::Keys(vec![chord, press])
+    );
+}
+
+/// A burst with no text in it is every key it holds: a held arrow moves by as
+/// many steps as the terminal sent, rather than losing all but the first.
+#[test]
+fn a_burst_of_arrows_moves_by_every_key_in_it() {
+    let (_temp, mut store) = store_of(4);
+    let mut app = App::load(&mut store).unwrap();
+    app.navigate(Page::Dashboard);
+    assert_eq!(app.recent_selected, 0);
+
+    let down = Event::Key(key(KeyCode::Down));
+    assert!(!deliver(
+        &mut app,
+        &mut store,
+        delivery(down.clone(), vec![down])
+    ));
+    assert_eq!(app.recent_selected, 2);
+}
+
+/// The bracketed form is what a terminal that supports the mode sends: one
+/// event carrying the newlines, which fold rather than switching focus.
+#[test]
+fn a_bracketed_paste_keeps_the_words_and_folds_the_newlines() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+
+    assert!(!deliver(
+        &mut app,
+        &mut store,
+        delivery(
+            Event::Paste("first line\r\nsecond line".to_owned()),
+            Vec::new()
+        )
+    ));
+    assert_eq!(app.query, "first line second line");
+    assert_eq!(app.focus, Focus::Query);
+    assert!(app.pending.is_none());
+}
+
+/// The confirmation is not merely spared the paste: a `y` that arrives with the
+/// `d` that would raise it is text, because the delivery is one paste and never
+/// a list of keys.
+#[test]
+fn a_confirming_key_in_the_same_burst_as_the_delete_raises_nothing() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+
+    assert!(!deliver(
+        &mut app,
+        &mut store,
+        delivery(
+            Event::Key(key(KeyCode::Char('d'))),
+            vec![Event::Key(key(KeyCode::Char('y')))]
+        )
+    ));
+    assert_eq!(app.query, "dy");
+    assert!(
+        app.pending.is_none(),
+        "the delete never went up for agreement"
+    );
+    assert_eq!(app.focus, Focus::Query);
+}
+
+/// A tab is a word boundary in pasted text, the same as a line break.
+#[test]
+fn a_pasted_tab_separates_words_instead_of_disappearing() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+
+    deliver(
+        &mut app,
+        &mut store,
+        delivery(Event::Paste("first\tsecond".to_owned()), Vec::new()),
+    );
+    assert_eq!(app.query, "first second");
+}
+
+/// A paste joins what is already typed, trims its ends, and types nothing when
+/// there is nothing but whitespace in it.
+#[test]
+fn a_paste_joins_one_line_to_what_was_already_typed() {
+    let mut app = test_app();
+    app.handle_key(key(KeyCode::Char('/')));
+    app.handle_key(key(KeyCode::Char('f')));
+    app.handle_key(key(KeyCode::Char('i')));
+
+    assert_eq!(app.paste(" \r\n x\r\n "), Action::Narrow);
+    assert_eq!(app.query, "fi x");
+    assert_eq!(app.paste(" \r\n\t "), Action::None, "nothing to type");
+    assert_eq!(app.query, "fi x");
+}
+
+/// The setup flow and the detail pages have no query row, so a paste there has
+/// nowhere to go and changes nothing.
+#[test]
+fn a_paste_on_a_page_without_a_query_line_is_dropped() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+    app.navigate(Page::Help);
+
+    assert!(!deliver(
+        &mut app,
+        &mut store,
+        delivery(Event::Paste("deleted by accident".to_owned()), Vec::new())
+    ));
+    assert!(app.query.is_empty());
+    assert_eq!(app.page, Page::Help, "the paste did not move the screen");
+}

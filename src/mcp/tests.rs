@@ -1278,6 +1278,15 @@ fn a_directory_that_holds_the_detected_project_is_not_drifted() {
     store
         .create_session("hook-visit", "new-remote", "C:/other")
         .unwrap();
+    // The same project's bucket, in another checkout. It says nothing about
+    // this directory, which is what the `same_directory` match is for.
+    store
+        .create_session(
+            &manual_session_id("new-remote"),
+            "new-remote",
+            "C:/elsewhere",
+        )
+        .unwrap();
     let renamed = ProjectDetection {
         project: "new-remote".to_owned(),
         source: crate::project::SOURCE_GIT_REMOTE.to_owned(),

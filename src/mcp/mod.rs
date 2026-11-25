@@ -525,25 +525,8 @@ impl LeteoMcpServer {
         detection: &ProjectDetection,
     ) -> Result<Option<ProjectDetection>, CallToolResult> {
         let detected = normalize::project(&detection.project);
-        if detected.is_empty() {
-            return Ok(None);
-        }
-        // The directory's own bucket clears the question; a session that merely
-        // visited does not. One stray row — what the session door used to write
-        // when it opened a session here for another project — used to make the
-        // whole directory disputed for ever (#405 stopped new ones, not the
-        // stores holding one). But any row naming the detected project is too
-        // wide: a hook records the directory before anybody has said it is
-        // theirs, so after a rename it would answer the question the rename
-        // exists to ask.
-        let manual_here = store
-            .directory_has_manual_session(&detection.path, &detected, is_manual_session_id)
-            .map_err(store_error)?;
-        if manual_here {
-            return Ok(None);
-        }
         let recorded = store
-            .recent_projects_in_directory(&detection.path, &detected)
+            .drifted_projects(detection, is_manual_session_id)
             .map_err(store_error)?;
         if recorded.is_empty() {
             return Ok(None);

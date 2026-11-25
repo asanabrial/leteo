@@ -25,6 +25,40 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// The projects this directory's sessions were recorded under, when it does
+    /// not resolve to the same one now.
+    ///
+    /// The directory's own bucket clears the question; a session that merely
+    /// visited does not. One stray row — what the session door used to write
+    /// when it opened a session here for another project — used to make the
+    /// whole directory disputed for ever (#405 stopped new ones, not the
+    /// stores holding one). But any row naming the detected project is too
+    /// wide: a hook records the directory before anybody has said it is
+    /// theirs, so after a rename it would answer the question the rename
+    /// exists to ask.
+    ///
+    /// The MCP door refused the silent pick and `leteo save` filed it under the
+    /// name detection now reads, so the same directory accepted a memory
+    /// through one door and rejected it through the other. Two questions let
+    /// the two answers drift apart; there is one, and both doors ask it.
+    ///
+    /// `is_manual` is the caller's because the id vocabulary lives with the
+    /// door that mints it; the store does not learn a prefix here.
+    pub fn drifted_projects(
+        &self,
+        detection: &crate::project::ProjectDetection,
+        is_manual: impl Fn(&str) -> bool,
+    ) -> Result<Vec<String>, StoreError> {
+        let detected = normalize::project(&detection.project);
+        if detected.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.directory_has_manual_session(&detection.path, &detected, is_manual)? {
+            return Ok(Vec::new());
+        }
+        self.recent_projects_in_directory(&detection.path, &detected)
+    }
+
     /// The projects of sessions recorded in exactly this directory, most recent
     /// first, excluding `exclude`.
     ///

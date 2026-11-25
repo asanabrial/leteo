@@ -507,7 +507,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             topic_key,
             tool_name,
         } => {
-            let session = resolve_write_session(&mut store, session, project)?;
+            let session = resolve_write_session(&mut store, session, project, Filing::Detection)?;
             // The same attribution the tool makes, on the other door into the
             // same table. This wrote `None` unconditionally, with no comment
             // saying why, beside sixty lines in `mem_save` arguing which
@@ -554,7 +554,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             // The replacement is filed where the sources are rather than where
             // this command happens to be run from — see
             // `Store::consolidate_observations`.
-            let session = resolve_write_session(&mut store, None, None)?;
+            let session = resolve_write_session(&mut store, None, None, Filing::Elsewhere)?;
             let outcome = store.consolidate_observations_from(
                 ConsolidateObservations {
                     session_id: session.id,
@@ -691,7 +691,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             session,
             project,
         } => {
-            let session = resolve_write_session(&mut store, session, project)?;
+            let session = resolve_write_session(&mut store, session, project, Filing::Detection)?;
             print_json(&store.add_prompt(AddPrompt {
                 session_id: session.id,
                 content,

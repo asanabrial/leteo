@@ -2210,3 +2210,215 @@ fn the_citations_check_is_in_a_report_only_when_it_is_asked_for() {
             .any(|check| check.code == DoctorCheck::STALE_CITATIONS)
     );
 }
+
+/// A cycle of judged `supersedes` hides every memory on it, and `doctor` says
+/// so — one answer per pair, so the way out is a memory at a time.
+///
+/// Written past the door on purpose: the door refuses to close one now, which
+/// is exactly why this check exists. A store written by a build that did not
+/// refuse it would otherwise stay silent, and the memories would stay
+/// unreachable behind a relation nobody looks at.
+#[test]
+fn a_supersedes_cycle_is_reported_and_answering_not_conflict_ends_it() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memories: Vec<Observation> = ["One", "Two", "Three"]
+        .into_iter()
+        .map(|title| {
+            store
+                .add_observation(observation("s1", title, "the body"))
+                .unwrap()
+                .observation
+        })
+        .collect();
+    for (index, memory) in memories.iter().enumerate() {
+        let next = &memories[(index + 1) % memories.len()];
+        store
+            .connection
+            .execute(
+                "INSERT INTO memory_relations
+                     (sync_id, source_id, target_id, relation, judgment_status)
+                     VALUES (?1, ?2, ?3, ?4, 'judged')",
+                params![
+                    format!("rel-{index}"),
+                    memory.sync_id,
+                    next.sync_id,
+                    RELATION_SUPERSEDES
+                ],
+            )
+            .unwrap();
+    }
+
+    let hidden = store
+        .recent_observations(Some("leteo"), None, false)
+        .unwrap();
+    assert!(
+        hidden.is_empty(),
+        "every memory on the cycle is hidden: {hidden:?}"
+    );
+
+    let report = store.doctor().unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.code == "supersession_cycles")
+        .expect("the doctor reports it");
+    assert!(!check.ok, "and the finding is there: {report:?}");
+    assert!(
+        check
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.contains("supersede themselves")),
+        "naming what it costs: {:?}",
+        check.detail
+    );
+
+    for index in 0..memories.len() {
+        store
+            .judge_relation(JudgeRelationParams {
+                judgment_id: format!("rel-{index}"),
+                relation: RELATION_NOT_CONFLICT.to_owned(),
+                marked_by_actor: "agent".to_owned(),
+                marked_by_kind: "agent".to_owned(),
+                ..JudgeRelationParams::default()
+            })
+            .unwrap();
+    }
+    let titles = store
+        .recent_observations(Some("leteo"), None, false)
+        .unwrap()
+        .into_iter()
+        .map(|memory| memory.title)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        titles.len(),
+        3,
+        "each answer brings one memory back: {titles:?}"
+    );
+    let after = store.doctor().unwrap();
+    assert!(
+        after
+            .checks
+            .iter()
+            .any(|check| check.code == "supersession_cycles" && check.ok),
+        "{after:?}"
+    );
+}
+
+/// A judged `supersedes` from a memory to itself hides the only memory it
+/// names, which reads from the outside as a memory somebody deleted.
+#[test]
+fn a_relation_joining_a_memory_to_itself_is_reported_and_can_be_answered() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = store
+        .add_observation(observation("s1", "Cache layer", "the cache is Redis"))
+        .unwrap()
+        .observation;
+    store
+        .connection
+        .execute(
+            "INSERT INTO memory_relations
+                 (sync_id, source_id, target_id, relation, judgment_status)
+                 VALUES ('rel-self', ?1, ?1, ?2, 'judged')",
+            params![memory.sync_id, RELATION_SUPERSEDES],
+        )
+        .unwrap();
+
+    assert!(
+        store
+            .recent_observations(Some("leteo"), None, false)
+            .unwrap()
+            .is_empty(),
+        "the pair hides the memory it joins"
+    );
+    let report = store.doctor().unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.code == "supersession_cycles")
+        .expect("the doctor reports it");
+    assert!(!check.ok, "{report:?}");
+    assert!(
+        check
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.contains("join a memory to itself")),
+        "{:?}",
+        check.detail
+    );
+    assert!(
+        check
+            .detail
+            .as_ref()
+            .is_some_and(|detail| !detail.contains("chain of verdicts")),
+        "one row is one finding, not also a cycle: {:?}",
+        check.detail
+    );
+
+    store
+        .judge_relation(JudgeRelationParams {
+            judgment_id: "rel-self".to_owned(),
+            relation: RELATION_NOT_CONFLICT.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..JudgeRelationParams::default()
+        })
+        .unwrap();
+    assert_eq!(
+        store
+            .recent_observations(Some("leteo"), None, false)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .doctor()
+            .unwrap()
+            .checks
+            .iter()
+            .any(|check| check.code == "supersession_cycles" && check.ok)
+    );
+}
+
+/// A pair nobody has judged hides nothing, so the check leaves it alone.
+///
+/// `not_superseded` reads judged verdicts only, and a store that carried a
+/// pending self-pair from a build that filed one has no memory hidden by it.
+/// Reporting it would teach the operator to ignore the check, which is how the
+/// finding that matters gets missed.
+#[test]
+fn a_pending_relation_to_a_memory_itself_is_not_a_finding() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = store
+        .add_observation(observation("s1", "Cache layer", "the cache is Redis"))
+        .unwrap()
+        .observation;
+    store
+        .connection
+        .execute(
+            "INSERT INTO memory_relations
+                 (sync_id, source_id, target_id, relation, judgment_status)
+                 VALUES ('rel-self', ?1, ?1, ?2, 'pending')",
+            params![memory.sync_id, RELATION_SUPERSEDES],
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .recent_observations(Some("leteo"), None, false)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .doctor()
+            .unwrap()
+            .checks
+            .iter()
+            .any(|check| check.code == "supersession_cycles" && check.ok)
+    );
+}

@@ -238,10 +238,18 @@ impl Store {
         // deserves to know the graph came back with holes.
         for relation in &data.relations {
             let sync_id = relation.sync_id.trim();
-            if sync_id.is_empty()
-                || relation.source_id.trim().is_empty()
-                || relation.target_id.trim().is_empty()
-            {
+            let source_id = relation.source_id.trim();
+            let target_id = relation.target_id.trim();
+            // A pair that joins a memory to itself is refused at the doors that
+            // write relations, so an export holding one came from a build that
+            // did not: dropped and counted, like a relation whose ends are not
+            // here, rather than restored into a store where it would hide the
+            // memory it names.
+            if sync_id.is_empty() || source_id.is_empty() || target_id.is_empty() {
+                result.relations_skipped += 1;
+                continue;
+            }
+            if source_id == target_id {
                 result.relations_skipped += 1;
                 continue;
             }
@@ -265,8 +273,8 @@ impl Store {
                 ),
                 params![
                     sync_id,
-                    relation.source_id.trim(),
-                    relation.target_id.trim(),
+                    source_id,
+                    target_id,
                     relation.relation,
                     reason,
                     evidence,
@@ -908,6 +916,36 @@ impl Store {
                 ),
             });
         }
+        if want("supersession_cycles") {
+            // The graph's two ways of hiding everything it names. No `--repair`:
+            // which relation of a cycle to retire is a question about what the
+            // memories say, and an automatic answer would choose one memory to
+            // show again and could choose wrong.
+            record(match supersession_cycles(&self.connection) {
+                Err(error) => could_not_run("supersession_cycles", "the relation graph", &error),
+                Ok((0, 0)) => DoctorCheck::passed("supersession_cycles"),
+                Ok((self_pairs, cycles)) => {
+                    let mut findings = Vec::new();
+                    if self_pairs > 0 {
+                        findings.push(format!("{self_pairs} relation(s) join a memory to itself"));
+                    }
+                    if cycles > 0 {
+                        findings.push(format!(
+                            "{cycles} memory(s) supersede themselves through a chain of verdicts"
+                        ));
+                    }
+                    DoctorCheck::warned(
+                        "supersession_cycles",
+                        format!(
+                            "{}; every one of those memories is hidden from search and from the \
+                             context, so answer not_conflict on each pair, with `leteo conflicts \
+                             list --project <project>` to find its judgment id",
+                            findings.join(" and ")
+                        ),
+                    )
+                }
+            });
+        }
         if want("observation_type_searchable") {
             // A memory filed under a word no filter can ask for.
             //
@@ -1511,6 +1549,54 @@ fn shared_topic_keys(connection: &Connection) -> Result<i64, rusqlite::Error> {
         [],
         |row| row.get(0),
     )
+}
+
+/// The relations that join a memory to itself, and the memories a chain of
+/// judged `supersedes` makes supersede themselves.
+///
+/// Both hide what they name: `not_superseded` hides every target of a judged
+/// supersedes, so a self-pair hides its only memory and a cycle hides every
+/// memory in it, from search, from the context block and from the prompt hint.
+/// Counted apart because the repair differs — one relation to answer
+/// `not_conflict` on, against one pair in a chain.
+fn supersession_cycles(connection: &Connection) -> Result<(i64, i64), rusqlite::Error> {
+    // Judged `supersedes` only, because that pair is the one that hides
+    // something: a pending row hides nothing until somebody judges it, and a
+    // self-pair answered with any other verb hides nothing at all. Counting
+    // those would report a store as unhealthy for carrying a row that cannot
+    // hurt it.
+    let self_pairs: i64 = connection.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM memory_relations
+              WHERE source_id = target_id
+                AND relation = '{RELATION_SUPERSEDES}'
+                AND judgment_status = '{JUDGMENT_STATUS_JUDGED}'"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    let cycles: i64 = connection.query_row(
+        &format!(
+            // A self-pair is the other number, so its own edge does not seed a
+            // walk: counting it in both would report one row as two findings.
+            "WITH RECURSIVE chain(start, sync_id) AS (
+                 SELECT source_id, target_id FROM memory_relations
+                  WHERE relation = '{RELATION_SUPERSEDES}'
+                    AND judgment_status = '{JUDGMENT_STATUS_JUDGED}'
+                    AND source_id <> target_id
+                 UNION
+                 SELECT c.start, r.target_id FROM memory_relations r
+                   JOIN chain c ON r.source_id = c.sync_id
+                  WHERE r.relation = '{RELATION_SUPERSEDES}'
+                    AND r.judgment_status = '{JUDGMENT_STATUS_JUDGED}'
+                    AND r.target_id <> c.sync_id
+             )
+             SELECT COUNT(DISTINCT start) FROM chain WHERE sync_id = start"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    Ok((self_pairs, cycles))
 }
 
 /// The kinds this store holds that no filtered search can name, with how many

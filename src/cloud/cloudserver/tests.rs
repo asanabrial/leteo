@@ -416,6 +416,65 @@ async fn an_identical_chunk_push_materializes_its_mutations_once() {
     );
 }
 
+/// End to end: a pool with no connection left refuses the push, retryably.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_push_with_no_connection_to_acquire_answers_503_with_retry_after() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        max_pool: 1,
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+    let stamp = unique_stamp();
+    let project = format!("pool-refused-{stamp}");
+    let token = mint_admin(
+        &server,
+        &config.token_pepper,
+        &format!("pool-{stamp}"),
+        &project,
+    )
+    .await;
+    let body = json!({
+        "entries": [{
+            "project": project,
+            "entity": crate::sync::ENTITY_PROJECT_RENAME,
+            "entity_key": format!("pool-{stamp}"),
+            "op": crate::sync::OP_UPSERT,
+            "payload": {
+                "sync_id": format!("pool-{stamp}"),
+                "sources": [format!("old-{stamp}")],
+                "project": project,
+            },
+        }],
+    });
+
+    // The pool has one connection and the test holds it, so the push meets the
+    // acquire timeout instead of a connection.
+    let held = server.state.store.pool().acquire().await.unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/sync/mutations/push")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let response = server.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response.headers().get(header::RETRY_AFTER).cloned(),
+        Some(HeaderValue::from(error::RETRY_AFTER_SECONDS)),
+        "an acquisition that never happened is safe to retry"
+    );
+    drop(held);
+}
+
 #[test]
 fn dashboard_cookie_is_http_only_and_conditionally_secure() {
     let cookie = dashboard_cookie("signed", false);

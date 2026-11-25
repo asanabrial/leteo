@@ -316,13 +316,20 @@ impl CloudStore {
         let sequences = insert_mutations_tx(&mut transaction, entries).await?;
         materialize_mutation_chunks(&mut transaction, entries).await?;
         #[cfg(test)]
-        if self.lose_commit.swap(false, Ordering::SeqCst) {
-            // Standing in for a commit nobody hears the answer to: the writes
-            // ran, the transaction is dropped and rolled back, and the caller
-            // is left exactly as unable to say which happened.
-            return Err(CloudStoreError::OutcomeUnknown);
-        }
-        match transaction.commit().await {
+        let commit = if self.lose_commit.swap(false, Ordering::SeqCst) {
+            // The error a commit whose answer never arrived produces; the
+            // transaction drops, rolling its writes back, and the match below
+            // is the production classification.
+            drop(transaction);
+            Err(sqlx::Error::Io(std::io::Error::other(
+                "the commit's answer was lost",
+            )))
+        } else {
+            transaction.commit().await
+        };
+        #[cfg(not(test))]
+        let commit = transaction.commit().await;
+        match commit {
             Ok(()) => Ok(sequences),
             Err(error) if commit_outcome_is_unknown(&error) => Err(CloudStoreError::OutcomeUnknown),
             Err(error) => Err(error.into()),

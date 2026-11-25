@@ -7,6 +7,7 @@ use crate::cloud::test_support::unique_stamp;
 fn only_a_failed_commit_without_an_answer_is_unknown() {
     let unknown = [
         sqlx::Error::Io(std::io::Error::other("connection reset")),
+        sqlx::Error::Tls("handshake failed mid-commit".into()),
         sqlx::Error::Protocol("connection lost mid-commit".to_owned()),
         sqlx::Error::WorkerCrashed,
     ];

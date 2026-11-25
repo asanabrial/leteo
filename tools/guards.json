@@ -3028,6 +3028,18 @@
     "new": "            if false && source_id == target_id {\n                result.relations_skipped += 1;\n                continue;\n            }"
   },
   {
+    "name": "relations: a stored pair of one memory takes any verdict",
+    "file": "src/store/relations.rs",
+    "old": "        if source_id == target_id {\n            if input.relation != RELATION_NOT_CONFLICT {",
+    "new": "        if false && source_id == target_id {\n            if input.relation != RELATION_NOT_CONFLICT {"
+  },
+  {
+    "name": "relations: the cycle walk reads a sync id as a substring of another",
+    "file": "src/store/relations.rs",
+    "old": "                    AND NOT EXISTS (\n                          SELECT 1 FROM json_each(c.path) WHERE json_each.value = r.target_id)",
+    "new": "                    AND instr(c.path, r.target_id) = 0"
+  },
+  {
     "name": "replication: a relation to a memory itself waits for ever",
     "file": "src/store/wire.rs",
     "old": "    if payload.source_id == payload.target_id {",

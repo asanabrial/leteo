@@ -1870,19 +1870,37 @@ fn a_manual_supersedes_verdict_that_names_no_memory_is_refused_with_what_to_send
     );
 }
 
+fn verdict_between(
+    store: &mut Store,
+    source_id: &str,
+    target_id: &str,
+    relation: &str,
+) -> Result<String, StoreError> {
+    store.judge_by_semantic(JudgeBySemanticParams {
+        source_id: source_id.to_owned(),
+        target_id: target_id.to_owned(),
+        relation: relation.to_owned(),
+        confidence: None,
+        reasoning: None,
+        model: None,
+    })
+}
+
+fn verdict(
+    store: &mut Store,
+    source: &Observation,
+    target: &Observation,
+    relation: &str,
+) -> Result<String, StoreError> {
+    verdict_between(store, &source.sync_id, &target.sync_id, relation)
+}
+
 fn supersede(
     store: &mut Store,
     source: &Observation,
     target: &Observation,
 ) -> Result<String, StoreError> {
-    store.judge_by_semantic(JudgeBySemanticParams {
-        source_id: source.sync_id.clone(),
-        target_id: target.sync_id.clone(),
-        relation: RELATION_SUPERSEDES.to_owned(),
-        confidence: None,
-        reasoning: None,
-        model: None,
-    })
+    verdict(store, source, target, RELATION_SUPERSEDES)
 }
 
 /// A relation needs two memories, and one memory is not two.
@@ -1908,7 +1926,7 @@ fn a_relation_needs_two_memories_and_one_memory_is_refused_at_the_door() {
         RELATION_COMPATIBLE,
         RELATION_SCOPED,
     ] {
-        let message = supersede(&mut store, &memory, &memory)
+        let message = verdict(&mut store, &memory, &memory, verb)
             .unwrap_err()
             .to_string();
         assert!(
@@ -2127,5 +2145,118 @@ fn a_backup_holding_a_relation_to_a_memory_itself_is_counted_and_skipped() {
         listed_titles(&restored),
         vec![memory.title],
         "the memory the pair would have hidden came back reachable"
+    );
+}
+
+/// A pair an older build filed between one memory and itself can still be
+/// judged, and `not_conflict` is the only verdict that leaves it harmless.
+///
+/// Every other verb would store a claim about a memory and itself; `supersedes`
+/// would hide the memory again, exactly as the door now refuses to. The way out
+/// has to stay open, or a store that carries one of these rows has no answer
+/// that makes the doctor's finding go away.
+#[test]
+fn a_stored_pair_of_one_memory_takes_only_not_conflict() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let memory = store
+        .add_observation(observation("s1", "Cache layer", "the cache is Redis"))
+        .unwrap()
+        .observation;
+    store
+        .connection
+        .execute(
+            "INSERT INTO memory_relations
+                 (sync_id, source_id, target_id, relation, judgment_status)
+                 VALUES ('rel-self', ?1, ?1, ?2, 'pending')",
+            params![memory.sync_id, RELATION_SUPERSEDES],
+        )
+        .unwrap();
+
+    for verb in [RELATION_SUPERSEDES, RELATION_CONFLICTS_WITH] {
+        let message = store
+            .judge_relation(JudgeRelationParams {
+                judgment_id: "rel-self".to_owned(),
+                relation: verb.to_owned(),
+                marked_by_actor: "agent".to_owned(),
+                marked_by_kind: "agent".to_owned(),
+                superseding_id: Some(memory.id),
+                ..JudgeRelationParams::default()
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("not_conflict"),
+            "{verb} on a stored pair of one memory was refused without the answer to give: {message}"
+        );
+        assert_eq!(
+            store.get_relation("rel-self").unwrap().judgment_status,
+            JUDGMENT_STATUS_PENDING,
+            "{verb} must leave the row as it was"
+        );
+    }
+
+    let judged = store
+        .judge_relation(JudgeRelationParams {
+            judgment_id: "rel-self".to_owned(),
+            relation: RELATION_NOT_CONFLICT.to_owned(),
+            marked_by_actor: "agent".to_owned(),
+            marked_by_kind: "agent".to_owned(),
+            ..JudgeRelationParams::default()
+        })
+        .unwrap();
+    assert_eq!(judged.judgment_status, JUDGMENT_STATUS_JUDGED);
+    assert_eq!(
+        listed_titles(&store),
+        vec![memory.title],
+        "and the memory it names is still reachable"
+    );
+}
+
+/// A `sync_id` arrives from a peer and may be any text, so one can contain
+/// another.
+///
+/// The walk that looks for a cycle must compare whole ids: reading `obs-1` in
+/// `xobs-1` as a memory already met prunes the edge that would have led back to
+/// the source, and the verdict that closes the cycle is accepted.
+#[test]
+fn the_cycle_walk_reads_a_sync_id_whole_rather_than_as_a_substring() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let mut remember = |title: &str, sync_id: &str| {
+        let memory = store
+            .add_observation(observation("s1", title, "the body"))
+            .unwrap()
+            .observation;
+        // A peer's memory keeps the `sync_id` the peer minted.
+        store
+            .connection
+            .execute(
+                "UPDATE observations SET sync_id = ?1 WHERE id = ?2",
+                params![sync_id, memory.id],
+            )
+            .unwrap();
+        (memory.id, sync_id.to_owned())
+    };
+    let first = remember("First", "xobs-1");
+    let middle = remember("Middle", "obs-0");
+    let second = remember("Second", "obs-1");
+    let third = remember("Third", "obs-2");
+    let fourth = remember("Fourth", "obs-3");
+
+    verdict_between(&mut store, &first.1, &middle.1, RELATION_SUPERSEDES).unwrap();
+    verdict_between(&mut store, &middle.1, &second.1, RELATION_SUPERSEDES).unwrap();
+    verdict_between(&mut store, &second.1, &third.1, RELATION_SUPERSEDES).unwrap();
+    verdict_between(&mut store, &third.1, &fourth.1, RELATION_SUPERSEDES).unwrap();
+
+    let message = verdict_between(&mut store, &fourth.1, &first.1, RELATION_SUPERSEDES)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains(&format!(
+            "{} -> {} -> {} -> {} -> {} -> {}",
+            first.0, middle.0, second.0, third.0, fourth.0, first.0
+        )),
+        "{message}"
     );
 }

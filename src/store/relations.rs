@@ -808,9 +808,16 @@ pub(super) fn refuse_self_pair(source_id: &str, target_id: &str) -> Result<(), S
 /// cycle" told to an agent that cannot see the other edges leaves it guessing
 /// which pair to answer, and guessing wrong hides a fourth memory.
 ///
-/// The visited check rather than `UNION` is what keeps the walk finite on a
-/// store that already holds a cycle — `UNION` would deduplicate on the path
-/// column too, and two routes to one memory are two different paths.
+/// The walk keeps its route in a JSON array rather than in a joined string,
+/// and asks whether a memory is on it with `json_each`.
+///
+/// A `sync_id` arrives from a peer and may be any text, so `obs-1` occurs
+/// inside `xobs-1`: a substring test over a joined path would take a memory
+/// for one the walk had already met, prune a legal edge, and let the verdict
+/// close the cycle anyway. `json_each` compares whole values. The array is
+/// also what keeps the walk finite on a store that already holds a cycle —
+/// `UNION` would deduplicate on the route column too, and two routes to one
+/// memory are two different routes.
 pub(super) fn refuse_supersedes_cycle_tx(
     tx: &Transaction<'_>,
     source_id: &str,
@@ -819,17 +826,20 @@ pub(super) fn refuse_supersedes_cycle_tx(
     let path: Option<String> = tx
         .query_row(
             "WITH RECURSIVE chain(sync_id, path) AS (
-                 SELECT target_id, source_id || ' -> ' || target_id
+                 SELECT target_id, json_array(source_id, target_id)
                    FROM memory_relations
                   WHERE source_id = ?1 AND relation = ?3 AND judgment_status = 'judged'
                  UNION ALL
-                 SELECT r.target_id, c.path || ' -> ' || r.target_id
+                 SELECT r.target_id, json_insert(c.path, '$[#]', r.target_id)
                    FROM chain c
                    JOIN memory_relations r ON r.source_id = c.sync_id
                   WHERE r.relation = ?3 AND r.judgment_status = 'judged'
-                    AND instr(c.path || ' -> ', r.target_id || ' -> ') = 0
+                    AND NOT EXISTS (
+                          SELECT 1 FROM json_each(c.path) WHERE json_each.value = r.target_id)
              )
-             SELECT path FROM chain WHERE sync_id = ?2 LIMIT 1",
+             SELECT path FROM chain WHERE sync_id = ?2
+              ORDER BY json_array_length(path), path
+              LIMIT 1",
             params![target_id, source_id, RELATION_SUPERSEDES],
             |row| row.get(0),
         )
@@ -837,10 +847,11 @@ pub(super) fn refuse_supersedes_cycle_tx(
     let Some(path) = path else {
         return Ok(());
     };
+    let route: Vec<String> = serde_json::from_str(&path)?;
     // The walk runs on `sync_id`, which is what a relation stores; the agent
     // that will answer `not_conflict` holds `id`, which is what a tool takes.
     let mut named = Vec::new();
-    for sync_id in path.split(" -> ") {
+    for sync_id in &route {
         let id: Option<i64> = tx
             .query_row(
                 "SELECT id FROM observations WHERE sync_id = ?1",
@@ -850,7 +861,7 @@ pub(super) fn refuse_supersedes_cycle_tx(
             .optional()?;
         named.push(match id {
             Some(id) => id.to_string(),
-            None => sync_id.to_owned(),
+            None => sync_id.clone(),
         });
     }
     let closed = format!(

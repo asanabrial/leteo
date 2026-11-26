@@ -1984,6 +1984,147 @@ fn doctor_repair_re_stems_a_memory_recorded_under_the_wrong_language() {
     assert_eq!(language(&database), "es");
 }
 
+/// `--check <code> --repair` repairs that check and nothing else.
+///
+/// `--check hook_spool` is the question "is the spool all right?", and answering
+/// it by rebuilding every full-text index on the store was a repair nobody asked
+/// for, paid on a store somebody already suspects.
+#[test]
+fn doctor_repairing_one_check_repairs_only_that_check() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("scoped-repair.db");
+
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("The connection pool leaked")
+            .arg("the pool was never returned to")
+            .arg("--project")
+            .arg("alpha"),
+    );
+    // A word only the index can reach, and the semantic stage off so nothing
+    // finds the memory by meaning once the index is gone.
+    std::fs::write(
+        database
+            .parent()
+            .expect("the store's directory")
+            .join("settings.json"),
+        r#"{"semantic_search": false}"#,
+    )
+    .expect("turn the semantic stage off");
+    rusqlite::Connection::open(&database)
+        .expect("open the store directly")
+        .execute_batch(
+            "INSERT INTO observations_fts(observations_fts) VALUES('delete-all');
+             INSERT INTO observations_exact(observations_exact) VALUES('delete-all');",
+        )
+        .expect("empty the indexes");
+
+    let scoped = run_json(
+        leteo(&database)
+            .arg("doctor")
+            .arg("--check")
+            .arg("hook_spool")
+            .arg("--repair"),
+    );
+    assert!(
+        scoped.get("rebuilt").is_none(),
+        "a repair of the spool rebuilt an index: {scoped}"
+    );
+    assert_eq!(scoped["spool"]["dropped"], json!(0), "{scoped}");
+
+    // Behaviourally as well: a rebuilt index would have recovered the memory.
+    let still_empty = run_json(
+        leteo(&database)
+            .arg("search")
+            .arg("returned")
+            .arg("--project")
+            .arg("alpha"),
+    );
+    assert_eq!(
+        still_empty.as_array().map(Vec::len),
+        Some(0),
+        "nothing rebuilt the index: {still_empty}"
+    );
+
+    // And the unscoped repair is still the whole repair.
+    let repaired = run_json(leteo(&database).arg("doctor").arg("--repair"));
+    assert!(
+        repaired["rebuilt"]
+            .as_array()
+            .is_some_and(|built| !built.is_empty()),
+        "the unscoped repair rebuilds: {repaired}"
+    );
+}
+
+/// A repair with no model says vectors could not be made, and why.
+///
+/// The count alone read as a store that needed none: on a machine without the
+/// model every memory is left without a vector, and `embedded: 0` is the answer
+/// to a different question from the one somebody is asking when they run
+/// `--repair`.
+#[test]
+fn doctor_repair_says_when_it_could_not_make_a_vector_and_why() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("vectors-repair.db");
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory")
+            .arg("with a body of its own")
+            .arg("--project")
+            .arg("alpha"),
+    );
+
+    let repaired = run_json(leteo(&database).arg("doctor").arg("--repair"));
+    assert_eq!(repaired["vectors"]["embedded"], json!(0), "{repaired}");
+    assert_eq!(
+        repaired["vectors"]["without_vector"],
+        json!(1),
+        "the memory is counted as lacking its vector: {repaired}"
+    );
+    assert!(
+        repaired["vectors"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not installed"),
+        "a repair that made no vector has to say why: {repaired}"
+    );
+}
+
+/// A repair that drops a spool entry says how many went and why.
+///
+/// The spool is where a subagent's only copy of what it learned waits for a
+/// busy store, so a repair that removes one has to say it did.
+#[test]
+fn doctor_repair_reports_the_spool_entries_it_dropped_and_why() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("spool-repair.db");
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory")
+            .arg("with a body of its own")
+            .arg("--project")
+            .arg("alpha"),
+    );
+    let spool = temp.path().join("hooks").join("spool");
+    std::fs::create_dir_all(&spool).expect("make the spool directory");
+    std::fs::write(spool.join("00000000000000000001.json"), b"not a capture")
+        .expect("leave litter in the spool");
+
+    let repaired = run_json(leteo(&database).arg("doctor").arg("--repair"));
+    assert_eq!(repaired["spool"]["dropped"], json!(1), "{repaired}");
+    assert_eq!(
+        repaired["spool"]["dropped_reasons"]
+            .as_object()
+            .and_then(|reasons| reasons.get("the entry could not be read as a capture")),
+        Some(&json!(1)),
+        "{repaired}"
+    );
+    assert_eq!(repaired["spool"]["remaining"], json!(0), "{repaired}");
+}
+
 /// `doctor --check` runs only the check it was asked for.
 ///
 /// The whole point is the time: `PRAGMA integrity_check` over a 96 MB store is

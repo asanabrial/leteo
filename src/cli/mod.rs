@@ -780,32 +780,63 @@ pub async fn run(cli: Cli) -> Result<()> {
             // order: the rebuild is what recovers the edits that happened
             // while a trigger was missing, and doing it first would leave the
             // index correct for a moment and stale again by the next write.
-            let restored = repair
+            //
+            // A `--check` beside `--repair` selects the check's own repairs and
+            // none other, so asking about the spool does not rebuild three
+            // indexes to answer.
+            let repairs = if repair {
+                match check.as_deref().map(str::trim) {
+                    Some(code) => Repairs::for_check(code).unwrap_or_default(),
+                    None => Repairs::ALL,
+                }
+            } else {
+                Repairs::default()
+            };
+            let restored = repairs
+                .triggers
                 .then(|| store.restore_full_text_triggers())
                 .transpose()?;
             // Before the rebuild, so the index it builds is of the stems the
             // rows should have and not of the ones they were recorded with.
-            let restemmed = repair
+            let restemmed = repairs
+                .language
                 .then(|| store.restem_to_detected_language())
                 .transpose()?;
-            let rebuilt = repair
+            let rebuilt = repairs
+                .indexes
                 .then(|| store.rebuild_full_text_indexes())
                 .transpose()?;
-            let rehashed = repair.then(|| store.recompute_stale_hashes()).transpose()?;
-            let folded = repair.then(|| store.fold_observation_types()).transpose()?;
-            let swept_versions = repair.then(|| store.remove_orphan_versions()).transpose()?;
+            let rehashed = repairs
+                .hashes
+                .then(|| store.recompute_stale_hashes())
+                .transpose()?;
+            let folded = repairs
+                .types
+                .then(|| store.fold_observation_types())
+                .transpose()?;
+            let swept_versions = repairs
+                .orphans
+                .then(|| store.remove_orphan_versions())
+                .transpose()?;
             // The vectors the stage is missing. `doctor --repair` is the one
             // command that says "do it now": the background backfill drains a
             // store on its own schedule, and a one-shot import or a store nobody
             // has searched since the vectors stopped being built during a search
             // has nobody else to ask. It loads the model, and steps through the
             // store a bounded chunk at a time rather than all at once.
-            let embedded = repair.then(|| store.embed_pending().embedded);
+            //
+            // The whole pass is kept and reported, not just its count: without
+            // the model every memory is left without a vector, and a report
+            // that says `0` and nothing else reads like a store that needed
+            // none.
+            let vectors = repairs.vectors.then(|| store.embed_pending());
             // And the captures a busy hook left beside the database. Before the
             // report, so the `hook_spool` check describes the spool as it is
             // after the repair rather than as it was when somebody asked.
             let spool_deadline = store.wait_deadline();
-            let _ = repair.then(|| crate::hooks::spool::drain(&mut store, spool_deadline));
+            let spool = repairs
+                .spool
+                .then(|| crate::hooks::spool::drain(&mut store, spool_deadline));
             // Naming the check is asking for it, so the flag and `--check` are
             // the same opt-in. It is the only check that needs to know where
             // the command was run, and the store has no working directory.
@@ -842,8 +873,11 @@ pub async fn run(cli: Cli) -> Result<()> {
                 if let Some(rehashed) = rehashed {
                     object.insert("rehashed".to_owned(), serde_json::to_value(rehashed)?);
                 }
-                if let Some(embedded) = embedded {
-                    object.insert("embedded".to_owned(), serde_json::to_value(embedded)?);
+                if let Some(vectors) = vectors {
+                    object.insert("vectors".to_owned(), serde_json::to_value(&vectors)?);
+                }
+                if let Some(spool) = spool {
+                    object.insert("spool".to_owned(), serde_json::to_value(&spool)?);
                 }
                 if let Some(folded) = folded {
                     object.insert("folded_types".to_owned(), serde_json::to_value(folded)?);
@@ -1202,6 +1236,105 @@ pub async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Which of `doctor --repair`'s repairs a check stands for.
+///
+/// `--check` is the question "is this one thing all right?", and `--repair`
+/// beside it is that question with "and put it right". Running every repair
+/// against `--check hook_spool` rebuilt three full-text indexes to answer a
+/// question about a directory of capture files, on a store somebody already
+/// suspects.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Repairs {
+    triggers: bool,
+    language: bool,
+    indexes: bool,
+    hashes: bool,
+    types: bool,
+    orphans: bool,
+    vectors: bool,
+    spool: bool,
+}
+
+impl Repairs {
+    /// Everything `--repair` does with no `--check` beside it.
+    const ALL: Self = Self {
+        triggers: true,
+        language: true,
+        indexes: true,
+        hashes: true,
+        types: true,
+        orphans: true,
+        vectors: true,
+        spool: true,
+    };
+
+    /// The repairs a check names, and none beside them.
+    ///
+    /// One row per code, and a test holds the rows to `DoctorCheck::CODES` in
+    /// both directions, so a check added without a row fails rather than
+    /// silently repairing nothing.
+    fn for_check(code: &str) -> Option<Self> {
+        match code {
+            "full_text_triggers" => Some(Self {
+                triggers: true,
+                ..Self::default()
+            }),
+            // Re-stemming rewrites the rows the Snowball index is built from,
+            // so the index is rebuilt after it or it is rebuilt from the old
+            // stems.
+            "memory_language" => Some(Self {
+                language: true,
+                indexes: true,
+                ..Self::default()
+            }),
+            "observation_fts_integrity"
+            | "observation_exact_fts_integrity"
+            | "prompt_fts_integrity"
+            | "observation_fts_sync"
+            | "observation_exact_fts_sync"
+            | "observation_stems_fts_integrity"
+            | "observation_stems_sync"
+            | "prompt_fts_sync" => Some(Self {
+                indexes: true,
+                ..Self::default()
+            }),
+            "observation_hash_sync" => Some(Self {
+                hashes: true,
+                ..Self::default()
+            }),
+            "observation_type_searchable" => Some(Self {
+                types: true,
+                ..Self::default()
+            }),
+            "orphan_versions" => Some(Self {
+                orphans: true,
+                ..Self::default()
+            }),
+            "semantic_model" | "semantic_vectors" => Some(Self {
+                vectors: true,
+                ..Self::default()
+            }),
+            "hook_spool" => Some(Self {
+                spool: true,
+                ..Self::default()
+            }),
+            // Read and reported, never mended here: an integrity failure, a
+            // journal mode and a busy timeout are settings and findings a
+            // repair would have to guess at, and a superseded pair is a
+            // judgement somebody makes.
+            "sqlite_integrity"
+            | "foreign_keys"
+            | "journal_mode"
+            | "busy_timeout"
+            | "settings_readable"
+            | "topic_key_uniqueness"
+            | "supersession_cycles"
+            | crate::memory::model::DoctorCheck::STALE_CITATIONS => Some(Self::default()),
+            _ => None,
+        }
+    }
+}
+
 /// Says which of its two reasons an empty answer has, on stderr.
 ///
 /// A read the directory narrowed can come back empty because the store has
@@ -1531,3 +1664,6 @@ fn reconcile_enrolment(store: &mut crate::Store, projects: &[String]) -> anyhow:
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

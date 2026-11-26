@@ -248,6 +248,23 @@ jobs:
           # event's own `before` is the commit that was the tip; every other event
           # leaves it empty and the guard falls back to `origin/main`.
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+      # The one thing the unit suite cannot reach: the two PowerShell scripts
+      # that own Leteo's PATH entry run as scripts, in the two engines Windows
+      # ships. `[Environment]::GetEnvironmentVariable` returns an expanded
+      # string under 5.1, so writing it back freezes every `%VAR%` entry of the
+      # user PATH at that moment — a change to something Leteo does not own,
+      # which the person finds much later. The script seeds a `%USERPROFILE%`
+      # entry, runs the real `install.ps1` and `uninstall.ps1` against a release
+      # archive it builds and serves locally, and reads the registry value and
+      # its kind back after each.
+      - name: The Windows scripts leave the rest of the user PATH alone (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/check-windows-path.ps1
+      - name: The Windows scripts leave the rest of the user PATH alone (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-path.ps1
 
   # Not on the matrix above, and not a trade-off that was weighed: this job
   # needs the `services:` block below, and GitHub runs service containers on

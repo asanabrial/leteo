@@ -83,6 +83,35 @@ fn project_label(project: &str) -> String {
     }
 }
 
+/// The other live memory holding `key` in this project and scope, if one does.
+///
+/// A superseded memory is not a holder: it is hidden from every listing, and
+/// the revision lookup a save runs treats the key it left as its replacement's.
+/// Counting one here would refuse a revision onto the key a consolidation
+/// handed on, which is the opposite of what that operation is for.
+fn held_topic_key(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    key: &str,
+    project: Option<&str>,
+    scope: &str,
+) -> Result<Option<i64>, StoreError> {
+    let not_superseded = super::relations::not_superseded();
+    tx.query_row(
+        &format!(
+            "SELECT o.id FROM observations o
+              WHERE o.topic_key = ?1 AND ifnull(o.project, '') = ifnull(?2, '')
+                AND o.scope = ?3 AND o.deleted_at IS NULL AND o.id <> ?4
+                AND {not_superseded}
+              ORDER BY datetime(o.updated_at) DESC, o.id DESC LIMIT 1"
+        ),
+        params![key, project, scope, id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(StoreError::from)
+}
+
 /// Sets, moves or clears a memory's review date to match the type it now has.
 ///
 /// Only three types are ever due for review — `decision`, `policy`,
@@ -847,6 +876,15 @@ impl Store {
         let tx = self.write_transaction()?;
         let current = get_active_observation(&tx, id)?;
         assert_expected_project(id, current.project.as_deref(), expected_project)?;
+        // Where the memory sits now, read before the fields below move them:
+        // a write that lands it on another memory's key has to know whether the
+        // key, project or scope actually changed, and the same write to the
+        // same placement is the ordinary revision.
+        let previous_placement = (
+            current.topic_key.clone(),
+            current.project.clone(),
+            current.scope.clone(),
+        );
         // The text before the update, for the snapshot and the reply alike:
         // once the UPDATE has run the row holds the new words and there is no
         // second read that gets the old ones back.
@@ -935,6 +973,24 @@ impl Store {
             .topic_key
             .map(|value| normalize::topic_key(Some(&value)))
             .unwrap_or(current.topic_key);
+        // A key belongs to one live memory, per project and scope. Two live
+        // holders make one of them unreachable by its own key: a save revises
+        // whichever the lookup reaches first, and the other can never be
+        // revised by that key again. Writing a key another memory holds — or
+        // moving this one into a project where their key is already taken — is
+        // refused before the UPDATE, so nothing is left half-written.
+        if let Some(key) = topic_key.as_deref() {
+            let moved = previous_placement.0.as_deref() != Some(key)
+                || previous_placement.1.as_deref() != project.as_deref()
+                || previous_placement.2 != scope;
+            if moved && let Some(holder) = held_topic_key(&tx, id, key, project.as_deref(), &scope)?
+            {
+                return Err(StoreError::TopicKeyHeld {
+                    topic_key: key.to_owned(),
+                    holder,
+                });
+            }
+        }
         let hash = normalize::normalized_hash(&content);
 
         // A metadata-only change is out of the history's scope: nothing a

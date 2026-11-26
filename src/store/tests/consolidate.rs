@@ -474,3 +474,57 @@ fn a_consolidation_refuses_an_empty_or_repeated_source_list() {
     );
     assert_eq!(count(&store, "SELECT COUNT(*) FROM memory_relations"), 0);
 }
+
+/// A consolidation under the key its source held leaves one live holder, which
+/// is the state `doctor` calls healthy.
+///
+/// The replacement inserts a live row under the same key while the source stays
+/// live in the table; the judged `supersedes` relation is what makes the source
+/// not a holder. Counting it failed `topic_key_uniqueness` on a store whose only
+/// mistake was a documented merge.
+#[test]
+fn a_consolidation_under_its_sources_key_leaves_one_holder_and_a_healthy_store() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let source = store
+        .add_observation(AddObservation {
+            topic_key: Some("auth/jwt".to_owned()),
+            ..observation(
+                "s1",
+                "The JWT model",
+                "tokens are minted where the session opens",
+            )
+        })
+        .unwrap()
+        .observation;
+
+    let outcome = store
+        .consolidate_observations(ConsolidateObservations {
+            topic_key: Some("auth/jwt".to_owned()),
+            ..a_merge(vec![source.id], "leteo")
+        })
+        .unwrap();
+    assert_eq!(outcome.observation.topic_key.as_deref(), Some("auth/jwt"));
+
+    let report = store.doctor().unwrap();
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.code == "topic_key_uniqueness")
+        .expect("the doctor reports it");
+    assert!(check.ok, "{check:?}");
+    assert!(report.healthy, "{report:?}");
+
+    // And the save path agrees: a save under the key revises the replacement,
+    // not the source it replaced.
+    let revised = store
+        .add_observation(AddObservation {
+            topic_key: Some("auth/jwt".to_owned()),
+            ..observation("s1", "The JWT model", "tokens are minted at the session")
+        })
+        .unwrap();
+    assert_eq!(
+        revised.observation.id, outcome.observation.id,
+        "the replacement holds the key: {revised:?}"
+    );
+}

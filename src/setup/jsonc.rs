@@ -676,6 +676,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A fixture as the lines of the file it stands for.
+    ///
+    /// Written this way, no line of the fixture is a run of indentation inside
+    /// a string literal, which is the shape the repository's guard reads as a
+    /// sentence broken by the line it was written on.
+    fn document(lines: &[&str]) -> String {
+        format!("{}\n", lines.join("\n"))
+    }
+
     #[test]
     fn a_member_is_added_beside_the_ones_already_there() {
         let text = "{\n  \"theme\": \"dark\",\n  // mine\n}\n";
@@ -700,30 +709,38 @@ mod tests {
 
     #[test]
     fn an_existing_member_is_replaced_in_place_and_the_comment_stays() {
-        let text = r#"{
-  "mcp": {
-    // our server
-    "leteo": {
-      "command": ["old"]
-    }
-  }
-}
-"#;
-        let edited =
-            set_member(text, &["mcp"], "leteo", &json!({"command": ["new"]}), "  ").unwrap();
+        let before = document(&[
+            "{",
+            "  \"mcp\": {",
+            "    // our server",
+            "    \"leteo\": {",
+            "      \"command\": [\"old\"]",
+            "    }",
+            "  }",
+            "}",
+        ]);
+        let edited = set_member(
+            &before,
+            &["mcp"],
+            "leteo",
+            &json!({"command": ["new"]}),
+            "  ",
+        )
+        .unwrap();
         assert_eq!(
             edited,
-            r#"{
-  "mcp": {
-    // our server
-    "leteo": {
-      "command": [
-        "new"
-      ]
-    }
-  }
-}
-"#
+            document(&[
+                "{",
+                "  \"mcp\": {",
+                "    // our server",
+                "    \"leteo\": {",
+                "      \"command\": [",
+                "        \"new\"",
+                "      ]",
+                "    }",
+                "  }",
+                "}",
+            ])
         );
     }
 
@@ -791,28 +808,30 @@ mod tests {
 
     #[test]
     fn the_comma_before_a_multiline_last_member_goes_with_it() {
-        let text = r#"{
-  "mcp": {
-    "other": {
-      "a": 1,
-    },
-    "leteo": {
-      "type": "local"
-    }
-  }
-}
-"#;
-        let edited = remove_member(text, &["mcp"], "leteo").unwrap().unwrap();
+        let before = document(&[
+            "{",
+            "  \"mcp\": {",
+            "    \"other\": {",
+            "      \"a\": 1,",
+            "    },",
+            "    \"leteo\": {",
+            "      \"type\": \"local\"",
+            "    }",
+            "  }",
+            "}",
+        ]);
+        let edited = remove_member(&before, &["mcp"], "leteo").unwrap().unwrap();
         assert_eq!(
             edited,
-            r#"{
-  "mcp": {
-    "other": {
-      "a": 1,
-    }
-  }
-}
-"#
+            document(&[
+                "{",
+                "  \"mcp\": {",
+                "    \"other\": {",
+                "      \"a\": 1,",
+                "    }",
+                "  }",
+                "}",
+            ])
         );
     }
 

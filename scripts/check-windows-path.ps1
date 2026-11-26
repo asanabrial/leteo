@@ -65,11 +65,11 @@ function Assert-Markers([string]$Where) {
     $entries = @((Read-Raw) -split ';')
     foreach ($marker in $markers) {
         if ($entries -notcontains $marker) {
-            throw "$Where: the user PATH no longer holds '$marker' as written: $(Read-Raw)"
+            throw "${Where}: the user PATH no longer holds '$marker' as written: $(Read-Raw)"
         }
     }
     if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
-        throw "$Where: the user PATH is now $((Read-Kind)), so every variable in it is frozen: $(Read-Raw)"
+        throw "${Where}: the user PATH is now $((Read-Kind)), so every variable in it is frozen: $(Read-Raw)"
     }
 }
 

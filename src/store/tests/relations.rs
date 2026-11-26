@@ -2260,3 +2260,173 @@ fn the_cycle_walk_reads_a_sync_id_whole_rather_than_as_a_substring() {
         "{message}"
     );
 }
+
+/// The words a title is searched by are the ones that name its subject.
+///
+/// The query was every whitespace-separated word ORed together, so "Go service
+/// pauses from GC with a 12 GB heap" asked the store for `a`, `the`, `with` and
+/// `12` — words every other memory in a project of two thousand already holds.
+/// Function words of either language and bare numbers are not the subject; a
+/// two-letter token is, often enough to keep (`GC`, `GB`, `Go`), and the
+/// coverage rule beside this is where it stops counting as evidence.
+#[test]
+fn a_title_is_searched_by_the_words_that_name_its_subject() {
+    let english = title_terms("Go service pauses from GC with a 12 GB heap");
+    assert_eq!(
+        english.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["go", "service", "pauses", "gc", "gb", "heap"]
+    );
+    assert_eq!(
+        candidate_fts_query(&english),
+        "\"go\" OR \"service\" OR \"pauses\" OR \"gc\" OR \"gb\" OR \"heap\""
+    );
+
+    let spanish = title_terms("El respaldo nocturno corre a las 03:15 UTC");
+    assert_eq!(
+        spanish.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["respaldo", "nocturno", "corre", "utc"]
+    );
+}
+
+/// One shared ordinary word is not a subject, and is not a question.
+///
+/// The floor is opened all the way so that anything the query retrieves comes
+/// back: what is under test is the coverage rule, not bm25. Each memory of the
+/// crowd shares one word of the saved title and nothing else, which is the
+/// shape the issue found proposed — a save about a Go service pausing on GC was
+/// answered with a heap, a batch and a backup.
+#[test]
+fn a_shared_ordinary_word_is_not_a_candidate() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let crowd = [
+        "Heap profiling showed the allocator was fine",
+        "The service registry lists every pod",
+        "GC tuning notes from the vendor",
+        "A 12 GB volume is attached to the primary",
+        "Nightly backup runs at 03:15 UTC",
+        "The queue drains in order after a restart",
+        "Retry budgets are counted per host",
+        "Stale pods survive the rollout",
+        "N+1 query in the orders endpoint",
+        "The deploy job leaves stale processes behind",
+    ];
+    for title in crowd {
+        store
+            .add_observation(observation("s1", title, "an unrelated note"))
+            .unwrap();
+    }
+    let saved = store
+        .add_observation(observation(
+            "s1",
+            "Go service pauses from GC with a 12 GB heap",
+            "The pause is the collector, not the scheduler.",
+        ))
+        .unwrap()
+        .observation;
+
+    let candidates = store
+        .find_candidates(
+            saved.id,
+            CandidateOptions {
+                skip_insert: true,
+                bm25_floor: Some(0.0),
+                ..CandidateOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        candidates.is_empty(),
+        "a shared ordinary word was proposed: {:?}",
+        candidates.iter().map(|c| &c.title).collect::<Vec<_>>()
+    );
+}
+
+/// A same-title memory that claims the opposite is proposed.
+///
+/// It is the case the issue found missed, and the save here is a real insert:
+/// the body differs, so the dedupe hash differs and the second memory is its
+/// own row. The same title saved with a topic key does not reach this finder at
+/// all — it revises the first memory in place — which is a different defect in
+/// the save path and not one this rule can see.
+#[test]
+fn a_same_title_contradiction_is_proposed() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let older = store
+        .add_observation(observation(
+            "s1",
+            "Queue backend for the ingestion worker",
+            "The queue backend is Redis lists.",
+        ))
+        .unwrap()
+        .observation;
+    let newer = store
+        .add_observation(observation(
+            "s1",
+            "Queue backend for the ingestion worker",
+            "The queue backend is Postgres with skip locked.",
+        ))
+        .unwrap()
+        .observation;
+    assert_ne!(older.id, newer.id, "the second save revised the first");
+
+    let candidates = store
+        .find_candidates(
+            newer.id,
+            CandidateOptions {
+                skip_insert: true,
+                bm25_floor: Some(0.0),
+                ..CandidateOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        candidates.iter().any(|candidate| candidate.id == older.id),
+        "the same title with the opposite claim was not proposed: {candidates:?}"
+    );
+}
+
+/// A title that substitutes the claim word is still proposed.
+///
+/// This is why the query is a disjunction and the coverage rule is not a
+/// conjunction of every word: "per host" and "per request" are one claim apart,
+/// so a query requiring all of them matches nothing and the pair that most
+/// needs a verdict is the one it loses. The coverage rule requires half of the
+/// subject words instead, and the shared `retry budget` is enough.
+#[test]
+fn a_contradiction_that_substitutes_the_claim_word_is_proposed() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let older = store
+        .add_observation(observation(
+            "s1",
+            "The retry budget is per host",
+            "Each host keeps its own counter.",
+        ))
+        .unwrap()
+        .observation;
+    let newer = store
+        .add_observation(observation(
+            "s1",
+            "The retry budget is per request",
+            "Every request carries its own budget.",
+        ))
+        .unwrap()
+        .observation;
+
+    let candidates = store
+        .find_candidates(
+            newer.id,
+            CandidateOptions {
+                skip_insert: true,
+                bm25_floor: Some(0.0),
+                ..CandidateOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        candidates.iter().any(|candidate| candidate.id == older.id),
+        "a contradiction one claim word apart was not proposed: {candidates:?}"
+    );
+}

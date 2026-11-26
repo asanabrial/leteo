@@ -156,10 +156,11 @@ than to the binary, which is why they are not in the
 [Environment](#environment) table.
 
 Releases carry five builds — x86-64 Linux, Windows and macOS, and arm64 Linux
-and macOS. The two Linux ones ask for nothing newer than glibc 2.34, so they
-run on Debian 12, Ubuntu 22.04, RHEL 9 and anything later. That floor is pinned
-in the release workflow rather than inherited from whichever image GitHub calls
-latest: v0.1.0 inherited it, and wanted a glibc newer than Debian stable's. The
+and macOS. The two Linux ones link glibc and ask for nothing newer than glibc
+2.34, so they run on Debian 12, Ubuntu 22.04, RHEL 9 and anything later; a musl
+system such as Alpine is not one of them, and neither Linux build starts there.
+That floor is pinned in the release workflow rather than inherited from whichever
+image GitHub calls latest: v0.1.0 inherited it, and wanted a glibc newer than Debian stable's. The
 Windows build asks for Windows 10 or later and nothing installed first: its C
 runtime is linked into the binary, so not even the Visual C++ Redistributable.
 On anything else, build from source, which is the one route that needs Rust:

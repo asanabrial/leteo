@@ -15,11 +15,34 @@ use crate::{
 
 use super::{HookInput, HookOutcome};
 
+/// The directory a hook is talking about, always absolute.
+///
+/// A relative `cwd` used to be stored as it arrived, so the session recorded a
+/// directory that only means something beside the process that wrote it, and
+/// the next hook — from another directory, or another run — could not match it
+/// to the history it was supposed to join. `cwd` is relative to the process
+/// that was started in it, which is the hook's own directory.
 pub(super) fn resolve_directory(cwd: &str) -> PathBuf {
-    if cwd.trim().is_empty() {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    } else {
-        PathBuf::from(cwd)
+    resolve_directory_against(cwd, std::env::current_dir().ok())
+}
+
+/// [`resolve_directory`] with the process directory named, so the rule can be
+/// asked directly instead of through whatever directory the test binary
+/// happens to have been started in.
+fn resolve_directory_against(cwd: &str, process: Option<PathBuf>) -> PathBuf {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return process.unwrap_or_else(|| PathBuf::from("."));
+    }
+    let directory = PathBuf::from(cwd);
+    if directory.is_absolute() {
+        return directory;
+    }
+    match process {
+        Some(process) => process.join(directory),
+        // No process directory to resolve against: the path stays relative,
+        // which the empty-directory guard downstream already reports.
+        None => directory,
     }
 }
 

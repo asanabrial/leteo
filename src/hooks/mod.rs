@@ -536,7 +536,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     if guessed {
         project = recorded_project(store, project, &directory.to_string_lossy());
     }
-    let session_id = resolve_session_id(input, &project);
+    let mut session_id = resolve_session_id(input, &project);
 
     // An existing session owns its project, exactly as the MCP tools treat it.
     // An agent that changes directory mid-session would otherwise split one
@@ -553,6 +553,68 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             .warnings
             .push("could not determine the project for this hook".to_owned());
         return Ok(outcome);
+    }
+
+    // A directory whose history is under another name is a question for the
+    // user, and a hook cannot ask it. What it can do is refuse to make the
+    // dispute permanent: opening a session under the newly detected name while
+    // the memories stay under the old one means the next write is refused as
+    // `ambiguous_project`, in both directions, and the person is never told
+    // why. So the session joins the recorded name — the history is the
+    // evidence — and the question goes into the context the agent reads.
+    //
+    // The one drift a hook repairs without asking is a repository that took
+    // its directory's name: its memories were filed under the plain basename,
+    // and that name is not a project anyone chose, so they move to what the
+    // remote now says. Any other recorded name is a project somebody worked
+    // under — an old remote, a fork — and moving it would answer the question
+    // the warning exists to ask. Neither decision may look at a project the
+    // payload names: that name belongs to this session alone, and using it as
+    // the fold's target once took a directory's whole history with it.
+    let detected = normalize::project(&detection.project);
+    let mut drifted: Vec<String> = Vec::new();
+    if matches!(event, HookEvent::SessionStart) && !named_by_agent {
+        let basename = directory
+            .file_name()
+            .map(|name| normalize::project(&name.to_string_lossy()))
+            .unwrap_or_default();
+        match drifted_directory_projects(store, &directory, &project) {
+            Ok(found) => drifted = found,
+            // A lookup that could not run is not a lookup that found no drift,
+            // so it says which it was rather than passing as agreement.
+            Err(error) => outcome
+                .warnings
+                .push(said("check this directory's project history", &error)),
+        }
+        let plain_name = drifted.len() == 1 && drifted.first() == Some(&basename);
+        if plain_name {
+            migrate_directory_project(store, &directory, &detected, &mut outcome);
+            // The fold can leave sessions behind when the same name was also
+            // recorded from another checkout. Those are still drift, and the
+            // warning is the only thing that says so.
+            match drifted_directory_projects(store, &directory, &project) {
+                Ok(found) => drifted = found,
+                Err(error) => outcome
+                    .warnings
+                    .push(said("check this directory's project history", &error)),
+            }
+        }
+        if let Some(recorded) = drifted.first() {
+            project = recorded.clone();
+            outcome.project = project.clone();
+            if input.session_id.trim().is_empty() {
+                session_id = resolve_session_id(input, &project);
+                outcome.session_id = session_id.clone();
+            }
+        }
+    }
+    if !drifted.is_empty() {
+        outcome.warnings.push(format!(
+            "this directory's sessions were recorded under {}, and it now resolves to \
+             {detected:?}; ask the user which project this belongs to, or fold the two \
+             together with `leteo projects consolidate`",
+            drifted.join(", ")
+        ));
     }
 
     // What detection could not finish, said where it can be read. A hook is
@@ -573,7 +635,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     //
     // And only the warnings about detection that could not finish — see
     // `ProjectDetection::unfinished_warning`, which is where that rule lives.
-    if project == normalize::project(&detection.project)
+    if project == detected
         && !named_by_agent
         && let Some(warning) = detection.unfinished_warning()
     {
@@ -596,30 +658,6 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
 
     match event {
         HookEvent::SessionStart => {
-            migrate_directory_project(store, &directory, &project, &mut outcome);
-            // A hook cannot ask which project the user meant, so the warning is
-            // how it tells the agent that this directory's history is under
-            // another name. It runs after `migrate_directory_project`, which
-            // already folds the one drift it can repair on its own — a
-            // repository that took its directory's name — so what is left to
-            // warn about is a remote that was renamed or pointed at a fork.
-            match drifted_directory_projects(store, &directory, &project) {
-                Ok(drifted) if !drifted.is_empty() => {
-                    outcome.warnings.push(format!(
-                        "this directory's sessions were recorded under {}, and it now resolves \
-                         to {project:?}; ask the user which project this belongs to, or fold the \
-                         two together with `leteo projects consolidate`",
-                        drifted.join(", ")
-                    ));
-                }
-                Ok(_) => {}
-                // A lookup that could not run is not a lookup that found no
-                // drift, so it says which it was rather than passing as
-                // agreement.
-                Err(error) => outcome
-                    .warnings
-                    .push(said("check this directory's project history", &error)),
-            }
             ensure_session(store, &session_id, &project, &directory, &mut outcome);
             sweep_stale_nudges(store);
             let mut context = if input.without_directive {
@@ -637,6 +675,19 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // reflects the settings file as it is now rather than as it was
             // when somebody installed.
             context.push_str(&settings.language_directive());
+            // The question the hook cannot ask, where the agent reads it. A
+            // warning is a surface nobody opens; this one is in the
+            // conversation at the moment the agent starts filing memories,
+            // which is the only moment it can act on it.
+            if !drifted.is_empty() {
+                context.push_str(&format!(
+                    "\n\nThis directory's sessions were recorded under {}, and the repository \
+                     now resolves to {detected:?}. The session was opened under the recorded \
+                     name so the history stays whole. Ask the user which project this belongs \
+                     to, or fold the two together with `leteo projects consolidate`.\n",
+                    drifted.join(", ")
+                ));
+            }
             if let Some((memory, listed)) = memory_context(store, &project, &settings, &mut outcome)
             {
                 context.push_str("\n\n");

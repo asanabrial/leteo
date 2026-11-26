@@ -966,6 +966,54 @@ fn a_non_package_install_keeps_its_canonical_path() {
     );
 }
 
+/// A package manager owns what it installed, and the command that takes it is
+/// the one its own tool prints.
+#[test]
+fn a_package_manager_owns_the_binary_it_installed() {
+    let temp = TempDir::new().unwrap();
+    let cases = [
+        (
+            temp.path().join("Cellar/leteo/1.2.3/bin/leteo"),
+            "Homebrew",
+            "brew uninstall leteo",
+        ),
+        (
+            temp.path().join("mise/installs/leteo/1.2.3/bin/leteo"),
+            "mise",
+            "mise uninstall leteo",
+        ),
+        (
+            temp.path().join(".asdf/installs/leteo/1.2.3/bin/leteo"),
+            "asdf",
+            "asdf uninstall leteo",
+        ),
+        (
+            temp.path()
+                .join("_npx/1a19a25e/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm cache clean --force",
+        ),
+        (
+            temp.path()
+                .join("lib/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm uninstall -g @asanabrial/leteo",
+        ),
+    ];
+
+    for (executable, manager, command) in cases {
+        let owner = package_owner(&executable)
+            .unwrap_or_else(|| panic!("{} is a package path", executable.display()));
+        assert_eq!(owner.manager, manager, "{}", executable.display());
+        assert_eq!(owner.command, command, "{}", executable.display());
+    }
+
+    assert!(
+        package_owner(&temp.path().join("bin/leteo")).is_none(),
+        "an ordinary install has no manager to name"
+    );
+}
+
 #[test]
 fn doctor_reports_a_configured_command_whose_binary_is_gone() {
     let temp = TempDir::new().unwrap();

@@ -59,6 +59,7 @@ fn the_uninstallers_recognise_a_line_of_the_report_the_binary_prints() {
         memories: None,
         binary: None,
         binary_removed: false,
+        binary_managed_by: None,
         model_files: Vec::new(),
         model_removed: true,
         remaining: Vec::new(),

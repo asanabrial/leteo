@@ -28,6 +28,12 @@ pub struct Removal {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary: Option<PathBuf>,
     pub binary_removed: bool,
+    /// The package manager that owns the binary, when one does. Its file is
+    /// left where it is: deleting it would leave the manager's record pointing
+    /// at nothing, and the next upgrade or reinstall would act on a file that
+    /// is gone. The command that does remove it is here instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_managed_by: Option<super::PackageOwner>,
     /// The model files taken out of the places the binary looks for them; on a
     /// dry run, the ones that would be.
     pub model_files: Vec<PathBuf>,
@@ -76,6 +82,7 @@ fn uninstall_everything_for(
         memories,
         binary: exe,
         binary_removed: false,
+        binary_managed_by: None,
         model_files: Vec::new(),
         model_removed: false,
         remaining: Vec::new(),
@@ -387,10 +394,23 @@ fn remove_binary(removed: &mut Removal, dry_run: bool) {
     let Some(binary) = removed.binary.clone() else {
         return;
     };
+    // A package manager owns the file, not the person running this: taking it
+    // leaves the manager's record disagreeing with the disk, and the next
+    // upgrade or reinstall acts on a file that is gone. Named rather than
+    // merely kept, because "uninstall left it" alone reads like a failure.
+    if let Some(owner) = super::package_owner(&binary) {
+        removed.binary_managed_by = Some(owner);
+        return;
+    }
+    remove_the_binary(removed, &binary, dry_run);
+}
+
+#[cfg(not(windows))]
+fn remove_the_binary(removed: &mut Removal, binary: &Path, dry_run: bool) {
     if dry_run {
         return;
     }
-    match std::fs::remove_file(&binary) {
+    match std::fs::remove_file(binary) {
         Ok(()) => removed.binary_removed = true,
         Err(error) => removed
             .remaining
@@ -399,10 +419,7 @@ fn remove_binary(removed: &mut Removal, dry_run: bool) {
 }
 
 #[cfg(windows)]
-fn remove_binary(removed: &mut Removal, _dry_run: bool) {
-    let Some(binary) = removed.binary.clone() else {
-        return;
-    };
+fn remove_the_binary(removed: &mut Removal, binary: &Path, _dry_run: bool) {
     // Not an error and not a failure to report as one: Windows holds a running
     // image open, and the only thing that can finish this is the script that is
     // not the binary.

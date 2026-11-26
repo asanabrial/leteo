@@ -802,6 +802,94 @@ fn versioned_package_root(
         })
 }
 
+/// The package whose own `node_modules` directory holds this executable.
+///
+/// `node_modules` is the marker because it covers both routes npm has — the
+/// `_npx` cache and a global install — and appears in neither of the places a
+/// person installs a binary. A scoped name is two components; an unscoped one
+/// is a single component.
+fn node_modules_package(executable: &Path) -> Option<String> {
+    let components: Vec<_> = executable.components().collect();
+    let index = components
+        .iter()
+        .position(|component| component.as_os_str() == "node_modules")?;
+    let first = components.get(index + 1)?.as_os_str().to_str()?;
+    if first.starts_with('@') {
+        let second = components.get(index + 2)?.as_os_str().to_str()?;
+        Some(format!("{first}/{second}"))
+    } else {
+        Some(first.to_owned())
+    }
+}
+
+/// A binary a package manager installed, and the command that removes it.
+///
+/// The third thing this module has to say about the layouts
+/// [`stable_package_path`] recognises: `setup` prefers the link a versioned
+/// install keeps, [`refuse_a_path_that_will_not_be_there`] declines to write an
+/// npm path that will disappear, and an uninstall must not take the file at all.
+/// Deleting it leaves the manager's record disagreeing with the disk, and the
+/// next upgrade or reinstall acts on a file that is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PackageOwner {
+    /// What installed it: `Homebrew`, `mise`, `asdf` or `npm`.
+    pub manager: &'static str,
+    /// The command that removes it, as somebody would type it.
+    pub command: String,
+}
+
+/// The package manager that owns this executable, if one does.
+///
+/// `None` is the ordinary case — a binary somebody downloaded or built — and is
+/// the only case where deleting the file is the right thing to do.
+pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
+    if let Some(package) = node_modules_package(executable) {
+        let cached = executable
+            .components()
+            .any(|component| component.as_os_str() == "_npx");
+        // The `_npx` entry has no installed package to uninstall, only a cache
+        // directory the next eviction takes; a global install does.
+        return Some(PackageOwner {
+            manager: "npm",
+            command: if cached {
+                "npm cache clean --force".to_owned()
+            } else {
+                format!("npm uninstall -g {package}")
+            },
+        });
+    }
+
+    let components: Vec<_> = executable.components().collect();
+    let (root, _) = versioned_package_root(&components)?;
+    let name = executable.file_name()?.to_str()?;
+    let manager = match components[root].as_os_str().to_str()? {
+        "Cellar" => "Homebrew",
+        "installs" => {
+            // mise and asdf keep the same `installs/<tool>/<version>` shape;
+            // which one this is, only the directory above it says.
+            let prefix: Vec<_> = components[..root]
+                .iter()
+                .filter_map(|component| component.as_os_str().to_str())
+                .collect();
+            if prefix
+                .iter()
+                .any(|component| component == &"asdf" || component == &".asdf")
+            {
+                "asdf"
+            } else {
+                "mise"
+            }
+        }
+        _ => return None,
+    };
+    let command = match manager {
+        "Homebrew" => format!("brew uninstall {name}"),
+        "asdf" => format!("asdf uninstall {name}"),
+        _ => format!("mise uninstall {name}"),
+    };
+    Some(PackageOwner { manager, command })
+}
+
 /// Refuse to write a path that the package manager owns.
 ///
 /// `setup` writes the absolute path of the running binary into an agent's
@@ -824,10 +912,7 @@ fn versioned_package_root(
 /// marker because it covers both routes npm has — the `_npx` cache and a global
 /// install — and appears in neither of the places a person installs a binary.
 fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
-    let managed = executable
-        .components()
-        .any(|component| component.as_os_str() == "node_modules");
-    if managed {
+    if node_modules_package(executable).is_some() {
         anyhow::bail!(
             "this Leteo is the one npm is holding, at {}, and that path is deleted by \
              `npm cache clean` or by the next version — the hooks written against it would \

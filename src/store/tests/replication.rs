@@ -2583,6 +2583,159 @@ fn failures_accumulate_and_recovering_clears_every_mark_they_left() {
     assert!(store.mark_sync_healthy("").is_err());
 }
 
+/// The push walks one project at a time, because the cloud refuses a whole
+/// batch on the first entry it will not take.
+#[test]
+fn the_push_queue_can_be_walked_one_project_at_a_time() {
+    let (_temp, mut store) = store();
+    store.enroll_project("otro").unwrap();
+    store.create_session("s1", "leteo", "C:/leteo").unwrap();
+    store.create_session("s2", "otro", "C:/otro").unwrap();
+    let mut other = observation("s2", "A memory of otro", "body");
+    other.project = Some("otro".to_owned());
+    store.add_observation(other).unwrap();
+
+    let allowed = vec!["leteo".to_owned(), "otro".to_owned()];
+    assert_eq!(
+        store.pending_sync_projects("cloud", &allowed).unwrap(),
+        ["leteo", "otro"],
+        "both projects have writes waiting, oldest queue first"
+    );
+
+    for project in ["leteo", "otro"] {
+        let page = store
+            .list_pending_sync_mutations_for_project("cloud", &allowed, project, 100)
+            .unwrap();
+        assert!(!page.is_empty(), "{project} has writes waiting");
+        assert!(
+            page.iter().all(|mutation| mutation.project == project),
+            "a page for {project} carries another project's row"
+        );
+    }
+
+    let excluded = store
+        .list_pending_sync_mutations_for_project("cloud", &["leteo".to_owned()], "otro", 100)
+        .unwrap();
+    assert!(
+        excluded.is_empty(),
+        "the per-project page still obeys the enrolment filter"
+    );
+}
+
+/// A refusal belongs to the project it named: the target keeps its own state,
+/// the other project keeps moving, and a new local write does not erase the
+/// verdict.
+#[test]
+fn a_refusal_is_recorded_against_one_project_and_cleared_by_a_batch() {
+    let (_temp, mut store) = store();
+    store.enroll_project("otro").unwrap();
+    store.create_session("s1", "leteo", "C:/leteo").unwrap();
+    store.create_session("s2", "otro", "C:/otro").unwrap();
+    let mut other = observation("s2", "A memory of otro", "body");
+    other.project = Some("otro".to_owned());
+    store.add_observation(other).unwrap();
+    let allowed = vec!["leteo".to_owned(), "otro".to_owned()];
+
+    store
+        .mark_project_sync_refused(
+            "cloud",
+            "leteo",
+            "sync-paused",
+            "sync is paused for project \"leteo\"",
+            chrono::Utc::now() + chrono::Duration::minutes(5),
+        )
+        .unwrap();
+
+    let target = store.sync_state_if_any("cloud").unwrap().unwrap();
+    assert_ne!(
+        target.lifecycle, PROJECT_SYNC_REFUSED,
+        "a project's refusal is not the target's"
+    );
+    assert_eq!(target.reason_code, None);
+
+    let statuses = store.project_sync_statuses("cloud", &allowed).unwrap();
+    let leteo = statuses
+        .iter()
+        .find(|status| status.project == "leteo")
+        .unwrap();
+    let otro = statuses
+        .iter()
+        .find(|status| status.project == "otro")
+        .unwrap();
+    assert_eq!(leteo.lifecycle, PROJECT_SYNC_REFUSED);
+    assert_eq!(leteo.reason_code.as_deref(), Some("sync-paused"));
+    assert!(
+        leteo
+            .reason_message
+            .as_deref()
+            .is_some_and(|message| message.contains("paused")),
+        "{leteo:?}"
+    );
+    assert_eq!(otro.lifecycle, PROJECT_SYNC_PENDING);
+    assert!(otro.pending_mutations > 0);
+
+    // Acknowledging one project drains its queue without touching the other.
+    let pending = store
+        .list_pending_sync_mutations_for_project("cloud", &allowed, "otro", 100)
+        .unwrap();
+    let sequences = pending
+        .iter()
+        .map(|mutation| mutation.seq)
+        .collect::<Vec<_>>();
+    store.ack_sync_mutation_seqs("cloud", &sequences).unwrap();
+
+    // A new local write is not news about the cloud's answer.
+    store
+        .add_observation(observation("s1", "A memory after the pause", "body"))
+        .unwrap();
+    let statuses = store.project_sync_statuses("cloud", &allowed).unwrap();
+    let leteo = statuses
+        .iter()
+        .find(|status| status.project == "leteo")
+        .unwrap();
+    let otro = statuses
+        .iter()
+        .find(|status| status.project == "otro")
+        .unwrap();
+    assert_eq!(
+        leteo.lifecycle, PROJECT_SYNC_REFUSED,
+        "a new local write erased the standing refusal"
+    );
+    assert_eq!(otro.lifecycle, PROJECT_SYNC_CURRENT);
+    assert_eq!(otro.pending_mutations, 0);
+
+    // Only a batch the cloud takes clears it. The queue itself has a write in
+    // it, so the project is pending rather than current — but no longer
+    // refused.
+    store.mark_project_sync_current("cloud", "leteo").unwrap();
+    let statuses = store.project_sync_statuses("cloud", &allowed).unwrap();
+    let leteo = statuses
+        .iter()
+        .find(|status| status.project == "leteo")
+        .unwrap();
+    assert_eq!(leteo.lifecycle, PROJECT_SYNC_PENDING);
+    assert_eq!(leteo.reason_code, None);
+    assert_eq!(leteo.reason_message, None);
+    assert_eq!(leteo.refused_until, None);
+
+    // And once that write is acknowledged the project is current.
+    let pending = store
+        .list_pending_sync_mutations_for_project("cloud", &allowed, "leteo", 100)
+        .unwrap();
+    let sequences = pending
+        .iter()
+        .map(|mutation| mutation.seq)
+        .collect::<Vec<_>>();
+    store.ack_sync_mutation_seqs("cloud", &sequences).unwrap();
+    let statuses = store.project_sync_statuses("cloud", &allowed).unwrap();
+    let leteo = statuses
+        .iter()
+        .find(|status| status.project == "leteo")
+        .unwrap();
+    assert_eq!(leteo.lifecycle, PROJECT_SYNC_CURRENT);
+    assert_eq!(leteo.pending_mutations, 0);
+}
+
 /// Applies a project's queue to a store that has never seen it, in order, and
 /// returns that store. A foreign-key failure is the point of the callers.
 fn peer_after_applying(store: &Store, project: &str) -> (TempDir, Store) {

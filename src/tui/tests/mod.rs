@@ -308,6 +308,7 @@ fn test_app() -> App {
             dead: 0,
             unreadable: None,
             state: None,
+            project_states: Vec::new(),
         },
         exit: Exit::Normal,
     }
@@ -480,5 +481,37 @@ fn a_stopped_replication_says_what_stopped_it() {
     assert!(
         stuck.contains("401 Unauthorized"),
         "the reason is the whole point of the page: {stuck}"
+    );
+}
+
+/// The target can be healthy while one project is not, and this page has to
+/// say which: the queue count alone reads as a slow link.
+#[test]
+fn a_refused_project_is_named_even_while_the_target_is_healthy() {
+    let (_temp, mut store) = store_of(1);
+    let mut app = test_app();
+    app.page = Page::Cloud;
+
+    store
+        .mark_project_sync_refused(
+            crate::cloud::CLOUD_SYNC_TARGET,
+            "leteo",
+            "sync-paused",
+            "sync is paused for project \"leteo\"",
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        )
+        .unwrap();
+    app.load_cloud(&store);
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let drawn = buffer_text(terminal.backend());
+
+    assert!(
+        drawn.contains("leteo: refused"),
+        "the project and its verdict: {drawn}"
+    );
+    assert!(
+        drawn.contains("sync is paused"),
+        "and why, which is the whole point of the page: {drawn}"
     );
 }

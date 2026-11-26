@@ -85,6 +85,17 @@ impl HttpStatusError {
     pub fn is_policy_failure(&self) -> bool {
         self.status == 403 || self.status == 409
     }
+
+    /// Whether the answer is about the project the batch names, rather than
+    /// the caller's token.
+    ///
+    /// `409` is the project's pause only when the body says `policy`: the same
+    /// status carries `commit_outcome_unknown` for an insert whose commit the
+    /// server could not report, and recording that as a verdict on the project
+    /// would hold it back for something that may never have happened.
+    pub fn is_project_refusal(&self) -> bool {
+        self.status == 403 || (self.status == 409 && self.error_class == "policy")
+    }
 }
 
 #[derive(Debug, Error)]
@@ -468,5 +479,35 @@ mod tests {
         assert!(error.is_auth_failure());
         error.status = 409;
         assert!(error.is_policy_failure());
+    }
+
+    /// A conflict the server could not classify is not the project's verdict.
+    ///
+    /// The pause and a commit whose outcome was lost share the status code, and
+    /// only the body tells them apart: treating the second as a refusal held
+    /// the project's queue back for a pause nobody had applied.
+    #[test]
+    fn an_unknown_commit_outcome_is_not_a_project_refusal() {
+        let mut error = HttpStatusError {
+            operation: "push mutations".to_owned(),
+            status: 409,
+            error_class: "unknown".to_owned(),
+            error_code: "commit_outcome_unknown".to_owned(),
+            message: "the batch may already be stored".to_owned(),
+        };
+        assert!(!error.is_project_refusal());
+
+        error.status = 403;
+        error.error_class = "policy".to_owned();
+        error.error_code = "policy_forbidden".to_owned();
+        assert!(error.is_project_refusal());
+
+        error.status = 409;
+        error.error_class = "policy".to_owned();
+        error.error_code = "sync-paused".to_owned();
+        assert!(error.is_project_refusal());
+
+        error.status = 401;
+        assert!(!error.is_project_refusal());
     }
 }

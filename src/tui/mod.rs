@@ -23,7 +23,8 @@ use ratatui::{
 
 use crate::{
     memory::model::{
-        Caveat, Listing, Observation, Prompt, SessionSummary, Stats, SyncState, TimelineResult,
+        Caveat, Listing, Observation, ProjectSyncStatus, Prompt, SessionSummary, Stats, SyncState,
+        TimelineResult,
     },
     store::{Store, StoreError},
 };
@@ -623,6 +624,12 @@ struct CloudOverview {
     /// This page, which is the one somebody opens *because* they think
     /// replication is stuck, showed the queue depth and not the reason.
     state: Option<SyncState>,
+    /// The same question per project, because a refusal names one.
+    ///
+    /// A target can be healthy — pushing and pulling every live project —
+    /// while one project sits behind a pause. The target's state has no word
+    /// for that, and the queue depth alone reads as a slow link.
+    project_states: Vec<ProjectSyncStatus>,
 }
 
 fn clamp_index(selected: usize, len: usize) -> usize {

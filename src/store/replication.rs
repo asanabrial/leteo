@@ -2,6 +2,41 @@
 
 use super::*;
 
+/// The three states [`Store::project_sync_statuses`] reports for one project.
+///
+/// They are the project's own vocabulary, not the target's. `current` is
+/// derived: the queue is empty and nothing stands against it. `pending` is
+/// derived too. Only `refused` is stored, and it outlives a new local write —
+/// that write is not news about the cloud's answer, and overwriting the verdict
+/// with `pending` hid the one word that said why the queue could not drain.
+pub const PROJECT_SYNC_REFUSED: &str = "refused";
+pub const PROJECT_SYNC_PENDING: &str = "pending";
+pub const PROJECT_SYNC_CURRENT: &str = "current";
+
+const SYNC_STATE_QUERY: &str = "SELECT target_key, lifecycle, last_enqueued_seq, last_acked_seq,
+            last_pulled_seq, consecutive_failures, backoff_until, lease_owner,
+            lease_until, reason_code, reason_message, last_error, updated_at
+     FROM sync_state WHERE target_key = ?1";
+
+/// The enrolment filter the push queries bind: `*` for every project, or the
+/// normalised names as a JSON array a `json_each` can walk.
+///
+/// The walk of the queue and each project's page narrow by the same list, and a
+/// second spelling of the wildcard here is a push that silently sends one
+/// project while the acknowledgement walks another.
+fn push_scope_projects(allowed_projects: &[String], allow_all: bool) -> Result<String, StoreError> {
+    if allow_all {
+        return Ok("*".to_owned());
+    }
+    Ok(serde_json::to_string(
+        &allowed_projects
+            .iter()
+            .map(|project| normalize::project(project))
+            .filter(|project| !project.is_empty())
+            .collect::<BTreeSet<_>>(),
+    )?)
+}
+
 /// Whether a pulled mutation names a project this peer replicates.
 ///
 /// `allowed_projects` is the same list the push filters by and the pull asks
@@ -116,15 +151,26 @@ impl Store {
     /// green through every mutation because the compiler got there first.
     pub fn sync_state_if_any(&self, target_key: &str) -> Result<Option<SyncState>, StoreError> {
         let target_key = require_sync_target(target_key)?;
+        self.read_sync_state(&target_key)
+    }
+
+    /// The same row, for one project's own queue.
+    ///
+    /// A project the cloud refused carries the verdict here rather than on the
+    /// target, so the peer keeps pushing and pulling everything else.
+    pub fn project_sync_state_if_any(
+        &self,
+        target_key: &str,
+        project: &str,
+    ) -> Result<Option<SyncState>, StoreError> {
+        let target_key = require_sync_target(target_key)?;
+        self.read_sync_state(&project_sync_target(&target_key, project))
+    }
+
+    /// Reads one `sync_state` row without creating it.
+    fn read_sync_state(&self, target_key: &str) -> Result<Option<SyncState>, StoreError> {
         self.connection
-            .query_row(
-                "SELECT target_key, lifecycle, last_enqueued_seq, last_acked_seq,
-                    last_pulled_seq, consecutive_failures, backoff_until, lease_owner,
-                    lease_until, reason_code, reason_message, last_error, updated_at
-             FROM sync_state WHERE target_key = ?1",
-                [&target_key],
-                map_sync_state,
-            )
+            .query_row(SYNC_STATE_QUERY, [target_key], map_sync_state)
             .optional()
             .map_err(StoreError::from)
     }
@@ -133,14 +179,37 @@ impl Store {
         let target_key = require_sync_target(target_key)?;
         self.connection.execute(ENSURE_SYNC_TARGET, [&target_key])?;
         self.connection
-            .query_row(
-                "SELECT target_key, lifecycle, last_enqueued_seq, last_acked_seq,
-                    last_pulled_seq, consecutive_failures, backoff_until, lease_owner,
-                    lease_until, reason_code, reason_message, last_error, updated_at
-             FROM sync_state WHERE target_key = ?1",
-                [&target_key],
-                map_sync_state,
-            )
+            .query_row(SYNC_STATE_QUERY, [&target_key], map_sync_state)
+            .map_err(StoreError::from)
+    }
+
+    /// Every project with local writes waiting, oldest queue first.
+    ///
+    /// The push has to name a project per batch: one batch holding several is
+    /// refused whole on the first project the cloud will not take, so a paused
+    /// project stopped every other one. Ordering by the head of each queue keeps
+    /// the caller's walk deterministic and keeps a project that has waited
+    /// longest from waiting behind a busy one.
+    pub fn pending_sync_projects(
+        &self,
+        target_key: &str,
+        allowed_projects: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        let target_key = require_sync_target(target_key)?;
+        let allow_all = crate::cloud::remote::allows_every_project(allowed_projects);
+        if allowed_projects.is_empty() && !allow_all {
+            return Ok(Vec::new());
+        }
+        let projects = push_scope_projects(allowed_projects, allow_all)?;
+        let mut statement = self.connection.prepare(
+            "SELECT project FROM sync_mutations
+             WHERE target_key = ?1 AND acked_at IS NULL AND source = 'local'
+               AND (?2 = '*' OR project IN (SELECT value FROM json_each(?2)))
+             GROUP BY project
+             ORDER BY MIN(seq)",
+        )?;
+        let rows = statement.query_map(params![target_key, projects], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
 
@@ -150,31 +219,51 @@ impl Store {
         allowed_projects: &[String],
         limit: usize,
     ) -> Result<Vec<SyncMutation>, StoreError> {
+        self.pending_sync_mutations(target_key, allowed_projects, None, limit)
+    }
+
+    /// One project's page of the queue.
+    ///
+    /// The push sends one project per batch because the cloud refuses a whole
+    /// batch on the first entry it will not take: a paused project in a mixed
+    /// batch stopped every other project's writes with it.
+    pub fn list_pending_sync_mutations_for_project(
+        &self,
+        target_key: &str,
+        allowed_projects: &[String],
+        project: &str,
+        limit: usize,
+    ) -> Result<Vec<SyncMutation>, StoreError> {
+        self.pending_sync_mutations(target_key, allowed_projects, Some(project), limit)
+    }
+
+    fn pending_sync_mutations(
+        &self,
+        target_key: &str,
+        allowed_projects: &[String],
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SyncMutation>, StoreError> {
         let target_key = require_sync_target(target_key)?;
         let limit = limit.clamp(1, 100) as i64;
         let allow_all = crate::cloud::remote::allows_every_project(allowed_projects);
         if allowed_projects.is_empty() && !allow_all {
             return Ok(Vec::new());
         }
-        let projects = if allow_all {
-            "*".to_owned()
-        } else {
-            serde_json::to_string(
-                &allowed_projects
-                    .iter()
-                    .map(|project| normalize::project(project))
-                    .filter(|project| !project.is_empty())
-                    .collect::<BTreeSet<_>>(),
-            )?
-        };
+        let projects = push_scope_projects(allowed_projects, allow_all)?;
+        let project = project.map(normalize::project);
         let mut statement = self.connection.prepare(&format!(
             "SELECT {SYNC_MUTATION_COLUMNS}
              FROM sync_mutations
              WHERE target_key = ?1 AND acked_at IS NULL AND source = 'local'
                AND (?2 = '*' OR project IN (SELECT value FROM json_each(?2)))
+               AND (?4 IS NULL OR project = ?4)
              ORDER BY seq LIMIT ?3"
         ))?;
-        let rows = statement.query_map(params![target_key, projects, limit], map_sync_mutation)?;
+        let rows = statement.query_map(
+            params![target_key, projects, limit, project],
+            map_sync_mutation,
+        )?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
@@ -342,6 +431,170 @@ impl Store {
             [&target_key],
         )?;
         Ok(())
+    }
+
+    /// Records that the cloud refused this project's writes, and when it is
+    /// worth offering them again.
+    ///
+    /// The verdict goes on the project's own row, not the target's: a peer
+    /// mirroring a paused project beside several live ones kept reporting
+    /// itself refused, took the maximum backoff, and stopped pushing and
+    /// pulling all of them.
+    ///
+    /// The hold mirrors the target's standing-refusal backoff — the longest
+    /// wait from the first refusal — because the cloud's answer will not change
+    /// before an administrator takes the pause off.
+    pub fn mark_project_sync_refused(
+        &mut self,
+        target_key: &str,
+        project: &str,
+        reason_code: &str,
+        message: &str,
+        backoff_until: chrono::DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let target_key = require_sync_target(target_key)?;
+        let project = normalize::project(project);
+        if project.is_empty() {
+            return Err(invalid_parameter(crate::project::EMPTY_NAME));
+        }
+        self.connection.execute(
+            "INSERT INTO sync_state
+             (target_key, lifecycle, backoff_until, reason_code, reason_message, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+             ON CONFLICT(target_key) DO UPDATE SET
+                 lifecycle = excluded.lifecycle,
+                 backoff_until = excluded.backoff_until,
+                 reason_code = excluded.reason_code,
+                 reason_message = excluded.reason_message,
+                 updated_at = datetime('now')",
+            params![
+                project_sync_target(&target_key, &project),
+                PROJECT_SYNC_REFUSED,
+                backoff_until.to_rfc3339(),
+                reason_code.trim(),
+                message.trim(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Clears a project's refusal because the cloud took a batch from it.
+    ///
+    /// Nothing else may clear it, including queueing a new local write: until a
+    /// batch lands, the project is still the one that cannot drain.
+    pub fn mark_project_sync_current(
+        &mut self,
+        target_key: &str,
+        project: &str,
+    ) -> Result<(), StoreError> {
+        let target_key = require_sync_target(target_key)?;
+        let project = normalize::project(project);
+        if project.is_empty() {
+            return Err(invalid_parameter(crate::project::EMPTY_NAME));
+        }
+        self.connection.execute(
+            "INSERT INTO sync_state (target_key, lifecycle, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(target_key) DO UPDATE SET
+                 lifecycle = excluded.lifecycle, backoff_until = NULL,
+                 reason_code = NULL, reason_message = NULL, last_error = NULL,
+                 updated_at = datetime('now')",
+            params![
+                project_sync_target(&target_key, &project),
+                PROJECT_SYNC_CURRENT
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// One entry per replicated project: what is waiting, and what stands
+    /// against it.
+    ///
+    /// `projects` is what the caller believes it replicates — the enrolment
+    /// list, or the configured one — and the projects with a `cloud:<name>` row
+    /// are added to it, because a wildcard peer has no names of its own and a
+    /// project unenrolled with writes still queued is still stuck. An empty
+    /// list would read as "nothing is wrong anywhere", which is the answer this
+    /// replaces.
+    pub fn project_sync_statuses(
+        &self,
+        target_key: &str,
+        projects: &[String],
+    ) -> Result<Vec<ProjectSyncStatus>, StoreError> {
+        let target_key = require_sync_target(target_key)?;
+        let prefix = format!("{target_key}:");
+        let mut names = projects
+            .iter()
+            .map(|project| normalize::project(project))
+            .filter(|project| !project.is_empty())
+            .filter(|project| project != crate::cloud::remote::PROJECT_WILDCARD)
+            .collect::<BTreeSet<_>>();
+
+        let mut rows: BTreeMap<String, SyncState> = BTreeMap::new();
+        {
+            let mut statement = self.connection.prepare(
+                "SELECT target_key, lifecycle, last_enqueued_seq, last_acked_seq,
+                        last_pulled_seq, consecutive_failures, backoff_until, lease_owner,
+                        lease_until, reason_code, reason_message, last_error, updated_at
+                 FROM sync_state
+                 WHERE substr(target_key, 1, length(?1)) = ?1",
+            )?;
+            let states = statement.query_map([&prefix], map_sync_state)?;
+            for state in states {
+                let state = state?;
+                let Some(project) = state.target_key.strip_prefix(&prefix) else {
+                    continue;
+                };
+                names.insert(project.to_owned());
+                rows.insert(project.to_owned(), state);
+            }
+        }
+
+        let mut pending: BTreeMap<String, i64> = BTreeMap::new();
+        {
+            let mut statement = self.connection.prepare(
+                "SELECT project, COUNT(*) FROM sync_mutations
+                 WHERE target_key = ?1 AND source = 'local' AND acked_at IS NULL
+                 GROUP BY project",
+            )?;
+            let counts = statement.query_map([&target_key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for count in counts {
+                let (project, count) = count?;
+                pending.insert(project, count);
+            }
+        }
+
+        Ok(names
+            .into_iter()
+            .map(|project| {
+                let row = rows.remove(&project);
+                let pending_mutations = pending.get(&project).copied().unwrap_or(0);
+                let refused = row
+                    .as_ref()
+                    .is_some_and(|row| row.lifecycle == PROJECT_SYNC_REFUSED);
+                let lifecycle = if refused {
+                    PROJECT_SYNC_REFUSED
+                } else if pending_mutations > 0 {
+                    PROJECT_SYNC_PENDING
+                } else {
+                    PROJECT_SYNC_CURRENT
+                };
+                let (reason_code, reason_message, refused_until) = match (refused, row) {
+                    (true, Some(row)) => (row.reason_code, row.reason_message, row.backoff_until),
+                    _ => (None, None, None),
+                };
+                ProjectSyncStatus {
+                    project,
+                    lifecycle: lifecycle.to_owned(),
+                    pending_mutations,
+                    reason_code,
+                    reason_message,
+                    refused_until,
+                }
+            })
+            .collect())
     }
 
     /// Retries a bounded batch of deferred relation mutations. Each item is

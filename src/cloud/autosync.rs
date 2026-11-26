@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    memory::model::SyncMutation,
-    store::{Store, StoreError},
+    memory::model::{ProjectSyncStatus, SyncMutation},
+    store::{PROJECT_SYNC_REFUSED, Store, StoreError},
     sync::MutationEntry,
 };
 
@@ -91,6 +91,13 @@ pub struct AutosyncStatus {
     pub last_sync_at: Option<String>,
     pub deferred_count: i64,
     pub dead_count: i64,
+    /// One entry per replicated project.
+    ///
+    /// A refusal is about a project, not the peer: this is where the status can
+    /// say that one project is refused while another is current, which the
+    /// target's own phase cannot express.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<ProjectSyncStatus>,
 }
 
 pub struct Autosync<'a> {
@@ -167,6 +174,10 @@ impl<'a> Autosync<'a> {
                     last_sync_at: Some(Utc::now().to_rfc3339()),
                     deferred_count,
                     dead_count,
+                    projects: self.store.project_sync_statuses(
+                        &self.config.target_key,
+                        &self.config.allowed_projects,
+                    )?,
                     ..AutosyncStatus::default()
                 };
                 Ok(true)
@@ -180,10 +191,7 @@ impl<'a> Autosync<'a> {
                         compute_backoff(self.config.base_backoff, self.config.max_backoff, failures)
                     }
                 };
-                let until = Utc::now()
-                    + chrono::Duration::from_std(backoff).map_err(|_| {
-                        AutosyncError::InvalidConfig("backoff duration is too large".to_owned())
-                    })?;
+                let until = until_after(backoff)?;
                 self.store
                     .mark_sync_failure(&self.config.target_key, &error.to_string(), until)?;
                 self.status.phase = match standing {
@@ -252,20 +260,72 @@ impl<'a> Autosync<'a> {
     }
 
     async fn sync_once(&mut self) -> Result<(), AutosyncError> {
-        self.push_pending().await?;
-        self.pull_remote().await?;
-        Ok(())
+        // A refused project holds back itself, so the push's outcome is no
+        // longer the gate on receiving. Both are awaited before their results
+        // are combined: a push that failed for its own reason still leaves the
+        // pull worth doing, and a peer that refuses us everything would
+        // otherwise never discover that it could still read.
+        let pushed = self.push_pending().await;
+        let pulled = self.pull_remote().await;
+        pushed.and(pulled)
     }
 
     async fn push_pending(&mut self) -> Result<(), AutosyncError> {
         self.status.phase = "pushing".to_owned();
+        let now = Utc::now();
+        let projects = self
+            .store
+            .pending_sync_projects(&self.config.target_key, &self.config.allowed_projects)?;
+        for project in projects {
+            if self.project_is_held_back(&project, now)? {
+                continue;
+            }
+            self.push_project(&project).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether the cloud's last answer about this project is still in force.
+    ///
+    /// The wait is the target's standing-refusal backoff, kept per project: a
+    /// pause is still in place on the next poll, and asking again every thirty
+    /// seconds buys nothing while the project that is not paused keeps its own
+    /// schedule.
+    fn project_is_held_back(
+        &self,
+        project: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, AutosyncError> {
+        Ok(self
+            .store
+            .project_sync_state_if_any(&self.config.target_key, project)?
+            .is_some_and(|state| {
+                state.lifecycle == PROJECT_SYNC_REFUSED
+                    && state
+                        .backoff_until
+                        .as_deref()
+                        .and_then(parse_timestamp)
+                        .is_some_and(|until| until > now)
+            }))
+    }
+
+    /// Pushes one project's queue, one page at a time.
+    ///
+    /// A refusal is recorded against this project and ends its turn rather than
+    /// the cycle: the next project's queue is independent of it, and the pull
+    /// behind the push is what a peer enrolled in both loses when one project is
+    /// paused.
+    async fn push_project(&mut self, project: &str) -> Result<(), AutosyncError> {
         loop {
-            let pending = self.store.list_pending_sync_mutations(
+            let pending = self.store.list_pending_sync_mutations_for_project(
                 &self.config.target_key,
                 &self.config.allowed_projects,
+                project,
                 self.config.push_batch_size,
             )?;
             if pending.is_empty() {
+                self.store
+                    .mark_project_sync_current(&self.config.target_key, project)?;
                 return Ok(());
             }
             let local_sequences = pending
@@ -276,10 +336,25 @@ impl<'a> Autosync<'a> {
                 .iter()
                 .map(local_mutation_entry)
                 .collect::<Result<Vec<_>, _>>()?;
-            let response = self
+            let response = match self
                 .remote
                 .push_mutations(&entries, &self.config.created_by)
-                .await?;
+                .await
+            {
+                Ok(response) => response,
+                Err(RemoteError::Status(status)) if status.is_project_refusal() => {
+                    let until = until_after(self.config.max_backoff)?;
+                    self.store.mark_project_sync_refused(
+                        &self.config.target_key,
+                        project,
+                        &status.error_code,
+                        &status.message,
+                        until,
+                    )?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+            };
             if response.accepted_seqs.len() != local_sequences.len() {
                 return Err(AutosyncError::Protocol(format!(
                     "cloud accepted {} of {} mutations; local rows were not ACKed",
@@ -289,9 +364,6 @@ impl<'a> Autosync<'a> {
             }
             self.store
                 .ack_sync_mutation_seqs(&self.config.target_key, &local_sequences)?;
-            if pending.len() < self.config.push_batch_size {
-                return Ok(());
-            }
         }
     }
 
@@ -434,6 +506,13 @@ fn standing_refusal(error: &AutosyncError) -> Option<&HttpStatusError> {
     (status.is_auth_failure() || status.is_policy_failure()).then_some(status)
 }
 
+fn until_after(duration: Duration) -> Result<DateTime<Utc>, AutosyncError> {
+    Ok(Utc::now()
+        + chrono::Duration::from_std(duration).map_err(|_| {
+            AutosyncError::InvalidConfig("backoff duration is too large".to_owned())
+        })?)
+}
+
 fn compute_backoff(base: Duration, maximum: Duration, failures: i64) -> Duration {
     let exponent = u32::try_from(failures.saturating_sub(1))
         .unwrap_or(u32::MAX)
@@ -447,6 +526,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::store::PROJECT_SYNC_CURRENT;
 
     #[test]
     fn config_rejects_unbounded_or_unscoped_sync() {
@@ -825,6 +905,313 @@ mod tests {
         assert!(
             asked.iter().all(|query| !query.contains("projects=")),
             "a wildcard peer asks for no narrowing at all: {asked:?}"
+        );
+    }
+
+    /// One page the cloud holds, with a memory of the live project, so a test
+    /// can tell a pull that ran from one that did not.
+    fn pulled_page() -> serde_json::Value {
+        serde_json::json!({
+            "mutations": [{
+                "seq": 1,
+                "entity": "observation",
+                "entity_key": "pulled-obs",
+                "op": "upsert",
+                "payload": {
+                    "sync_id": "pulled-obs",
+                    "session_id": "s2",
+                    "type": "decision",
+                    "title": "a memory pulled from the cloud",
+                    "content": "body",
+                    "project": "proj-b",
+                    "scope": "project",
+                },
+                "project": "proj-b",
+                "occurred_at": "2026-08-02T10:00:00Z",
+            }],
+            "has_more": false,
+            "latest_seq": 1,
+        })
+    }
+
+    /// The same cloud, with a push that breaks rather than refusing: the pull
+    /// is not the push's reward and has to run anyway.
+    async fn failing_push_server() -> std::net::SocketAddr {
+        use axum::{Json, Router, http::StatusCode, routing::get, routing::post};
+
+        let app = Router::new()
+            .route(
+                "/sync/mutations/push",
+                post(|| async {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "the server broke"})),
+                    )
+                }),
+            )
+            .route(
+                "/sync/mutations/pull",
+                get(|| async { Json(pulled_page()) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        address
+    }
+
+    /// A cloud holding two projects, refusing `proj-a` as paused, and
+    /// recording every project it was asked to take.
+    async fn paused_project_server() -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::{Json, Router, http::StatusCode, routing::get, routing::post};
+
+        let pushes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&pushes);
+        let app = Router::new()
+            .route(
+                "/sync/mutations/push",
+                post(move |Json(body): Json<serde_json::Value>| {
+                    let recorded = Arc::clone(&recorded);
+                    async move {
+                        let entries = body["entries"].as_array().cloned().unwrap_or_default();
+                        let project = entries
+                            .first()
+                            .and_then(|entry| entry["project"].as_str())
+                            .unwrap_or_default()
+                            .to_owned();
+                        recorded
+                            .lock()
+                            .expect("the push log is not poisoned")
+                            .push(project.clone());
+                        if project == "proj-a" {
+                            return (
+                                StatusCode::CONFLICT,
+                                Json(serde_json::json!({
+                                    "error_class": "policy",
+                                    "error_code": "sync-paused",
+                                    "error": "sync is paused for project \"proj-a\"",
+                                    "project": "proj-a",
+                                })),
+                            );
+                        }
+                        let accepted = (1..=entries.len() as i64).collect::<Vec<_>>();
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({"accepted_seqs": accepted})),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/sync/mutations/pull",
+                get(|| async { Json(pulled_page()) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (address, pushes)
+    }
+
+    fn two_project_store() -> (tempfile::TempDir, Store) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut store =
+            Store::open(crate::store::StoreConfig::new(temp.path().join("leteo.db"))).unwrap();
+        for (session, project) in [("s1", "proj-a"), ("s2", "proj-b")] {
+            store.enroll_project(project).unwrap();
+            store
+                .create_session(session, project, &format!("/tmp/{project}"))
+                .unwrap();
+            store
+                .add_observation(crate::memory::model::AddObservation {
+                    session_id: session.to_owned(),
+                    kind: "decision".to_owned(),
+                    title: format!("a memory of {project}"),
+                    content: "body".to_owned(),
+                    tool_name: None,
+                    project: Some(project.to_owned()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                })
+                .unwrap();
+        }
+        (temp, store)
+    }
+
+    async fn cycle(
+        store: &mut Store,
+        address: std::net::SocketAddr,
+    ) -> (Result<bool, AutosyncError>, AutosyncStatus) {
+        let remote =
+            RemoteClient::new(&format!("http://{address}"), "a-token-that-is-long-enough").unwrap();
+        let config = AutosyncConfig {
+            allowed_projects: vec!["proj-a".to_owned(), "proj-b".to_owned()],
+            ..AutosyncConfig::default()
+        };
+        let mut autosync = Autosync::new(store, remote, config).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), autosync.run_cycle())
+            .await
+            .expect("the cycle terminated");
+        (outcome, autosync.status().clone())
+    }
+
+    /// The issue's first acceptance case: `proj-a` is paused, and `proj-b`
+    /// must still reach the cloud and still receive from it.
+    #[tokio::test]
+    async fn a_paused_project_does_not_stop_the_other_project_from_pushing_or_the_pull() {
+        let (_temp, mut store) = two_project_store();
+        let (address, pushes) = paused_project_server().await;
+
+        let (outcome, _status) = cycle(&mut store, address).await;
+        assert!(
+            outcome.unwrap(),
+            "a project's refusal is not a refusal of the peer"
+        );
+
+        let pushed = pushes.lock().expect("the push log is not poisoned").clone();
+        assert!(pushed.contains(&"proj-a".to_owned()), "{pushed:?}");
+        assert!(pushed.contains(&"proj-b".to_owned()), "{pushed:?}");
+
+        let allowed = vec!["proj-a".to_owned(), "proj-b".to_owned()];
+        let left_over = |project: &str| {
+            store
+                .list_pending_sync_mutations_for_project("cloud", &allowed, project, 100)
+                .unwrap()
+                .len()
+        };
+        assert_eq!(
+            left_over("proj-b"),
+            0,
+            "the live project's writes reached the cloud"
+        );
+        assert!(
+            left_over("proj-a") > 0,
+            "the refused project's writes stay queued"
+        );
+
+        let pulled = store
+            .recent_observations(Some("proj-b"), Some(10), true)
+            .unwrap();
+        assert!(
+            pulled
+                .iter()
+                .any(|observation| observation.title == "a memory pulled from the cloud"),
+            "the pull behind the refused push never ran: {pulled:?}"
+        );
+    }
+
+    /// The issue's second acceptance case, on both status surfaces: the peer's
+    /// status names `proj-a` as refused and `proj-b` as current.
+    #[tokio::test]
+    async fn the_status_names_the_refused_project_and_the_current_one() {
+        let (_temp, mut store) = two_project_store();
+        let (address, _pushes) = paused_project_server().await;
+
+        let (outcome, status) = cycle(&mut store, address).await;
+        assert!(outcome.unwrap());
+        assert_eq!(status.phase, "healthy");
+
+        let project = |statuses: &[ProjectSyncStatus], name: &str| {
+            statuses
+                .iter()
+                .find(|status| status.project == name)
+                .unwrap_or_else(|| panic!("{name} is missing from {statuses:?}"))
+                .clone()
+        };
+        let paused = project(&status.projects, "proj-a");
+        let live = project(&status.projects, "proj-b");
+        assert_eq!(paused.lifecycle, PROJECT_SYNC_REFUSED);
+        assert_eq!(paused.reason_code.as_deref(), Some("sync-paused"));
+        assert!(
+            paused
+                .reason_message
+                .as_deref()
+                .is_some_and(|message| message.contains("paused")),
+            "{paused:?}"
+        );
+        assert_eq!(live.lifecycle, PROJECT_SYNC_CURRENT);
+        assert_eq!(live.pending_mutations, 0);
+
+        // `leteo cloud status` reads the same rows, so it names the same two.
+        let enrolled = store.enrolled_projects().unwrap();
+        let stored = store.project_sync_statuses("cloud", &enrolled).unwrap();
+        let paused = project(&stored, "proj-a");
+        let live = project(&stored, "proj-b");
+        assert_eq!(paused.lifecycle, PROJECT_SYNC_REFUSED);
+        assert_eq!(live.lifecycle, PROJECT_SYNC_CURRENT);
+    }
+
+    /// A push that fails for its own reason still leaves the pull worth
+    /// doing, and the failure is still reported rather than swallowed.
+    #[tokio::test]
+    async fn a_failed_push_still_leaves_the_pull_worth_doing() {
+        let (_temp, mut store) = two_project_store();
+        let address = failing_push_server().await;
+
+        let (outcome, _status) = cycle(&mut store, address).await;
+        let error = outcome.expect_err("a 500 is not a refusal the status may swallow");
+        assert!(
+            error.to_string().contains("500"),
+            "the failure has to name what the cloud did: {error}"
+        );
+
+        assert_eq!(
+            store.get_sync_state("cloud").unwrap().last_pulled_seq,
+            1,
+            "the pull behind the failed push never ran"
+        );
+        let pulled = store
+            .recent_observations(Some("proj-b"), Some(10), true)
+            .unwrap();
+        assert!(
+            pulled
+                .iter()
+                .any(|observation| observation.title == "a memory pulled from the cloud"),
+            "{pulled:?}"
+        );
+    }
+
+    /// A standing refusal holds back its project, not the peer: the paused
+    /// project is not asked again inside its wait, and the live one keeps its
+    /// own schedule.
+    #[tokio::test]
+    async fn a_refused_project_is_not_asked_again_inside_its_hold() {
+        let (_temp, mut store) = two_project_store();
+        let (address, pushes) = paused_project_server().await;
+
+        let (outcome, _status) = cycle(&mut store, address).await;
+        assert!(outcome.unwrap());
+
+        store
+            .add_observation(crate::memory::model::AddObservation {
+                session_id: "s2".to_owned(),
+                kind: "decision".to_owned(),
+                title: "a second memory of proj-b".to_owned(),
+                content: "body".to_owned(),
+                tool_name: None,
+                project: Some("proj-b".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap();
+        let (outcome, _status) = cycle(&mut store, address).await;
+        assert!(outcome.unwrap());
+
+        let pushed = pushes.lock().expect("the push log is not poisoned").clone();
+        let asked = |project: &str| pushed.iter().filter(|asked| *asked == project).count();
+        assert_eq!(
+            asked("proj-a"),
+            1,
+            "the refused project was offered to the cloud again inside its hold: {pushed:?}"
+        );
+        assert_eq!(
+            asked("proj-b"),
+            2,
+            "the live project stopped keeping its own schedule: {pushed:?}"
         );
     }
 

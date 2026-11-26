@@ -3456,6 +3456,36 @@ fn a_captured_learning_records_the_directory_the_subagent_stopped_in() {
     );
 }
 
+/// A hook records where its time went, and the agent's answer carries none of
+/// it.
+///
+/// A hook killed at its budget leaves nothing that says whether opening the
+/// store, detecting the project, writing or building the block was the slow
+/// part, and the store it is slow on is the user's own — so the numbers have to
+/// come from the run that is happening. They go to `--verbose` and to standard
+/// error; `response()` is what an agent reads and is unchanged.
+#[test]
+fn a_hook_records_the_time_of_each_phase() {
+    let (temp, mut store) = store();
+    let directory = temp.path().join("timed");
+    std::fs::create_dir_all(&directory).unwrap();
+
+    let outcome = run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
+
+    let phases: Vec<&str> = outcome.timings.iter().map(|timing| timing.phase).collect();
+    for phase in ["detect", "recall", "write"] {
+        assert!(
+            phases.contains(&phase),
+            "{phase} is missing from {phases:?}"
+        );
+    }
+    assert!(
+        outcome.response().get("timings").is_none(),
+        "the agent's answer carries no timing: {}",
+        outcome.response()
+    );
+}
+
 fn vector_rows(store: &Store) -> i64 {
     store
         .connection()

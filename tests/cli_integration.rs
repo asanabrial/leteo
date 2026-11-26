@@ -3306,3 +3306,67 @@ fn a_hook_and_a_search_leave_the_vectors_to_the_backfill() {
         "and `doctor --repair` is what fills them: {after_the_repair}"
     );
 }
+
+/// `--verbose` prints where a hook's time went, on standard error, and nothing
+/// changes without it.
+///
+/// A hook has no other way to say which phase was slow: a run killed at its own
+/// budget leaves no trace, and the timings live in a store the person running
+/// it can report from.
+#[test]
+fn a_verbose_hook_times_its_phases_on_standard_error() {
+    let temp = tempfile::tempdir().expect("create the test directory");
+    let database = temp.path().join("leteo.db");
+    let payload = json!({
+        "session_id": "timed-session",
+        "cwd": temp.path(),
+    })
+    .to_string();
+
+    let verbose = bare_leteo()
+        .arg("--database")
+        .arg(&database)
+        .arg("hook")
+        .arg("session-start")
+        .arg("--verbose")
+        .write_stdin(payload.clone())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8_lossy(&verbose.stderr).into_owned();
+    for phase in ["open", "detect", "write"] {
+        assert!(
+            stderr.contains(&format!(": {phase} took ")),
+            "{phase} is not timed in: {stderr}"
+        );
+    }
+    let printed: Value =
+        serde_json::from_slice(&verbose.stdout).expect("--verbose prints the whole outcome");
+    assert!(
+        printed.get("timings").is_none(),
+        "a timing is not something to put on the agent's channel, even verbosely: {printed}"
+    );
+
+    let plain = bare_leteo()
+        .arg("--database")
+        .arg(&database)
+        .arg("hook")
+        .arg("session-start")
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let said = String::from_utf8_lossy(&plain.stderr).into_owned();
+    assert!(
+        !said.contains(" took "),
+        "a silent hook says nothing: {said}"
+    );
+    let answer: Value = serde_json::from_slice(&plain.stdout).expect("the hook answers JSON");
+    assert!(answer.get("timings").is_none(), "{answer}");
+    assert!(
+        answer.get("hookSpecificOutput").is_some(),
+        "and the agent's answer is the one it has always been: {answer}"
+    );
+}

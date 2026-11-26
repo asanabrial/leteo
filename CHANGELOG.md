@@ -6,6 +6,11 @@ All notable changes to Leteo are documented in this file.
 
 ### Added
 
+- **A hook says where its time went.** `leteo hook <event> --verbose` prints the
+  milliseconds each phase took — opening the store, detecting the project,
+  building the opening block, the event itself and the spool replay — on
+  standard error, where a hook log reads it and the agent's own context does
+  not. Without the flag the answer is byte for byte what it was (#424).
 - **One command says whether a change cost a search the previous binary
   answered.** `tools/memory-bench/precision.py` loads two corpora — the
   ratchet's 117 questions and the held-out comparison corpus's 56 — into a

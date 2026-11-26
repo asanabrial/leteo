@@ -220,14 +220,17 @@ pub fn collect_pairs(
     let observations = store.recent_observations(Some(&project), Some(i64::MAX as usize), false)?;
     // The bound the word-mode scan applies in SQL, applied here: `datetime(x)`
     // is NULL for a timestamp it cannot read, and the comparison then matches
-    // nothing, so a row without a readable timestamp is outside the bound in
-    // both modes rather than in one of them.
-    let since = options.since.as_deref().and_then(crate::timestamp::parse);
+    // nothing — so a row without a readable timestamp is outside the bound in
+    // both modes, and a bound that cannot be read is one nothing is after. The
+    // CLI refuses such a value before it gets here; this is the same answer for
+    // a caller that did not.
+    let since = options.since.as_deref().map(crate::timestamp::parse);
     let observations: Vec<_> = observations
         .into_iter()
         .filter(|observation| match since {
             None => true,
-            Some(since) => crate::timestamp::parse(&observation.created_at)
+            Some(None) => false,
+            Some(Some(since)) => crate::timestamp::parse(&observation.created_at)
                 .is_some_and(|created| created >= since),
         })
         .collect();
@@ -671,7 +674,22 @@ mod tests {
         options.since = Some("2025-01-01 00:00:00".to_owned());
         let (pairs, inspected, _) = collect_pairs(&mut store, &options).unwrap();
         assert_eq!(inspected, 2, "only the two memories after the bound");
-        assert!(!pairs.is_empty(), "and they are the pair worth judging");
+        assert_eq!(pairs.len(), 1, "which are the pair worth judging");
+        assert!(
+            pairs[0].prompt.contains("Retry backoff policy"),
+            "and it is made of them: {}",
+            pairs[0].prompt
+        );
+        assert!(
+            !pairs[0].prompt.contains("Unrelated note"),
+            "not of a row outside the bound"
+        );
+
+        // The bound is inclusive, as the SQL's `>=` is: a memory created at
+        // exactly the bound is in.
+        options.since = Some("2026-01-01 00:00:00".to_owned());
+        let (_, inspected, _) = collect_pairs(&mut store, &options).unwrap();
+        assert_eq!(inspected, 2, "a memory created at the bound is after it");
 
         options.since = Some("2027-01-01 00:00:00".to_owned());
         let (pairs, inspected, _) = collect_pairs(&mut store, &options).unwrap();
@@ -679,6 +697,16 @@ mod tests {
             (inspected, pairs.len()),
             (0, 0),
             "a bound after every memory inspects nothing and asks nothing"
+        );
+
+        // A bound the parser cannot read is not "no bound": the word-mode scan
+        // compares NULL and matches nothing, and this has to agree with it.
+        options.since = Some("yesterday".to_owned());
+        let (pairs, inspected, _) = collect_pairs(&mut store, &options).unwrap();
+        assert_eq!(
+            (inspected, pairs.len()),
+            (0, 0),
+            "an unreadable bound excludes every memory rather than bounding none"
         );
     }
 

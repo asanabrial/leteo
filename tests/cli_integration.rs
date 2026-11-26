@@ -3832,23 +3832,39 @@ fn a_semantic_scan_honours_since_and_refuses_apply() {
         "a bound after every memory inspects nothing: {preview}"
     );
 
-    let refusal = leteo(&database)
-        .arg("conflicts")
-        .arg("scan")
-        .arg("--project")
-        .arg("alpha")
-        .arg("--semantic")
-        .arg("claude")
-        .arg("--apply")
-        .assert()
-        .failure();
-    let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
-    assert!(
-        stderr.contains("--yes"),
-        "the refusal names what runs a semantic scan instead: {stderr}"
-    );
-    assert!(
-        stderr.contains("--apply"),
-        "and the flag it is refusing: {stderr}"
-    );
+    // The flag path, and the environment path the issue named: `LETEO_AGENT_CLI`
+    // selects the mode, so a plain `--apply` has to be refused there too.
+    let refusals = [
+        leteo(&database)
+            .env_remove("LETEO_AGENT_CLI")
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--semantic")
+            .arg("claude")
+            .arg("--apply")
+            .assert()
+            .failure(),
+        leteo(&database)
+            .env("LETEO_AGENT_CLI", "claude")
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--apply")
+            .assert()
+            .failure(),
+    ];
+    for refusal in refusals {
+        let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
+        assert!(
+            stderr.contains("--yes"),
+            "the refusal names what runs a semantic scan instead: {stderr}"
+        );
+        assert!(
+            stderr.contains("--apply"),
+            "and the flag it is refusing: {stderr}"
+        );
+    }
 }

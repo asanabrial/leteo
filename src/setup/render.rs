@@ -6,14 +6,11 @@ pub(super) fn render_hooks_config(
     registrations: &[HookRegistration],
     executable: &Path,
 ) -> Result<String> {
-    let text = existing
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .unwrap_or_default();
+    let text = super::configuration_text(path, existing)?;
     let config = if text.trim().is_empty() {
         Value::Object(Map::new())
     } else {
-        jsonc::parse(existing.expect("a non-empty text came from these bytes"))
-            .with_context(|| format!("parse {}", path.display()))?
+        jsonc::parse(text.as_bytes()).with_context(|| format!("parse {}", path.display()))?
     };
 
     // Hook commands are handed to a shell, and always quoted.
@@ -27,7 +24,7 @@ pub(super) fn render_hooks_config(
     // it. Quoting unconditionally costs two characters and is right everywhere.
     let executable = executable_string(executable)?;
     let command = format!("\"{executable}\"");
-    write_hook_events(text, &config, &["hooks"], registrations, &command)
+    write_hook_events(&text, &config, &["hooks"], registrations, &command)
         .map_err(|error| super::in_file(path, error))
 }
 
@@ -37,14 +34,11 @@ pub(super) fn render_zcode_hooks(
     registrations: &[HookRegistration],
     executable: &Path,
 ) -> Result<String> {
-    let text = existing
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .unwrap_or_default();
+    let text = super::configuration_text(path, existing)?;
     let config = if text.trim().is_empty() {
         Value::Object(Map::new())
     } else {
-        jsonc::parse(existing.expect("a non-empty text came from these bytes"))
-            .with_context(|| format!("parse {}", path.display()))?
+        jsonc::parse(text.as_bytes()).with_context(|| format!("parse {}", path.display()))?
     };
     if super::zcode_hook_runner_disabled(&config) {
         anyhow::bail!(
@@ -55,11 +49,11 @@ pub(super) fn render_zcode_hooks(
         );
     }
 
-    let step = super::detected_indent(text);
+    let step = super::detected_indent(&text);
     let mut base = if text.trim().is_empty() {
         "{}".to_owned()
     } else {
-        text.to_owned()
+        text.clone()
     };
     base = jsonc::set_member(&base, &["hooks"], "enabled", &Value::Bool(true), &step)
         .map_err(|error| super::in_file(path, error))?;
@@ -146,9 +140,7 @@ pub(super) fn render_json_config(
     tools: &str,
 ) -> Result<String> {
     let entry = mcp_entry(format, executable, tools)?;
-    let text = existing
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .unwrap_or_default();
+    let text = super::configuration_text(path, existing)?;
     if text.trim().is_empty() {
         let mut root = Value::Object(Map::new());
         let object = root
@@ -156,16 +148,15 @@ pub(super) fn render_json_config(
             .expect("a value built as an object is one");
         let servers = super::open_servers_mut(object, format, path)?;
         servers.insert(SERVER_NAME.to_owned(), entry);
-        return super::to_json_like(text, &root)
+        return super::to_json_like(&text, &root)
             .with_context(|| format!("serialize {}", path.display()));
     }
 
     // Read first, so a file that is not JSON at all is refused with the parse
     // error rather than with whatever the splice made of it.
-    jsonc::parse(existing.expect("a non-empty text came from these bytes"))
-        .with_context(|| format!("parse {}", path.display()))?;
-    let step = super::detected_indent(text);
-    jsonc::set_member(text, format.key_path(), SERVER_NAME, &entry, &step)
+    jsonc::parse(text.as_bytes()).with_context(|| format!("parse {}", path.display()))?;
+    let step = super::detected_indent(&text);
+    jsonc::set_member(&text, format.key_path(), SERVER_NAME, &entry, &step)
         .map_err(|error| super::in_file(path, error))
 }
 

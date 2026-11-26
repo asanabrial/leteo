@@ -1216,23 +1216,74 @@ fn opencode_jsonc_keeps_the_comments_it_was_written_with() {
         setup("opencode", &setup_options).unwrap().changed_files(),
         0
     );
-
     uninstall("opencode", &setup_options).unwrap();
     let gone = fs::read_to_string(&jsonc_path).unwrap();
-    for comment in [
-        "// OpenCode permits JSONC.",
-        "// my theme",
-        "// the servers I actually use",
-    ] {
-        assert!(
-            gone.contains(comment),
-            "uninstall took the comment {comment:?}:\n{gone}"
-        );
-    }
-    let config = super::jsonc::parse(gone.as_bytes()).unwrap();
-    assert!(config["mcp"].get(SERVER_NAME).is_none(), "{gone}");
-    assert_eq!(config["mcp"]["other"]["command"][0], "other");
+    // Byte for byte the file that was there, save the separator comma Leteo's
+    // entry took with it: nothing else in the document moved.
+    assert_eq!(
+        gone,
+        r#"{
+                // OpenCode permits JSONC.
+                "theme": "dark", // my theme
+                "mcp": {
+                    // the servers I actually use
+                    "other": {
+                        "type": "local",
+                        "command": ["other", "mcp"],
+                    }
+                },
+            }"#,
+        "uninstall left something other than the file it found"
+    );
     assert!(!super::is_configured("opencode", &setup_options));
+}
+
+/// A file Leteo cannot decode is refused, not treated as an empty one.
+///
+/// The empty path writes Leteo's entry over the whole document, which is the
+/// opposite of what a person wants from a config holding a stray Latin-1 byte.
+#[test]
+fn a_configuration_that_is_not_utf8_is_refused_rather_than_replaced() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let broken = |path: &Path| {
+        let mut bytes = br#"{"theme":"dark","note":""#.to_vec();
+        bytes.push(0xff);
+        bytes.extend_from_slice(br#""}"#);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, &bytes).unwrap();
+        bytes
+    };
+
+    let mcp = resolve_agent_paths("qwen", &setup_options)
+        .unwrap()
+        .mcp_config;
+    let seed = broken(&mcp);
+    let error = setup("qwen", &setup_options).unwrap_err().to_string();
+    assert!(error.contains("not valid UTF-8"), "{error}");
+    assert_eq!(
+        fs::read(&mcp).unwrap(),
+        seed,
+        "a refused setup changes nothing"
+    );
+
+    // The hook settings take the same path, and are a different renderer.
+    let hooks = resolve_agent_paths("claude-code", &setup_options)
+        .unwrap()
+        .hooks
+        .expect("Claude Code keeps hook settings");
+    let seed = broken(&hooks);
+    let error = setup(
+        "claude-code",
+        &SetupOptions {
+            install_hooks: true,
+            ..options(&temp)
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("not valid UTF-8"), "{error}");
+    assert_eq!(fs::read(&hooks).unwrap(), seed, "and so does that one");
 }
 
 /// The same reader on a `.json` file somebody annotated: VS Code reads
@@ -1259,14 +1310,19 @@ fn a_commented_mcp_json_loses_only_leteos_entry() {
 
     uninstall("vscode-copilot", &setup_options).unwrap();
     let after = fs::read_to_string(&paths.mcp_config).unwrap();
-    assert!(!after.contains("leteo was here") || after.contains("// leteo was here"));
-    assert!(
-        after.contains("// my own server, please keep it"),
-        "the comment survived:\n{after}"
+    // The comment above Leteo's entry — the one a removal that reaches back to
+    // the previous comma would have taken — is still where it was written.
+    assert_eq!(
+        after,
+        r#"{
+    // my own server, please keep it
+    "servers": {
+        "mine": {"type": "stdio", "command": "mine"}
+        // leteo was here
+    }
+}"#,
+        "only Leteo's entry went"
     );
-    let config = super::jsonc::parse(after.as_bytes()).unwrap();
-    assert!(config["servers"].get(SERVER_NAME).is_none(), "{after}");
-    assert_eq!(config["servers"]["mine"]["command"], "mine");
 }
 
 /// ZCode keeps its providers, its own hooks and the server in one file, and a

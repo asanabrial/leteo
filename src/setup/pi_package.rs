@@ -169,10 +169,8 @@ fn register(
     // Spliced, like every other configuration Leteo edits: a settings file
     // somebody annotated keeps its notes, and one the user never touched is
     // not re-indented by a setup that only added a package.
-    let text = existing
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .unwrap_or_default();
-    let text = if text.trim().is_empty() { "{}" } else { text };
+    let text = super::configuration_text(path, existing)?;
+    let text = if text.trim().is_empty() { "{}" } else { &text };
     let step = super::detected_indent(text);
     super::jsonc::push_elements(text, &["packages"], &[entry], &step)
         .map(super::jsonc::with_final_newline)

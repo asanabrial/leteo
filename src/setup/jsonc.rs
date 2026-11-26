@@ -337,6 +337,8 @@ fn value_end(bytes: &[u8], at: usize) -> Option<usize> {
             while index < bytes.len()
                 && !matches!(bytes[index], b',' | b'}' | b']')
                 && !bytes[index].is_ascii_whitespace()
+                && !bytes[index..].starts_with(b"//")
+                && !bytes[index..].starts_with(b"/*")
             {
                 index += 1;
             }
@@ -640,7 +642,27 @@ fn remove_item(text: &str, open: usize, items: &[Item], index: usize) -> String 
         let comma = items[index - 1]
             .comma
             .expect("a comma separates two members");
-        return format!("{}{}", &text[..comma], &text[item.end..]);
+        let from = line_indent(text, item.start).map(|_| line_start(bytes, item.start));
+        // A comment in the gap belongs to whoever wrote it, not to the entry
+        // being removed. It stays, and the member's own line goes instead.
+        if text[comma + 1..item.start].trim().is_empty()
+            || from.is_none_or(|from| from <= comma + 1)
+        {
+            return format!("{}{}", &text[..comma], &text[item.end..]);
+        }
+        let from = from.expect("answered above");
+        let mut to = item.end;
+        if text[to..].starts_with("\r\n") {
+            to += 2;
+        } else if text[to..].starts_with('\n') {
+            to += 1;
+        }
+        return format!(
+            "{}{}{}",
+            &text[..comma],
+            &text[comma + 1..from],
+            &text[to..]
+        );
     }
     let close = matching_close(bytes, open).expect("the container was scanned");
     if text[open + 1..item.start].trim().is_empty() && text[item.end..close].trim().is_empty() {
@@ -747,6 +769,63 @@ mod tests {
             edited,
             "{\n  \"hooks\": {\n    \"Stop\": [\n      {\n        \"a\": 1\n      }\n    ]\n  }\n}\n"
         );
+    }
+
+    #[test]
+    fn the_comma_before_a_multiline_last_member_goes_with_it() {
+        let text = "{\n  \"mcp\": {\n    \"other\": {\n      \"a\": 1,\n    },\n    \"leteo\": {\n      \"type\": \"local\"\n    }\n  }\n}\n";
+        let edited = remove_member(text, &["mcp"], "leteo").unwrap().unwrap();
+        assert_eq!(
+            edited,
+            "{\n  \"mcp\": {\n    \"other\": {\n      \"a\": 1,\n    }\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_comment_between_the_last_two_members_survives_the_last_ones_removal() {
+        let text = "{\n  \"a\": 1,\n  // about b\n  \"b\": 2\n}\n";
+        let edited = remove_member(text, &[], "b").unwrap().unwrap();
+        assert_eq!(edited, "{\n  \"a\": 1\n  // about b\n}\n");
+    }
+
+    #[test]
+    fn the_scanner_reads_strings_comments_and_scalars_where_they_end() {
+        let text = r#"{
+  "url": "https://example.com/a//b", // the slashes are not a comment
+  "braces": "{\"a\": [1, 2]}",
+  "block": /* } , // */ 1,
+  "after": true/* still the comment */,
+  "key\"": "value"
+}"#;
+        let edited = set_member(text, &[], "added", &json!({"ok": true}), "  ").unwrap();
+        let parsed = parse(edited.as_bytes()).unwrap();
+        assert_eq!(parsed["url"], "https://example.com/a//b");
+        assert_eq!(parsed["braces"], "{\"a\": [1, 2]}");
+        assert_eq!(parsed["block"], 1);
+        assert_eq!(parsed["after"], true);
+        assert_eq!(parsed["key\""], "value");
+        assert_eq!(parsed["added"]["ok"], true);
+        assert!(
+            edited.contains("/* still the comment */"),
+            "the comment after a scalar is not part of it:\n{edited}"
+        );
+    }
+
+    #[test]
+    fn a_shape_the_editor_cannot_edit_says_which_key_it_was() {
+        let error = set_member("{\"mcp\": []}", &["mcp"], "leteo", &json!({}), "  ")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "mcp in this file must contain a JSON object");
+        let error = push_elements(
+            "{\"hooks\": {\"Stop\": {}}}",
+            &["hooks", "Stop"],
+            &[json!(1)],
+            "  ",
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, "hooks.Stop must contain an array");
     }
 
     #[test]

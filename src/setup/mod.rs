@@ -1269,6 +1269,18 @@ fn render_instructions(adapter: &AgentAdapter, existing: &str, is_new: bool) -> 
     upsert_memory_protocol(existing)
 }
 
+/// The configuration's bytes as text, refusing rather than treating a file it
+/// cannot decode as an empty one — the empty path writes Leteo's entry over
+/// whatever the bytes held.
+fn configuration_text(path: &Path, existing: Option<&[u8]>) -> Result<String> {
+    match existing {
+        None => Ok(String::new()),
+        Some(bytes) => std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .with_context(|| format!("{} is not valid UTF-8", path.display())),
+    }
+}
+
 /// Folds the file's path into an editing error's own sentence.
 ///
 /// A caller that only prints `to_string()` sees the outermost context and not

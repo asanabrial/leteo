@@ -1471,33 +1471,89 @@ fn strip_list_marker(line: &str) -> Option<&str> {
     (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim_start())
 }
 
-/// A commit does not change the comparison corpus together with the search it
+const COMPARISON_CORPUS: &str = "tools/memory-bench/comparison_corpus.py";
+
+/// Every path whose bytes can reorder a search result, in one list.
+///
+/// The guard reads this list and nothing else, because a second copy is how one
+/// of them starts watching a tree the other stopped watching: `src/semantic/`
+/// carries the merge cap and the relevance floor the semantic stage applies,
+/// `src/stemming.rs` folds the tokens both stages compare, and `migrations/`
+/// declares the indexes and stem rows they read. `src/store/semantic` covers
+/// `semantic.rs` and `semantic_stage.rs` beside it, which is why it is a prefix
+/// and not two names.
+const RANKING_INPUTS: &[&str] = &[
+    "src/store/search",
+    "src/store/semantic",
+    "src/semantic/",
+    "src/stemming.rs",
+    "migrations/",
+];
+
+fn feeds_ranking(file: &str) -> bool {
+    RANKING_INPUTS.iter().any(|input| file.starts_with(input))
+}
+
+/// What one change did to the corpus and to the scoring measured against it.
+#[derive(Debug)]
+struct CorpusChange {
+    corpus: bool,
+    ranking: Vec<String>,
+}
+
+fn corpus_is_tuned_against_itself(change: &CorpusChange) -> bool {
+    change.corpus && !change.ranking.is_empty()
+}
+
+/// The change between `base` and `HEAD`, read as one diff, or `None` when the
+/// range cannot be read.
+///
+/// One `git diff --name-only base...HEAD` rather than a walk of the commits:
+/// what the hold-out has to be protected from is a pull request that edits the
+/// corpus in one commit and the scoring in the next, and a commit-level test
+/// sees two innocent commits instead of one tuning edit. The three-dot range
+/// asks git for the merge base, so a branch that merged `main` after it was cut
+/// is not read as deleting everything `main` gained.
+fn read_corpus_change(root: &Path, base: &str) -> Option<CorpusChange> {
+    let files = git(root, &["diff", "--name-only", &format!("{base}...HEAD")])?;
+    let mut change = CorpusChange {
+        corpus: false,
+        ranking: Vec::new(),
+    };
+    for file in files.lines().map(str::trim).filter(|file| !file.is_empty()) {
+        change.corpus |= file == COMPARISON_CORPUS;
+        if feeds_ranking(file) {
+            change.ranking.push(file.to_owned());
+        }
+    }
+    Some(change)
+}
+
+/// A change does not edit the comparison corpus together with the search it
 /// scores.
 ///
 /// `tools/memory-bench/comparison_corpus.py` is the held-out corpus the Engram
 /// comparison is measured on, and `ratchet.py` gates on a different one
 /// (`corpus.py`) so the ratchet cannot tune against it. The hold-out only means
 /// something if a ranking change cannot also move the queries that are supposed
-/// to measure it: editing both in one commit is how a benchmark becomes its own
+/// to measure it: editing both in one change is how a benchmark becomes its own
 /// tuning set, and nothing else in the repository would say so.
 ///
-/// Read from git, because "a commit" is the unit the rule names and a working
-/// tree cannot show one. The base is the push's own `before` when CI names one,
-/// the branch the change targets when CI names that, and `origin/main`
-/// otherwise. A base that will not resolve, a `git`
-/// invocation that does not answer, and a `git show` that fails are each a
-/// failure here rather than a pass: reading an unanswerable range as clean is
-/// how the commit this guard exists to catch slips through, and the earlier
-/// version of this did exactly that by defaulting a failed `git show` to an
-/// empty file list. The corpus path is asserted to exist for the same reason —
-/// a rename would otherwise leave the guard watching a path nothing writes.
+/// Read from git, because a change is what a reviewer merges and a working tree
+/// cannot show one. The base is the push's own `before` when CI names one, the
+/// branch the change targets when CI names that, and `origin/main` otherwise. A
+/// base that will not resolve and a `git` invocation that does not answer are
+/// each a failure here rather than a pass: reading an unanswerable range as
+/// clean is how the change this guard exists to catch slips through, and an
+/// earlier version of this did exactly that by defaulting a failed `git show` to
+/// an empty file list. The corpus path is asserted to exist for the same reason
+/// — a rename would otherwise leave the guard watching a path nothing writes.
 #[test]
-fn a_commit_does_not_change_the_comparison_corpus_with_the_search_it_scores() {
+fn a_change_does_not_edit_the_comparison_corpus_with_the_search_it_scores() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let corpus = "tools/memory-bench/comparison_corpus.py";
     assert!(
-        root.join(corpus).exists(),
-        "the comparison-corpus guard names `{corpus}`, which is not here; if the \
+        root.join(COMPARISON_CORPUS).exists(),
+        "the comparison-corpus guard names `{COMPARISON_CORPUS}`, which is not here; if the \
          corpus moved, update the path in this guard so it still watches it"
     );
 
@@ -1508,39 +1564,115 @@ fn a_commit_does_not_change_the_comparison_corpus_with_the_search_it_scores() {
              full history for this — or fix the repository this checkout names"
         )
     });
-    let range = format!("{base}..HEAD");
-    let log = git(root, &["rev-list", &range]).unwrap_or_else(|| {
-        panic!("comparison-corpus guard: `git rev-list {range}` did not answer")
+    let change = read_corpus_change(root, &base).unwrap_or_else(|| {
+        panic!(
+            "comparison-corpus guard: `git diff {base}...HEAD` did not answer, so \
+             whether this change touches the corpus and the scoring together is \
+             unknown, not clean"
+        )
     });
+    assert!(
+        !corpus_is_tuned_against_itself(&change),
+        "this change edits the comparison corpus together with the search it \
+         measures ({}). The corpus is held out from the ratchet on purpose; \
+         edit `comparison_corpus.py` in a change of its own so a ranking edit \
+         cannot be tuned against the corpus that measures it.",
+        change.ranking.join(", ")
+    );
+}
 
-    let mut offenders = Vec::new();
-    for commit in log.split_whitespace() {
-        let files =
-            git(root, &["show", "--pretty=format:", "--name-only", commit]).unwrap_or_else(|| {
-                panic!(
-                    "comparison-corpus guard: `git show {commit}` did not answer, so \
-                     whether this commit touched the corpus is unknown, not clean"
-                )
-            });
-        let mut touches_corpus = false;
-        let mut touches_search = false;
-        for file in files.lines().map(str::trim).filter(|file| !file.is_empty()) {
-            touches_corpus |= file == corpus;
-            touches_search |=
-                file.starts_with("src/store/search") || file.starts_with("src/store/semantic");
+#[cfg(unix)]
+fn commit_fixture(root: &Path, message: &str, files: &[(&str, &str)]) {
+    for (path, contents) in files {
+        let path = root.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
         }
-        if touches_corpus && touches_search {
-            offenders.push(commit.to_owned());
-        }
+        std::fs::write(path, contents).unwrap();
     }
+    assert!(
+        git(root, &["add", "-A"]).is_some(),
+        "the fixture's change was staged"
+    );
+    assert!(
+        git(
+            root,
+            &[
+                "-c",
+                "user.name=the corpus guard",
+                "-c",
+                "user.email=guard@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        .is_some(),
+        "the fixture's `{message}` commit landed"
+    );
+}
+
+/// The guard reads a range as one change, so splitting a tuning edit across two
+/// commits does not pass it.
+///
+/// The pair this exists for: one commit moves `comparison_corpus.py`, the next
+/// reorders `src/semantic/mod.rs`. A commit-by-commit walk saw two innocent
+/// commits; the range sees a held-out set that moved with its scorer.
+#[cfg(unix)]
+#[test]
+fn the_guard_reads_a_range_as_one_change_and_every_ranking_input() {
+    use tempfile::TempDir;
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    assert!(
+        git(root, &["init"]).is_some(),
+        "the fixture is a git repository"
+    );
+    commit_fixture(root, "the base", &[("README.md", "the fixture")]);
+    commit_fixture(root, "the corpus", &[(COMPARISON_CORPUS, "QUERIES = []\n")]);
+    commit_fixture(
+        root,
+        "the scoring",
+        &[("src/semantic/mod.rs", "pub const FLOOR: f32 = 0.3;\n")],
+    );
+
+    let base = git(root, &["rev-parse", "HEAD~2"]).expect("the fixture's base resolves");
+    let change = read_corpus_change(root, base.trim()).expect("the fixture's range is readable");
+    assert!(change.corpus, "{change:?}");
+    assert_eq!(change.ranking, ["src/semantic/mod.rs"], "{change:?}");
+    assert!(
+        corpus_is_tuned_against_itself(&change),
+        "two commits are one change: {change:?}"
+    );
 
     assert!(
-        offenders.is_empty(),
-        "these commits change the comparison corpus and the search it measures \
-         together: {offenders:?}. The corpus is held out from the ratchet on \
-         purpose; edit `comparison_corpus.py` in a commit of its own so a ranking \
-         change cannot be tuned against the corpus that measures it."
+        read_corpus_change(root, "a-base-that-is-not-there").is_none(),
+        "an unreadable range is not a clean one"
     );
+}
+
+/// Every ranking input in the list is one the guard actually matches.
+///
+/// The list is only worth having if the matcher reads it: a directory entry, a
+/// module stem and a whole path all have to answer, or an input the list names
+/// silently watches nothing.
+#[test]
+fn every_ranking_input_is_watched() {
+    for input in RANKING_INPUTS {
+        assert!(
+            feeds_ranking(input) || input.ends_with('/'),
+            "`{input}` is in the list and the guard does not match it"
+        );
+    }
+    assert!(feeds_ranking("src/semantic/mod.rs"));
+    assert!(feeds_ranking("src/stemming.rs"));
+    assert!(feeds_ranking("src/store/search.rs"));
+    assert!(feeds_ranking("src/store/semantic_stage.rs"));
+    assert!(feeds_ranking("migrations/0020_observation_vectors.sql"));
+    assert!(!feeds_ranking("src/mcp/mod.rs"));
 }
 
 /// The comparison page's generated blocks are the bytes `compare.py` wrote.
@@ -1648,17 +1780,50 @@ fn the_harness_does_not_come_back_under_its_old_directory() {
 /// There is deliberately no `HEAD^` fallback: it would answer for a repository
 /// with no remote by checking only the single last commit, silently narrowing
 /// the range instead of saying the base could not be read.
+/// The commit a push event's range starts from, and nothing else.
+///
+/// `GITHUB_EVENT_BEFORE` is the tip before a push. A pull request and a
+/// workflow dispatch carry no such field, and reading the variable on those
+/// events narrowed the range to a pull request's latest push — the commits
+/// before it were never examined, which is the whole range the guard exists
+/// for.
+fn push_before(event_name: Option<&str>, before: Option<&str>) -> Option<String> {
+    if event_name != Some("push") {
+        return None;
+    }
+    let before = before?.trim();
+    if before.is_empty() || before.bytes().all(|byte| byte == b'0') {
+        return None;
+    }
+    Some(before.to_owned())
+}
+
+#[test]
+fn a_pull_request_does_not_narrow_the_range_to_its_latest_push() {
+    assert_eq!(
+        push_before(Some("push"), Some("4b825dc")),
+        Some("4b825dc".to_owned())
+    );
+    assert_eq!(push_before(Some("pull_request"), Some("4b825dc")), None);
+    assert_eq!(
+        push_before(Some("workflow_dispatch"), Some("4b825dc")),
+        None
+    );
+    assert_eq!(push_before(None, Some("4b825dc")), None);
+    assert_eq!(push_before(Some("push"), Some("0000000")), None);
+    assert_eq!(push_before(Some("push"), None), None);
+}
+
 fn comparison_base(root: &Path) -> Option<String> {
     let mut candidates = Vec::new();
     // A push to the base branch is the one case `origin/main` cannot answer:
     // it is HEAD itself, so the merge-base is HEAD and the range is empty. The
-    // push event's own `before` is the commit that was the tip, which is the
-    // base that range needs; every other event leaves it empty or all-zeroes.
-    if let Ok(before) = std::env::var("GITHUB_EVENT_BEFORE") {
-        let before = before.trim();
-        if !before.is_empty() && before.bytes().any(|byte| byte != b'0') {
-            candidates.push(before.to_owned());
-        }
+    // push's own `before` is the tip that range needs.
+    if let Some(before) = push_before(
+        std::env::var("GITHUB_EVENT_NAME").ok().as_deref(),
+        std::env::var("GITHUB_EVENT_BEFORE").ok().as_deref(),
+    ) {
+        candidates.push(before);
     }
     if let Ok(base) = std::env::var("GITHUB_BASE_REF")
         && !base.trim().is_empty()

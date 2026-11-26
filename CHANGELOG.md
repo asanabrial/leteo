@@ -23,6 +23,14 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Session start resolves one directory instead of every stored one.** Deciding
+  whether a directory's project drifted compared the recorded directory with the
+  current one row by row, and both sides went through `realpath` on every row —
+  filesystem work proportional to the store's history, on the path that runs
+  before an agent sees a prompt. The directory is resolved once per call and each
+  distinct recorded spelling at most once: `leteo hook session-start` on a copy
+  of a store with 2,668 sessions made 5,228 `realpath` calls and makes 458, with
+  the same answer (#421).
 - **The pre-migration backup is complete before it carries the name a later
   open trusts.** `VACUUM INTO` wrote straight to `leteo.db.pre-schema-N`, so a
   process killed mid-copy left a partial file there, and every later open

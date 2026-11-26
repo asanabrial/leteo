@@ -2056,7 +2056,7 @@ fn a_renamed_project_is_recognised_however_the_path_was_spelled() {
     // case.
     //
     // The case fold is conditional because it is a property of the filesystem
-    // rather than of the spelling. `same_directory` folds case only under
+    // rather than of the spelling. the directory comparison folds case only under
     // `cfg!(windows)`, and it is right to: on macOS and Linux `/tmp/Foo` and
     // `/tmp/foo` can be two different directories, so treating them as one
     // would merge the memories of one project into another. Uppercasing here
@@ -3449,9 +3449,9 @@ fn a_captured_learning_records_the_directory_the_subagent_stopped_in() {
     let recorded = captured_directories(&store);
     assert_eq!(recorded.len(), 1);
     let recorded = recorded[0].clone().expect("a directory was recorded");
-    assert!(crate::project::same_directory(&recorded, &second));
+    assert!(crate::project::DirectoryTarget::new(&second).matches(&recorded));
     assert!(
-        !crate::project::same_directory(&recorded, &first),
+        !crate::project::DirectoryTarget::new(&first).matches(&recorded),
         "the session opened in the first one and says so: {recorded}"
     );
 }

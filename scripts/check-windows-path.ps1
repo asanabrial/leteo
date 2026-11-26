@@ -169,9 +169,24 @@ while ($true) {
         # An entry that names the install directory through a variable is that
         # entry: the installer must not add a second copy of it, and the
         # uninstaller must take it away.
-        $variable = $installDir -replace ('^' + [regex]::Escape($env:TEMP)), '%TEMP%'
-        if ($variable -eq $installDir) {
-            throw "cannot spell $installDir through %TEMP%; the variable pass needs it under $env:TEMP"
+        #
+        # The variable is found by expanding it back rather than by trusting the
+        # spelling: `$env:TEMP` on the runners is the 8.3 form of the directory
+        # `GetTempPath` returns, so a prefix compare against it misses.
+        $variable = $null
+        foreach ($name in 'TEMP', 'LOCALAPPDATA', 'USERPROFILE') {
+            $prefix = [Environment]::GetEnvironmentVariable($name)
+            if (-not $prefix -or -not $installDir.StartsWith("$prefix\", [StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+            $candidate = "%$name%" + $installDir.Substring($prefix.Length)
+            if ([Environment]::ExpandEnvironmentVariables($candidate) -eq $installDir) {
+                $variable = $candidate
+                break
+            }
+        }
+        if (-not $variable) {
+            throw "cannot spell $installDir through a variable; the variable pass needs it under TEMP, LOCALAPPDATA or USERPROFILE"
         }
         $registry.SetValue('Path', "$seed;$variable", [Microsoft.Win32.RegistryValueKind]::ExpandString)
         & (Join-Path $PSScriptRoot 'install.ps1')

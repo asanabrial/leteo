@@ -28,6 +28,12 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A hard delete confirms the tombstones it also erases.** The terminal's
+  confirmation counted live memories and the delete removed the soft-deleted
+  rows as well, so a project with three live and two tombstoned memories said
+  "3 memory(s)" and destroyed five — and the two it left out were exactly the
+  ones still recoverable. The confirmation and the delete now read one count, and
+  the tombstoned rows are named on their own line (#438).
 - **A hook writes its memory and leaves the vector to the backfill, and a search
   that has answered exits.** `subagent-stop` loaded the 13 MB semantic model and
   ran it inside the budget the agent is counting down — the one process the code

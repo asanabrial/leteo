@@ -174,7 +174,8 @@ fn deleting_a_session_takes_everything_it_recorded() {
     assert!(app.sessions.is_empty(), "the session went");
     assert!(app.recent.is_empty(), "and so did what it recorded");
     assert!(app.prompts.is_empty());
-    assert_eq!(store.session_counts("s1").unwrap(), (0, 0));
+    let left = store.session_delete_counts("s1", false).unwrap();
+    assert_eq!((left.live, left.prompts), (0, 0));
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -514,4 +515,74 @@ fn a_refused_project_is_named_even_while_the_target_is_healthy() {
         drawn.contains("sync is paused"),
         "and why, which is the whole point of the page: {drawn}"
     );
+}
+
+/// A hard delete confirms the tombstones it also erases.
+///
+/// A soft delete leaves the rows in the table behind a `deleted_at`, and a hard
+/// delete removes those too — they are the rows somebody could still have
+/// recovered. The confirmation quoted the live count, so it named fewer than it
+/// then destroyed, which is the one thing a confirmation cannot do.
+#[test]
+fn a_hard_delete_confirms_the_tombstones_it_also_erases() {
+    let (_temp, mut store) = store_of(5);
+    for id in [4, 5] {
+        store.delete_observation(id, None, false).unwrap();
+    }
+
+    let mut app = App::load(&mut store).unwrap();
+    app.page = Page::Dashboard;
+    apply_action(
+        &mut app,
+        &mut store,
+        Action::Confirm {
+            what: Target::Session("s1".to_owned()),
+            hard: true,
+        },
+    );
+    let pending = app.pending.clone().expect("a confirmation is up");
+    assert!(
+        pending.detail.iter().any(|line| line == "5 memory(s)"),
+        "three live and two tombstoned is five: {:?}",
+        pending.detail
+    );
+    assert!(
+        pending
+            .detail
+            .iter()
+            .any(|line| line == "2 already deleted"),
+        "and the two are named as such: {:?}",
+        pending.detail
+    );
+
+    apply_action(
+        &mut app,
+        &mut store,
+        Action::Delete {
+            what: Target::Session("s1".to_owned()),
+            hard: true,
+        },
+    );
+    let said = app
+        .status
+        .clone()
+        .expect("the delete says what it did")
+        .text;
+    assert!(
+        said.contains("5 memory"),
+        "and the result is the number the confirmation gave: {said}"
+    );
+
+    let (_temp, mut store) = store_of(5);
+    for id in [4, 5] {
+        store.delete_observation(id, None, false).unwrap();
+    }
+    let counts = store.project_delete_counts("leteo", true).unwrap();
+    assert_eq!(
+        (counts.live, counts.erased, counts.total_memories()),
+        (3, 2, 5),
+        "the project's confirmation counts the same five"
+    );
+    let deleted = store.delete_project("leteo", true).unwrap();
+    assert_eq!(deleted.observations_deleted, 5, "and removes exactly those");
 }

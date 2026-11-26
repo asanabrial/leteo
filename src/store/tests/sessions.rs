@@ -185,7 +185,8 @@ fn deleting_a_session_cascades_in_one_transaction() {
     let soft = store.delete_session_and_contents("s1", false).unwrap();
     assert_eq!(soft.observations_deleted, 1);
     assert_eq!(soft.prompts_deleted, 1);
-    assert_eq!(store.session_counts("s1").unwrap(), (0, 0));
+    let left = store.session_delete_counts("s1", false).unwrap();
+    assert_eq!((left.live, left.prompts), (0, 0));
     assert!(store.get_session("s1").is_ok(), "the session row stays");
 
     let hard = store.delete_session_and_contents("s2", true).unwrap();

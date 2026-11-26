@@ -162,6 +162,7 @@ pub const SCREENS: Screens = Screens {
     count_memories: "{count} minne(n)",
     count_sessions: "{count} session(er)",
     count_prompts: "{count} prompt(er)",
+    count_already_deleted: "{count} redan borttagen/tagna",
     copied_to_clipboard: "Kopierade {count} tecken till urklipp",
     data_refreshed: "Uppgifterna omlästa",
     deleted_memory: "Minnet #{id} {gone}",

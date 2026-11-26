@@ -164,6 +164,7 @@ pub const SCREENS: Screens = Screens {
     count_memories: "{count} Erinnerung(en)",
     count_sessions: "{count} Sitzung(en)",
     count_prompts: "{count} Prompt(s)",
+    count_already_deleted: "{count} bereits gelöscht",
     copied_to_clipboard: "{count} Zeichen in die Zwischenablage kopiert",
     data_refreshed: "Daten neu geladen",
     deleted_memory: "Erinnerung #{id} {gone}",

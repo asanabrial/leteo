@@ -163,6 +163,7 @@ pub const SCREENS: Screens = Screens {
     count_memories: "{count} memorii",
     count_sessions: "{count} sesiuni",
     count_prompts: "{count} prompturi",
+    count_already_deleted: "{count} deja ștearsă/e",
     copied_to_clipboard: "S-au copiat {count} caractere în clipboard",
     data_refreshed: "Date reîmprospătate",
     deleted_memory: "Memoria #{id} {gone}",

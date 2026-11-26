@@ -23,6 +23,19 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **The pre-migration backup is complete before it carries the name a later
+  open trusts.** `VACUUM INTO` wrote straight to `leteo.db.pre-schema-N`, so a
+  process killed mid-copy left a partial file there, and every later open
+  skipped the copy because the name existed: on a copy of a real store, a
+  killed open left 2.5 MB of a 208 MB store under the final name, and SQLite's
+  answer to it was "file is not a database". The copy is written under a
+  working name of its own and renamed into place, and an existing file is taken
+  for a backup only when it reads as a database at the schema it is named for.
+  Two processes opening just after an upgrade no longer collide either: 7 of 20
+  paired opens of a store at the previous schema failed with "open Leteo store"
+  before this change and 0 of 20 after, because `VACUUM INTO` refusing the
+  other opener's destination is not `SQLITE_BUSY` and the open's retry loop
+  never saw it (#423).
 - **A comment in a configuration file survives `setup` and `uninstall`.** Setup
   parsed `opencode.jsonc` with the comments stripped and wrote plain JSON back,
   so a person's notes about their own servers were deleted without a word, and

@@ -1836,24 +1836,133 @@ fn pruning_keeps_the_newest_copies_and_ignores_a_name_it_cannot_read() {
 }
 
 #[test]
-fn a_copy_left_by_an_earlier_attempt_stands() {
-    // `VACUUM INTO` refuses an existing destination, and overwriting it would
-    // be no fresher than the copy already there. The first one stands, and the
-    // early return is what makes the second open of a half-migrated store work
-    // rather than fail.
-    let temp = TempDir::new().unwrap();
-    let path = temp.path().join("leteo.db");
-    let connection = Connection::open(&path).unwrap();
+fn a_complete_copy_left_by_an_earlier_attempt_stands() {
+    // `VACUUM INTO` refuses an existing destination, and a copy that reads as a
+    // database at this schema is no fresher for being taken again. Taking a
+    // second one costs a full pass over a store that can be hundreds of
+    // megabytes, on the open that immediately follows an upgrade, and it would
+    // replace a file somebody may already have reached for with one that is not
+    // more of a way back. The first copy stands, marker row and all.
+    let (temp, store) = store();
+    let path = store.database_path().to_path_buf();
     let from = SCHEMA_VERSION - 1;
-    let target = temp.path().join(format!("leteo.db.pre-schema-{from}"));
-    std::fs::write(&target, b"an earlier attempt").unwrap();
+    store
+        .connection
+        .execute_batch(&format!("PRAGMA user_version = {from}"))
+        .unwrap();
+    drop(store);
 
+    let target = temp.path().join(format!("leteo.db.pre-schema-{from}"));
+    Connection::open(&target)
+        .unwrap()
+        .execute_batch(&format!(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 project TEXT NOT NULL,
+                 directory TEXT NOT NULL);
+             INSERT INTO sessions (id, project, directory)
+                 VALUES ('marker', 'p', 'd');
+             PRAGMA user_version = {from};"
+        ))
+        .unwrap();
+
+    let connection = Connection::open(&path).unwrap();
     backup_before_migrate(&connection, &path, from).unwrap();
 
+    let marker: i64 = Connection::open(&target)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM sessions WHERE id = 'marker'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        std::fs::read(&target).unwrap(),
-        b"an earlier attempt",
-        "the copy already there is the same copy, and stands"
+        marker, 1,
+        "a copy that reads as a database at this schema is the same copy, and stands"
+    );
+}
+
+#[test]
+fn a_partial_copy_under_the_final_name_is_replaced_by_a_complete_one() {
+    // What a killed `VACUUM INTO` left under the final name in the build before
+    // this one: a file the migration never finished writing, which SQLite
+    // answers with "file is not a database". Every later open saw it there and
+    // skipped the copy, so the only way back from a one-way migration was a
+    // file that could not be opened. The name is taken by a complete copy now.
+    let (temp, store) = store();
+    let path = store.database_path().to_path_buf();
+    let from = SCHEMA_VERSION - 1;
+    store
+        .connection
+        .execute_batch(&format!("PRAGMA user_version = {from}"))
+        .unwrap();
+    drop(store);
+
+    let target = temp.path().join(format!("leteo.db.pre-schema-{from}"));
+    std::fs::write(&target, b"half a copy").unwrap();
+
+    let reopened = Store::open(StoreConfig::new(path.clone())).unwrap();
+
+    assert_eq!(
+        copy_version(&target),
+        Some(from),
+        "the file under the final name is a copy of the schema it is named for"
+    );
+    let restored = Connection::open(&target).unwrap();
+    let version: i32 = restored
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, from, "and it is readable, which is the way back");
+    drop(restored);
+
+    let leftovers: Vec<String> = std::fs::read_dir(temp.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".part"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a copy that finished leaves no working file behind: {leftovers:?}"
+    );
+
+    let migrated: i32 = reopened
+        .connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(migrated, SCHEMA_VERSION, "and the store moved forward");
+}
+
+#[test]
+fn a_copy_is_written_under_a_name_of_its_own() {
+    // The two things that make the rename what it is: the same directory, so it
+    // is a rename and not a copy across a filesystem boundary, and a name that
+    // is not the final one, so a killed process cannot leave a partial file
+    // under a name every later open trusts.
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("leteo.db");
+    let first = temporary_copy(&path, "leteo.db", 26);
+    let second = temporary_copy(&path, "leteo.db", 26);
+
+    assert_eq!(
+        first.parent(),
+        path.parent(),
+        "a rename is atomic only inside one filesystem"
+    );
+    assert_ne!(
+        first,
+        path.with_file_name("leteo.db.pre-schema-26"),
+        "the copy is not written under the name the next open looks for"
+    );
+    let name = first.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.starts_with(&format!(".leteo.db{BACKUP_INFIX}26.")) && name.ends_with(".part"),
+        "and it is named as a working file for this copy: {name}"
+    );
+    assert_ne!(
+        first, second,
+        "two copies taken at once do not share a working name, or one deletes the other's"
     );
 }
 

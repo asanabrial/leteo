@@ -113,7 +113,7 @@ while ($true) {
     Start-Sleep -Seconds 2
 
     try {
-        $seed = (@($originalRaw, $markers) | Where-Object { $_ }) -join ';'
+        $seed = ((@($originalRaw) + $markers) | Where-Object { $_ }) -join ';'
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
         Show-State 'seeded'
         Assert-Markers 'seeded'

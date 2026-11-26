@@ -104,11 +104,15 @@ pub(crate) const FALLBACK_RECALL_MARGIN: f64 = 1.2;
 /// margin still earns its keep, because every proposal is a `mem_judge` call
 /// and forty fewer of them is forty calls nobody makes.
 ///
-/// It halves the noise rather than ending it. Nine of nineteen memories from
-/// outside the project still get a proposal, because a title's words always
-/// match something in a project of seventeen hundred memories, and no margin
-/// on this query fixes that. What would is a different question from "which of
-/// these scored best".
+/// It halves the noise rather than ending it, because every one of those
+/// matches shared a word of the title and no margin can say *how much* of the
+/// title was shared. The subject-coverage rule beside `find_candidates` is what
+/// ends it: on the labelled set in `tools/memory-bench/conflict_corpus.py` the
+/// margin alone still proposed something on all twenty-eight unrelated saves,
+/// and with coverage none of them asks while all fourteen contradictions are
+/// still found. The margin keeps its measured number — all fourteen survived it
+/// — and coverage is what now decides which of the survivors is worth a
+/// question.
 const CANDIDATE_MARGIN: f64 = 1.25;
 
 /// How many candidates the per-prompt hint scores before it judges any of them.
@@ -1058,12 +1062,123 @@ fn validate_confidence(confidence: f64) -> Result<(), StoreError> {
     }
 }
 
-fn candidate_fts_query(title: &str) -> String {
+/// The words of a title that say what the memory is about.
+///
+/// The candidate query used to split the title on whitespace and OR every word
+/// of it, so a save asking "is this a contradiction?" was answered by whatever
+/// shared "the", "de", "a" or "12". On the labelled set in
+/// `tools/memory-bench/conflict_corpus.py` — fourteen real contradictions and
+/// twenty-eight unrelated saves, half of each in Spanish — the old query
+/// proposed a candidate for every one of the forty-two saves, 107 proposals of
+/// which 13% were the contradiction the pair was labelled with.
+///
+/// A function word is not the subject of a title, and neither is a bare number:
+/// "de" is in the Spanish and Portuguese lists of [`crate::stemming::STOP_WORDS`]
+/// and "per" in the Italian one, which is why the union of the table is used
+/// rather than a second list written here. One-character words are dropped by
+/// length, because `a`, `y` and `o` are function words in several languages and
+/// the table leaves them out rather than count them for one.
+fn title_terms(title: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
     title
-        .split_whitespace()
-        .map(|word| word.replace('"', ""))
-        .filter(|word| !word.is_empty())
-        .map(|word| format!("\"{word}\""))
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| word.chars().count() > 1)
+        .map(str::to_lowercase)
+        .filter(|word| !word.chars().all(|character| character.is_numeric()))
+        .filter(|word| !stop_words().contains(word.as_str()))
+        .filter(|word| seen.insert(word.clone()))
+        .collect()
+}
+
+fn stop_words() -> &'static std::collections::HashSet<&'static str> {
+    static WORDS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    WORDS.get_or_init(|| {
+        crate::stemming::STOP_WORDS
+            .iter()
+            .flat_map(|(_, words)| words.iter().copied())
+            .collect()
+    })
+}
+
+/// How many of a saved title's words a candidate's title has to repeat.
+///
+/// One shared word is what made the old query useless, so a title of any length
+/// needs two. Past that it is half the saved title, rounded up: a contradiction
+/// restates the subject and substitutes the claim, so a title of six subject
+/// words has to share three of them and a title of three has to share two.
+/// Measured against the labelled set, this is what separates the two halves —
+/// see `find_candidates` for the figures.
+fn required_title_terms(terms: usize) -> usize {
+    match terms {
+        0 | 1 => terms,
+        2 => 2,
+        other => other.div_ceil(2),
+    }
+}
+
+/// The words of a title that count as evidence of a shared subject.
+///
+/// A word of one or two characters stays in the search — it can only narrow
+/// what comes back — and does not count as evidence. Two letters are as often a
+/// preposition the language-detection table has no use for (`in`, `at`, `as`)
+/// as a subject somebody really wrote (`go`, `gc`, `s3`), and on the labelled
+/// set counting them made "Migrations are applied automatically at deploy" miss
+/// the memory that says they are applied by hand: the two titles share
+/// `migrations` and `applied`, and `in`, `at` and `by` were enough extra words
+/// to push the pair under the bar. A title with nothing longer than two letters
+/// falls back to them, because a short title still has a subject.
+fn subject_terms(terms: &[String]) -> Vec<&String> {
+    let long: Vec<&String> = terms
+        .iter()
+        .filter(|term| term.chars().count() > 2)
+        .collect();
+    if long.is_empty() {
+        terms.iter().collect()
+    } else {
+        long
+    }
+}
+
+/// Whether a candidate's title repeats enough of the saved one.
+fn title_covers(terms: &[String], candidate_title: &str) -> bool {
+    let subject = subject_terms(terms);
+    if subject.is_empty() {
+        return false;
+    }
+    let candidate = title_terms(candidate_title);
+    let shared = subject
+        .iter()
+        .filter(|term| candidate.contains(*term))
+        .count();
+    shared >= required_title_terms(subject.len())
+}
+
+/// A query that matches only a memory holding every one of the saved title's
+/// subject words in its title or its body.
+///
+/// The half rule above reads titles, and a title is not always where a memory
+/// says what it is about: an adopted memory titled "Fixed tokenizer" carries
+/// "Normalized tokenizer panic on edge case" as its body, which is a near
+/// duplicate of a memory saved under that whole sentence. Requiring every
+/// subject word somewhere in the text is the strict version of "this memory
+/// restates the same thing", and it keeps `mem_save` seeing the pair a save
+/// would otherwise stop proposing. Restricted to `title` and `content`, so a
+/// word shared with the project, the type or the topic key cannot open it.
+fn whole_subject_query(terms: &[String]) -> String {
+    let subject = subject_terms(terms);
+    let joined = subject
+        .iter()
+        .map(|term| format!("\"{term}\""))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    format!("{{title content}} : ({joined})")
+}
+
+fn candidate_fts_query(terms: &[String]) -> String {
+    terms
+        .iter()
+        .map(|term| format!("\"{term}\""))
         .collect::<Vec<_>>()
         .join(" OR ")
 }

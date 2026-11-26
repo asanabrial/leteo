@@ -127,7 +127,7 @@ impl Store {
         // driving the built binary over the protocol, `Session summary: leteo`
         // scored its best candidate at -8.3 and a ten-word title scored -93.3.
         // Both clear -2.0 without effort. Replaying the query over 400 real
-        // memories, 399 of them get the full three proposals.
+        // memories, 399 of them get the full three proposals past the floor.
         //
         // A gate that meant the same thing for both would have to be relative
         // to the query — the median margin `nearest_observations` uses. What is
@@ -170,7 +170,8 @@ impl Store {
             .map(normalize::scope)
             .map(str::to_owned)
             .unwrap_or(stored_scope);
-        let fts_query = candidate_fts_query(&title);
+        let terms = title_terms(&title);
+        let fts_query = candidate_fts_query(&terms);
         if fts_query.is_empty() {
             return Ok(Vec::new());
         }
@@ -242,7 +243,16 @@ impl Store {
             // were a summary, and 54 of the 399 saves that got any proposal at
             // all got one.
             let summary = crate::memory::model::SESSION_SUMMARY;
-            let mut statement = self.connection.prepare(&format!(
+            let whole_subject = whole_subject_query(&terms);
+            // One statement, asked two questions: which memories share any word
+            // of the title, ranked, and which hold every subject word of it
+            // somewhere in their text. The second is the whole-document
+            // fallback the filter below needs, and it is asked once here rather
+            // than as a correlated `MATCH` per returned row: over a store of six
+            // hundred memories, one save through this binary's protocol took
+            // 2.6ms before this change, 4.5ms with the correlated form, and
+            // 3.0ms with the second pass.
+            let candidate_sql = format!(
                 "SELECT o.id, ifnull(o.sync_id, ''), o.title, o.type, o.topic_key,
                         bm25(observations_fts, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0) AS score
                  FROM observations_fts fts
@@ -260,7 +270,22 @@ impl Store {
                        ))
                  ORDER BY score
                  LIMIT ?5"
-            ))?;
+            );
+            let mut whole = self.connection.prepare(&candidate_sql)?;
+            let whole_ids: std::collections::HashSet<i64> = whole
+                .query_map(
+                    params![
+                        whole_subject,
+                        saved_id,
+                        project,
+                        scope,
+                        RECALL_SAMPLE as i64,
+                        settled
+                    ],
+                    |row| row.get(0),
+                )?
+                .collect::<Result<_, _>>()?;
+            let mut statement = self.connection.prepare(&candidate_sql)?;
             let rows = statement.query_map(
                 params![
                     fts_query,
@@ -311,6 +336,31 @@ impl Store {
                 let median = ranks[ranks.len() / 2];
                 scored.retain(|candidate| candidate.score <= median * CANDIDATE_MARGIN);
             }
+            // A shared ordinary word is not a shared subject.
+            //
+            // The query above still ORs the words, because a phrase of them
+            // would miss the pair this exists for: a contradiction restates the
+            // subject and substitutes the claim, so "the retry budget is per
+            // host" and "the retry budget is per request" do not share every
+            // word and a conjunction would throw them apart. What the OR cannot
+            // say is *how much* of the title was shared, and that is what tells
+            // the two halves of the labelled set apart.
+            //
+            // Over its forty-two saves: the old query made 107 proposals, 14 of
+            // them the labelled contradiction (13%), and proposed something on
+            // all 28 unrelated saves. Dropping the function words alone: 85
+            // proposals, 16%, 25 of the 28. This rule: 14 proposals, all 14
+            // contradictions found, nothing on the unrelated half. Requiring
+            // all but one of the words instead of half loses two of the
+            // fourteen; a conjunction of every word loses eleven.
+            //
+            // A title worded differently is not out of reach: a candidate
+            // holding every subject word in its text is in `whole_ids`, which
+            // is what still proposes an adopted memory titled "Fixed tokenizer"
+            // for a save that restates its body. See `whole_subject_query`.
+            scored.retain(|candidate| {
+                whole_ids.contains(&candidate.id) || title_covers(&terms, &candidate.title)
+            });
             let mut candidates = Vec::new();
             for candidate in scored {
                 // At least as good as the floor. bm25 in SQLite is negative and

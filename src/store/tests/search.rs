@@ -752,9 +752,36 @@ fn a_question_in_a_language_the_store_does_not_hold_is_answered_with_nothing() {
     }
 
     // Every content word is absent; only `de`, `la`, `no` and `se` are shared,
-    // which is exactly what the widened pass would answer with.
+    // which is exactly what the widened pass would answer with. The fixture is
+    // checked against the index directly, because the product no longer asks
+    // this question: a disjunction still drops the function words before it
+    // reaches the index, and that is the other half of this test.
     let question = "por que no se guarda nada de la memoria pasiva";
-    let widened_would_match = store
+    let stop_word_matches: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM observations_fts
+              WHERE observations_fts MATCH '\"de\" OR \"la\" OR \"no\" OR \"se\"'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        stop_word_matches >= MIN_RECALL_SAMPLE as i64,
+        "the fixture has to give the widened pass something to wrongly return, or the floor is \
+         never exercised: {stop_word_matches} rows share only function words"
+    );
+
+    let answered = store.search(question, SearchOptions::default()).unwrap();
+    assert!(
+        answered.is_empty(),
+        "a question this store cannot answer has to come back empty: {:?}",
+        answered
+            .iter()
+            .map(|result| &result.observation.title)
+            .collect::<Vec<_>>()
+    );
+    let any = store
         .search(
             question,
             SearchOptions {
@@ -764,17 +791,9 @@ fn a_question_in_a_language_the_store_does_not_hold_is_answered_with_nothing() {
         )
         .unwrap();
     assert!(
-        widened_would_match.len() >= MIN_RECALL_SAMPLE,
-        "the fixture has to give the widened pass something to wrongly return, or the floor is \
-         never exercised: {widened_would_match:?}"
-    );
-
-    let answered = store.search(question, SearchOptions::default()).unwrap();
-    assert!(
-        answered.is_empty(),
-        "a question this store cannot answer has to come back empty: {:?}",
-        answered
-            .iter()
+        any.is_empty(),
+        "a disjunction of the function words is not an answer either: {:?}",
+        any.iter()
             .map(|result| &result.observation.title)
             .collect::<Vec<_>>()
     );
@@ -2031,4 +2050,109 @@ fn a_topic_key_lookup_does_not_hand_back_a_superseded_memory() {
         found.iter().all(|hit| hit.observation.id != keyed.id),
         "a superseded memory is hidden from the exact lookup too: {found:?}"
     );
+}
+
+/// A memory that shares only a function word is not a match.
+///
+/// The fixture is the shape the issue reported: one memory carrying `fuga` and
+/// `memoria`, and a rack of Spanish notes that share nothing with the question
+/// but `de`. Under `match_mode: any` the disjunction matched every one of them,
+/// and reciprocal rank fusion put them beside the answer because they matched
+/// the same words in all three indexes. A row that shares no content word is
+/// not a partial match, and it is not an answer either.
+#[test]
+fn a_memory_that_shares_only_a_function_word_is_not_a_match() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "Fuga de memoria en el servicio de imágenes",
+            "El servicio de imágenes perdía memoria porque cada petición creaba un búfer que nadie liberaba.",
+        ))
+        .unwrap();
+    for index in 0..8 {
+        store
+            .add_observation(observation(
+                "s1",
+                &format!("Revisada la política de reintentos del servicio de facturación {index}"),
+                "Se revisaron los tiempos de respuesta y los errores en los registros de despliegue.",
+            ))
+            .unwrap();
+    }
+
+    let exact = store
+        .search("fuga de memoria", SearchOptions::default())
+        .unwrap();
+    assert_eq!(
+        exact.len(),
+        1,
+        "only the memory with both content words: {:?}",
+        exact
+            .iter()
+            .map(|result| &result.observation.title)
+            .collect::<Vec<_>>()
+    );
+
+    let any = store
+        .search(
+            "fuga de memoria",
+            SearchOptions {
+                mode: SearchMode::Any,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        any.len(),
+        1,
+        "a disjunction over the content words must not return the notes that share only `de`: {:?}",
+        any.iter()
+            .map(|result| &result.observation.title)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(any[0].observation.title, exact[0].observation.title);
+}
+
+/// A question made of function words and words no memory carries has no answer.
+///
+/// `receta de paella valenciana` names a dish no memory is about, and the only
+/// word it shares with the store is `de`. The fallback used to return the
+/// memories with the strongest `de` as a partial answer; an agent believes what
+/// memory returns, so a list of unrelated notes under a caveat is still worse
+/// than nothing. `de la` and `the` are the same question with no absent word at
+/// all: a query with no subject is not a query.
+#[test]
+fn a_question_of_function_words_and_absent_words_is_answered_with_nothing() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for index in 0..12 {
+        let body: String = std::iter::repeat_n("de la reunión ", index + 1).collect();
+        store
+            .add_observation(observation(
+                "s1",
+                &format!("Nota {index} de la reunión de equipo"),
+                &format!("{body}Se habló del calendario y de los turnos de guardia."),
+            ))
+            .unwrap();
+    }
+    store
+        .add_observation(observation(
+            "s1",
+            "The report of the meeting",
+            "The minutes of the meeting were sent to the team.",
+        ))
+        .unwrap();
+
+    for query in ["receta de paella valenciana", "de la", "the"] {
+        let answered = store.search(query, SearchOptions::default()).unwrap();
+        assert!(
+            answered.is_empty(),
+            "{query:?} has no subject in this store and must not be answered: {:?}",
+            answered
+                .iter()
+                .map(|result| &result.observation.title)
+                .collect::<Vec<_>>()
+        );
+    }
 }

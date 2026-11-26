@@ -432,7 +432,18 @@ impl Store {
         }
         options.project = None;
         let any = options.mode == SearchMode::Any;
-        let matched = self.fused_observations(&normalize::fts_terms(query), any, &options, cap)?;
+        let content = normalize::content_terms(query);
+        if content.is_empty() {
+            return Ok(0);
+        }
+        // The same query the answered pass ran, or the count would promise
+        // matches the widened project's search cannot return.
+        let terms = if any {
+            content
+        } else {
+            normalize::fts_terms(query)
+        };
+        let matched = self.fused_observations(&terms, any, &options, cap)?;
         Ok(matched.len())
     }
 
@@ -538,8 +549,38 @@ impl Store {
         }
 
         let any = options.mode == SearchMode::Any;
-        let mut matched =
-            self.fused_observations(&normalize::fts_terms(query), any, &options, limit)?;
+        // Nothing left but function words. There is no subject to search for,
+        // and answering with the memories that happen to share `de` is the
+        // confident wrong answer this stage exists to avoid. A topic key above
+        // is an exact lookup and survives.
+        //
+        // Checked before either pass, because `de la` and `the` reach the
+        // conjunction with every word whole and would match the whole store.
+        let content = normalize::content_terms(query);
+        if content.is_empty() {
+            results.truncate(limit);
+            return Ok(SearchOutcome {
+                results,
+                corrections: Vec::new(),
+            });
+        }
+        // The disjunction asks with content words; the conjunction does not.
+        //
+        // `any` is the pass the issue names: with every word in it, a question
+        // and a rack of notes sharing only `de` are the same set of rows, and
+        // the memory that carries the subject loses on bm25. The default
+        // conjunction keeps the function words deliberately: dropping them
+        // there was measured on the ratchet and cost `paraphrase` 0.033 of MRR
+        // (0.884 to 0.851) and `ALL` 0.006 (0.931 to 0.925), because a
+        // conjunction that matches more rows lets bm25 reorder an answer the
+        // caller already had. The same measurement is what kept the strict
+        // pass's AND semantics out of this change.
+        let terms = if any {
+            content
+        } else {
+            normalize::fts_terms(query)
+        };
+        let mut matched = self.fused_observations(&terms, any, &options, limit)?;
         // And a word somebody half-remembers, before the question is loosened.
         //
         // The strict pass needs every word whole, so a fragment fails it
@@ -1121,23 +1162,50 @@ impl Store {
         options: &SearchOptions,
         limit: usize,
     ) -> Result<Vec<Candidate>, StoreError> {
-        let terms = normalize::fts_terms(query);
-        if terms.is_empty() {
+        let content = normalize::content_terms(query);
+        if content.is_empty() {
             return Ok(Vec::new());
         }
-        let mut candidates = self.stemmed_candidates(&terms, true, options, RECALL_SAMPLE)?;
+        // Ranked on every word, as the stage always did, and then cut down to
+        // the memories that share at least one word with a subject. The
+        // function words are what this stage's distribution is made of — they
+        // are why a question with one distinctive word still has an ordinary
+        // match to stand out from — so they stay for the ranking. They cannot
+        // answer on their own: a memory that matched only them is dropped
+        // before the floor is computed, which is what a row sharing only `de`
+        // was doing in the answer.
+        //
+        // Ranking on the content words alone was measured and is worse:
+        // `paraphrase` fell from 0.904 to 0.851 on the ratchet, because two
+        // questions the raw ranking answered first were reordered by a term set
+        // that no longer contained the words holding the distribution up.
+        let ranked = normalize::fts_terms(query);
+        let allowed: Vec<i64> = self
+            .stemmed_candidates(&content, true, options, RECALL_SAMPLE)?
+            .into_iter()
+            .map(|candidate| candidate.id)
+            .collect();
+        let mut candidates = self.stemmed_candidates(&ranked, true, options, RECALL_SAMPLE)?;
+        candidates.retain(|candidate| allowed.contains(&candidate.id));
         if excludes_summaries(options) {
             candidates.retain(|candidate| candidate.kind != crate::memory::model::SESSION_SUMMARY);
         }
-        // The median of two is not a distribution, and nothing here is worth
-        // saying without one.
-        if candidates.len() < MIN_RECALL_SAMPLE {
+        // Fewer than `MIN_RECALL_SAMPLE` is not a distribution to stand out
+        // from, and on the content words alone a question often matches one or
+        // two memories. They are kept: every one of them shares a word that
+        // carries a subject, which the stop words the stage used to also match
+        // on did not. Discarding them instead made `where do toggles for
+        // unreleased features get decided` silent, and cost `paraphrase` 0.027
+        // (0.904 to 0.877) on the ratchet.
+        if candidates.is_empty() {
             return Ok(Vec::new());
         }
-        let mut ranks: Vec<f64> = candidates.iter().map(|row| row.rank).collect();
-        ranks.sort_by(|left, right| left.total_cmp(right));
-        let median = ranks[ranks.len() / 2];
-        candidates.retain(|candidate| candidate.rank <= median * FALLBACK_RECALL_MARGIN);
+        if candidates.len() >= MIN_RECALL_SAMPLE {
+            let mut ranks: Vec<f64> = candidates.iter().map(|row| row.rank).collect();
+            ranks.sort_by(|left, right| left.total_cmp(right));
+            let median = ranks[ranks.len() / 2];
+            candidates.retain(|candidate| candidate.rank <= median * FALLBACK_RECALL_MARGIN);
+        }
         candidates.truncate(limit);
         Ok(candidates)
     }
@@ -1345,7 +1413,7 @@ impl Store {
         options: &SearchOptions,
         limit: usize,
     ) -> Result<Vec<Candidate>, StoreError> {
-        let terms = normalize::fts_terms(query);
+        let terms = normalize::content_terms(query);
         // One term dropped from one term is no query at all, and past a dozen
         // the omission is too small to relax anything while costing a query
         // each. Both ends fall back to what the caller already had: nothing.

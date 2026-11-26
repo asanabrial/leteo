@@ -230,6 +230,53 @@ pub const STOP_WORDS: [(Interface, &[&str]); 12] = [
     ),
 ];
 
+/// Function words that are noise in a query and are not detection vocabulary.
+///
+/// [`STOP_WORDS`] exists to recognise a language, and adding to it changes
+/// [`detect`] for every memory and every short title: `how` would count as
+/// English evidence, and a two-word Spanish note already falls back to English.
+/// So the words a *question* carries and a memory does not live here instead.
+///
+/// These are interrogatives, auxiliaries and possessives that a bag-of-words
+/// search matches against every memory that happens to use them. They are not a
+/// complete list of English or Spanish function words, for the reason the table
+/// above gives: both are the commonest ones, not a vocabulary.
+pub const QUERY_STOP_WORDS: &[&str] = &[
+    // English. The table already holds `what`, `which`, `when`, `that`, `this`,
+    // `there`, `is`, `are`, `was`, `were`, and the rest of its list; these are
+    // what a question adds on top of it.
+    "a", "an", "do", "does", "did", "how", "many", "much", "who", "whom", "whose", "where", "why",
+    "my", "your", "our", "their", "its", "me", "him", "her", "us", "them", "i",
+    // Spanish, with the accents a person types. The unaccented spellings are
+    // either in the table (`que`, `como`, `cuando`) or are not words a query
+    // uses; `cual`, `cuanto` and `quien` are here beside their accented forms
+    // because a caller may type either.
+    "qué", "cuál", "cual", "cuáles", "cuales", "cómo", "cuándo", "dónde", "donde", "quién", "quien",
+    "quiénes", "cuánto", "cuanto", "cuánta", "cuanta", "cuántos", "cuantos", "cuántas", "cuantas",
+    "mi", "mis", "tu", "tus", "nuestro", "nuestra", "vuestro", "vuestra",
+];
+
+/// Whether a query word carries no subject of its own.
+///
+/// The union of every language's [`STOP_WORDS`] and [`QUERY_STOP_WORDS`], not
+/// one language's list chosen by detection. A question is short: `fuga de
+/// memoria` has one recognised word and `detect` answers English, so a check
+/// gated on the detected language would keep `de` for the one query that is
+/// entirely Spanish. A store also holds more than one language — the setting is
+/// where new memories are written, not what the old ones are in — and the cost
+/// of the union is a word that is a function word somewhere being dropped from
+/// a query where it was content, which is rare and cheap against answering a
+/// question with a memory that matched `de`.
+///
+/// Case-folded, because the tokenizer folds case: `The` and `the` are one term.
+pub fn is_stop_word(word: &str) -> bool {
+    let folded = word.to_lowercase();
+    QUERY_STOP_WORDS.contains(&folded.as_str())
+        || STOP_WORDS
+            .iter()
+            .any(|(_, words)| words.contains(&folded.as_str()))
+}
+
 /// How many words a language must be recognised by before it is believed.
 ///
 /// Three and not one: a title and a line of body in English around a single
@@ -558,6 +605,44 @@ mod tests {
             let listed = STOP_WORDS.iter().any(|(listed, _)| *listed == language);
             let wanted = language == Interface::English || algorithm(language).is_some();
             assert_eq!(listed, wanted, "{}", language.code());
+        }
+    }
+
+    /// A query word is dropped only when it carries no subject, in either
+    /// language a question may be written in.
+    ///
+    /// The union is the point: `fuga de memoria` is too short for `detect` to
+    /// call it Spanish, so a rule that asked the detected language would keep
+    /// the one word the question does not mean.
+    #[test]
+    fn a_function_word_is_recognised_without_detecting_the_language() {
+        for word in ["the", "de", "How", "MANY", "which", "cuál", "cómo", "dónde"] {
+            assert!(is_stop_word(word), "{word} should be a stop word");
+        }
+        for word in [
+            "memoria", "fuga", "límite", "subida", "requests", "minute", "email", "provider",
+            "webhook",
+        ] {
+            assert!(!is_stop_word(word), "{word} carries a subject");
+        }
+    }
+
+    /// The query list adds nothing to what recognises a language.
+    ///
+    /// Adding a word to `STOP_WORDS` changes what language every memory is read
+    /// as, so the question words live in their own list. A word that is already
+    /// detection vocabulary — `do` is Portuguese in the table — may be named
+    /// here too, because `detect` never reads this list; what must hold is that
+    /// a word added here alone cannot become language evidence.
+    #[test]
+    fn the_query_list_adds_no_evidence_to_language_detection() {
+        for word in QUERY_STOP_WORDS {
+            let already_detection = STOP_WORDS.iter().any(|(_, words)| words.contains(word));
+            assert_eq!(
+                recognised_words().contains_key(word),
+                already_detection,
+                "{word} must not be recognised by this list alone"
+            );
         }
     }
 

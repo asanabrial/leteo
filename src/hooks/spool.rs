@@ -20,6 +20,7 @@
 //! replay it.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -107,7 +108,7 @@ pub struct Pending {
 }
 
 /// What one drain did.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct DrainReport {
     /// Entries this drain took by renaming. An entry it renamed back because
     /// the store was busy is counted here and may be claimed again by another
@@ -123,8 +124,26 @@ pub struct DrainReport {
     pub stored: usize,
     /// Entries removed because replay failed for a reason a retry cannot mend.
     pub dropped: usize,
+    /// Why those were dropped, and how many went each way, keyed by the reason.
+    ///
+    /// `doctor --repair` is the command somebody runs when a capture has gone
+    /// missing, and a count without a reason tells them only that it did. The
+    /// map is kept in step with `dropped` by [`DrainReport::drop_entry`], so the
+    /// two cannot disagree about how many entries were lost.
+    pub dropped_reasons: BTreeMap<String, usize>,
     /// Entries left behind, for the next drain.
     pub remaining: usize,
+}
+
+impl DrainReport {
+    /// Removes one entry from the spool's accounting and says why it went.
+    ///
+    /// The only place `dropped` moves, so a report can never count three entries
+    /// and name reasons for two of them.
+    fn drop_entry(&mut self, reason: impl Into<String>) {
+        self.dropped += 1;
+        *self.dropped_reasons.entry(reason.into()).or_default() += 1;
+    }
 }
 
 /// What the busy-open path had to leave unresolved because it had no store.
@@ -243,7 +262,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
                 // for; it is litter, and keeping it would make `doctor` report
                 // a spool that can never drain.
                 let _ = fs::remove_file(&claimed);
-                report.dropped += 1;
+                report.drop_entry("the entry could not be read as a capture");
                 continue;
             }
         };
@@ -273,9 +292,9 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
                 report.returned += 1;
                 break;
             }
-            Err(_) => {
+            Err(error) => {
                 let _ = fs::remove_file(&claimed);
-                report.dropped += 1;
+                report.drop_entry(format!("the session could not be opened: {error}"));
                 continue;
             }
         }
@@ -298,9 +317,9 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
                 report.returned += 1;
                 break;
             }
-            Err(_) => {
+            Err(failure) => {
                 let _ = fs::remove_file(&claimed);
-                report.dropped += 1;
+                report.drop_entry(format!("the capture was refused: {}", failure.error));
             }
         }
     }

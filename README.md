@@ -452,10 +452,12 @@ leteo setup opencode --dry-run
 why; `--repair` carries out the repairs that are safe to make on their own —
 restoring missing full-text triggers, rebuilding the indexes, recomputing
 stale hashes, folding the memory types an older adoption left unfolded, and
-replaying any captures a busy hook kept beside the store. Run inside a
-repository, `doctor --citations` also lists the memories of that project that
-cite a commit or a backticked path which no longer resolves; it runs `git`, so
-it is opt-in, and it only reports.
+replaying any captures a busy hook kept beside the store. Beside
+`--check <code>`, `--repair` carries out only the repairs that check names, and
+it reports what it stored or dropped and why it could not make a vector. Run
+inside a repository, `doctor --citations` also lists the memories of that
+project that cite a commit or a backticked path which no longer resolves; it
+runs `git`, so it is opt-in, and it only reports.
 `export` and `import` move a store between machines, and `obsidian-export`
 writes it into a vault as Markdown:
 

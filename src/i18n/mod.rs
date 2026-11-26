@@ -265,6 +265,9 @@ pub struct Screens {
     pub count_sessions: &'static str,
     /// `{count}`.
     pub count_prompts: &'static str,
+    /// How many of the memories above an earlier soft delete had already
+    /// tombstoned, which a hard delete erases as well. `{count}`.
+    pub count_already_deleted: &'static str,
     /// `{count}`.
     pub copied_to_clipboard: &'static str,
     pub data_refreshed: &'static str,
@@ -542,6 +545,7 @@ mod tests {
             count_memories,
             count_sessions,
             count_prompts,
+            count_already_deleted,
             copied_to_clipboard,
             data_refreshed,
             deleted_memory,
@@ -720,6 +724,7 @@ mod tests {
             ("count_memories", count_memories),
             ("count_sessions", count_sessions),
             ("count_prompts", count_prompts),
+            ("count_already_deleted", count_already_deleted),
             ("copied_to_clipboard", copied_to_clipboard),
             ("data_refreshed", data_refreshed),
             ("deleted_memory", deleted_memory),

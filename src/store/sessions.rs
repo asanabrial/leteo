@@ -538,24 +538,43 @@ impl Store {
         Ok(())
     }
 
-    /// How much a session holds: observations, then prompts.
+    /// What deleting this session would remove, counted the way the delete
+    /// walks it.
     ///
     /// For asking before deleting it. The count carried on a session row is of
     /// whatever the list was narrowed to — under a search it is the number of
     /// matches — and a confirmation that quoted that would understate what it
     /// was about to destroy.
-    pub fn session_counts(&self, id: &str) -> Result<(i64, i64), StoreError> {
-        let observations = self.connection.query_row(
-            "SELECT COUNT(*) FROM observations WHERE session_id = ?1 AND deleted_at IS NULL",
-            params![id],
-            |row| row.get(0),
-        )?;
+    ///
+    /// `hard` decides the second half. A soft delete leaves a tombstone and
+    /// touches only what is live; a hard delete erases the tombstones too, and
+    /// those are the rows somebody could still have recovered. The confirmation
+    /// used to quote the live count for both, so the rows it omitted were
+    /// exactly the recoverable ones.
+    pub fn session_delete_counts(
+        &self,
+        id: &str,
+        hard: bool,
+    ) -> Result<super::DeleteCounts, StoreError> {
+        let memories = |tombstoned: bool| -> Result<i64, StoreError> {
+            Ok(self.connection.query_row(
+                "SELECT COUNT(*) FROM observations
+                 WHERE session_id = ?1 AND (deleted_at IS NULL) = ?2",
+                params![id, !tombstoned],
+                |row| row.get(0),
+            )?)
+        };
         let prompts = self.connection.query_row(
             "SELECT COUNT(*) FROM prompts WHERE session_id = ?1",
             params![id],
             |row| row.get(0),
         )?;
-        Ok((observations, prompts))
+        Ok(super::DeleteCounts {
+            live: memories(false)?,
+            erased: if hard { memories(true)? } else { 0 },
+            sessions: 1,
+            prompts,
+        })
     }
 
     /// Removes a session and everything it recorded.

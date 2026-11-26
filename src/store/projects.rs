@@ -724,6 +724,52 @@ impl Store {
         Ok(result)
     }
 
+    /// What deleting this project would remove, counted the way the delete
+    /// walks it.
+    ///
+    /// The companion of [`Store::session_delete_counts`], and the same rule:
+    /// the number on a confirmation is the number that goes. `list_projects_with_stats`
+    /// answers the dashboard's question, which is about live memories, and a
+    /// hard delete also erases the ones earlier soft deletes left behind.
+    pub fn project_delete_counts(
+        &self,
+        name: &str,
+        hard: bool,
+    ) -> Result<super::DeleteCounts, StoreError> {
+        let project = normalize::project(name);
+        let memories = |tombstoned: bool| -> Result<i64, StoreError> {
+            Ok(self.connection.query_row(
+                "SELECT COUNT(*) FROM observations
+                 WHERE ifnull(project, '') = ?1 AND (deleted_at IS NULL) = ?2",
+                params![project, !tombstoned],
+                |row| row.get(0),
+            )?)
+        };
+        let sessions: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE LOWER(TRIM(project)) = ?1",
+            params![project],
+            |row| row.get(0),
+        )?;
+        let prompts: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM prompts WHERE ifnull(project, '') = ?1",
+            params![project],
+            |row| row.get(0),
+        )?;
+        let live = memories(false)?;
+        let erased = memories(true)?;
+        // The same refusal a delete makes, so a confirmation cannot appear for
+        // a project that is not there.
+        if live + erased == 0 && sessions == 0 && prompts == 0 {
+            return Err(StoreError::ProjectNotFound(project));
+        }
+        Ok(super::DeleteCounts {
+            live,
+            erased: if hard { erased } else { 0 },
+            sessions,
+            prompts,
+        })
+    }
+
     pub fn merge_project(
         &mut self,
         source: &str,

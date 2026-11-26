@@ -361,6 +361,29 @@ const DEFERRED_REPLAY_BATCH: i64 = 50;
 /// Attempts after which a deferred relation mutation is retired as dead.
 const DEFERRED_DEAD_THRESHOLD: i64 = 5;
 
+/// What a delete would remove, live rows and tombstones apart.
+///
+/// One shape for a session and for a project, because the rule is the same for
+/// both and the terminal's confirmation is where it broke: the number on a
+/// confirmation is the number that goes. A soft delete leaves a tombstone and
+/// only touches what is live, so `erased` is zero; a hard delete erases the
+/// tombstones as well, and those rows are the ones somebody could still have
+/// recovered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeleteCounts {
+    pub live: i64,
+    pub erased: i64,
+    pub sessions: i64,
+    pub prompts: i64,
+}
+
+impl DeleteCounts {
+    /// Everything a hard delete removes.
+    pub fn total_memories(&self) -> i64 {
+        self.live + self.erased
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
     pub database_path: PathBuf,

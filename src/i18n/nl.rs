@@ -163,6 +163,7 @@ pub const SCREENS: Screens = Screens {
     count_memories: "{count} herinnering(en)",
     count_sessions: "{count} sessie(s)",
     count_prompts: "{count} prompt(s)",
+    count_already_deleted: "{count} al verwijderd",
     copied_to_clipboard: "{count} tekens naar het klembord gekopieerd",
     data_refreshed: "Gegevens herladen",
     deleted_memory: "Herinnering #{id} {gone}",

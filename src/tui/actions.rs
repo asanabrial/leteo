@@ -6,6 +6,30 @@ pub(super) fn gone(language: crate::settings::Interface, hard: bool) -> &'static
     if hard { say.gone_permanently } else { say.gone }
 }
 
+/// The lines a confirmation shows for what is about to go.
+///
+/// The memory line is the total a hard delete removes; when part of it is rows
+/// an earlier soft delete left behind, they are named on their own line,
+/// because those are the ones somebody could still have recovered and the
+/// confirmation that counted only live rows was the bug this exists to fix.
+fn counted(
+    say: &crate::i18n::Screens,
+    counts: crate::store::DeleteCounts,
+    sessions: bool,
+) -> Vec<String> {
+    let mut lines = vec![fill(say.count_memories, "count", counts.total_memories())];
+    if counts.erased > 0 {
+        lines.push(fill(say.count_already_deleted, "count", counts.erased));
+    }
+    // A session's own confirmation never named a session count — it is the one
+    // being deleted — and a project's always did, including a zero.
+    if sessions {
+        lines.push(fill(say.count_sessions, "count", counts.sessions));
+    }
+    lines.push(fill(say.count_prompts, "count", counts.prompts));
+    lines
+}
+
 /// What a delete would destroy, counted from the store.
 ///
 /// Counted rather than estimated. A session row carries the number of
@@ -45,30 +69,19 @@ pub(super) fn confirmation(
             )
         }
         Target::Session(id) => {
-            let (observations, prompts) = store.session_counts(id)?;
-            prompts_go_for_good = prompts > 0;
+            let counts = store.session_delete_counts(id, hard)?;
+            prompts_go_for_good = counts.prompts > 0;
             (
                 fill(say.delete_session, "id", truncate(id, 40)),
-                vec![
-                    fill(say.count_memories, "count", observations),
-                    fill(say.count_prompts, "count", prompts),
-                ],
+                counted(say, counts, false),
             )
         }
         Target::Project(name) => {
-            let stats = store
-                .list_projects_with_stats()?
-                .into_iter()
-                .find(|project| project.name.eq_ignore_ascii_case(name))
-                .ok_or_else(|| StoreError::ProjectNotFound(name.clone()))?;
-            prompts_go_for_good = stats.prompt_count > 0;
+            let counts = store.project_delete_counts(name, hard)?;
+            prompts_go_for_good = counts.prompts > 0;
             (
                 fill(say.delete_project, "name", truncate(name, 40)),
-                vec![
-                    fill(say.count_memories, "count", stats.observation_count),
-                    fill(say.count_sessions, "count", stats.session_count),
-                    fill(say.count_prompts, "count", stats.prompt_count),
-                ],
+                counted(say, counts, true),
             )
         }
     };

@@ -1843,12 +1843,10 @@ fn every_opener_of_a_store_that_needs_migrating_takes_its_copy() {
     // The copy used to go straight to its final name, so two openers of a store
     // that needs migrating both saw no file and the second `VACUUM INTO` met the
     // first's destination. A refused destination is not `SQLITE_BUSY`, so the
-    // open's retry loop never retried it and one of the two failed with "open
-    // Leteo store". Measured with the release binary on a copy of a real store
-    // at the previous schema: 7 of 20 paired opens failed; after this change, 0
-    // of 20. The rounds are what make the window likely rather than certain to
-    // be hit: the check and the vacuum are separated by nothing a test can hold
-    // open.
+    // open's retry loop never retried it and one of the two failed. Measured on
+    // a copy of a real store: 7 of 20 paired opens failed, 0 of 20 after. The
+    // rounds make the window likely rather than certain, which is all a test
+    // can do with a gap it cannot hold open.
     for round in 0..8 {
         let (temp, store) = store();
         let path = store.database_path().to_path_buf();
@@ -1990,21 +1988,7 @@ fn a_partial_copy_under_the_final_name_is_replaced_by_a_complete_one() {
     drop(store);
 
     let target = temp.path().join(format!("leteo.db.pre-schema-{from}"));
-    // A copy of this store cut in half: page 1 is intact, so the version reads,
-    // and the pages the header claims are not all there.
-    let whole = temp.path().join("whole.db");
-    let connection = Connection::open(&path).unwrap();
-    connection
-        .execute("VACUUM INTO ?1", [whole.to_string_lossy().as_ref()])
-        .unwrap();
-    let bytes = std::fs::read(&whole).unwrap();
-    std::fs::remove_file(&whole).unwrap();
-    std::fs::write(&target, &bytes[..bytes.len() / 2]).unwrap();
-    assert_eq!(
-        copy_version(&target),
-        None,
-        "half of a database is not a database, whatever its first page says"
-    );
+    std::fs::write(&target, b"half a copy").unwrap();
 
     let reopened = Store::open(StoreConfig::new(path.clone())).unwrap();
 

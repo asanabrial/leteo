@@ -3563,13 +3563,7 @@ fn doctor_repair_continues_past_a_row_whose_title_is_not_text() {
         .expect("write a title that is not text");
     drop(connection);
 
-    let report = run_json_unhealthy(
-        leteo(&database)
-            .arg("doctor")
-            .arg("--repair")
-            .arg("--check")
-            .arg("memory_language"),
-    );
+    let report = run_json_unhealthy(leteo(&database).arg("doctor").arg("--repair"));
     let language = report["checks"]
         .as_array()
         .expect("a report holds its checks")
@@ -3590,12 +3584,19 @@ fn doctor_repair_continues_past_a_row_whose_title_is_not_text() {
     let failures = report["repair_failed"]
         .as_array()
         .expect("the repairs that could not run are named");
+    let named = |needle: &str| {
+        failures
+            .iter()
+            .any(|line| line.as_str().unwrap_or_default().contains(needle))
+    };
+    assert!(named("memory language"), "the re-stem is one: {failures:?}");
     assert!(
-        failures.iter().any(|line| line
-            .as_str()
-            .unwrap_or_default()
-            .contains("memory language")),
-        "the language re-stem is one of them: {failures:?}"
+        named("full-text indexes"),
+        "and so is the rebuild that reads the same row: {failures:?}"
+    );
+    assert!(
+        report.get("removed_orphan_versions").is_some(),
+        "and the repairs after them still ran: {report}"
     );
     assert_eq!(
         report["healthy"], false,

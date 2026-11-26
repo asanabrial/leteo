@@ -2464,12 +2464,23 @@ fn a_row_whose_title_is_not_text_says_the_language_check_could_not_run() {
         detail.contains("could not be checked"),
         "and it has to say that rather than a verdict: {detail}"
     );
+    for code in [
+        "full_text_triggers",
+        "sqlite_integrity",
+        "observation_hash_sync",
+    ] {
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| check.code == code && check.ok),
+            "{code} still answers after the one that could not run: {:?}",
+            report.checks
+        );
+    }
     assert!(
-        report
-            .checks
-            .iter()
-            .any(|check| check.code == "full_text_triggers" && check.ok),
-        "every other check still answers: {:?}",
+        report.checks.len() > 10,
+        "and the report still holds its roll: {:?}",
         report.checks
     );
 }

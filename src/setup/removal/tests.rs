@@ -211,10 +211,12 @@ fn a_package_managed_binary_is_left_and_its_removal_named() {
             .unwrap_or_else(|| panic!("{manager}'s ownership has to be reported"));
         assert_eq!(owner.manager, manager);
         assert_eq!(owner.command, command);
-        assert_eq!(
-            serde_json::to_value(&removed).unwrap()["binary_managed_by"]["command"],
-            command,
-            "and the report a person or script reads carries it"
+        // `print_json` writes exactly this pretty string, so this is the output
+        // a person or a script is given.
+        let report = serde_json::to_string_pretty(&removed).unwrap();
+        assert!(
+            report.contains(&format!("\"command\": \"{command}\"")),
+            "the report has to say how it goes: {report}"
         );
 
         // A dry run names the owner too: it is the run that is supposed to say

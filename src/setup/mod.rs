@@ -18,6 +18,9 @@ pub mod wizard;
 use render::*;
 
 pub const SERVER_NAME: &str = "leteo";
+/// The package npm publishes, named wherever a sentence tells somebody to use
+/// or remove it.
+pub const NPM_PACKAGE: &str = "@asanabrial/leteo";
 pub const MEMORY_PROTOCOL_BEGIN: &str =
     "<!-- BEGIN LETEO MEMORY PROTOCOL - managed by leteo setup -->";
 pub const MEMORY_PROTOCOL_END: &str = "<!-- END LETEO MEMORY PROTOCOL -->";
@@ -802,16 +805,17 @@ fn versioned_package_root(
         })
 }
 
-/// The package whose own `node_modules` directory holds this executable.
+/// The package a `node_modules` path holds, when its name can be read.
 ///
-/// `node_modules` is the marker because it covers both routes npm has — the
-/// `_npx` cache and a global install — and appears in neither of the places a
-/// person installs a binary. A scoped name is two components; an unscoped one
-/// is a single component.
-fn node_modules_package(executable: &Path) -> Option<String> {
-    let components: Vec<_> = executable.components().collect();
-    let index = node_modules_marker(&components)?;
+/// A scoped name is two components, an unscoped one a single component. A dot
+/// entry is layout rather than a package — `.bin` holds the links a package
+/// declares, and naming it in `npm uninstall -g` would print a command that
+/// removes nothing — so it answers `None` like an unreadable name does.
+fn node_modules_package(components: &[std::path::Component<'_>], index: usize) -> Option<String> {
     let first = components.get(index + 1)?.as_os_str().to_str()?;
+    if first.starts_with('.') {
+        return None;
+    }
     if first.starts_with('@') {
         let second = components.get(index + 2)?.as_os_str().to_str()?;
         Some(format!("{first}/{second}"))
@@ -822,9 +826,8 @@ fn node_modules_package(executable: &Path) -> Option<String> {
 
 /// Where npm's own directory starts, in the components of a path.
 ///
-/// The marker alone is the question `setup` refuses on: a package name it
-/// cannot read is still a path npm owns and will delete, and the old check was
-/// on the component, not on what followed it.
+/// The marker alone is the question: a name that cannot be read, or that is a
+/// dot entry rather than a package, is still a path npm owns and will delete.
 fn node_modules_marker(components: &[std::path::Component<'_>]) -> Option<usize> {
     components
         .iter()
@@ -852,12 +855,17 @@ pub struct PackageOwner {
 /// `None` is the ordinary case — a binary somebody downloaded or built — and is
 /// the only case where deleting the file is the right thing to do.
 pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
-    if let Some(package) = node_modules_package(executable) {
-        let cached = executable
-            .components()
+    let components: Vec<_> = executable.components().collect();
+    if let Some(index) = node_modules_marker(&components) {
+        let cached = components
+            .iter()
             .any(|component| component.as_os_str() == "_npx");
         // The `_npx` entry has no installed package to uninstall, only a cache
-        // directory the next eviction takes; a global install does.
+        // directory the next eviction takes; a global install does. A name that
+        // cannot be read falls back to the package Leteo publishes, because the
+        // alternative is a command carrying a path component.
+        let package =
+            node_modules_package(&components, index).unwrap_or_else(|| NPM_PACKAGE.to_owned());
         return Some(PackageOwner {
             manager: "npm",
             command: if cached {
@@ -868,7 +876,6 @@ pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
         });
     }
 
-    let components: Vec<_> = executable.components().collect();
     let (root, _) = versioned_package_root(&components)?;
     // The tool's directory, not the file's name: mise on Windows calls the file
     // `leteo.exe`, and a package may ship a differently named binary inside the
@@ -931,9 +938,10 @@ fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
             "this Leteo is the one npm is holding, at {}, and that path is deleted by \
              `npm cache clean` or by the next version — the hooks written against it would \
              then fail silently. Point your client at the wrapper instead, which stays \
-             put:\n\n  \"command\": \"npx\", \"args\": [\"-y\", \"@asanabrial/leteo\", \"mcp\"]\n\n\
+             put:\n\n  \"command\": \"npx\", \"args\": [\"-y\", \"{}\", \"mcp\"]\n\n\
              Or install Leteo itself and run this again: https://github.com/asanabrial/leteo#install",
-            executable.display()
+            executable.display(),
+            NPM_PACKAGE
         );
     }
     Ok(())

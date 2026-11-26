@@ -1006,6 +1006,13 @@ fn a_package_manager_owns_the_binary_it_installed() {
             "Homebrew",
             "brew uninstall leteo",
         ),
+        // `.bin` is where a package leaves its links, not a package: naming it
+        // would print a command that removes nothing.
+        (
+            temp.path().join("node_modules/.bin/leteo"),
+            "npm",
+            "npm uninstall -g @asanabrial/leteo",
+        ),
     ];
 
     for (executable, manager, command) in cases {
@@ -1019,6 +1026,26 @@ fn a_package_manager_owns_the_binary_it_installed() {
         package_owner(&temp.path().join("bin/leteo")).is_none(),
         "an ordinary install has no manager to name"
     );
+}
+
+/// A package name npm cannot be read is still npm's, and still must not be
+/// deleted; the command falls back to the package Leteo publishes.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_npm_package_name_still_belongs_to_npm() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp = TempDir::new().unwrap();
+    let executable = temp
+        .path()
+        .join("node_modules")
+        .join(OsStr::from_bytes(b"\xff\xfe"))
+        .join("leteo");
+
+    let owner = package_owner(&executable).expect("npm still owns the path");
+    assert_eq!(owner.manager, "npm");
+    assert_eq!(owner.command, "npm uninstall -g @asanabrial/leteo");
 }
 
 #[test]

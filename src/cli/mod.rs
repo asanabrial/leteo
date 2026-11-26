@@ -472,7 +472,11 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         return Ok(());
     }
+    let opening = std::time::Instant::now();
     let mut store = store.context("open Leteo store")?;
+    // Where the hook's own time went, from the first thing it does. Only
+    // `--verbose` reads it.
+    let open = crate::hooks::PhaseTime::since("open", opening);
     match cli.command {
         Command::SessionStart {
             id,
@@ -1121,6 +1125,16 @@ pub async fn run(cli: Cli) -> Result<()> {
                         eprintln!("leteo hook {}: {warning}", outcome.event);
                     }
                     if verbose {
+                        // Standard error, because standard output is what the
+                        // agent reads and a timing is not something to put in
+                        // its context.
+                        outcome.timings.insert(0, open);
+                        for timing in &outcome.timings {
+                            eprintln!(
+                                "leteo hook {}: {} took {} ms",
+                                outcome.event, timing.phase, timing.millis
+                            );
+                        }
                         print_json(&outcome)?;
                     } else {
                         print_json(&outcome.response())?;

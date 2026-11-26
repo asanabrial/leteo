@@ -325,6 +325,34 @@ impl HookInput {
     }
 }
 
+/// One phase of a hook run, as the milliseconds it took.
+///
+/// Recorded on every run and printed by `leteo hook <event> --verbose` on
+/// standard error, never on the standard output the agent reads. A hook that is
+/// slow or killed at its budget leaves nothing else that says which part was
+/// slow, and the store it is slow on is the user's own — so the numbers have to
+/// come from the run that is happening.
+///
+/// `write` covers the whole event handler, and `recall` is the part of it spent
+/// assembling the opening block: they overlap on purpose, because "the store is
+/// slow to read from" and "the event is slow" are different diagnoses and
+/// subtracting one from the other is arithmetic nobody should have to do while
+/// reading a log line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PhaseTime {
+    pub phase: &'static str,
+    pub millis: u64,
+}
+
+impl PhaseTime {
+    pub(crate) fn since(phase: &'static str, started: std::time::Instant) -> Self {
+        Self {
+            phase,
+            millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct HookOutcome {
     pub event: &'static str,
@@ -337,6 +365,9 @@ pub struct HookOutcome {
     pub session_created: bool,
     pub prompt_saved: bool,
     pub observations_captured: usize,
+    /// How long each phase took. See [`PhaseTime`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timings: Vec<PhaseTime>,
     /// Why nothing was captured, when nothing was.
     ///
     /// Zero saved has two reasons and the agent-facing silence is right about
@@ -508,17 +539,22 @@ fn capture_of(input: &HookInput, session_id: &str, project: &str) -> PassiveCapt
 /// Hooks sit on the agent's critical path, so recoverable problems are
 /// collected as warnings instead of aborting the run.
 pub fn run(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<HookOutcome> {
-    let outcome = run_event(store, event, input)?;
+    let write = std::time::Instant::now();
+    let mut outcome = run_event(store, event, input)?;
+    outcome.timings.push(PhaseTime::since("write", write));
     if event.replays_spool() {
         // Bounded by what is left of this hook's own budget, so the drain
         // cannot outlast the agent that is waiting for the answer.
         let deadline = store.wait_deadline();
+        let drain = std::time::Instant::now();
         spool::drain(store, deadline);
+        outcome.timings.push(PhaseTime::since("spool", drain));
     }
     Ok(outcome)
 }
 
 fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<HookOutcome> {
+    let detected = std::time::Instant::now();
     let directory = resolve_directory(&input.cwd);
     let detection = detect_project(&directory);
     let mut project = resolve_project(input, &detection);
@@ -584,6 +620,9 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     // cannot answer half its questions from one setting and half from another
     // if somebody saves the file mid-event.
     let settings = crate::settings::load_beside(store.database_path());
+    // Everything above is detection: the directory, what it resolves to, and
+    // which session owns it.
+    outcome.timings.push(PhaseTime::since("detect", detected));
     let voice = settings.voice;
     // Which language to say it in. Only the lines a person reads are
     // translated: `additional_context` below is protocol handed to a model, and
@@ -637,8 +676,10 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // reflects the settings file as it is now rather than as it was
             // when somebody installed.
             context.push_str(&settings.language_directive());
-            if let Some((memory, listed)) = memory_context(store, &project, &settings, &mut outcome)
-            {
+            let recall = std::time::Instant::now();
+            let recalled = memory_context(store, &project, &settings, &mut outcome);
+            outcome.timings.push(PhaseTime::since("recall", recall));
+            if let Some((memory, listed)) = recalled {
                 context.push_str("\n\n");
                 context.push_str(&memory);
                 // What the block lists is in the agent's hands from the first
@@ -725,7 +766,10 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // English, and nothing says why.
             context.push_str(&settings.language_directive());
             context.push_str("\n\n");
-            match memory_context(store, &project, &settings, &mut outcome) {
+            let recall = std::time::Instant::now();
+            let recalled = memory_context(store, &project, &settings, &mut outcome);
+            outcome.timings.push(PhaseTime::since("recall", recall));
+            match recalled {
                 Some((memory, listed)) => {
                     context.push_str(&memory);
                     if !input.transient_hints {

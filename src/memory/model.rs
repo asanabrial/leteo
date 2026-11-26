@@ -976,6 +976,27 @@ pub struct SyncState {
     pub updated_at: String,
 }
 
+/// One replicated project's own queue, as `leteo cloud status` reports it.
+///
+/// The target's [`SyncState`] answers whether this peer is talking to the
+/// cloud. This answers which project is not moving, and why: a refusal names
+/// one project, and folding it into the target's state reported a peer that had
+/// stopped when one project had, leaving every other project's queue behind it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectSyncStatus {
+    pub project: String,
+    /// `refused`, `pending` or `current`; see `store::PROJECT_SYNC_*`.
+    pub lifecycle: String,
+    pub pending_mutations: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_message: Option<String>,
+    /// When a refused project will be offered to the cloud again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused_until: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncExportResult {
     #[serde(skip_serializing_if = "Option::is_none")]

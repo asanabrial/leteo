@@ -1423,11 +1423,21 @@ fn backfill_relations_tx(tx: &Transaction<'_>, project: &str) -> Result<(), Stor
 ///
 /// A canonical name nobody replicates has nowhere to send them, and the unsent
 /// mutations go as they always did.
+///
+/// The retired name's own queue state goes with its queue. A `cloud:<name>` row
+/// describes a project this peer replicates, and after the merge nothing under
+/// that name can ever be sent again — so a `refused` verdict left on it would be
+/// reported on every status and every TUI load, with no batch that could ever
+/// clear it.
 pub(super) fn carry_unsent_mutations_tx(
     tx: &Transaction<'_>,
     source: &str,
     canonical: &str,
 ) -> Result<(), StoreError> {
+    tx.execute(
+        "DELETE FROM sync_state WHERE target_key = ?1",
+        [project_sync_target("cloud", source)],
+    )?;
     if !is_enrolled_tx(tx, canonical)? {
         tx.execute(
             "DELETE FROM sync_mutations WHERE project = ?1 AND acked_at IS NULL",
@@ -1505,18 +1515,20 @@ pub(super) fn carry_unsent_mutations_tx(
         params![source, canonical],
     )?;
     if moved > 0 {
-        let project_target = format!("cloud:{canonical}");
-        for target in ["cloud", project_target.as_str()] {
-            tx.execute(ENSURE_SYNC_TARGET, [target])?;
-            tx.execute(
-                "UPDATE sync_state
-                    SET lifecycle = 'pending', updated_at = datetime('now'),
-                        last_enqueued_seq = MAX(last_enqueued_seq,
-                            (SELECT MAX(seq) FROM sync_mutations WHERE project = ?2))
-                  WHERE target_key = ?1",
-                params![target, canonical],
-            )?;
-        }
+        let sequence: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM sync_mutations WHERE project = ?1",
+            [canonical],
+            |row| row.get(0),
+        )?;
+        tx.execute(ENSURE_SYNC_TARGET, ["cloud"])?;
+        tx.execute(
+            "UPDATE sync_state
+                SET lifecycle = 'pending', updated_at = datetime('now'),
+                    last_enqueued_seq = MAX(last_enqueued_seq, ?2)
+              WHERE target_key = ?1",
+            params!["cloud", sequence],
+        )?;
+        mark_project_pending_tx(tx, canonical, sequence)?;
     }
     for (_, entity, entity_key, payload) in deletes {
         let mut payload: serde_json::Value = serde_json::from_str(&payload)?;
@@ -1774,12 +1786,32 @@ fn enqueue_serialized_mutation(
         [sequence],
     )?;
     if !project.is_empty() {
-        let project_target = format!("cloud:{project}");
-        tx.execute(ENSURE_SYNC_TARGET, [&project_target])?;
-        tx.execute(
-            "UPDATE sync_state SET lifecycle = 'pending', last_enqueued_seq = ?1, updated_at = datetime('now') WHERE target_key = ?2",
-            params![sequence, project_target],
-        )?;
+        mark_project_pending_tx(tx, project, sequence)?;
     }
+    Ok(())
+}
+
+/// Moves one project's queue mark to `pending`, unless the cloud has refused
+/// it.
+///
+/// A new local write is not news about the cloud's verdict, and letting it
+/// overwrite `refused` with `pending` dropped the only word that said why the
+/// project's queue could not drain — until the next cycle paid for the same
+/// refusal again. Only a batch the cloud takes clears the verdict.
+fn mark_project_pending_tx(
+    tx: &Transaction<'_>,
+    project: &str,
+    sequence: i64,
+) -> Result<(), StoreError> {
+    let project_target = project_sync_target("cloud", project);
+    tx.execute(ENSURE_SYNC_TARGET, [&project_target])?;
+    tx.execute(
+        "UPDATE sync_state
+            SET lifecycle = CASE WHEN lifecycle = ?3 THEN lifecycle ELSE 'pending' END,
+                last_enqueued_seq = MAX(last_enqueued_seq, ?2),
+                updated_at = datetime('now')
+          WHERE target_key = ?1",
+        params![project_target, sequence, PROJECT_SYNC_REFUSED],
+    )?;
     Ok(())
 }

@@ -7,6 +7,9 @@
 
 use super::*;
 
+/// The replication counts and the per-project states, read together.
+type ReplicationState = (Vec<String>, Vec<ProjectSyncStatus>, i64, i64, i64);
+
 impl App {
     pub(super) fn load(store: &mut Store) -> Result<Self, StoreError> {
         let settings = crate::settings::load_beside(store.database_path());
@@ -150,8 +153,9 @@ impl App {
             .ok()
             .flatten();
         match Self::replication_state(store) {
-            Ok((enrolled, pending, deferred, dead)) => {
+            Ok((enrolled, project_states, pending, deferred, dead)) => {
                 overview.enrolled = enrolled;
+                overview.project_states = project_states;
                 overview.pending_mutations = pending;
                 overview.deferred = deferred;
                 overview.dead = dead;
@@ -161,18 +165,21 @@ impl App {
         self.cloud = overview;
     }
 
-    /// The four replication counts, or the first reason there are none.
+    /// The four replication counts and the per-project states, or the first
+    /// reason there are none.
     ///
     /// Together rather than one by one: they describe one queue, and a panel
     /// showing three real numbers beside one silent zero is worse than a panel
-    /// that admits it could not read the queue at all.
-    fn replication_state(
-        store: &Store,
-    ) -> Result<(Vec<String>, i64, i64, i64), crate::store::StoreError> {
+    /// that admits it could not read the queue at all. The per-project states
+    /// are in here for the same reason — a panel that names no refused project
+    /// because it could not read them reads exactly like one where none is.
+    fn replication_state(store: &Store) -> Result<ReplicationState, crate::store::StoreError> {
         let enrolled = store.enrolled_projects()?;
+        let project_states =
+            store.project_sync_statuses(crate::cloud::CLOUD_SYNC_TARGET, &enrolled)?;
         let pending = store.pending_sync_mutation_count(crate::cloud::CLOUD_SYNC_TARGET)?;
         let (deferred, dead) = store.deferred_sync_counts()?;
-        Ok((enrolled, pending, deferred, dead))
+        Ok((enrolled, project_states, pending, deferred, dead))
     }
 
     /// The observation the current page has selected, if any.

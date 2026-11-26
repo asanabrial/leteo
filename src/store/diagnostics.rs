@@ -26,11 +26,33 @@ impl Store {
     }
 
     pub fn import_json(&mut self, json: &str) -> Result<ImportResult, StoreError> {
+        self.import_json_with(json, false)
+    }
+
+    /// A JSON import that reports what it would write without keeping it.
+    ///
+    /// The rows are written and counted in the same transaction a real import
+    /// uses, then rolled back, so the counts are what the store would hold and
+    /// nothing survives: not the rows, not the rebuilt indexes, not the
+    /// triggers an import drops and restores on the way through.
+    pub fn import_json_with(
+        &mut self,
+        json: &str,
+        dry_run: bool,
+    ) -> Result<ImportResult, StoreError> {
         let data: ExportData = serde_json::from_str(json)?;
-        self.import(&data)
+        self.import_with(&data, dry_run)
     }
 
     pub fn import(&mut self, data: &ExportData) -> Result<ImportResult, StoreError> {
+        self.import_with(data, false)
+    }
+
+    fn import_with(
+        &mut self,
+        data: &ExportData,
+        dry_run: bool,
+    ) -> Result<ImportResult, StoreError> {
         if !data.version.is_empty() && !READABLE_EXPORT_VERSIONS.contains(&data.version.as_str()) {
             return Err(invalid_parameter(format!(
                 "unsupported export format {}; this build reads {}",
@@ -308,6 +330,15 @@ impl Store {
             if let Some(sql) = crate::store::schema::full_text_trigger_sql(name) {
                 tx.execute_batch(sql)?;
             }
+        }
+
+        // A dry run stops here. Everything above happened inside the
+        // transaction, so the rollback takes the rows, the rebuilt indexes and
+        // the restored triggers back with it, and the counts are what the store
+        // would have held.
+        if dry_run {
+            tx.rollback()?;
+            return Ok(result);
         }
 
         tx.commit()?;

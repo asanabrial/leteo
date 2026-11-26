@@ -54,6 +54,71 @@ fn an_export_written_by_go_imports_despite_its_null_lists() {
 }
 
 #[test]
+fn a_dry_run_counts_the_rows_it_would_write_and_keeps_none() {
+    // The same export twice: once previewed, once imported. The preview
+    // answers with the counts somebody asked for, and the store still holds no
+    // session, no memory and no vector for either.
+    let (_temp, mut store) = store();
+    let exported = r#"{
+          "version": "0.1.0",
+          "exported_at": "2026-07-28 17:00:39",
+          "sessions": [
+            {
+              "id": "dry-run-session",
+              "project": "interop",
+              "directory": "C:/repo",
+              "started_at": "2026-07-28 17:00:39"
+            }
+          ],
+          "observations": [
+            {
+              "id": 1,
+              "sync_id": "obs-dry-run-000000000001",
+              "session_id": "dry-run-session",
+              "type": "manual",
+              "title": "A memory the preview must not keep",
+              "content": "The preview marker is dryrunneedle",
+              "project": "interop",
+              "scope": "project",
+              "revision_count": 1,
+              "duplicate_count": 1,
+              "last_seen_at": "2026-07-28 17:00:39",
+              "created_at": "2026-07-28 17:00:39",
+              "updated_at": "2026-07-28 17:00:39"
+            }
+          ],
+          "prompts": null
+        }"#;
+
+    let before = store.export().unwrap();
+    let preview = store.import_json_with(exported, true).unwrap();
+    assert_eq!(preview.sessions_imported, 1);
+    assert_eq!(preview.observations_imported, 1);
+
+    let after = store.export().unwrap();
+    assert_eq!(after.sessions.len(), before.sessions.len());
+    assert_eq!(after.observations.len(), before.observations.len());
+    assert!(
+        store
+            .search("dryrunneedle", SearchOptions::default())
+            .unwrap()
+            .is_empty(),
+        "the preview wrote the row it was reporting"
+    );
+
+    // The same bytes still import for real: the preview refused nothing.
+    let imported = store.import_json(exported).unwrap();
+    assert_eq!(imported.observations_imported, 1);
+    assert_eq!(
+        store
+            .search("dryrunneedle", SearchOptions::default())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn an_engram_0_2_0_export_imports_and_re_imports_as_a_no_op() {
     // Engram moved its direct backup to 0.2.0 in v3.0.0: relations lost their
     // local `id` and name their supersession chain by `sync_id` instead, prompts

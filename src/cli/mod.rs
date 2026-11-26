@@ -1022,16 +1022,23 @@ pub async fn run(cli: Cli) -> Result<()> {
                 None => println!("{json}"),
             }
         }
-        Command::Import { file, input, .. } => {
+        Command::Import {
+            file,
+            input,
+            dry_run,
+            ..
+        } => {
             let file = input
                 .or(file)
                 .context("import needs a file, or --from-engram")?;
             let path = absolutize(&file)?;
             let json = std::fs::read_to_string(&path)
                 .with_context(|| format!("read import file {}", path.display()))?;
-            let imported = store.import_json(&json)?;
+            let imported = store.import_json_with(&json, dry_run)?;
             let mut output = serde_json::to_value(&imported)?;
-            if let Some(object) = output.as_object_mut() {
+            // A dry run wrote no row, so there is no vector to give one, and
+            // the same rule already holds on the adoption path beside this one.
+            if !dry_run && let Some(object) = output.as_object_mut() {
                 object.insert(
                     "vectors".to_owned(),
                     serde_json::to_value(store.embed_pending())?,

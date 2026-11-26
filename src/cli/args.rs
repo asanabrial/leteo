@@ -192,12 +192,18 @@ pub enum Command {
         #[arg(long = "input", value_name = "FILE", conflicts_with = "file")]
         input: Option<PathBuf>,
         /// Take over an existing Engram installation's memories instead.
-        #[arg(long)]
+        ///
+        /// A file names the other source, so the two are refused together
+        /// rather than one of them silently winning.
+        #[arg(long, conflicts_with_all = ["file", "input"])]
         from_engram: bool,
         /// The Engram database to adopt. Defaults to ~/.engram/engram.db.
-        #[arg(long)]
+        ///
+        /// Only `--from-engram` reads it, so naming it alone is refused rather
+        /// than accepted as a path nothing looks at.
+        #[arg(long, requires = "from_engram")]
         source: Option<PathBuf>,
-        /// Report what would be adopted without writing anything.
+        /// Report what would be imported without writing the rows.
         #[arg(long)]
         dry_run: bool,
     },
@@ -672,6 +678,17 @@ mod tests {
     fn saying_it_both_ways_at_once_is_refused_rather_than_silently_picking_one() {
         assert!(parse(&["context", "leteo", "--project", "other"]).is_err());
         assert!(parse(&["import", "a.json", "--input", "b.json"]).is_err());
+    }
+
+    #[test]
+    fn an_engram_import_refuses_a_file_and_a_source_without_the_flag() {
+        // `--from-engram` adopts a database; a file names a different source,
+        // so one of the two would be read as nothing.
+        assert!(parse(&["import", "dump.json", "--from-engram"]).is_err());
+        assert!(parse(&["import", "--input", "dump.json", "--from-engram"]).is_err());
+        // `--source` names the Engram database and nothing else reads it.
+        assert!(parse(&["import", "--source", "engram.db"]).is_err());
+        assert!(parse(&["import", "--from-engram", "--source", "engram.db"]).is_ok());
     }
 
     #[test]

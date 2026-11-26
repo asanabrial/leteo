@@ -28,6 +28,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A semantic conflict scan honours `--since` and refuses `--apply`.** The mode
+  that spends a model call per pair ignored `--since`, so a caller who bounded
+  the work paid for every memory in the project, and it ignored `--apply`, so
+  `conflicts scan --apply` — with `LETEO_AGENT_CLI` set in the environment —
+  returned a preview and applied nothing. The bound now goes to `collect_pairs`
+  with the same comparison the word-mode scan makes in SQL, and `--apply`
+  beside `--semantic` is refused with the flag that runs it (`--yes`) (#446).
 - **`leteo consolidate` files its result in a session of the sources' project.**
   The replacement takes its project from the first source, and the session was
   resolved from the working directory: a merge of one project's memories run

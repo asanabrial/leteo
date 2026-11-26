@@ -3793,3 +3793,99 @@ fn consolidating_a_source_that_is_not_there_keeps_the_refusal() {
         "the refusal names the id it could not find: {stderr}"
     );
 }
+
+/// The semantic scan honours `--since` and refuses the flag it cannot honour.
+///
+/// `--semantic` is selected by `LETEO_AGENT_CLI` as well as by the flag, and it
+/// ignored `--since` — so a bounded scan paid for every memory in the project —
+/// and ignored `--apply`, so `conflicts scan --apply` returned a preview and
+/// applied nothing.
+#[test]
+fn a_semantic_scan_honours_since_and_refuses_apply() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-semantic-since.db");
+    for title in ["Retry backoff policy", "Retry backoff policy revisited"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("the retry backoff doubles every attempt")
+            .arg("--project")
+            .arg("alpha")
+            .assert()
+            .success();
+    }
+
+    // Both sides of the bound: a date-only `--since` the CLI accepts has to
+    // reach the scan as that date. Only the second case would pass on an
+    // unreadable bound, which excludes everything just as a bound after every
+    // memory does.
+    let all = run_json(
+        leteo(&database)
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--semantic")
+            .arg("claude")
+            .arg("--since")
+            .arg("1999-01-01"),
+    );
+    assert_eq!(
+        all["inspected"],
+        serde_json::json!(2),
+        "a bound before the memories inspects both: {all}"
+    );
+
+    let preview = run_json(
+        leteo(&database)
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--semantic")
+            .arg("claude")
+            .arg("--since")
+            .arg("2999-01-01"),
+    );
+    assert_eq!(
+        preview["inspected"],
+        serde_json::json!(0),
+        "a bound after every memory inspects nothing: {preview}"
+    );
+
+    // The flag path, and the environment path the issue named: `LETEO_AGENT_CLI`
+    // selects the mode, so a plain `--apply` has to be refused there too.
+    let refusals = [
+        leteo(&database)
+            .env_remove("LETEO_AGENT_CLI")
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--semantic")
+            .arg("claude")
+            .arg("--apply")
+            .assert()
+            .failure(),
+        leteo(&database)
+            .env("LETEO_AGENT_CLI", "claude")
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--apply")
+            .assert()
+            .failure(),
+    ];
+    for refusal in refusals {
+        let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
+        assert!(
+            stderr.contains("--yes"),
+            "the refusal names what runs a semantic scan instead: {stderr}"
+        );
+        assert!(
+            stderr.contains("--apply"),
+            "and the flag it is refusing: {stderr}"
+        );
+    }
+}

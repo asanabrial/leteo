@@ -7,10 +7,17 @@ use sha2::{Digest, Sha256};
 
 static PRIVATE_TAGS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<private>.*?</private>").expect("private regex is valid"));
-/// What a topic key may hold once its accents are folded: letters, digits, the
-/// dot a version number needs, and the slash between family and topic.
+/// What a topic key may hold once its accents are folded: letters in any
+/// script, digits, the dot a version number needs, and the slash between family
+/// and topic.
+///
+/// It kept `[a-z0-9]` only, which is not a smaller alphabet but an empty one
+/// for a store written in Chinese, Arabic, Russian or Greek: every character of
+/// the title became a separator, and every such title reached the same
+/// `general` segment. Two unrelated memories then shared one key, and the
+/// second save revised the first.
 static TOPIC_ALLOWED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[^a-z0-9./]+").expect("topic key regex is valid"));
+    LazyLock::new(|| Regex::new(r"[^\p{L}\p{N}./]+").expect("topic key regex is valid"));
 static LEARNING_HEADERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(?im)^#{{2,3}}\s+(?:{})s?:?\s*$",
@@ -470,11 +477,12 @@ pub fn topic_key(value: Option<&str>) -> Option<String> {
     // the exact-key branch of search — the one that puts a memory first
     // instead of ranking it among its family — silently did not fire.
     //
-    // This rule is the union: letters with their accents folded, digits, dots
-    // and the slash that separates the family from the topic. Checked against
-    // every one of the 2,077 keys on a real store, and not one of them moves —
-    // including the 33 that carry a version number, which is what the dot is
-    // here for.
+    // This rule is the union: letters in any script, the Latin accents this
+    // store's languages use folded, digits, dots and the slash that separates
+    // the family from the topic. Checked against every one of the 2,077 keys on
+    // a real store, and not one of them moves — including the 33 that carry a
+    // version number, which is what the dot is here for. Keeping non-Latin
+    // letters moves none either: every one of those keys was already ASCII.
     let mut normalized = TOPIC_ALLOWED
         .replace_all(&fold_accents(&value), " ")
         .split('/')
@@ -540,7 +548,19 @@ pub fn suggest_topic_key(kind: &str, title: &str, content: &str) -> String {
         segment = normalize_topic_segment(&words);
     }
     if segment.is_empty() {
-        segment = "general".to_owned();
+        // Nothing in the title or the body left a slug: an emoji-only title, or
+        // one that is all punctuation. Every such save used to arrive under the
+        // same `general` segment, so the second one revised the first. A short
+        // digest is stable for the same text and different for different text,
+        // which is what a key has to be, and it is not the surface a reader
+        // reads the memory on.
+        let material = if strip_private(title).trim().is_empty() {
+            strip_private(content)
+        } else {
+            strip_private(title)
+        };
+        let digest = normalized_hash(&material);
+        segment = digest[..12].to_owned();
     }
     if let Some(stripped) = segment.strip_prefix(&format!("{family}-")) {
         segment = stripped.to_owned();
@@ -767,21 +787,22 @@ pub fn extract_learnings(text: &str) -> Vec<String> {
     Vec::new()
 }
 
-fn infer_topic_family(kind: &str, title: &str, content: &str) -> String {
-    let kind = kind.trim().to_lowercase();
-    let known = match kind.as_str() {
-        "architecture" | "design" | "adr" | "refactor" => Some("architecture"),
-        "bug" | "bugfix" | "fix" | "incident" | "hotfix" => Some("bug"),
-        "decision" => Some("decision"),
-        "pattern" | "convention" | "guideline" => Some("pattern"),
-        "config" | "setup" | "infra" | "infrastructure" | "ci" => Some("config"),
-        "discovery" | "investigation" | "root_cause" | "root-cause" => Some("discovery"),
-        "learning" | "learn" => Some("learning"),
-        "session_summary" => Some("session"),
-        _ => None,
-    };
-    if let Some(family) = known {
-        return family.to_owned();
+fn infer_topic_family(kind_name: &str, title: &str, content: &str) -> String {
+    // The type is folded the way the save folds it. Passed through raw, a word
+    // the vocabulary does not name became a family of its own — `banana` gave
+    // `banana/hello-world` — which no typed search can ask for, while the
+    // memory it describes is stored as `discovery`. `manual` is not one of
+    // those words: it is what a caller who named no type leaves behind, so its
+    // family comes from the text below.
+    let named = kind_name.trim().to_lowercase();
+    if !named.is_empty() && named != "manual" {
+        let folded = kind(&named);
+        return match folded.as_str() {
+            "bugfix" => "bug".to_owned(),
+            "session_summary" => "session".to_owned(),
+            // A stored kind is already the family it belongs to.
+            _ => folded,
+        };
     }
 
     let text = format!("{title} {content}").to_lowercase();
@@ -842,26 +863,24 @@ fn infer_topic_family(kind: &str, title: &str, content: &str) -> String {
             return family.to_owned();
         }
     }
-    if !kind.is_empty() && kind != "manual" {
-        return normalize_topic_segment(&kind);
-    }
     "topic".to_owned()
 }
 
 /// Folds the accented letters of the languages this store is written in onto
 /// their plain ones.
 ///
-/// A topic key keeps `[a-z0-9]` and turns everything else into a separator, so
-/// an accent did not lose its letter — it broke the word around it.
-/// `Una decisión sobre SQLite` came back as `decision/una-decisi-n-sobre-sqlite`
-/// from the tool that suggests keys, which is the tool the skill points agents
-/// at. That is not only ugly: `topic_key` is weighted 3.0 in the ranking, so
-/// the key indexed `decisi` and `n` instead of `decision` and stopped helping
-/// the search it is weighted for.
+/// An accent used to lose its letter to the key alphabet: `[a-z0-9]` turned
+/// everything else into a separator, so `Una decisión sobre SQLite` came back as
+/// `decision/una-decisi-n-sobre-sqlite` from the tool that suggests keys, which
+/// is the tool the skill points agents at. That was not only ugly: `topic_key`
+/// is weighted 3.0 in the ranking, so the key indexed `decisi` and `n` instead
+/// of `decision` and stopped helping the search it is weighted for.
 ///
-/// Only the letters, and only in one direction. `ñ` becomes `n` because a key
-/// is an identifier rather than a word — `ano` and `año` are one topic here,
-/// and the body keeps the difference.
+/// The alphabet keeps any letter now, so this is no longer what saves an
+/// accent. It is what keeps one topic from becoming two: `ñ` becomes `n`
+/// because a key is an identifier rather than a word — `ano` and `año` are one
+/// topic here, and the body keeps the difference. Only the letters in this
+/// table are folded; a letter outside it keeps itself.
 fn fold_accents(value: &str) -> String {
     value
         .chars()
@@ -886,12 +905,10 @@ fn normalize_topic_segment(value: &str) -> String {
     truncate_bytes(&mut value, 100);
     // A dot is allowed so `v5.48` survives, which means a title of nothing but
     // punctuation now leaves dots behind where it used to leave nothing. A
-    // segment with no letter and no digit in it names nothing, so it is
-    // treated as the empty one it used to be and the caller's fallback runs.
-    if !value
-        .chars()
-        .any(|character| character.is_ascii_alphanumeric())
-    {
+    // segment with no letter and no digit in it names nothing, in any script,
+    // so it is treated as the empty one it used to be and the caller's fallback
+    // runs.
+    if !value.chars().any(char::is_alphanumeric) {
         return String::new();
     }
     value
@@ -1666,7 +1683,84 @@ is per host",
             suggest_topic_key("decision", "decision", ""),
             "decision/general"
         );
-        assert_eq!(suggest_topic_key("manual", "!!!", "..."), "topic/general");
+        // Nothing slug-able is not one shared key: the same text still names the
+        // same topic, and different text does not.
+        let punctuation = suggest_topic_key("manual", "!!!", "...");
+        assert!(
+            punctuation.starts_with("topic/") && punctuation != "topic/general",
+            "{punctuation}"
+        );
+        assert_eq!(punctuation, suggest_topic_key("manual", "!!!", "..."));
+        assert_ne!(
+            punctuation,
+            suggest_topic_key("manual", "???", "..."),
+            "two titles that slug to nothing are still two titles"
+        );
+    }
+
+    /// A title in any script gets a key of its own.
+    ///
+    /// The alphabet was `[a-z0-9]`, so every character of a Chinese, Japanese,
+    /// Korean, Arabic, Hebrew, Russian or Greek title became a separator and
+    /// every one of those titles arrived as `decision/general`. An emoji-only
+    /// title left nothing at all. Two unrelated memories then shared one key,
+    /// and a save under the second revised the first: the tool meant to make
+    /// upserts safe was the one losing them.
+    #[test]
+    fn a_title_in_any_script_gets_its_own_key() {
+        let titles = [
+            "数据库迁移",
+            "データベースの移行",
+            "데이터베이스 마이그레이션",
+            "ترحيل قاعدة البيانات",
+            "העברת מסד נתונים",
+            "миграция базы данных",
+            "μετεγκατάσταση βάσης δεδομένων",
+            "🚀🔥🛠️",
+        ];
+        let keys = titles.map(|title| suggest_topic_key("decision", title, ""));
+        let distinct: std::collections::BTreeSet<&String> = keys.iter().collect();
+        assert_eq!(distinct.len(), titles.len(), "{keys:?}");
+        for (title, key) in titles.iter().zip(&keys) {
+            assert_ne!(key, "decision/general", "{keys:?}");
+            if title.chars().any(char::is_alphanumeric) {
+                let slug = title.split_whitespace().collect::<Vec<_>>().join("-");
+                assert!(
+                    key.ends_with(&slug),
+                    "a title that has a slug keeps it: {title} → {key}"
+                );
+            } else {
+                // Nothing slug-able, so a stable digest stands in.
+                assert_eq!(key.len(), "decision/".len() + 12, "{key}");
+            }
+            assert_eq!(topic_key(Some(key)).as_deref(), Some(key.as_str()));
+        }
+        // The same title is the same key every time.
+        for (title, key) in titles.iter().zip(&keys) {
+            assert_eq!(&suggest_topic_key("decision", title, ""), key);
+        }
+    }
+
+    /// A type the save does not know is not a family of its own.
+    ///
+    /// `banana` passed through raw and produced `banana/hello-world`, a family
+    /// no typed search can ask for, while the memory it described was stored as
+    /// `discovery`. The suggester and the store now fold the type the same way,
+    /// which is also why `learning` — never a stored kind — is a discovery.
+    #[test]
+    fn a_type_the_save_does_not_know_is_not_a_family_of_its_own() {
+        assert_eq!(
+            suggest_topic_key("banana", "hello world", ""),
+            "discovery/hello-world"
+        );
+        assert_eq!(
+            suggest_topic_key("learning", "Trusting the clone", ""),
+            "discovery/trusting-the-clone"
+        );
+        assert_eq!(
+            suggest_topic_key("convention", "Naming the tables", ""),
+            "pattern/naming-the-tables"
+        );
     }
 
     /// Every language Leteo speaks has a heading a subagent can be captured by.
@@ -2180,10 +2274,10 @@ mod plumbing {
     /// they sat in a project that existed nowhere else.
     /// An accent keeps its letter instead of breaking the word around it.
     ///
-    /// A topic key keeps `[a-z0-9]` and turns everything else into a
+    /// The key alphabet kept `[a-z0-9]` and turned everything else into a
     /// separator, so `decisión` became `decisi-n`: two tokens, neither of them
     /// the word. `topic_key` is weighted 3.0 in the ranking, so a key that
-    /// spells its own subject wrong stops helping the search it is weighted
+    /// spelled its own subject wrong stopped helping the search it is weighted
     /// for — and this store is written in Spanish.
     #[test]
     fn an_accent_in_a_topic_key_keeps_its_letter() {

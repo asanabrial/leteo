@@ -272,6 +272,33 @@ fn render_cloud(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )));
         }
     }
+    // A refusal names a project, and the state above is the target's: it says
+    // healthy while it pushes every project but the paused one. Printing the
+    // project's own lifecycle keeps this page honest without a second
+    // translation of a word the target's line already prints as stored.
+    for project in cloud
+        .project_states
+        .iter()
+        .filter(|project| project.lifecycle == crate::store::PROJECT_SYNC_REFUSED)
+    {
+        let reason = project
+            .reason_message
+            .as_deref()
+            .or(project.reason_code.as_deref())
+            .unwrap_or_default();
+        let state = if reason.is_empty() {
+            project.lifecycle.clone()
+        } else {
+            format!("{} — {reason}", project.lifecycle)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}: ", project.project),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(state, Style::default().fg(Color::Red)),
+        ]));
+    }
     // In red, and with the reason. A queue nobody could read is a worse state
     // than an empty one, so it must not be the quieter of the two on screen.
     if let Some(reason) = &cloud.unreadable {

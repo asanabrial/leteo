@@ -18,11 +18,11 @@ use crate::{
         ExportObservationVersion, ForeignKeyViolation, ImportResult, IndexRebuild,
         JudgeBySemanticParams, JudgeRelationParams, ListDeferredOptions, ListRelationsOptions,
         Listing, MemoryRef, MergeResult, Observation, ObservationVersion, PassiveCapture,
-        PassiveCaptureResult, PendingPair, PendingSide, ProjectStats, Prompt, PruneResult,
-        Relation, RelationListItem, RelationStats, ReplacedContent, ReplayDeferredResult,
-        SaveRelationParams, ScanOptions, ScanResult, SearchMode, SearchOptions, SearchResult,
-        Session, SessionSummary, Stats, SyncMutation, SyncState, TimelineEntry, TimelineResult,
-        UpdateObservation, UpdateOutcome,
+        PassiveCaptureResult, PendingPair, PendingSide, ProjectStats, ProjectSyncStatus, Prompt,
+        PruneResult, Relation, RelationListItem, RelationStats, ReplacedContent,
+        ReplayDeferredResult, SaveRelationParams, ScanOptions, ScanResult, SearchMode,
+        SearchOptions, SearchResult, Session, SessionSummary, Stats, SyncMutation, SyncState,
+        TimelineEntry, TimelineResult, UpdateObservation, UpdateOutcome,
     },
     memory::normalize,
 };
@@ -956,6 +956,15 @@ const ENSURE_SYNC_TARGET: &str =
     "INSERT OR IGNORE INTO sync_state (target_key, lifecycle, updated_at)
      VALUES (?1, 'idle', datetime('now'))";
 
+/// The `sync_state` row that tracks one project's own queue beside the
+/// target's, named `<target>:<project>` — in practice `cloud:<project>`.
+///
+/// Queueing and the rename path both wrote this key by hand, and a status that
+/// derived the key its own way would read a row nobody writes.
+fn project_sync_target(target_key: &str, project: &str) -> String {
+    format!("{target_key}:{}", normalize::project(project))
+}
+
 /// Marks every relation that pointed at a memory now permanently gone.
 ///
 /// A hard delete leaves relations whose other end no longer exists. Four places
@@ -1232,6 +1241,7 @@ mod relations;
 pub(crate) mod semantic_stage;
 
 mod replication;
+pub use replication::{PROJECT_SYNC_CURRENT, PROJECT_SYNC_PENDING, PROJECT_SYNC_REFUSED};
 
 mod diagnostics;
 

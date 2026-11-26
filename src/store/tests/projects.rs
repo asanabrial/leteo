@@ -1272,6 +1272,50 @@ fn merging_a_project_keeps_the_verdict_that_was_waiting_for_a_peer() {
     assert_eq!(verdict.2["project"], "canonical-project");
 }
 
+/// A refusal belongs to a name that no longer replicates once it is merged
+/// away, and the status must not go on naming it.
+///
+/// The merge carries the queue to the canonical name and leaves the retired
+/// name's `cloud:<name>` row behind. Nothing under that name can be sent again,
+/// so a `refused` verdict on it is a state no batch could clear — it outlived
+/// the project it described, on every status and every TUI load.
+#[test]
+fn merging_a_refused_project_away_stops_naming_it_in_the_status() {
+    let (_temp, mut store) = enrolled_store(&["old-project", "canonical-project"]);
+    store.create_session("s1", "old-project", "C:/old").unwrap();
+    let mut memory = observation("s1", "Waiting under the old name", "body");
+    memory.project = Some("old-project".to_owned());
+    store.add_observation(memory).unwrap();
+    store
+        .mark_project_sync_refused(
+            "cloud",
+            "old-project",
+            "sync-paused",
+            "sync is paused for project \"old-project\"",
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        )
+        .unwrap();
+
+    store
+        .merge_projects(&["old-project".to_owned()], "canonical-project")
+        .unwrap();
+
+    let enrolled = store.enrolled_projects().unwrap();
+    let statuses = store.project_sync_statuses("cloud", &enrolled).unwrap();
+    assert!(
+        statuses
+            .iter()
+            .all(|status| status.project != "old-project"),
+        "the retired name outlived the merge: {statuses:?}"
+    );
+    let canonical = statuses
+        .iter()
+        .find(|status| status.project == "canonical-project")
+        .unwrap_or_else(|| panic!("the name that took the queue is missing: {statuses:?}"));
+    assert_eq!(canonical.lifecycle, PROJECT_SYNC_PENDING);
+    assert!(canonical.pending_mutations > 0);
+}
+
 /// So does the version a content change had replaced.
 #[test]
 fn merging_a_project_keeps_the_version_that_was_waiting_for_a_peer() {

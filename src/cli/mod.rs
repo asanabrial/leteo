@@ -1185,9 +1185,15 @@ pub async fn run(cli: Cli) -> Result<()> {
             let config = crate::cloud::ClientConfig::load(&cloud_config_path)?;
             let state = store.get_sync_state(crate::cloud::CLOUD_SYNC_TARGET)?;
             let (deferred, dead) = store.deferred_sync_counts()?;
+            let enrolled_projects = store.enrolled_projects()?;
+            let projects =
+                store.project_sync_statuses(crate::cloud::CLOUD_SYNC_TARGET, &enrolled_projects)?;
             print_json(&serde_json::json!({
                 "config": config.redacted(),
-                "enrolled_projects": store.enrolled_projects()?,
+                "enrolled_projects": enrolled_projects,
+                // The target says whether this peer is talking to the cloud;
+                // these say which project is not moving and why.
+                "projects": projects,
                 "pending_mutations": store
                     .pending_sync_mutation_count(crate::cloud::CLOUD_SYNC_TARGET)?,
                 // The question the count does not answer: a hundred waiting

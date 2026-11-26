@@ -61,6 +61,19 @@ class CannotRun(Exception):
 # --- measuring (child process) ----------------------------------------------
 
 
+def search_arguments(question, limit):
+    """What is sent for one question at one limit.
+
+    The mode is part of the question, not a property of the store: the corpus
+    asks the same words under the default conjunction and under `any`, and a
+    request that dropped the mode would answer the default one twice.
+    """
+    args = {"query": question["q"], "limit": limit}
+    if question.get("mode"):
+        args["match_mode"] = question["mode"]
+    return args
+
+
 def measure(corpora, limits):
     """Load each corpus into a store of its own and rank every question.
 
@@ -96,7 +109,7 @@ def measure(corpora, limits):
                     reply, text, _ = call_json(
                         servers[question["project"]],
                         "mem_search",
-                        {"query": question["q"], "limit": limit},
+                        search_arguments(question, limit),
                     )
                     found = [r["id"] for r in reply.get("results") or []]
                     rows.append(
@@ -105,6 +118,7 @@ def measure(corpora, limits):
                             q=question["q"],
                             project=question["project"],
                             limit=limit,
+                            mode=question.get("mode"),
                             rank=rank(found, ids[question["target"]]),
                             results=len(found),
                             bytes=len(text.encode()),
@@ -124,8 +138,13 @@ def measure(corpora, limits):
 
 
 def identity(row):
-    """What makes two rows the same question in two runs."""
-    return (row["limit"], row["kind"], row["project"], row["q"])
+    """What makes two rows the same question in two runs.
+
+    The mode belongs in it: `fuga de memoria` under `any` and under the default
+    conjunction are two different questions to the store, and only the mode
+    tells the corpus entries apart.
+    """
+    return (row["limit"], row["kind"], row["project"], row["q"], row["mode"] or "")
 
 
 def paired(base, head):
@@ -185,6 +204,7 @@ def compare(name, base, head, limits):
                         kind=b["kind"],
                         q=b["q"],
                         project=b["project"],
+                        mode=b["mode"],
                         base=b["rank"],
                         head=h["rank"],
                     )
@@ -219,10 +239,11 @@ def print_report(report):
         )
     for moved in report["moved"]:
         direction = "lost" if rank_worse(moved["base"], moved["head"]) else "gained"
+        mode = f"[{moved['mode']}] " if moved["mode"] else ""
         print(
             f"  {direction:6} limit {moved['limit']:>2} {moved['kind']:<10} "
             f"{moved['project']:<9} rank {place(moved['base'])} -> {place(moved['head'])}  "
-            f"{moved['q']!r}"
+            f"{mode}{moved['q']!r}"
         )
     for drop in report["drops"]:
         print(f"DROPPED {drop}")

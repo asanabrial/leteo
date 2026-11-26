@@ -38,6 +38,52 @@ pub fn parse(value: &str) -> Option<NaiveDateTime> {
         })
 }
 
+/// The shapes a date argument may be written in.
+///
+/// Named here because it is also what a refusal says, and a person learns the
+/// formats from the error or from nowhere. SQLite's `datetime()` reads more
+/// than these — `now`, `-1 day` and its other modifiers — which is the trap:
+/// `datetime('yesterday')` is NULL, so a filter compares NULL and the command
+/// answers an empty page as a success.
+pub const ARGUMENT_FORMATS: &str = "`YYYY-MM-DD HH:MM:SS`, an RFC 3339 timestamp, or `YYYY-MM-DD`";
+
+/// A date argument in none of the shapes [`ARGUMENT_FORMATS`] names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidTimestamp {
+    value: String,
+}
+
+impl std::fmt::Display for InvalidTimestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:?} is not a date Leteo can read; a date argument takes {}",
+            self.value, ARGUMENT_FORMATS
+        )
+    }
+}
+
+impl std::error::Error for InvalidTimestamp {}
+
+/// Reads a date somebody typed, in the one place every argument is read.
+///
+/// The answer is the native format, so a filter compares one spelling whether
+/// the argument arrived as a date, an instant with an offset, or a stored row's
+/// timestamp. A date with no time is midnight UTC, which is what SQLite's own
+/// `datetime('2026-11-26')` means and what a person writing a day is asking
+/// for.
+pub fn parse_argument(value: &str) -> Result<String, InvalidTimestamp> {
+    let value = value.trim();
+    let parsed = parse(value).or_else(|| {
+        chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+            .ok()
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+    });
+    parsed.map(format).ok_or_else(|| InvalidTimestamp {
+        value: value.to_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +107,48 @@ mod tests {
     #[test]
     fn surrounding_space_does_not_defeat_it() {
         assert!(parse("  2026-07-29 14:21:42  ").is_some());
+    }
+
+    #[test]
+    fn a_date_argument_becomes_the_native_format() {
+        assert_eq!(
+            parse_argument("2026-07-29 14:21:42").unwrap(),
+            "2026-07-29 14:21:42"
+        );
+        assert_eq!(
+            parse_argument("2026-07-29T16:21:42+02:00").unwrap(),
+            "2026-07-29 14:21:42",
+            "an offset is converted to UTC, as everywhere else"
+        );
+        assert_eq!(
+            parse_argument(" 2026-07-29 ").unwrap(),
+            "2026-07-29 00:00:00",
+            "a day with no time is its midnight"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_date_argument_names_the_formats() {
+        // Everything SQLite would have answered NULL for, plus two shapes a
+        // looser parser is tempted by: a date with no day and an impossible
+        // one, which `datetime` also refuses but by returning NULL rather than
+        // an error.
+        for value in [
+            "",
+            "   ",
+            "yesterday",
+            "now",
+            "-1 day",
+            "2026-02-30",
+            "2026-07",
+        ] {
+            let refused = parse_argument(value).unwrap_err();
+            let said = refused.to_string();
+            assert!(said.contains(ARGUMENT_FORMATS), "{value:?} said {said}");
+            if !value.trim().is_empty() {
+                assert!(said.contains(value.trim()), "{value:?} said {said}");
+            }
+        }
     }
 
     #[test]

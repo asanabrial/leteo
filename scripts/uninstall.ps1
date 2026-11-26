@@ -228,10 +228,19 @@ function Write-UserPath([string]$Value) {
     }
 }
 
+# An entry that names the directory through a variable is that entry, for the
+# reason `install.ps1` gives beside its own copy of this: removing only the raw
+# text would leave `%LOCALAPPDATA%\leteo\bin` on the PATH after uninstalling.
+function Test-SamePathEntry([string]$Entry) {
+    $Entry -eq $installDir -or
+        [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
+}
+
 $userPath = Read-UserPath
 if ($userPath) {
-    $kept = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $installDir })
-    if ($kept.Count -ne @($userPath -split ';' | Where-Object { $_ }).Count) {
+    $entries = @($userPath -split ';' | Where-Object { $_ })
+    $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
+    if ($kept.Count -ne $entries.Count) {
         Say "  removing $installDir from your PATH"
         Write-UserPath ($kept -join ';')
     }

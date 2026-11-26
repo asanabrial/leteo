@@ -192,11 +192,19 @@ try {
         } else {
             [string][Environment]::GetEnvironmentVariable('Path', 'User')
         }
+        # An entry that names the directory through a variable is that entry:
+        # `%LOCALAPPDATA%\leteo\bin` and the expanded path are one thing, and
+        # matching only the raw text would add a second copy of it. The
+        # comparison expands; what gets written stays exactly as it was read.
+        function Test-SamePathEntry([string]$Entry) {
+            $Entry -eq $installDir -or
+                [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
+        }
         # Empty entries dropped rather than kept: a value starting with `;` has
         # an empty entry, and Windows reads an empty entry of PATH as the
         # current directory.
         $entries = @($userPath -split ';' | Where-Object { $_ })
-        $added = $entries -notcontains $installDir
+        $added = -not ($entries | Where-Object { Test-SamePathEntry $_ })
         if ($added) {
             $value = (@($entries) + $installDir) -join ';'
             if ($environment) {

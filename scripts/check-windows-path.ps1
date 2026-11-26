@@ -59,7 +59,14 @@ function Show-State([string]$Where) {
 # The value as it was, so the runner is left the way it was found even when an
 # assertion below fails.
 $originalRaw = Read-Raw
-$originalKind = Read-Kind
+$originalKind = $null
+try {
+    $originalKind = Read-Kind
+} catch {
+    # A runner whose user has no PATH value of their own, which is a state the
+    # check has an empty-value pass for.
+    $originalKind = $null
+}
 
 function Assert-Markers([string]$Where) {
     $entries = @((Read-Raw) -split ';')
@@ -110,7 +117,21 @@ while ($true) {
     $server = Start-Process -FilePath $engine -PassThru -ArgumentList @(
         '-NoProfile', '-File', "`"$serverScript`"", "`"$dist`"", "$port"
     )
-    Start-Sleep -Seconds 2
+    # Answered rather than slept through: a busy runner takes longer than any
+    # fixed wait that would still be short enough here, and the installer's
+    # failure would read as a PATH defect.
+    $ready = $false
+    for ($attempt = 0; $attempt -lt 50 -and -not $ready; $attempt++) {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://localhost:$port/SHA256SUMS"
+            $ready = $response.StatusCode -eq 200
+        } catch {
+            Start-Sleep -Milliseconds 200
+        }
+    }
+    if (-not $ready) {
+        throw "the archive server never answered on port $port"
+    }
 
     try {
         $seed = ((@($originalRaw) + $markers) | Where-Object { $_ }) -join ';'
@@ -136,6 +157,39 @@ while ($true) {
         if (@((Read-Raw) -split ';') -contains $installDir) {
             throw "after uninstall: $installDir is still on the user PATH: $(Read-Raw)"
         }
+        # Not only the markers: every entry that was there is still there, in
+        # the order it was in. Empty entries are the one thing the installer
+        # drops, which is the `;` this check exists for.
+        $seeded = @($seed -split ';' | Where-Object { $_ })
+        $after = @((Read-Raw) -split ';' | Where-Object { $_ })
+        if (($after -join ';') -ne ($seeded -join ';')) {
+            throw "after uninstall: the PATH reads '$(Read-Raw)', not the '$(($seeded -join ';'))' it was seeded with"
+        }
+
+        # An entry that names the install directory through a variable is that
+        # entry: the installer must not add a second copy of it, and the
+        # uninstaller must take it away.
+        $variable = $installDir -replace ('^' + [regex]::Escape($env:TEMP)), '%TEMP%'
+        if ($variable -eq $installDir) {
+            throw "cannot spell $installDir through %TEMP%; the variable pass needs it under $env:TEMP"
+        }
+        $registry.SetValue('Path', "$seed;$variable", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        & (Join-Path $PSScriptRoot 'install.ps1')
+        $named = @((Read-Raw) -split ';' | Where-Object {
+            $_ -and [Environment]::ExpandEnvironmentVariables($_) -eq $installDir
+        })
+        if ($named.Count -ne 1) {
+            throw "with '$variable' already there, install left $($named.Count) entries for ${installDir}: $(Read-Raw)"
+        }
+        & (Join-Path $installDir 'uninstall.ps1') -Yes
+        $named = @((Read-Raw) -split ';' | Where-Object {
+            $_ -and [Environment]::ExpandEnvironmentVariables($_) -eq $installDir
+        })
+        if ($named.Count -ne 0) {
+            throw "uninstall left '$($named -join ';')' on the user PATH: $(Read-Raw)"
+        }
+        Assert-Markers 'after a variable-spelled removal'
+        Write-Host 'an entry spelled with a variable is the same entry, added once and removed'
 
         # A user with no PATH of their own. The installer used to write
         # `"$userPath;$installDir"`, which from an empty value starts with `;` —
@@ -145,6 +199,9 @@ while ($true) {
         & (Join-Path $PSScriptRoot 'install.ps1')
         if ((Read-Raw) -ne $installDir) {
             throw "from an empty PATH, install wrote '$(Read-Raw)' instead of just $installDir"
+        }
+        if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+            throw "from an empty PATH, install wrote a $((Read-Kind)) value, so every variable in it would be frozen"
         }
         & (Join-Path $installDir 'uninstall.ps1') -Yes
         if (Read-Raw) {
@@ -161,8 +218,11 @@ while ($true) {
 } finally {
     if ($originalKind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
         $registry.SetValue('Path', $originalRaw, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-    } elseif ($originalRaw) {
+    } elseif ($originalRaw -and $originalKind) {
         $registry.SetValue('Path', $originalRaw, $originalKind)
+    } else {
+        # There was no value before the check and there is no value to put back.
+        $registry.DeleteValue('Path', $false)
     }
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -5,7 +5,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::{
-    memory::model::{AddObservation, PassiveCapture},
+    memory::model::{AddObservation, PassiveCapture, SearchOptions},
     store::{Store, StoreConfig},
 };
 
@@ -2056,7 +2056,7 @@ fn a_renamed_project_is_recognised_however_the_path_was_spelled() {
     // case.
     //
     // The case fold is conditional because it is a property of the filesystem
-    // rather than of the spelling. `same_directory` folds case only under
+    // rather than of the spelling. the directory comparison folds case only under
     // `cfg!(windows)`, and it is right to: on macOS and Linux `/tmp/Foo` and
     // `/tmp/foo` can be two different directories, so treating them as one
     // would merge the memories of one project into another. Uppercasing here
@@ -3449,10 +3449,111 @@ fn a_captured_learning_records_the_directory_the_subagent_stopped_in() {
     let recorded = captured_directories(&store);
     assert_eq!(recorded.len(), 1);
     let recorded = recorded[0].clone().expect("a directory was recorded");
-    assert!(crate::project::same_directory(&recorded, &second));
+    assert!(crate::project::DirectoryTarget::new(&second).matches(&recorded));
     assert!(
-        !crate::project::same_directory(&recorded, &first),
+        !crate::project::DirectoryTarget::new(&first).matches(&recorded),
         "the session opened in the first one and says so: {recorded}"
+    );
+}
+
+fn vector_rows(store: &Store) -> i64 {
+    store
+        .connection()
+        .query_row("SELECT COUNT(*) FROM observation_vectors", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+/// What a hook's store differs in: its own wait, one budget for the process,
+/// and no vector made on the write path.
+#[test]
+fn a_hooks_store_is_shaped_by_the_event_it_runs() {
+    let temp = TempDir::new().unwrap();
+    let mut config = StoreConfig::new(temp.path().join("hooks.db"));
+
+    HookEvent::store_config(&mut config, HookEvent::SessionStop);
+
+    assert_eq!(config.busy_timeout, HookEvent::SessionStop.store_wait());
+    assert!(config.single_busy_budget);
+    assert!(
+        !config.embed_on_write,
+        "a hook leaves its vectors to the backfill"
+    );
+}
+
+/// Five learnings and no vector: making one is the backfill's work.
+///
+/// Embedding loads a 13 MB model and runs it, inside the budget the agent is
+/// counting down. The memory is committed before either happens, so a hook that
+/// spends its budget on vectors is one the agent kills with the write done and
+/// the answer unsent. What the hook leaves is exactly what the backfill is for:
+/// the store still holds the words, and a vector is derived from them.
+#[test]
+fn a_subagent_stop_writes_its_learnings_without_a_vector() {
+    // A copy of the model in a directory of its own: `is_loaded` answers per
+    // model place, and the shipped one is shared with every test in the binary.
+    let Some(shipped) = crate::semantic::tests::repository_model() else {
+        return;
+    };
+    let temp = TempDir::new().unwrap();
+    let model = temp.path().join("model");
+    std::fs::create_dir_all(&model).unwrap();
+    for entry in std::fs::read_dir(&shipped).unwrap().flatten() {
+        std::fs::copy(entry.path(), model.join(entry.file_name())).unwrap();
+    }
+    let mut config = StoreConfig::new(temp.path().join("hooks.db"));
+    config.model_dir = Some(model.clone());
+    HookEvent::store_config(&mut config, HookEvent::SubagentStop);
+    let mut store = Store::open(config).unwrap();
+
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut stop = input(&workspace);
+    stop.stdout = "## Key Learnings:
+1. Rotate JWT signing keys every 30 days with a kid header
+2. Signing keys live in KMS and tokens carry the kid of the key that signed them
+3. The verifier accepts the current and the previous signing key for 48 hours
+4. Retired signing keys are removed from KMS after the overlap window
+5. Every signature rotation is logged with the kid it introduced and retired"
+        .to_owned();
+
+    let captured = run(&mut store, HookEvent::SubagentStop, &stop).unwrap();
+    assert_eq!(captured.observations_captured, 5);
+
+    assert_eq!(vector_rows(&store), 0, "the hook made no vector");
+    assert!(
+        !crate::semantic::is_loaded(store.data_dir(), Some(&model)),
+        "and never opened the model file to make one"
+    );
+
+    assert_eq!(
+        store.backfill_vectors(16).unwrap(),
+        5,
+        "the backfill gives the same five memories their vectors"
+    );
+    assert_eq!(vector_rows(&store), 5);
+
+    // Asked in words the memories do not use, so the words alone find nothing
+    // and the vector is what answers.
+    let asked = "rotación de las claves de firma";
+    let by_words = store.search(asked, SearchOptions::default()).unwrap();
+    assert!(
+        by_words.is_empty(),
+        "the fixture is only a fixture if the words find nothing"
+    );
+    let by_meaning = store
+        .search(
+            asked,
+            SearchOptions {
+                semantic: true,
+                ..SearchOptions::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        !by_meaning.is_empty(),
+        "what the hook wrote is found by meaning once the backfill has run"
     );
 }
 

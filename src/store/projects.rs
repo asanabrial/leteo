@@ -745,7 +745,7 @@ impl Store {
     ///
     /// Returns the result of the move and how many sessions under `source` were
     /// recorded elsewhere and stayed. The directory comparison is
-    /// [`same_directory`](crate::project::same_directory)'s, in Rust, for the
+    /// [`DirectoryTarget`](crate::project::DirectoryTarget)'s, in Rust, for the
     /// reason `session_directories` gives.
     ///
     /// Replication follows the rows exactly as `merge_projects` arranges it:
@@ -783,6 +783,7 @@ impl Store {
 
         let mut session_ids = Vec::new();
         let mut left_behind = 0_i64;
+        let mut target = crate::project::DirectoryTarget::new(directory);
         {
             let mut statement =
                 tx.prepare("SELECT id, directory FROM sessions WHERE LOWER(TRIM(project)) = ?1")?;
@@ -793,7 +794,7 @@ impl Store {
                 let (id, recorded) = row?;
                 if recorded
                     .as_deref()
-                    .is_some_and(|recorded| crate::project::same_directory(recorded, directory))
+                    .is_some_and(|recorded| target.matches(recorded))
                 {
                     session_ids.push(id);
                 } else {

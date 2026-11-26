@@ -142,6 +142,28 @@ impl HookEvent {
         budget * 9 / 10
     }
 
+    /// Shapes the store a hook runs against.
+    ///
+    /// Three things differ from every other caller, and each is here rather
+    /// than in the command-line wiring because a hook is what they are about.
+    ///
+    /// The wait is the event's — see [`store_wait`](Self::store_wait) — and it
+    /// is one budget for the whole process, because an event that writes twice
+    /// must not spend it twice.
+    ///
+    /// And no vector is made on the write path: making one loads a 13 MB model
+    /// and runs it, inside the budget the agent is counting down, where the
+    /// backfill can do the same work afterwards with nothing waiting. Measured
+    /// on a copy of a real store with the model present, a `subagent-stop` with
+    /// five learnings took 108 ms and takes 70 ms, medians of eight runs. The
+    /// five memories are written either way; the 38 ms bought a vector a search
+    /// would have waited for instead of an answer an agent was waiting for.
+    pub fn store_config(config: &mut crate::store::StoreConfig, event: Self) {
+        config.busy_timeout = event.store_wait();
+        config.single_busy_budget = true;
+        config.embed_on_write = false;
+    }
+
     /// Whether this event replays what a busy store left in the spool.
     ///
     /// The replay used to follow every event, and it is bounded only by the

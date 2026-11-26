@@ -1092,8 +1092,8 @@ fn a_remote_that_changed_makes_the_session_door_ask_too() {
     // The raw temp spelling on purpose, not `canonicalize`: on macOS the temp
     // directory is `/var/...` while detection resolves it to `/private/var/...`,
     // and the session recorded here has to be found from that resolved form. The
-    // spelling alone would not match, which is the symlink case `same_directory`
-    // resolves.
+    // spelling alone would not match, which is the symlink case the directory
+    // comparison resolves.
     let directory = workspace.to_string_lossy().into_owned();
     {
         let mut store = server.lock_store().unwrap();
@@ -1279,7 +1279,7 @@ fn a_directory_that_holds_the_detected_project_is_not_drifted() {
         .create_session("hook-visit", "new-remote", "C:/other")
         .unwrap();
     // The same project's bucket, in another checkout. It says nothing about
-    // this directory, which is what the `same_directory` match is for.
+    // this directory, which is what the directory comparison is for.
     store
         .create_session(
             &manual_session_id("new-remote"),
@@ -1304,7 +1304,7 @@ fn a_directory_that_holds_the_detected_project_is_not_drifted() {
 /// A session whose recorded directory is relative names no place, so it is
 /// never evidence of drift.
 ///
-/// `.` was recorded once, after a failed `current_dir`, and `same_directory`
+/// `.` was recorded once, after a failed `current_dir`, and the comparison
 /// resolved it against the reading process: every repository an MCP server was
 /// started in then offered the phantom project as a candidate. The detection
 /// path here is this process's own directory, which is where `.` resolves.

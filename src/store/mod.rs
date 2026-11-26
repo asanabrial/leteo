@@ -394,6 +394,20 @@ pub struct StoreConfig {
     /// twice. Every other caller keeps the per-statement meaning the MCP server
     /// has always had, so nothing but a hook changes.
     pub single_busy_budget: bool,
+    /// Whether a write makes the vector for what it wrote.
+    ///
+    /// A hook sets this off. Its budget is what its agent will wait before
+    /// killing it, and loading a 13 MB model and running it inside that budget
+    /// is work the backfill can do afterwards with nobody waiting — the memory
+    /// is written either way, and a hook that ran out of time would lose the
+    /// write for a vector. Every other caller keeps it on: the MCP server is
+    /// long-lived and embeds in the background, and a one-shot command that
+    /// writes a memory was asked to write that memory.
+    ///
+    /// What fills the vectors of what a hook wrote, for somebody who runs the
+    /// CLI and no MCP server: the background backfill of `leteo mcp serve`, or
+    /// `leteo doctor --repair`, which is the command that says "do it now".
+    pub embed_on_write: bool,
 }
 
 impl StoreConfig {
@@ -408,6 +422,7 @@ impl StoreConfig {
             model_dir: crate::semantic::explicit_dir(),
             memory_language: None,
             single_busy_budget: false,
+            embed_on_write: true,
         }
     }
 

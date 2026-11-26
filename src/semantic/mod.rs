@@ -393,8 +393,12 @@ fn stamp(directory: &Path) -> Stamp {
 /// Every file is read, hashed and compared before a byte of it is used, and the
 /// bytes that were hashed are the bytes that are loaded, so a file swapped in
 /// between cannot be loaded unverified. Loading then costs 13 to 15 ms and, with
-/// the int8 table kept as the bytes it is stored as, the memory that costs. A process that never reaches the semantic stage never pays
-/// either: that is every hook and almost every search.
+/// the int8 table kept as the bytes it is stored as, the memory that costs.
+///
+/// A process that never reaches the semantic stage never pays either: that is
+/// every hook, which writes its memory without a vector and leaves the vector
+/// to the backfill (`StoreConfig::embed_on_write`), and almost every search,
+/// which answers from the words before this is asked for.
 ///
 /// Re-checked when the files change (size or modification time), and not on every
 /// call; the lookup on the way is a few `stat`s.

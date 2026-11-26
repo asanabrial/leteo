@@ -23,6 +23,24 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A hook writes its memory and leaves the vector to the backfill, and a search
+  that has answered exits.** `subagent-stop` loaded the 13 MB semantic model and
+  ran it inside the budget the agent is counting down — the one process the code
+  said never reached that stage — and every `leteo search` embedded up to 1,024
+  memories *after* printing its answer, so a one-shot command lingered for work
+  nobody had asked it for. A hook now writes without a vector and leaves it to
+  the backfill; the MCP server's background backfill fills them, and
+  `doctor --repair` is the command for somebody who runs no server. Measured on
+  a copy of a real store with the model present, a `subagent-stop` with five
+  learnings took 108 ms and takes 70 ms (#422).
+- **Session start resolves one directory instead of every stored one.** Deciding
+  whether a directory's project drifted compared the recorded directory with the
+  current one row by row, and both sides went through `realpath` on every row —
+  filesystem work proportional to the store's history, on the path that runs
+  before an agent sees a prompt. The directory is resolved once per call and each
+  distinct recorded spelling at most once: `leteo hook session-start` on a copy
+  of a store with 2,668 sessions made 5,228 `realpath` calls and makes 458, with
+  the same answer (#421).
 - **The pre-migration backup is complete before it carries the name a later
   open trusts.** `VACUUM INTO` wrote straight to `leteo.db.pre-schema-N`, so a
   process killed mid-copy left a partial file there, and every later open

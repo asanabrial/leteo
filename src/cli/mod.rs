@@ -443,6 +443,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     // with nothing to add already returns, and the reason goes to stderr where
     // the agent's verbose mode shows it. `leteo doctor` is the place to look
     // next, and it is the one command that has to keep failing loudly.
+    // Taken before the open, not after it: `open` is the phase this measures,
+    // and a timer started below would always read zero.
+    let opening = std::time::Instant::now();
     let store = Store::open(config.clone());
     if let (Command::Hook { event, verbose }, Err(error)) = (&cli.command, &store) {
         eprintln!("leteo hook: the store could not be opened: {error:#}");
@@ -472,7 +475,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         return Ok(());
     }
-    let opening = std::time::Instant::now();
     let mut store = store.context("open Leteo store")?;
     // Where the hook's own time went, from the first thing it does. Only
     // `--verbose` reads it.

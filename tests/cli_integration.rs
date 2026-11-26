@@ -3370,3 +3370,164 @@ fn a_verbose_hook_times_its_phases_on_standard_error() {
         "and the agent's answer is the one it has always been: {answer}"
     );
 }
+
+/// A `--since` SQLite cannot read is refused, not answered with "nothing".
+///
+/// Every relation filter compared `datetime(?3)`, and `datetime('yesterday')`
+/// is NULL: the comparison matched no row, so `conflicts scan --since
+/// yesterday` reported `inspected: 0` and exited zero — the same answer as a
+/// store with nothing in it, for a question that was never asked.
+#[test]
+fn a_since_date_that_cannot_be_read_is_refused_with_the_formats() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-since.db");
+
+    for command in ["list", "scan"] {
+        let refusal = leteo(&database)
+            .arg("conflicts")
+            .arg(command)
+            .arg("--project")
+            .arg("alpha")
+            .arg("--since")
+            .arg("yesterday")
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
+        assert!(
+            stderr.contains("yesterday"),
+            "{command} has to quote the date it could not read: {stderr}"
+        );
+        assert!(
+            stderr.contains(leteo::timestamp::ARGUMENT_FORMATS),
+            "{command} has to name the accepted formats: {stderr}"
+        );
+    }
+
+    // The same command with a readable date answers, so the refusal above is
+    // about the date and not about the command.
+    let answered = run_json(
+        leteo(&database)
+            .arg("conflicts")
+            .arg("list")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--since")
+            .arg("2026-01-01"),
+    );
+    assert_eq!(
+        answered["total"],
+        serde_json::json!(0),
+        "a readable date on an empty store is an empty page, not a refusal"
+    );
+}
+
+/// The date the parser answers is the date the store's filter applies.
+///
+/// The refusal tests show the bad date never reaches SQLite; this shows the
+/// good one still does, at the boundary a person wrote. A bare day becomes its
+/// midnight, so it covers what was saved today, and a day before or after the
+/// rows moves them out of the answer.
+#[test]
+fn a_readable_since_covers_exactly_the_rows_after_it() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-since-range.db");
+    // Read before the rows are written: a run that crossed midnight between the
+    // save and the read would ask with the next day, whose midnight is after
+    // them, and the count would be zero for a reason that is not the filter's.
+    let today = leteo::timestamp::now()[..10].to_owned();
+    for title in ["first day", "second day"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("something worth keeping")
+            .arg("--project")
+            .arg("alpha")
+            .assert()
+            .success();
+    }
+    let inspected = |since: &str| {
+        let answer = run_json(
+            leteo(&database)
+                .arg("conflicts")
+                .arg("scan")
+                .arg("--project")
+                .arg("alpha")
+                .arg("--since")
+                .arg(since),
+        );
+        answer["inspected"]
+            .as_i64()
+            .expect("a scan reports inspected")
+    };
+
+    assert_eq!(
+        inspected(&today),
+        2,
+        "a bare day is its midnight, and both rows were saved after it"
+    );
+    assert_eq!(
+        inspected("2000-01-01"),
+        2,
+        "and a day before them covers both"
+    );
+    assert_eq!(
+        inspected("2999-01-01"),
+        0,
+        "a day after them covers neither"
+    );
+}
+
+/// The relation listing reads the same normalized date as the scan.
+///
+/// `conflicts list` filters `r.created_at`, not an observation's, so it has its
+/// own handoff from the parser to the store and the scan's test says nothing
+/// about it. `consolidate` is the one CLI path that writes a relation, so the
+/// store holds one written after the boundary and one query on each side of it.
+#[test]
+fn a_readable_since_covers_the_relation_listing_too() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-since-relations.db");
+    let today = leteo::timestamp::now()[..10].to_owned();
+    for title in ["first day", "second day"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("something worth keeping")
+            .arg("--project")
+            .arg("alpha")
+            .assert()
+            .success();
+    }
+    leteo(&database)
+        .arg("consolidate")
+        .arg("1")
+        .arg("2")
+        .arg("--title")
+        .arg("merged")
+        .arg("--content")
+        .arg("one memory instead of two")
+        .assert()
+        .success();
+
+    let total = |since: &str| {
+        let answer = run_json(
+            leteo(&database)
+                .arg("conflicts")
+                .arg("list")
+                .arg("--project")
+                .arg("alpha")
+                .arg("--since")
+                .arg(since),
+        );
+        answer["total"].as_i64().expect("a listing reports total")
+    };
+
+    // One `supersedes` relation per source, both written by the consolidate.
+    assert_eq!(total(&today), 2, "the relations were written today");
+    assert_eq!(
+        total("2000-01-01"),
+        2,
+        "and a day before them still covers them"
+    );
+    assert_eq!(total("2999-01-01"), 0, "a day after them covers nothing");
+}

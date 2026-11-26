@@ -1389,7 +1389,10 @@ async fn run_conflicts(store: &mut Store, command: ConflictsCommand) -> Result<(
             let options = ListRelationsOptions {
                 project: Some(project.clone()),
                 status,
-                since,
+                since: since
+                    .as_deref()
+                    .map(crate::timestamp::parse_argument)
+                    .transpose()?,
                 limit: Some(limit),
                 offset,
             };
@@ -1444,6 +1447,10 @@ async fn run_conflicts(store: &mut Store, command: ConflictsCommand) -> Result<(
             yes,
         } => {
             let project = resolve_project(project)?;
+            let since = since
+                .as_deref()
+                .map(crate::timestamp::parse_argument)
+                .transpose()?;
             let Some(semantic) = semantic.filter(|value| !value.trim().is_empty()) else {
                 return print_json(&store.scan_project(ScanOptions {
                     project,

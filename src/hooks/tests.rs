@@ -4000,6 +4000,46 @@ fn doctor_counts_the_spool() {
     assert!(check(&store).ok, "an empty spool is the ordinary state");
 }
 
+/// An entry nothing can read is dropped, and the report says how many went and
+/// why.
+///
+/// `doctor --repair` is the command somebody runs when a capture has gone
+/// missing, and `dropped: 1` with no reason tells them only that it did. The
+/// count and the map move together through the same call, so a report cannot
+/// say one was dropped and name reasons for none.
+#[test]
+fn a_drain_reports_the_entries_it_dropped_and_why() {
+    let (_temp, mut store) = store();
+    let data_dir = store.data_dir().to_path_buf();
+    let directory = spool::directory(&data_dir);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("00000000000000000001.json"),
+        b"not a capture",
+    )
+    .unwrap();
+
+    let report = spool::drain(&mut store, Instant::now() + Duration::from_secs(5));
+
+    assert_eq!(report.dropped, 1, "{report:?}");
+    assert_eq!(
+        report
+            .dropped_reasons
+            .get("the entry could not be read as a capture"),
+        Some(&1),
+        "{report:?}"
+    );
+    assert_eq!(
+        report.dropped_reasons.values().sum::<usize>(),
+        report.dropped,
+        "the reasons account for every dropped entry: {report:?}"
+    );
+    assert_eq!(
+        report.remaining, 0,
+        "and the litter is not left for the next drain: {report:?}"
+    );
+}
+
 /// A spooled capture whose session never existed is still stored when drained.
 ///
 /// The busy-open path spools before `ensure_session` could run, so the entry can

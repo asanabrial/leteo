@@ -160,14 +160,47 @@ try {
         Set-ItemProperty -Path $registryKey -Name 'NoRepair'             -Value 1 -Type DWord
     }
 
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (($userPath -split ';') -notcontains $installDir) {
-        [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')
-        Write-Host ""
+    # The PATH entry, read and written as the registry holds it.
+    #
+    # `[Environment]::GetEnvironmentVariable('Path','User')` hands back every
+    # `%VAR%` already expanded, and `SetEnvironmentVariable` stores the result
+    # as a plain string. Measured on `windows-latest` under both PowerShell
+    # engines: `%USERPROFILE%\.cargo\bin;...` came back as
+    # `C:\Users\runneradmin\.cargo\bin;...` and the value's kind went from
+    # `ExpandString` to `String`, so every entry that names a variable stopped
+    # following it. Leteo owns one entry on this value; the rest are read with
+    # `DoNotExpandEnvironmentNames` and written back with the kind they had.
+    $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    $added = $false
+    try {
+        $userPath = [string]$environment.GetValue(
+            'Path',
+            '',
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        # Empty entries dropped rather than kept: a value starting with `;` has
+        # an empty entry, and Windows reads an empty entry of PATH as the
+        # current directory.
+        $entries = @($userPath -split ';' | Where-Object { $_ })
+        $added = $entries -notcontains $installDir
+        if ($added) {
+            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            try {
+                $kind = $environment.GetValueKind('Path')
+            } catch {
+                # No Path value of the user's own yet, which is what
+                # `ExpandString` is for.
+            }
+            $environment.SetValue('Path', (@($entries) + $installDir) -join ';', $kind)
+        }
+    } finally {
+        $environment.Close()
+    }
+    Write-Host ""
+    if ($added) {
         Write-Host "Installed, and $installDir was added to your PATH."
         Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."
     } else {
-        Write-Host ""
         Write-Host "Installed. Run 'leteo setup' to configure your agents."
     }
     Write-Host "To remove it: 'leteo uninstall', or Leteo in Settings > Installed apps."

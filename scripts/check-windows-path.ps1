@@ -137,6 +137,21 @@ while ($true) {
             throw "after uninstall: $installDir is still on the user PATH: $(Read-Raw)"
         }
 
+        # A user with no PATH of their own. The installer used to write
+        # `"$userPath;$installDir"`, which from an empty value starts with `;` —
+        # an empty entry, and Windows reads an empty entry of PATH as the
+        # current directory.
+        $registry.DeleteValue('Path', $false)
+        & (Join-Path $PSScriptRoot 'install.ps1')
+        if ((Read-Raw) -ne $installDir) {
+            throw "from an empty PATH, install wrote '$(Read-Raw)' instead of just $installDir"
+        }
+        & (Join-Path $installDir 'uninstall.ps1') -Yes
+        if (Read-Raw) {
+            throw "from an empty PATH, uninstall left '$(Read-Raw)'"
+        }
+        Write-Host 'an empty user PATH gets Leteo alone, with no empty entry'
+
         Write-Host "the rest of the user PATH survived install and uninstall under $($PSVersionTable.PSVersion)"
     } finally {
         if ($server -and -not $server.HasExited) {

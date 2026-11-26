@@ -192,13 +192,27 @@ if ((Test-Path $dataDir) -and -not $handled) {
 
 # The PATH entry, matched exactly rather than by substring: a user PATH holding
 # `C:\tools\leteo-extras` must survive removing `C:\...\leteo\bin`.
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($userPath) {
-    $kept = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $installDir })
-    if ($kept.Count -ne @($userPath -split ';' | Where-Object { $_ }).Count) {
-        Say "  removing $installDir from your PATH"
-        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
+#
+# Read and written through the registry with `DoNotExpandEnvironmentNames` and
+# with the value's own kind, for the reason `install.ps1` gives beside the same
+# lines: the environment API expands every `%VAR%` entry and stores the result
+# as a plain string, so a removal would freeze every other entry at whatever the
+# variables meant the day Leteo was uninstalled.
+$environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+if ($environment) {
+    $userPath = [string]$environment.GetValue(
+        'Path',
+        '',
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    )
+    if ($userPath) {
+        $kept = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $installDir })
+        if ($kept.Count -ne @($userPath -split ';' | Where-Object { $_ }).Count) {
+            Say "  removing $installDir from your PATH"
+            $environment.SetValue('Path', ($kept -join ';'), $environment.GetValueKind('Path'))
+        }
     }
+    $environment.Close()
 }
 
 if (Test-Path $registryKey) {

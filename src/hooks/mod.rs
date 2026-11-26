@@ -338,9 +338,15 @@ impl HookInput {
 /// slow to read from" and "the event is slow" are different diagnoses and
 /// subtracting one from the other is arithmetic nobody should have to do while
 /// reading a log line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// A killed hook still leaves nothing — a process the agent ended cannot print
+/// — so this is for the slow run that survived, which is the one somebody can
+/// be asked to re-run with `--verbose`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseTime {
+    /// The phase's name, as `--verbose` prints it.
     pub phase: &'static str,
+    /// How long it took, rounded down to the millisecond.
     pub millis: u64,
 }
 
@@ -366,7 +372,11 @@ pub struct HookOutcome {
     pub prompt_saved: bool,
     pub observations_captured: usize,
     /// How long each phase took. See [`PhaseTime`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ///
+    /// Not serialised at all: `--verbose` prints these on standard error, and
+    /// standard output is the agent's channel. A field here would put them in
+    /// the outcome `--verbose` prints, which is still standard output.
+    #[serde(skip)]
     pub timings: Vec<PhaseTime>,
     /// Why nothing was captured, when nothing was.
     ///

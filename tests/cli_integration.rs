@@ -3344,10 +3344,8 @@ fn a_verbose_hook_times_its_phases_on_standard_error() {
     let printed: Value =
         serde_json::from_slice(&verbose.stdout).expect("--verbose prints the whole outcome");
     assert!(
-        printed["timings"]
-            .as_array()
-            .is_some_and(|timings| !timings.is_empty()),
-        "{printed}"
+        printed.get("timings").is_none(),
+        "a timing is not something to put on the agent's channel, even verbosely: {printed}"
     );
 
     let plain = bare_leteo()

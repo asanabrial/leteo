@@ -530,6 +530,15 @@ fn a_hard_delete_confirms_the_tombstones_it_also_erases() {
         store.delete_observation(id, None, false).unwrap();
     }
 
+    // A soft delete leaves the tombstones alone, so its confirmation is the
+    // live three and names nothing as already gone.
+    let soft = store.session_delete_counts("s1", false).unwrap();
+    assert_eq!(
+        (soft.live, soft.erased, soft.total_memories()),
+        (3, 0, 3),
+        "a soft delete removes the live three and nothing else"
+    );
+
     let mut app = App::load(&mut store).unwrap();
     app.page = Page::Dashboard;
     apply_action(

@@ -12,12 +12,18 @@ pub(super) fn gone(language: crate::settings::Interface, hard: bool) -> &'static
 /// an earlier soft delete left behind, they are named on their own line,
 /// because those are the ones somebody could still have recovered and the
 /// confirmation that counted only live rows was the bug this exists to fix.
-fn counted(say: &crate::i18n::Screens, counts: crate::store::DeleteCounts) -> Vec<String> {
+fn counted(
+    say: &crate::i18n::Screens,
+    counts: crate::store::DeleteCounts,
+    sessions: bool,
+) -> Vec<String> {
     let mut lines = vec![fill(say.count_memories, "count", counts.total_memories())];
     if counts.erased > 0 {
         lines.push(fill(say.count_already_deleted, "count", counts.erased));
     }
-    if counts.sessions > 0 {
+    // A session's own confirmation never named a session count — it is the one
+    // being deleted — and a project's always did, including a zero.
+    if sessions {
         lines.push(fill(say.count_sessions, "count", counts.sessions));
     }
     lines.push(fill(say.count_prompts, "count", counts.prompts));
@@ -67,7 +73,7 @@ pub(super) fn confirmation(
             prompts_go_for_good = counts.prompts > 0;
             (
                 fill(say.delete_session, "id", truncate(id, 40)),
-                counted(say, counts),
+                counted(say, counts, false),
             )
         }
         Target::Project(name) => {
@@ -75,7 +81,7 @@ pub(super) fn confirmation(
             prompts_go_for_good = counts.prompts > 0;
             (
                 fill(say.delete_project, "name", truncate(name, 40)),
-                counted(say, counts),
+                counted(say, counts, true),
             )
         }
     };

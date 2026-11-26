@@ -170,31 +170,52 @@ try {
     # `ExpandString` to `String`, so every entry that names a variable stopped
     # following it. Leteo owns one entry on this value; the rest are read with
     # `DoNotExpandEnvironmentNames` and written back with the kind they had.
-    $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    #
+    # Off Windows there is no registry to read. `install.ps1` is not what the
+    # script harness runs there — `uninstall.ps1` is — but the two read and
+    # write this value the same way, and a copy that fails where the other
+    # falls back is the drift that makes the pair disagree.
+    $environment = $null
+    try {
+        $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    } catch {
+        $environment = $null
+    }
     $added = $false
     try {
-        $userPath = [string]$environment.GetValue(
-            'Path',
-            '',
-            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-        )
+        $userPath = if ($environment) {
+            [string]$environment.GetValue(
+                'Path',
+                '',
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        } else {
+            [string][Environment]::GetEnvironmentVariable('Path', 'User')
+        }
         # Empty entries dropped rather than kept: a value starting with `;` has
         # an empty entry, and Windows reads an empty entry of PATH as the
         # current directory.
         $entries = @($userPath -split ';' | Where-Object { $_ })
         $added = $entries -notcontains $installDir
         if ($added) {
-            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
-            try {
-                $kind = $environment.GetValueKind('Path')
-            } catch {
-                # No Path value of the user's own yet, which is what
-                # `ExpandString` is for.
+            $value = (@($entries) + $installDir) -join ';'
+            if ($environment) {
+                $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+                try {
+                    $kind = $environment.GetValueKind('Path')
+                } catch {
+                    # No Path value of the user's own yet, which is what
+                    # `ExpandString` is for.
+                }
+                $environment.SetValue('Path', $value, $kind)
+            } else {
+                [Environment]::SetEnvironmentVariable('Path', $value, 'User')
             }
-            $environment.SetValue('Path', (@($entries) + $installDir) -join ';', $kind)
         }
     } finally {
-        $environment.Close()
+        if ($environment) {
+            $environment.Close()
+        }
     }
     Write-Host ""
     if ($added) {

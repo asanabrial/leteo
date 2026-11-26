@@ -198,20 +198,45 @@ if ((Test-Path $dataDir) -and -not $handled) {
 # lines: the environment API expands every `%VAR%` entry and stores the result
 # as a plain string, so a removal would freeze every other entry at whatever the
 # variables meant the day Leteo was uninstalled.
-$environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
-if ($environment) {
-    $userPath = [string]$environment.GetValue(
-        'Path',
-        '',
-        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-    )
-    if ($userPath) {
-        $kept = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $installDir })
-        if ($kept.Count -ne @($userPath -split ';' | Where-Object { $_ }).Count) {
-            Say "  removing $installDir from your PATH"
-            $environment.SetValue('Path', ($kept -join ';'), $environment.GetValueKind('Path'))
-        }
+#
+# Off Windows there is no registry to read: `tools/semantic/check_install.sh`
+# runs this file under pwsh on the Linux runners to exercise everything below
+# it, where the environment API is what those flows have always used.
+$environment = $null
+try {
+    $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+} catch {
+    $environment = $null
+}
+
+function Read-UserPath {
+    if ($environment) {
+        return [string]$environment.GetValue(
+            'Path',
+            '',
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
     }
+    [string][Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Write-UserPath([string]$Value) {
+    if ($environment) {
+        $environment.SetValue('Path', $Value, $environment.GetValueKind('Path'))
+    } else {
+        [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+    }
+}
+
+$userPath = Read-UserPath
+if ($userPath) {
+    $kept = @($userPath -split ';' | Where-Object { $_ -and $_ -ne $installDir })
+    if ($kept.Count -ne @($userPath -split ';' | Where-Object { $_ }).Count) {
+        Say "  removing $installDir from your PATH"
+        Write-UserPath ($kept -join ';')
+    }
+}
+if ($environment) {
     $environment.Close()
 }
 

@@ -3666,3 +3666,130 @@ fn doctor_repair_continues_past_a_row_whose_title_is_not_text() {
         "a repair that did not run is not a success: {report}"
     );
 }
+
+/// Which project a session belongs to, read straight from the store.
+fn session_project(database: &Path, session: &str) -> String {
+    let connection = rusqlite::Connection::open(database).expect("open the store");
+    connection
+        .query_row(
+            "SELECT project FROM sessions WHERE id = ?1",
+            [session],
+            |row| row.get(0),
+        )
+        .expect("the session exists")
+}
+
+/// A merge of one project's memories is filed in that project's session.
+///
+/// `consolidate` takes the replacement's project from the first source, and its
+/// session from the working directory: run inside X, a merge of Y's memories put
+/// the result in one of X's conversations, where the next agent to read X's
+/// session met a memory about something else.
+#[test]
+fn consolidating_another_projects_memories_files_the_result_where_they_live() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-consolidate-project.db");
+    // A real project to run inside of: a `.git` directory is what the
+    // detection reads, and the folder's name is the project it answers.
+    let x = temp.path().join("x-project");
+    std::fs::create_dir_all(x.join(".git")).expect("make the other project");
+    for title in ["first note", "second note"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("something worth keeping")
+            .arg("--project")
+            .arg("yankee")
+            .assert()
+            .success();
+    }
+
+    let outcome = run_json(
+        leteo(&database)
+            .current_dir(&x)
+            .arg("consolidate")
+            .arg("1")
+            .arg("2")
+            .arg("--title")
+            .arg("merged")
+            .arg("--content")
+            .arg("one memory instead of two"),
+    );
+    let session = outcome["observation"]["session_id"]
+        .as_str()
+        .expect("the replacement names its session");
+    assert_eq!(
+        session_project(&database, session),
+        "yankee",
+        "consolidated inside x-project, the session is still yankee's"
+    );
+}
+
+/// And it does not need a project to be detected where it runs.
+///
+/// The command has no `--project` and no `--session`, so the refusal it used to
+/// answer with told the person to pass a flag it does not take.
+#[test]
+fn consolidating_outside_a_project_uses_the_sources_project() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-consolidate-outside.db");
+    let elsewhere = temp.path().join("no-project-here");
+    std::fs::create_dir_all(&elsewhere).expect("create a directory with no project");
+
+    for title in ["first note", "second note"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("something worth keeping")
+            .arg("--project")
+            .arg("yankee")
+            .assert()
+            .success();
+    }
+
+    let outcome = run_json(
+        leteo(&database)
+            .current_dir(&elsewhere)
+            .arg("consolidate")
+            .arg("1")
+            .arg("2")
+            .arg("--title")
+            .arg("merged")
+            .arg("--content")
+            .arg("one memory instead of two"),
+    );
+    let session = outcome["observation"]["session_id"]
+        .as_str()
+        .expect("the replacement names its session");
+    assert_eq!(
+        session_project(&database, session),
+        "yankee",
+        "and still lands in the project the sources are in"
+    );
+}
+
+/// A source that is not there is refused by the same sentence as before.
+///
+/// The session is resolved from the first source now, so that read is the first
+/// thing a bad id meets. It answers the same `observation not found`, which is
+/// what the consolidation itself said when it was the one reading the ids.
+#[test]
+fn consolidating_a_source_that_is_not_there_keeps_the_refusal() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-consolidate-missing.db");
+
+    let refusal = leteo(&database)
+        .arg("consolidate")
+        .arg("999")
+        .arg("--title")
+        .arg("merged")
+        .arg("--content")
+        .arg("one memory instead of two")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("observation not found: 999"),
+        "the refusal names the id it could not find: {stderr}"
+    );
+}

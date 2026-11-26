@@ -43,6 +43,20 @@ fn input(directory: &Path) -> HookInput {
     }
 }
 
+/// A checkout whose origin names `name`, without spawning git.
+///
+/// Detection reads `.git/config` directly, so a test that only needs the name a
+/// remote gives it does not need a working repository to say so.
+fn git_remote(directory: &Path, name: &str) {
+    let dot_git = directory.join(".git");
+    std::fs::create_dir_all(&dot_git).unwrap();
+    std::fs::write(
+        dot_git.join("config"),
+        format!("[remote \"origin\"]\n\turl = https://example.com/{name}.git\n"),
+    )
+    .unwrap();
+}
+
 #[test]
 fn hook_input_tolerates_empty_and_partial_payloads() {
     assert_eq!(read_input("".as_bytes()).unwrap().session_id, "");
@@ -783,6 +797,7 @@ fn a_name_recorded_here_and_elsewhere_folds_only_what_was_recorded_here() {
     let elsewhere = temp.path().join("other-checkout");
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(&elsewhere).unwrap();
+    git_remote(&workspace, "backend");
     let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
     remember_from(&mut store, "here", &workspace, "api", "Recorded here");
     remember_from(&mut store, "there", &elsewhere, "api", "Recorded there");
@@ -800,7 +815,6 @@ fn a_name_recorded_here_and_elsewhere_folds_only_what_was_recorded_here() {
         &HookInput {
             session_id: "new-session".to_owned(),
             cwd: workspace.to_string_lossy().into_owned(),
-            project: Some("backend".to_owned()),
             ..HookInput::default()
         },
     )
@@ -832,6 +846,7 @@ fn a_project_spelled_with_an_underscore_is_not_folded_into_a_hyphenated_director
     let elsewhere = temp.path().join("other-checkout");
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(&elsewhere).unwrap();
+    git_remote(&workspace, "backend");
     let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
     remember_from(&mut store, "here", &workspace, "my-api", "Recorded here");
     remember_from(&mut store, "there", &elsewhere, "my_api", "Spelled apart");
@@ -842,7 +857,6 @@ fn a_project_spelled_with_an_underscore_is_not_folded_into_a_hyphenated_director
         &HookInput {
             session_id: "new-session".to_owned(),
             cwd: workspace.to_string_lossy().into_owned(),
-            project: Some("backend".to_owned()),
             ..HookInput::default()
         },
     )
@@ -850,6 +864,79 @@ fn a_project_spelled_with_an_underscore_is_not_folded_into_a_hyphenated_director
 
     assert_eq!(titles_under(&store, "backend"), ["Recorded here"]);
     assert_eq!(titles_under(&store, "my_api"), ["Spelled apart"]);
+}
+
+/// A project named in the payload is that session's project and nothing else.
+///
+/// The fold took its target from whatever the payload said, so a start naming
+/// `other` moved every session and memory recorded in the directory to `other`,
+/// and a traversal spelling moved them under whatever was left of the path. A
+/// hook has no business relabelling a directory's history because one session
+/// was told a name.
+#[test]
+fn a_project_named_in_the_payload_moves_nothing_else() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("gamma");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    remember_from(&mut store, "first", &workspace, "gamma", "First");
+    remember_from(&mut store, "second", &workspace, "gamma", "Second");
+
+    for (session, named, resolved) in [
+        ("payload-other", "other", "other"),
+        ("payload-traversal", "../../etc/passwd", "passwd"),
+    ] {
+        let outcome = run(
+            &mut store,
+            HookEvent::SessionStart,
+            &HookInput {
+                session_id: session.to_owned(),
+                cwd: workspace.to_string_lossy().into_owned(),
+                project: Some(named.to_owned()),
+                ..HookInput::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.project, resolved);
+        assert_eq!(store.get_session(session).unwrap().project, resolved);
+    }
+
+    assert_eq!(titles_under(&store, "gamma"), ["First", "Second"]);
+    assert_eq!(store.get_session("first").unwrap().project, "gamma");
+    assert_eq!(store.get_session("second").unwrap().project, "gamma");
+    assert!(titles_under(&store, "other").is_empty());
+    assert!(titles_under(&store, "passwd").is_empty());
+}
+
+/// A relative `cwd` is resolved against the process directory before it is
+/// recorded.
+///
+/// Stored as it arrived, the session carried a directory that only meant
+/// something beside the process that wrote it, and the next hook — from another
+/// directory, or another run — could not match it to the history it was
+/// supposed to join.
+#[test]
+fn a_relative_cwd_records_an_absolute_directory() {
+    let (_temp, mut store) = store();
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "relative-session".to_owned(),
+            cwd: "some/relative/place".to_owned(),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+    let directory = PathBuf::from(&store.get_session("relative-session").unwrap().directory);
+    assert!(
+        directory.is_absolute(),
+        "{outcome:?} recorded {directory:?}"
+    );
+    assert_eq!(
+        directory,
+        std::env::current_dir().unwrap().join("some/relative/place")
+    );
 }
 
 #[test]
@@ -976,6 +1063,10 @@ fn a_renamed_project_folds_the_directory_name_into_the_detected_project() {
     let temp = TempDir::new().unwrap();
     let workspace = temp.path().join("legacy-name");
     std::fs::create_dir_all(&workspace).unwrap();
+    // The repository took a remote, and with it a name. Nothing below names a
+    // project: a payload's name belongs to its own session and must not be the
+    // target of a fold.
+    git_remote(&workspace, "renamed-project");
     let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
     store
         .create_session("old", "legacy-name", &workspace.to_string_lossy())
@@ -1000,13 +1091,13 @@ fn a_renamed_project_folds_the_directory_name_into_the_detected_project() {
         &HookInput {
             session_id: "renamed-session".to_owned(),
             cwd: workspace.to_string_lossy().into_owned(),
-            project: Some("renamed-project".to_owned()),
             ..HookInput::default()
         },
     )
     .unwrap();
 
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(outcome.project, "renamed-project");
     assert_eq!(
         store
             .recent_observations(Some("renamed-project"), Some(10), true)
@@ -1024,18 +1115,19 @@ fn a_renamed_project_folds_the_directory_name_into_the_detected_project() {
 
 /// A session-start says when this directory's history is under another name.
 ///
-/// A hook cannot ask which project the user meant, so a warning is what it has
-/// instead: the write path refuses and hands over a token, but by the time a
-/// session opens the memories are about to be filed, and the agent is the only
-/// thing that can put the question to somebody. The project here is not the
-/// directory's basename, which is the case `migrate_directory_project` already
-/// folds on its own; this is the remote that was renamed, which nothing else
-/// notices.
+/// A hook cannot ask which project the user meant, so a warning and a line in
+/// the agent's context are what it has instead: the write path refuses and
+/// hands over a token, but by the time a session opens the memories are about
+/// to be filed, and the agent is the only thing that can put the question to
+/// somebody. The project here is not the directory's basename, which is the
+/// case `migrate_directory_project` already folds on its own; this is the
+/// remote that was renamed, which nothing else notices.
 #[test]
 fn a_session_start_warns_when_the_directorys_history_is_under_another_name() {
     let (temp, mut store) = store();
     let workspace = temp.path().join("repo");
     std::fs::create_dir_all(&workspace).unwrap();
+    git_remote(&workspace, "new-remote");
     store
         .create_session("old", "old-remote", &workspace.to_string_lossy())
         .unwrap();
@@ -1046,7 +1138,6 @@ fn a_session_start_warns_when_the_directorys_history_is_under_another_name() {
         &HookInput {
             session_id: "agent-session".to_owned(),
             cwd: workspace.to_string_lossy().into_owned(),
-            project: Some("new-remote".to_owned()),
             ..HookInput::default()
         },
     )
@@ -1061,6 +1152,21 @@ fn a_session_start_warns_when_the_directorys_history_is_under_another_name() {
         "a drift a hook cannot prompt about still has to be said: {:?}",
         outcome.warnings
     );
+    assert_eq!(
+        store.get_session("agent-session").unwrap().project,
+        "old-remote",
+        "the session joins the history, it does not open under the new name"
+    );
+    let context = outcome
+        .additional_context
+        .as_deref()
+        .expect("a session-start gives the agent a context");
+    assert!(
+        context.contains("old-remote")
+            && context.contains("new-remote")
+            && context.contains("projects consolidate"),
+        "the question belongs where the agent reads it: {context}"
+    );
 }
 
 /// A session-start in a directory whose sessions agree says nothing extra.
@@ -1071,7 +1177,12 @@ fn a_session_start_warns_when_the_directorys_history_is_under_another_name() {
 #[test]
 fn a_session_start_in_an_agreeing_directory_says_nothing_about_projects() {
     let (temp, mut store) = store();
-    let outcome = run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+    let opening = HookInput {
+        session_id: "agent-session".to_owned(),
+        cwd: temp.path().to_string_lossy().into_owned(),
+        ..HookInput::default()
+    };
+    let outcome = run(&mut store, HookEvent::SessionStart, &opening).unwrap();
     assert!(
         outcome
             .warnings
@@ -1081,9 +1192,9 @@ fn a_session_start_in_an_agreeing_directory_says_nothing_about_projects() {
         outcome.warnings
     );
 
-    // A second start in the same directory, now that a session recorded
-    // `hook-project` there, still agrees.
-    let outcome = run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+    // A second start in the same directory, now that a session is recorded
+    // there under the name detection resolves to, still agrees.
+    let outcome = run(&mut store, HookEvent::SessionStart, &opening).unwrap();
     assert!(
         outcome
             .warnings
@@ -1110,7 +1221,18 @@ fn a_session_start_says_when_it_could_not_check_the_directorys_history() {
         .execute("ALTER TABLE sessions RENAME TO sessions_moved", [])
         .unwrap();
 
-    let outcome = run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+    // No project named in the payload: a payload's name belongs to its session
+    // and the hook does not check a directory's history on its behalf.
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "agent-session".to_owned(),
+            cwd: temp.path().to_string_lossy().into_owned(),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
     assert!(
         outcome
             .warnings

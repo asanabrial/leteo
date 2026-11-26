@@ -1,0 +1,14 @@
+name: Probe minimal six
+on: [push]
+jobs:
+  hello:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [powershell, pwsh]
+    steps:
+      - name: hello
+        shell: ${{ matrix.engine }}
+        run: |
+          Write-Host "engine $($PSVersionTable.PSVersion)"

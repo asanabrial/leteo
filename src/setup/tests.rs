@@ -1013,6 +1013,13 @@ fn a_package_manager_owns_the_binary_it_installed() {
             "npm",
             "npm uninstall -g @asanabrial/leteo",
         ),
+        // An `asdf` far above a mise install is a home directory or a mount
+        // point, not the manager: only the component above `installs` decides.
+        (
+            temp.path().join("asdf/mise/installs/leteo/1.2.3/bin/leteo"),
+            "mise",
+            "mise uninstall leteo",
+        ),
     ];
 
     for (executable, manager, command) in cases {

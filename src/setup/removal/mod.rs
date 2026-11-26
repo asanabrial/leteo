@@ -395,8 +395,8 @@ fn remove_binary(removed: &mut Removal, dry_run: bool) {
     };
     // A package manager owns the file, not the person running this: taking it
     // leaves the manager's record disagreeing with the disk, and the next
-    // upgrade or reinstall acts on a file that is gone. Named rather than
-    // merely kept, because "uninstall left it" alone reads like a failure.
+    // upgrade or reinstall acts on a file that is gone. Reported rather than
+    // merely left, because `binary_removed: false` alone reads like a failure.
     if let Some(owner) = super::package_owner(&binary) {
         removed.binary_managed_by = Some(owner);
         return;

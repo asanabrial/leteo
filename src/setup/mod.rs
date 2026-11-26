@@ -886,15 +886,14 @@ pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
         "Cellar" => "Homebrew",
         "installs" => {
             // mise and asdf keep the same `installs/<tool>/<version>` shape;
-            // which one this is, only the directory above it says.
-            let prefix: Vec<_> = components[..root]
-                .iter()
-                .filter_map(|component| component.as_os_str().to_str())
-                .collect();
-            if prefix
-                .iter()
-                .any(|component| component == &"asdf" || component == &".asdf")
-            {
+            // which one this is, only the directory immediately above it says.
+            // An `asdf` anywhere higher up is somebody's home directory or mount
+            // point, not the manager — a mise install underneath one must not
+            // be told to run `asdf uninstall`.
+            let parent = root
+                .checked_sub(1)
+                .and_then(|index| components[index].as_os_str().to_str());
+            if parent == Some("asdf") || parent == Some(".asdf") {
                 "asdf"
             } else {
                 "mise"

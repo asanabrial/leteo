@@ -6,25 +6,12 @@ pub(super) fn render_hooks_config(
     registrations: &[HookRegistration],
     executable: &Path,
 ) -> Result<String> {
-    let mut root = match existing {
-        Some(content) if !content.iter().all(u8::is_ascii_whitespace) => {
-            serde_json::from_slice::<Value>(content)
-                .with_context(|| format!("parse {}", path.display()))?
-        }
-        _ => Value::Object(Map::new()),
+    let text = super::configuration_text(path, existing)?;
+    let config = if text.trim().is_empty() {
+        Value::Object(Map::new())
+    } else {
+        jsonc::parse(text.as_bytes()).with_context(|| format!("parse {}", path.display()))?
     };
-    let object = root
-        .as_object_mut()
-        .with_context(|| format!("{} must contain a JSON object", path.display()))?;
-    let hooks = object
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if hooks.is_null() {
-        *hooks = Value::Object(Map::new());
-    }
-    let hooks = hooks
-        .as_object_mut()
-        .with_context(|| format!("hooks in {} must contain a JSON object", path.display()))?;
 
     // Hook commands are handed to a shell, and always quoted.
     //
@@ -37,63 +24,8 @@ pub(super) fn render_hooks_config(
     // it. Quoting unconditionally costs two characters and is right everywhere.
     let executable = executable_string(executable)?;
     let command = format!("\"{executable}\"");
-    // Leteo's own entries are pruned from every event present in the file, not
-    // only from the ones about to be written. A hook that moves between events
-    // — `session-stop` went from `Stop` to `SessionEnd` — would otherwise leave
-    // its old registration behind on every machine that had already run setup,
-    // and that stale copy would go on firing beside the new one forever.
-    let present: Vec<String> = hooks.keys().cloned().collect();
-    for event in present {
-        let Some(entries) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
-            continue;
-        };
-        entries.retain(|entry| !is_leteo_hook_entry(entry));
-        if entries.is_empty() && !registrations.iter().any(|item| item.event == event) {
-            hooks.remove(&event);
-        }
-    }
-    for registration in registrations {
-        let entries = hooks
-            .entry(registration.event.to_owned())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        if entries.is_null() {
-            *entries = Value::Array(Vec::new());
-        }
-        entries.as_array_mut().with_context(|| {
-            format!(
-                "hooks.{} in {} must contain an array",
-                registration.event,
-                path.display()
-            )
-        })?;
-    }
-    for registration in registrations {
-        let mut entry = Map::new();
-        if let Some(matcher) = registration.matcher {
-            entry.insert("matcher".to_owned(), Value::String(matcher.to_owned()));
-        }
-        entry.insert(
-            "hooks".to_owned(),
-            json!([{
-                "type": "command",
-                "command": format!("{command} hook {}", registration.slug),
-                "timeout": registration.timeout_seconds,
-            }]),
-        );
-        hooks
-            .get_mut(registration.event)
-            .and_then(Value::as_array_mut)
-            .expect("hook event array was created above")
-            .push(Value::Object(entry));
-    }
-
-    super::to_json_like(
-        existing
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_default(),
-        &root,
-    )
-    .with_context(|| format!("serialize {}", path.display()))
+    write_hook_events(&text, &config, &["hooks"], registrations, &command)
+        .map_err(|error| super::in_file(path, error))
 }
 
 pub(super) fn render_zcode_hooks(
@@ -102,14 +34,13 @@ pub(super) fn render_zcode_hooks(
     registrations: &[HookRegistration],
     executable: &Path,
 ) -> Result<String> {
-    let mut root = match existing {
-        Some(content) if !content.iter().all(u8::is_ascii_whitespace) => {
-            serde_json::from_slice::<Value>(content)
-                .with_context(|| format!("parse {}", path.display()))?
-        }
-        _ => Value::Object(Map::new()),
+    let text = super::configuration_text(path, existing)?;
+    let config = if text.trim().is_empty() {
+        Value::Object(Map::new())
+    } else {
+        jsonc::parse(text.as_bytes()).with_context(|| format!("parse {}", path.display()))?
     };
-    if super::zcode_hook_runner_disabled(&root) {
+    if super::zcode_hook_runner_disabled(&config) {
         anyhow::bail!(
             "{} sets hooks.enabled to false, which tells this client to run no \
              configuration hooks at all — Leteo's registrations would be written \
@@ -117,69 +48,47 @@ pub(super) fn render_zcode_hooks(
             path.display()
         );
     }
-    let object = root
-        .as_object_mut()
-        .with_context(|| format!("{} must contain a JSON object", path.display()))?;
-    let hooks = object
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if hooks.is_null() {
-        *hooks = Value::Object(Map::new());
-    }
-    let hooks = hooks
-        .as_object_mut()
-        .with_context(|| format!("hooks in {} must contain a JSON object", path.display()))?;
 
-    hooks.insert("enabled".to_owned(), Value::Bool(true));
-
-    let events = hooks
-        .entry("events")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if events.is_null() {
-        *events = Value::Object(Map::new());
-    }
-    let events = events.as_object_mut().with_context(|| {
-        format!(
-            "hooks.events in {} must contain a JSON object",
-            path.display()
-        )
-    })?;
+    let step = super::detected_indent(&text);
+    let mut base = if text.trim().is_empty() {
+        "{}".to_owned()
+    } else {
+        text.clone()
+    };
+    base = jsonc::set_member(&base, &["hooks"], "enabled", &Value::Bool(true), &step)
+        .map_err(|error| super::in_file(path, error))?;
 
     let executable = executable_string(executable)?;
     let command = format!("\"{executable}\"");
-    let present: Vec<String> = events.keys().cloned().collect();
-    for event in present {
-        let Some(entries) = events.get_mut(&event).and_then(Value::as_array_mut) else {
-            continue;
-        };
-        entries.retain(|entry| !is_leteo_hook_entry(entry));
-        if entries.is_empty() && !registrations.iter().any(|item| item.event == event) {
-            events.remove(&event);
-        }
-    }
-    // Every event about to be written is checked before any of them is — the
-    // same two passes [`render_hooks_config`] makes one level up. `entry` hands
-    // back whatever the key already held, so an event this client left as
-    // `null`, or as the bare object a hand-edited config can carry, went
-    // straight into `as_array_mut().expect(...)` below and panicked. The prune
-    // above steps over such a value rather than removing it, which is right —
-    // it is not Leteo's — so refusing with the key named is the only answer
-    // left, and it beats crashing over a config that was unusual, not broken.
-    for registration in registrations {
-        let entries = events
-            .entry(registration.event.to_owned())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        if entries.is_null() {
-            *entries = Value::Array(Vec::new());
-        }
-        entries.as_array_mut().with_context(|| {
-            format!(
-                "hooks.events.{} in {} must contain an array",
-                registration.event,
-                path.display()
-            )
-        })?;
-    }
+    write_hook_events(
+        &base,
+        &config,
+        &["hooks", "events"],
+        registrations,
+        &command,
+    )
+    .map_err(|error| super::in_file(path, error))
+}
+
+/// Rewrites Leteo's registrations in the events object at `events_path`,
+/// splicing them into the original text rather than rendering the parsed value
+/// back, so every comment and every other tool's entry stays as it was.
+fn write_hook_events(
+    text: &str,
+    config: &Value,
+    events_path: &[&str],
+    registrations: &[HookRegistration],
+    command: &str,
+) -> Result<String> {
+    let text = if text.trim().is_empty() { "{}" } else { text };
+    let step = super::detected_indent(text);
+    let keep: Vec<&str> = registrations.iter().map(|item| item.event).collect();
+    let mut edited = super::strip_leteo_hook_events(text, config, events_path, &keep)?;
+
+    // One array write per event, in the order the registrations name them, so
+    // the file reads the way the client's own documentation orders them.
+    let mut events: Vec<&str> = Vec::new();
+    let mut entries: Vec<Vec<Value>> = Vec::new();
     for registration in registrations {
         let mut entry = Map::new();
         if let Some(matcher) = registration.matcher {
@@ -193,20 +102,20 @@ pub(super) fn render_zcode_hooks(
                 "timeout": registration.timeout_seconds,
             }]),
         );
-        events
-            .get_mut(registration.event)
-            .and_then(Value::as_array_mut)
-            .expect("hook event array was created or refused above")
-            .push(Value::Object(entry));
+        match events.iter().position(|event| *event == registration.event) {
+            Some(index) => entries[index].push(Value::Object(entry)),
+            None => {
+                events.push(registration.event);
+                entries.push(vec![Value::Object(entry)]);
+            }
+        }
     }
-
-    super::to_json_like(
-        existing
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_default(),
-        &root,
-    )
-    .with_context(|| format!("serialize {}", path.display()))
+    for (event, values) in events.into_iter().zip(entries) {
+        let mut path: Vec<&str> = events_path.to_vec();
+        path.push(event);
+        edited = jsonc::push_elements(&edited, &path, &values, &step)?;
+    }
+    Ok(jsonc::with_final_newline(edited))
 }
 
 pub(super) fn resolve_paths(adapter: &AgentAdapter, environment: &SetupEnvironment) -> AgentPaths {
@@ -230,38 +139,25 @@ pub(super) fn render_json_config(
     executable: &Path,
     tools: &str,
 ) -> Result<String> {
-    let mut root = match existing {
-        Some(content) if !content.iter().all(u8::is_ascii_whitespace) => {
-            let content = if path
-                .extension()
-                .is_some_and(|extension| extension == "jsonc")
-            {
-                strip_jsonc(content)
-            } else {
-                content.to_vec()
-            };
-            serde_json::from_slice::<Value>(&content)
-                .with_context(|| format!("parse {}", path.display()))?
-        }
-        _ => Value::Object(Map::new()),
-    };
+    let entry = mcp_entry(format, executable, tools)?;
+    let text = super::configuration_text(path, existing)?;
+    if text.trim().is_empty() {
+        let mut root = Value::Object(Map::new());
+        let object = root
+            .as_object_mut()
+            .expect("a value built as an object is one");
+        let servers = super::open_servers_mut(object, format, path)?;
+        servers.insert(SERVER_NAME.to_owned(), entry);
+        return super::to_json_like(&text, &root)
+            .with_context(|| format!("serialize {}", path.display()));
+    }
 
-    let object = root
-        .as_object_mut()
-        .with_context(|| format!("{} must contain a JSON object", path.display()))?;
-    let servers = super::open_servers_mut(object, format, path)?;
-    servers.insert(
-        SERVER_NAME.to_owned(),
-        mcp_entry(format, executable, tools)?,
-    );
-
-    super::to_json_like(
-        existing
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_default(),
-        &root,
-    )
-    .with_context(|| format!("serialize {}", path.display()))
+    // Read first, so a file that is not JSON at all is refused with the parse
+    // error rather than with whatever the splice made of it.
+    jsonc::parse(text.as_bytes()).with_context(|| format!("parse {}", path.display()))?;
+    let step = super::detected_indent(&text);
+    jsonc::set_member(&text, format.key_path(), SERVER_NAME, &entry, &step)
+        .map_err(|error| super::in_file(path, error))
 }
 
 pub(super) fn render_codex_hooks(

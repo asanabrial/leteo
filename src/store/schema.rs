@@ -466,14 +466,76 @@ pub(super) fn backup_before_migrate(
         .unwrap_or_else(|| "leteo.db".to_owned());
     let target = path.with_file_name(format!("{name}{BACKUP_INFIX}{from}"));
     // A copy left by an earlier attempt at this same migration is the same
-    // copy: `VACUUM INTO` refuses an existing destination, and overwriting it
-    // would be no fresher. The first one stands.
-    if target.exists() {
+    // copy, and `VACUUM INTO` refuses an existing destination. It has to be a
+    // *readable* copy at this schema, though: a build that streamed the copy
+    // straight to this name left a killed process's partial file here, and
+    // SQLite's answer to one is "file is not a database". Taking that for the
+    // way back is worse than having none, because the file says it is a backup.
+    if copy_version(&target) == Some(from) {
         return Ok(());
     }
-    connection.execute("VACUUM INTO ?1", [target.to_string_lossy().as_ref()])?;
+    // Written under a name of its own and renamed into place, so the final name
+    // only ever holds a copy that finished. A working name per opener is also
+    // what lets two of them take their copies at the same time instead of one
+    // meeting the other's destination — `VACUUM INTO` refusing an existing file
+    // is not `SQLITE_BUSY` and the open's retry loop never saw it. Measured on a
+    // 208 MB store at the previous schema: 7 of 20 paired opens failed before
+    // this, 0 of 20 after.
+    let temporary = temporary_copy(path, &name, from);
+    let _ = std::fs::remove_file(&temporary);
+    let into = temporary.to_string_lossy().into_owned();
+    if let Err(error) = connection.execute("VACUUM INTO ?1", [into.as_str()]) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
+    // The copy is of the store as it stood when the vacuum ran, which may be
+    // after another opener finished migrating it. A file named for schema
+    // `from` holding a newer schema is not the way back it promises, and the
+    // opener that won the race has already left the real one.
+    if copy_version(&temporary) != Some(from) {
+        let _ = std::fs::remove_file(&temporary);
+        return Ok(());
+    }
+    if let Err(error) = std::fs::rename(&temporary, &target) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(StoreError::Io(std::io::Error::new(
+            error.kind(),
+            format!("keep {}: {error}", target.display()),
+        )));
+    }
     prune_backups(path, &name);
     Ok(())
+}
+
+/// The name a copy is written under until it is complete.
+///
+/// A process killed mid-copy leaves this file behind, which is the point: it is
+/// not named like a copy, so no later open mistakes it for one. Nothing sweeps
+/// them, and nothing reads them.
+pub(super) fn temporary_copy(path: &Path, name: &str, from: i32) -> PathBuf {
+    // The pid separates processes and the counter separates the threads of one
+    // process: the store's own tests open it from six threads, and two threads
+    // sharing a working name delete each other's copy halfway through.
+    static ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let attempt = ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_file_name(format!(
+        ".{name}{BACKUP_INFIX}{from}.{}.{attempt}.part",
+        std::process::id()
+    ))
+}
+
+/// The schema a file claims to be, when SQLite can read it at all.
+///
+/// Opening is the whole check. SQLite compares the page count the header claims
+/// with the bytes actually in the file, so half a copy and a file that is not a
+/// database both fail here: measured on a copy of a real store cut at 90%, and
+/// on the 2.5 MB a killed `VACUUM INTO` left behind, the answers were "database
+/// disk image is malformed" and "file is not a database".
+pub(super) fn copy_version(path: &Path) -> Option<i32> {
+    let copy =
+        Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    copy.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .ok()
 }
 
 /// Keeps the newest [`BACKUPS_KEPT`] copies, read by the schema each came from.

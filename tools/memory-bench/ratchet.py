@@ -51,7 +51,10 @@ def measure():
         empty = defaultdict(int)
         millis = []
         for q in wanted:
-            reply, _, dt = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
+            args = {"query": q["q"], "limit": PUBLISHED_LIMIT}
+            if q.get("mode"):
+                args["match_mode"] = q["mode"]
+            reply, _, dt = call_json(servers[q["project"]], "mem_search", args)
             found = [r["id"] for r in reply.get("results") or []]
             place = rank(found, ids[q["target"]])
             ranks[q["kind"]].append(place)
@@ -77,10 +80,11 @@ def measure():
 
         # The questions the corpus cannot answer. A stage with nothing to give
         # should say so: a confident list of unrelated memories is worse than an
-        # empty answer, because the agent believes what memory returns. What is
-        # gated is the replies carrying no caveat at all -- an empty answer and
-        # one that says the match is weak both tell the agent not to rely on it.
-        # The words-only stages are a separate question the issue leaves alone.
+        # empty answer, because the agent believes what memory returns. Three
+        # things are gated: how many of these questions are answered at all, how
+        # many of those replies carry no caveat, and how big they are. The first
+        # is what catches a row that matched only a function word, which is a
+        # wrong answer whether or not the reply says the match is weak.
         asked = no_answer()
         answered, confident, no_answer_bytes = 0, 0, []
         for q in asked:
@@ -134,9 +138,12 @@ def propose(got):
         "empty": {"ALL": got["empty"]["ALL"]},
         "inflection": {k: math.floor(v["mrr"] * 1000 + 1e-9) / 1000 for k, v in sorted(got["inflection"].items())},
         # A ceiling, like `empty` and `bytes`: the count of no-answer questions
-        # answered without a caveat, and the size of those replies, can only be
-        # allowed to fall.
-        "no_answer": {"confident": got["no_answer"]["confident"],
+        # answered at all, the count of those with no caveat, and the size of
+        # those replies, can only be allowed to fall. The first is what says a
+        # question the store cannot answer is not given a partial row for
+        # sharing a stop word.
+        "no_answer": {"answered": got["no_answer"]["answered"],
+                      "confident": got["no_answer"]["confident"],
                       "bytes": ceiling(got["no_answer"]["bytes"])},
     }
 

@@ -1043,14 +1043,13 @@ fn path_basename(path: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-/// How many times a path has been resolved in this process.
-///
-/// Test-only, and read by the one test that holds [`DirectoryTarget`] to "the
-/// target once and each distinct recorded directory at most once". Counting is
-/// structural: a stopwatch here would measure the machine and the test order.
-///
-/// Thread-local, because the test binary runs its tests at once: a shared
-/// counter would count another test's resolutions and read as this one's.
+// How many times a path has been resolved in this process.
+//
+// Test-only, and read by the one test that holds `DirectoryTarget` to "the
+// target once and each distinct recorded directory at most once". Counting is
+// structural: a stopwatch here would measure the machine and the test order.
+// Thread-local, because the test binary runs its tests at once: a shared
+// counter would count another test's resolutions and read as this one's.
 #[cfg(test)]
 thread_local! {
     pub(crate) static RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

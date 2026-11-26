@@ -192,8 +192,13 @@ impl Store {
     /// searchable by meaning at once rather than waiting for the backfill: the
     /// first write in a process pays the load and the rest reuse it. The
     /// `semantic_search` setting off means no vectors are made at all.
+    ///
+    /// A hook turns this off — see `StoreConfig::embed_on_write` — and leaves
+    /// its memories to the backfill, which is the same trade with nothing
+    /// waiting on it: the row is committed either way, and a vector is derived
+    /// from words the store already holds.
     pub(crate) fn embed_written(&self, ids: &[i64]) {
-        if ids.is_empty() || !self.semantic_enabled() {
+        if ids.is_empty() || !self.semantic_enabled() || !self.config.embed_on_write {
             return;
         }
         let outcome = (|| {

@@ -449,7 +449,8 @@ fn pi_uninstall_takes_the_package_and_its_registration_and_only_those() {
     let setup_options = options(&temp);
     write_fixture(
         &pi_settings(&temp),
-        r#"{"theme":"dark","packages":["npm:gentle-engram@0.4.1"]}"#,
+        r#"{"theme":"dark", // my theme
+            "packages":["npm:gentle-engram@0.4.1"]}"#,
     );
     let mcp = resolve_agent_paths("pi", &setup_options)
         .unwrap()
@@ -458,10 +459,21 @@ fn pi_uninstall_takes_the_package_and_its_registration_and_only_those() {
     setup("pi", &setup_options).unwrap();
     write_fixture(&pi_package_dir(&temp).join("notes.txt"), "mine");
 
+    let installed = fs::read_to_string(pi_settings(&temp)).unwrap();
+    assert!(
+        installed.contains("// my theme"),
+        "setup kept the user's note:\n{installed}"
+    );
+
     uninstall("pi", &setup_options).unwrap();
-    let settings = read_json(&pi_settings(&temp));
+    let written = fs::read(pi_settings(&temp)).unwrap();
+    let settings = super::jsonc::parse(&written).unwrap();
     assert_eq!(settings["packages"], json!(["npm:gentle-engram@0.4.1"]));
     assert_eq!(settings["theme"], "dark");
+    assert!(
+        String::from_utf8_lossy(&written).contains("// my theme"),
+        "and so did uninstall"
+    );
     assert!(!pi_package_dir(&temp).join("package.json").exists());
     assert!(!pi_package_dir(&temp).join("leteo.ts").exists());
     assert!(
@@ -1139,8 +1151,14 @@ fn fixtures_cover_all_json_formats_and_preserve_existing_values() {
     }
 }
 
+/// JSONC is what OpenCode's file is, and the comments in it are the user's.
+///
+/// `setup` used to strip the comments to parse and write plain JSON back, and
+/// `uninstall` could not parse the file at all — one commented `.jsonc` made a
+/// whole `leteo uninstall` exit non-zero for somebody who never configured
+/// OpenCode. Both doors splice the one member that changes now.
 #[test]
-fn opencode_jsonc_accepts_comments_and_trailing_commas() {
+fn opencode_jsonc_keeps_the_comments_it_was_written_with() {
     let temp = TempDir::new().unwrap();
     let setup_options = options(&temp);
     let jsonc_path = setup_options
@@ -1153,8 +1171,9 @@ fn opencode_jsonc_accepts_comments_and_trailing_commas() {
         &jsonc_path,
         r#"{
                 // OpenCode permits JSONC.
-                "theme": "dark",
+                "theme": "dark", // my theme
                 "mcp": {
+                    // the servers I actually use
                     "other": {
                         "type": "local",
                         "command": ["other", "mcp"],
@@ -1166,11 +1185,162 @@ fn opencode_jsonc_accepts_comments_and_trailing_commas() {
     assert_eq!(paths.mcp_config, jsonc_path);
 
     setup("opencode", &setup_options).unwrap();
-    let config = read_json(&paths.mcp_config);
+    let after = fs::read_to_string(&jsonc_path).unwrap();
+    for comment in [
+        "// OpenCode permits JSONC.",
+        "// my theme",
+        "// the servers I actually use",
+    ] {
+        assert!(
+            after.contains(comment),
+            "the comment {comment:?} was lost:\n{after}"
+        );
+    }
+    assert!(
+        after.contains("\"command\": [\"other\", \"mcp\"],"),
+        "the trailing comma the user wrote is still there:\n{after}"
+    );
+    let config = super::jsonc::parse(after.as_bytes()).unwrap();
     assert_eq!(config["theme"], "dark");
     assert_eq!(config["mcp"]["other"]["command"][0], "other");
     assert_eq!(config["mcp"][SERVER_NAME]["type"], "local");
     assert_eq!(config["mcp"][SERVER_NAME]["command"][1], "mcp");
+    assert!(
+        super::is_configured("opencode", &setup_options),
+        "a commented file is a configured one the second time round"
+    );
+
+    // A second run finds nothing to do: the splice is where its own output
+    // ends up, not beside it.
+    assert_eq!(
+        setup("opencode", &setup_options).unwrap().changed_files(),
+        0
+    );
+
+    uninstall("opencode", &setup_options).unwrap();
+    let gone = fs::read_to_string(&jsonc_path).unwrap();
+    for comment in [
+        "// OpenCode permits JSONC.",
+        "// my theme",
+        "// the servers I actually use",
+    ] {
+        assert!(
+            gone.contains(comment),
+            "uninstall took the comment {comment:?}:\n{gone}"
+        );
+    }
+    let config = super::jsonc::parse(gone.as_bytes()).unwrap();
+    assert!(config["mcp"].get(SERVER_NAME).is_none(), "{gone}");
+    assert_eq!(config["mcp"]["other"]["command"][0], "other");
+    assert!(!super::is_configured("opencode", &setup_options));
+}
+
+/// The same reader on a `.json` file somebody annotated: VS Code reads
+/// `mcp.json` with comments, so an uninstall that cannot read one is a
+/// failure for a person who never configured the tool.
+#[test]
+fn a_commented_mcp_json_loses_only_leteos_entry() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    let paths = resolve_agent_paths("vscode-copilot", &setup_options).unwrap();
+    let seed = r#"{
+    // my own server, please keep it
+    "servers": {
+        "mine": {"type": "stdio", "command": "mine"},
+        // leteo was here
+        "leteo": {"type": "stdio", "command": "leteo", "args": ["mcp"]}
+    }
+}"#;
+    write_fixture(&paths.mcp_config, seed);
+    assert!(
+        super::is_configured("vscode-copilot", &setup_options),
+        "the commented file names the server"
+    );
+
+    uninstall("vscode-copilot", &setup_options).unwrap();
+    let after = fs::read_to_string(&paths.mcp_config).unwrap();
+    assert!(!after.contains("leteo was here") || after.contains("// leteo was here"));
+    assert!(
+        after.contains("// my own server, please keep it"),
+        "the comment survived:\n{after}"
+    );
+    let config = super::jsonc::parse(after.as_bytes()).unwrap();
+    assert!(config["servers"].get(SERVER_NAME).is_none(), "{after}");
+    assert_eq!(config["servers"]["mine"]["command"], "mine");
+}
+
+/// ZCode keeps its providers, its own hooks and the server in one file, and a
+/// comment in it is as much the user's as the providers are. Both steps of
+/// `setup` and both removals of `uninstall` splice.
+#[test]
+fn zcode_keeps_the_comments_in_the_file_its_hooks_share() {
+    let temp = TempDir::new().unwrap();
+    let config = temp.path().join(".zcode").join("cli").join("config.json");
+    write_fixture(
+        &config,
+        r#"{
+  // providers I set up myself
+  "providers": {"mine": {"api": "x"}},
+  "hooks": {
+    "enabled": true, // the runner, switched on
+    "events": {
+      // not leteo's
+      "PostToolUse": [{"matcher": "Bash"}]
+    }
+  }
+}"#,
+    );
+    let setup_options = SetupOptions {
+        install_hooks: true,
+        ..options(&temp)
+    };
+
+    setup("zcode", &setup_options).unwrap();
+    let after = fs::read_to_string(&config).unwrap();
+    for comment in [
+        "// providers I set up myself",
+        "// the runner, switched on",
+        "// not leteo's",
+    ] {
+        assert!(
+            after.contains(comment),
+            "the comment {comment:?} was lost:\n{after}"
+        );
+    }
+    let written = super::jsonc::parse(after.as_bytes()).unwrap();
+    assert_eq!(written["providers"]["mine"]["api"], "x");
+    assert_eq!(written["mcp"]["servers"][SERVER_NAME]["type"], "stdio");
+    assert_eq!(
+        written["hooks"]["events"]["PostToolUse"][0]["matcher"],
+        "Bash"
+    );
+    assert!(
+        written["hooks"]["events"]["SessionStart"]
+            .as_array()
+            .is_some_and(|entries| !entries.is_empty()),
+        "leteo's hooks are beside the user's, not instead of them: {written}"
+    );
+
+    uninstall("zcode", &setup_options).unwrap();
+    let gone = fs::read_to_string(&config).unwrap();
+    for comment in [
+        "// providers I set up myself",
+        "// the runner, switched on",
+        "// not leteo's",
+    ] {
+        assert!(
+            gone.contains(comment),
+            "uninstall took the comment {comment:?}:\n{gone}"
+        );
+    }
+    let left = super::jsonc::parse(gone.as_bytes()).unwrap();
+    assert!(left["mcp"]["servers"].get(SERVER_NAME).is_none(), "{gone}");
+    assert_eq!(left["providers"]["mine"]["api"], "x");
+    assert_eq!(left["hooks"]["events"]["PostToolUse"][0]["matcher"], "Bash");
+    assert!(
+        left["hooks"]["events"].get("SessionStart").is_none(),
+        "leteo's event went with its entries:\n{gone}"
+    );
 }
 
 #[test]
@@ -1509,7 +1679,10 @@ fn invalid_server_block_does_not_overwrite_the_existing_config() {
 
     let error = setup("qwen", &setup_options).unwrap_err();
 
-    assert!(error.to_string().contains("mcpServers"));
+    assert!(
+        error.to_string().contains("mcpServers"),
+        "the key that failed: {error}"
+    );
     assert_eq!(fs::read_to_string(paths.mcp_config).unwrap(), seed);
 }
 

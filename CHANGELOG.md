@@ -23,6 +23,17 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A comment in a configuration file survives `setup` and `uninstall`.** Setup
+  parsed `opencode.jsonc` with the comments stripped and wrote plain JSON back,
+  so a person's notes about their own servers were deleted without a word, and
+  `uninstall` could not parse a commented file at all: one comment in one
+  config made a whole `leteo uninstall` exit non-zero for somebody who never
+  configured OpenCode. One reader and one editor now serve every JSON file
+  Leteo touches — `opencode.jsonc`, VS Code's `mcp.json`, ZCode's shared
+  `config.json`, Pi's settings and the hook settings — and the writer splices
+  the member or array element that changed instead of rendering the parsed
+  document back. A file with nothing of Leteo's in it is left exactly as it
+  stands rather than re-indented (#430).
 - **Deleting a session or a project now takes a prompt's words with it, and
   refuses to let a peer bring them back.** Only a single prompt delete wrote a
   tombstone, and none of the five paths touched `sync_mutations`, where the full

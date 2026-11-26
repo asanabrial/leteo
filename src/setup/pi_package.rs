@@ -120,7 +120,7 @@ fn listed_npm_entry(path: &Path, existing: Option<&[u8]>) -> Result<Option<Strin
 fn parse_settings(path: &Path, existing: Option<&[u8]>) -> Result<Value> {
     match existing {
         Some(content) if !content.iter().all(u8::is_ascii_whitespace) => {
-            serde_json::from_slice(content).with_context(|| format!("parse {}", path.display()))
+            super::jsonc::parse(content).with_context(|| format!("parse {}", path.display()))
         }
         _ => Ok(Value::Object(Map::new())),
     }
@@ -160,18 +160,23 @@ fn register(
     {
         return Ok(existing.to_owned());
     }
-    packages.push(Value::String(
+    let entry = Value::String(
         package
             .to_str()
             .with_context(|| format!("{} is not valid UTF-8", package.display()))?
             .to_owned(),
-    ));
-    to_json_like(
-        existing
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_default(),
-        &root,
-    )
+    );
+    // Spliced, like every other configuration Leteo edits: a settings file
+    // somebody annotated keeps its notes, and one the user never touched is
+    // not re-indented by a setup that only added a package.
+    let text = existing
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .unwrap_or_default();
+    let text = if text.trim().is_empty() { "{}" } else { text };
+    let step = super::detected_indent(text);
+    super::jsonc::push_elements(text, &["packages"], &[entry], &step)
+        .map(super::jsonc::with_final_newline)
+        .map_err(|error| super::in_file(path, error))
 }
 
 /// Pi's settings with the package no longer listed.
@@ -180,12 +185,19 @@ fn deregister(path: &Path, existing: &[u8], agent_dir: &Path, package: &Path) ->
     let Some(packages) = root.get_mut("packages").and_then(Value::as_array_mut) else {
         return Ok(String::from_utf8_lossy(existing).into_owned());
     };
-    let before = packages.len();
-    packages.retain(|entry| !names_package(entry, agent_dir, package));
-    if packages.len() == before {
+    let indices: Vec<usize> = packages
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| names_package(entry, agent_dir, package))
+        .map(|(index, _)| index)
+        .collect();
+    if indices.is_empty() {
         return Ok(String::from_utf8_lossy(existing).into_owned());
     }
-    to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &root)
+    let text = std::str::from_utf8(existing).context("Pi settings are not valid UTF-8")?;
+    super::jsonc::remove_elements(text, &["packages"], &indices)
+        .map(super::jsonc::with_final_newline)
+        .map_err(|error| super::in_file(path, error))
 }
 
 /// Whether Pi's settings list the package.
@@ -193,7 +205,7 @@ pub(super) fn is_registered(environment: &SetupEnvironment) -> bool {
     let Ok(Some(content)) = read_optional(&settings_path(environment)) else {
         return false;
     };
-    let Ok(root) = serde_json::from_slice::<Value>(&content) else {
+    let Ok(root) = super::jsonc::parse(&content) else {
         return false;
     };
     let agent_dir = environment.pi_agent_dir();

@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 mod agents;
+mod jsonc;
 mod pi_package;
 mod removal;
 mod render;
@@ -275,7 +276,7 @@ pub fn is_configured(agent: &str, options: &SetupOptions) -> bool {
             .lines()
             .any(|line| line.trim() == "[mcp_servers.leteo]"),
         ConfigFormat::DshPatch => dsh_names_leteo(&text),
-        ConfigFormat::Json(format) => serde_json::from_str::<Value>(&text)
+        ConfigFormat::Json(format) => jsonc::parse(text.as_bytes())
             .ok()
             .and_then(|config| {
                 servers_at(&config, format).map(|servers| servers.contains_key(SERVER_NAME))
@@ -424,32 +425,30 @@ fn detected_indent(existing: &str) -> String {
 }
 
 fn remove_json_server(existing: &[u8], format: McpFormat) -> Result<String> {
-    let mut config: Value =
-        serde_json::from_slice(existing).context("MCP configuration is not valid JSON")?;
+    let text = std::str::from_utf8(existing).context("MCP configuration is not valid UTF-8")?;
+    let config = jsonc::parse(existing).context("MCP configuration is not valid JSON")?;
     // ZCode's hooks share this file — see `zcode.rs` — so taking the server
     // out takes them, exactly as `remove_codex_server` does for the TOML its
     // hooks live in. The generic hook-removal step in `uninstall` is skipped
     // for a file that holds both.
-    if format == McpFormat::Zcode {
-        remove_nested_leteo_hooks(&mut config);
+    //
+    // Removed by splicing the text, not by rendering the parsed value back:
+    // a comment in this file is the user's, and dropping it to delete Leteo's
+    // entry would be a bigger edit than the one that was asked for.
+    let mut edited = if format == McpFormat::Zcode {
+        let stripped = strip_leteo_hook_events(text, &config, &["hooks", "events"], &[])?;
+        if events_object_is_empty(&config, &["hooks", "events"]) {
+            jsonc::remove_member(&stripped, &["hooks"], "events")?.unwrap_or(stripped)
+        } else {
+            stripped
+        }
+    } else {
+        text.to_owned()
+    };
+    if let Some(taken) = jsonc::remove_member(&edited, format.key_path(), SERVER_NAME)? {
+        edited = taken;
     }
-    if let Some(servers) = walk_to_servers_mut(&mut config, format) {
-        servers.remove(SERVER_NAME);
-    }
-    to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &config)
-}
-
-fn walk_to_servers_mut(
-    config: &mut Value,
-    format: McpFormat,
-) -> Option<&mut serde_json::Map<String, Value>> {
-    let path = format.key_path();
-    let (last, parents) = path.split_last()?;
-    let mut node = config;
-    for key in parents {
-        node = node.get_mut(key)?;
-    }
-    node.get_mut(last).and_then(Value::as_object_mut)
+    Ok(edited)
 }
 
 fn open_servers_mut<'a>(
@@ -530,43 +529,84 @@ fn with_line_endings_of(source: &str, text: String) -> String {
 }
 
 fn remove_hooks(existing: &[u8]) -> Result<String> {
-    let mut settings: Value =
-        serde_json::from_slice(existing).context("hook settings are not valid JSON")?;
-    if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
-        for entries in hooks.values_mut() {
-            if let Some(entries) = entries.as_array_mut() {
-                entries.retain(|entry| !is_leteo_hook_entry(entry));
-            }
+    let text = std::str::from_utf8(existing).context("hook settings are not valid UTF-8")?;
+    let settings = jsonc::parse(existing).context("hook settings are not valid JSON")?;
+    let edited = strip_leteo_hook_events(text, &settings, &["hooks"], &[])?;
+    if events_object_is_empty(&settings, &["hooks"]) {
+        return Ok(jsonc::remove_member(&edited, &[], "hooks")?.unwrap_or(edited));
+    }
+    Ok(edited)
+}
+
+/// Removes Leteo's hook registrations from the events object at `events_path`,
+/// editing the text instead of re-serialising it, and dropping an event that
+/// is left with nothing in it.
+///
+/// Every event is looked at, not only the ones about to be written: a hook that
+/// moved between events — `session-stop` went from `Stop` to `SessionEnd` —
+/// would otherwise leave its old registration behind on every machine that had
+/// already run setup, firing beside the new one forever.
+///
+/// `keep` names the events that are about to be written again, so removing an
+/// entry and putting it back does not move the event to the end of the file.
+fn strip_leteo_hook_events(
+    text: &str,
+    config: &Value,
+    events_path: &[&str],
+    keep: &[&str],
+) -> Result<String> {
+    let Some(events) = value_at_path(config, events_path).and_then(Value::as_object) else {
+        return Ok(text.to_owned());
+    };
+    let mut edited = text.to_owned();
+    for (event, list) in events {
+        let Some(list) = list.as_array() else {
+            continue;
+        };
+        let indices: Vec<usize> = list
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| is_leteo_hook_entry(entry))
+            .map(|(index, _)| index)
+            .collect();
+        if !indices.is_empty() {
+            let mut path: Vec<&str> = events_path.to_vec();
+            path.push(event);
+            edited = jsonc::remove_elements(&edited, &path, &indices)?;
         }
-        hooks.retain(|_, entries| entries.as_array().is_none_or(|list| !list.is_empty()));
-        let empty = hooks.is_empty();
-        if empty && let Some(settings) = settings.as_object_mut() {
-            settings.remove("hooks");
+        // An array with nothing else in it goes with Leteo's entry, empty or
+        // not — the event exists because somebody registered something, and
+        // what is left says the same thing as no event at all.
+        if list.iter().all(is_leteo_hook_entry) && !keep.contains(&event.as_str()) {
+            edited = jsonc::remove_member(&edited, events_path, event)?.unwrap_or(edited);
         }
     }
-    to_json_like(std::str::from_utf8(existing).unwrap_or_default(), &settings)
+    Ok(edited)
+}
+
+/// Whether the events object at `events_path` holds nothing but Leteo's own
+/// entries, which is what is left once they are removed.
+fn events_object_is_empty(config: &Value, events_path: &[&str]) -> bool {
+    value_at_path(config, events_path)
+        .and_then(Value::as_object)
+        .is_some_and(|events| {
+            events.values().all(|list| {
+                list.as_array()
+                    .is_some_and(|list| list.iter().all(is_leteo_hook_entry))
+            })
+        })
+}
+
+fn value_at_path<'v>(value: &'v Value, path: &[&str]) -> Option<&'v Value> {
+    let mut node = value;
+    for key in path {
+        node = node.get(*key)?;
+    }
+    Some(node)
 }
 
 fn zcode_hook_runner_disabled(config: &Value) -> bool {
     config.get("hooks").and_then(|hooks| hooks.get("enabled")) == Some(&Value::Bool(false))
-}
-
-fn remove_nested_leteo_hooks(config: &mut Value) {
-    let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) else {
-        return;
-    };
-    let Some(events) = hooks.get_mut("events").and_then(Value::as_object_mut) else {
-        return;
-    };
-    for entries in events.values_mut() {
-        if let Some(entries) = entries.as_array_mut() {
-            entries.retain(|entry| !is_leteo_hook_entry(entry));
-        }
-    }
-    events.retain(|_, entries| entries.as_array().is_none_or(|list| !list.is_empty()));
-    if events.is_empty() {
-        hooks.remove("events");
-    }
 }
 
 pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
@@ -589,7 +629,7 @@ pub fn setup(agent: &str, options: &SetupOptions) -> Result<SetupResult> {
         && adapter.config_format == ConfigFormat::Json(McpFormat::Zcode)
         && existing_config
             .as_deref()
-            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .and_then(|bytes| jsonc::parse(bytes).ok())
             .is_some_and(|config| zcode_hook_runner_disabled(&config))
     {
         anyhow::bail!(
@@ -1229,87 +1269,13 @@ fn render_instructions(adapter: &AgentAdapter, existing: &str, is_new: bool) -> 
     upsert_memory_protocol(existing)
 }
 
-fn strip_jsonc(content: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(content.len());
-    let mut index = 0;
-
-    while index < content.len() {
-        if content[index] == b'"' {
-            output.push(content[index]);
-            index += 1;
-            while index < content.len() {
-                output.push(content[index]);
-                if content[index] == b'\\' && index + 1 < content.len() {
-                    index += 1;
-                    output.push(content[index]);
-                } else if content[index] == b'"' {
-                    index += 1;
-                    break;
-                }
-                index += 1;
-            }
-            continue;
-        }
-        if content.get(index..index + 2) == Some(b"//") {
-            index += 2;
-            while index < content.len() && content[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if content.get(index..index + 2) == Some(b"/*") {
-            index += 2;
-            while index + 1 < content.len() && &content[index..index + 2] != b"*/" {
-                index += 1;
-            }
-            index = (index + 2).min(content.len());
-            continue;
-        }
-        output.push(content[index]);
-        index += 1;
-    }
-
-    strip_trailing_commas(&output)
-}
-
-fn strip_trailing_commas(content: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(content.len());
-    let mut index = 0;
-    let mut in_string = false;
-
-    while index < content.len() {
-        let byte = content[index];
-        if byte == b'"' {
-            output.push(byte);
-            index += 1;
-            in_string = !in_string;
-            continue;
-        }
-        if in_string && byte == b'\\' && index + 1 < content.len() {
-            output.push(byte);
-            index += 1;
-            output.push(content[index]);
-            index += 1;
-            continue;
-        }
-        if !in_string && byte == b',' {
-            let mut next = index + 1;
-            while next < content.len() && content[next].is_ascii_whitespace() {
-                next += 1;
-            }
-            if content
-                .get(next)
-                .is_some_and(|byte| matches!(byte, b'}' | b']'))
-            {
-                index += 1;
-                continue;
-            }
-        }
-        output.push(byte);
-        index += 1;
-    }
-
-    output
+/// Folds the file's path into an editing error's own sentence.
+///
+/// A caller that only prints `to_string()` sees the outermost context and not
+/// the chain under it, and "edit <path>" on its own names the file without
+/// saying what was wrong with it.
+fn in_file(path: &Path, error: anyhow::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}: {error}", path.display())
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -1348,7 +1314,7 @@ fn names_leteo(config: &[u8], format: ConfigFormat) -> bool {
         return true;
     };
     match format {
-        ConfigFormat::Json(format) => match serde_json::from_str::<Value>(text) {
+        ConfigFormat::Json(format) => match jsonc::parse(text.as_bytes()) {
             Ok(value) => {
                 servers_at(&value, format).is_some_and(|servers| servers.contains_key(SERVER_NAME))
             }
@@ -1555,10 +1521,9 @@ fn configured_commands(path: &Path, format: ConfigFormat) -> Vec<PathBuf> {
 
 fn json_configured_commands(text: &str, mcp_format: McpFormat) -> Vec<PathBuf> {
     // OpenCode's config may be a `.jsonc` with comments, which `serde_json`
-    // rejects outright; the same strip the writer applies keeps the reader able
-    // to see the command `setup` itself just wrote into that file.
-    let stripped = strip_jsonc(text.as_bytes());
-    let Ok(config) = serde_json::from_slice::<Value>(&stripped) else {
+    // rejects outright; the same reader the writer uses keeps this able to see
+    // the command `setup` itself just wrote into that file.
+    let Ok(config) = jsonc::parse(text.as_bytes()) else {
         return Vec::new();
     };
     let mut commands = Vec::new();
@@ -1702,7 +1667,7 @@ fn hook_runner_switch_is_off(
     }
     let path = resolve_paths(adapter, environment).hooks?;
     let existing = read_optional(&path).ok().flatten()?;
-    let config = serde_json::from_slice::<Value>(&existing).ok()?;
+    let config = jsonc::parse(&existing).ok()?;
     zcode_hook_runner_disabled(&config).then_some(path)
 }
 

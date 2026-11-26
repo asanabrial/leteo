@@ -166,3 +166,9 @@ while ($true) {
     }
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# The step's exit code would otherwise be `$LASTEXITCODE`, which the last native
+# command left: `leteo uninstall` exits non-zero when it keeps a file it did not
+# create, and that is the uninstaller's answer about itself, not this check's.
+# Reaching this line means every assertion above held.
+exit 0

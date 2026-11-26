@@ -966,6 +966,102 @@ fn a_non_package_install_keeps_its_canonical_path() {
     );
 }
 
+/// A package manager owns what it installed, and the command that takes it is
+/// the one its own tool prints.
+#[test]
+fn a_package_manager_owns_the_binary_it_installed() {
+    let temp = TempDir::new().unwrap();
+    let cases = [
+        (
+            temp.path().join("Cellar/leteo/1.2.3/bin/leteo"),
+            "Homebrew",
+            "brew uninstall leteo",
+        ),
+        (
+            temp.path().join("mise/installs/leteo/1.2.3/bin/leteo"),
+            "mise",
+            "mise uninstall leteo",
+        ),
+        (
+            temp.path().join(".asdf/installs/leteo/1.2.3/bin/leteo"),
+            "asdf",
+            "asdf uninstall leteo",
+        ),
+        (
+            temp.path()
+                .join("_npx/1a19a25e/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm cache clean --force",
+        ),
+        (
+            temp.path()
+                .join("lib/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm uninstall -g @asanabrial/leteo",
+        ),
+        // The formula is the directory, not the file: a package can ship a
+        // differently named binary, and `brew` only knows the formula.
+        (
+            temp.path().join("Cellar/leteo/1.2.3/bin/leteo-server"),
+            "Homebrew",
+            "brew uninstall leteo",
+        ),
+        // `.bin` is where a package leaves its links, not a package: naming it
+        // would print a command that removes nothing. Nothing in an ordinary
+        // project's `node_modules` says the install is global, so the command
+        // does not claim it is.
+        (
+            temp.path().join("project/node_modules/.bin/leteo"),
+            "npm",
+            "npm uninstall @asanabrial/leteo",
+        ),
+        (
+            temp.path().join("project/node_modules/leteo/vendor/leteo"),
+            "npm",
+            "npm uninstall leteo",
+        ),
+        // An `asdf` far above a mise install is a home directory or a mount
+        // point, not the manager: only the component above `installs` decides.
+        (
+            temp.path().join("asdf/mise/installs/leteo/1.2.3/bin/leteo"),
+            "mise",
+            "mise uninstall leteo",
+        ),
+    ];
+
+    for (executable, manager, command) in cases {
+        let owner = package_owner(&executable)
+            .unwrap_or_else(|| panic!("{} is a package path", executable.display()));
+        assert_eq!(owner.manager, manager, "{}", executable.display());
+        assert_eq!(owner.command, command, "{}", executable.display());
+    }
+
+    assert!(
+        package_owner(&temp.path().join("bin/leteo")).is_none(),
+        "an ordinary install has no manager to name"
+    );
+}
+
+/// A package name npm cannot be read is still npm's, and still must not be
+/// deleted; the command falls back to the package Leteo publishes.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_npm_package_name_still_belongs_to_npm() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp = TempDir::new().unwrap();
+    let executable = temp
+        .path()
+        .join("node_modules")
+        .join(OsStr::from_bytes(b"\xff\xfe"))
+        .join("leteo");
+
+    let owner = package_owner(&executable).expect("npm still owns the path");
+    assert_eq!(owner.manager, "npm");
+    assert_eq!(owner.command, "npm uninstall @asanabrial/leteo");
+}
+
 #[test]
 fn doctor_reports_a_configured_command_whose_binary_is_gone() {
     let temp = TempDir::new().unwrap();

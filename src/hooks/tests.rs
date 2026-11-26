@@ -103,7 +103,8 @@ fn the_voice_setting_decides_which_lines_a_hook_shows() {
         )
         .unwrap();
         aged.execute(
-            "UPDATE observations SET created_at = datetime('now', '-200 minutes')",
+            "UPDATE observations SET created_at = datetime('now', '-200 minutes'), \
+                 updated_at = datetime('now', '-200 minutes')",
             [],
         )
         .unwrap();
@@ -186,7 +187,8 @@ fn a_store_with_no_voice_setting_keeps_the_reminder_and_says_nothing_else() {
     )
     .unwrap();
     aged.execute(
-        "UPDATE observations SET created_at = datetime('now', '-200 minutes')",
+        "UPDATE observations SET created_at = datetime('now', '-200 minutes'), \
+                 updated_at = datetime('now', '-200 minutes')",
         [],
     )
     .unwrap();
@@ -2290,7 +2292,10 @@ fn the_reminder_waits_for_the_session_to_start_and_for_the_saving_to_stop() {
             .unwrap();
         connection
             .execute(
-                &format!("UPDATE observations SET created_at = datetime('now', '{observations}')"),
+                &format!(
+                    "UPDATE observations SET created_at = datetime('now', '{observations}'), \
+                      updated_at = datetime('now', '{observations}')"
+                ),
                 [],
             )
             .unwrap();
@@ -2322,6 +2327,63 @@ fn the_reminder_waits_for_the_session_to_start_and_for_the_saving_to_stop() {
     // Old enough and quiet enough, and it speaks.
     age("-2 hours", "-1 day");
     assert!(nudged(&mut store), "a genuinely quiet project is nudged");
+}
+
+/// Revising a memory is saving, and the reminder says nothing about it.
+///
+/// A topic-key revision writes `updated_at` and leaves `created_at` where the
+/// first write put it. The reminder read the newest row's `created_at`, so an
+/// agent that spent half an hour refining one memory was told, on every prompt
+/// past the fifth minute, that it had kept nothing — a false reminder that cost
+/// tokens each time it fired and taught the agent to ignore the true ones.
+#[test]
+fn a_revision_inside_the_window_keeps_the_reminder_silent() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    // One memory, written twice under one key: the second write is a revision.
+    for body in ["first words", "second words"] {
+        store
+            .add_observation(AddObservation {
+                session_id: payload.session_id.clone(),
+                kind: "decision".to_owned(),
+                title: "A memory being refined".to_owned(),
+                content: body.to_owned(),
+                tool_name: None,
+                project: Some("hook-project".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: Some("refined".to_owned()),
+                prompt_sync_id: None,
+            })
+            .unwrap();
+    }
+
+    // The conversation began two hours ago and the memory was created
+    // yesterday; only the revision is recent.
+    let database = store.database_path().to_path_buf();
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "UPDATE sessions SET started_at = datetime('now', '-2 hours')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE observations SET created_at = datetime('now', '-1 day')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    if let Some(path) = nudge_state_path(&store, &payload.session_id) {
+        let _ = std::fs::remove_file(path);
+    }
+    let outcome = run(&mut store, HookEvent::UserPromptSubmit, &payload).unwrap();
+    assert_eq!(
+        outcome.system_message, None,
+        "a revision a moment ago is somebody who just saved"
+    );
 }
 
 /// The opening block says what each recent session was for, however long ago
@@ -3773,7 +3835,8 @@ fn a_spooled_capture_drained_twice_is_stored_once() {
     rusqlite::Connection::open(store.database_path())
         .unwrap()
         .execute(
-            "UPDATE observations SET created_at = datetime('now', '-200 minutes')",
+            "UPDATE observations SET created_at = datetime('now', '-200 minutes'), \
+                 updated_at = datetime('now', '-200 minutes')",
             [],
         )
         .unwrap();

@@ -28,6 +28,22 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Uninstall leaves a package-managed binary to its package manager.** `leteo
+  uninstall --yes` deleted whatever `current_exe()` pointed at, a Homebrew or
+  mise/asdf and an npm install included, and the manager's record then
+  disagreed with the disk — the next upgrade or reinstall acted on a file that
+  was gone. The removal now recognises the same layouts `setup` already knows
+  and reports the command that removes it (`brew uninstall leteo`, `mise
+  uninstall leteo`, `npm uninstall` or `npm uninstall -g` depending on whether
+  the `node_modules` is a project's or a global prefix, or `npm cache clean
+  --force` for the `_npx` cache) instead of taking the file (#435).
+- **Revising a memory counts as saving, and the reminder knows it.** The "you
+  have not kept anything" line read the newest memory's `created_at`, and a
+  topic-key revision moves only `updated_at` — so an agent that spent half an
+  hour refining one memory was told, on every prompt past the fifth minute, that
+  it had kept nothing. One aggregate over the later of the two columns answers
+  the question, which also stops the reminder selecting every column of a row to
+  read one timestamp (#439).
 - **A hard delete confirms the tombstones it also erases.** The terminal's
   confirmation counted live memories and the delete removed the soft-deleted
   rows as well, so a project with three live and two tombstoned memories said

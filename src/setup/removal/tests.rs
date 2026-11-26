@@ -153,6 +153,121 @@ fn windows_reports_the_binary_instead_of_pretending_it_removed_it() {
     );
 }
 
+/// The binary a package manager installed is the manager's to remove.
+///
+/// `uninstall --yes` took every executable it found, a Homebrew or npm install
+/// included. The manager's record then disagreed with the disk, and the next
+/// upgrade or reinstall acted on a file that was gone.
+#[test]
+fn a_package_managed_binary_is_left_and_its_removal_named() {
+    let temp = TempDir::new().unwrap();
+    let data = temp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+
+    let cases = [
+        (
+            temp.path().join("Cellar/leteo/1.2.3/bin/leteo"),
+            "Homebrew",
+            "brew uninstall leteo",
+        ),
+        (
+            temp.path().join("mise/installs/leteo/1.2.3/bin/leteo"),
+            "mise",
+            "mise uninstall leteo",
+        ),
+        (
+            temp.path().join(".asdf/installs/leteo/1.2.3/bin/leteo"),
+            "asdf",
+            "asdf uninstall leteo",
+        ),
+        (
+            temp.path()
+                .join("_npx/1a19a25e/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm cache clean --force",
+        ),
+        (
+            temp.path()
+                .join("lib/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm uninstall -g @asanabrial/leteo",
+        ),
+    ];
+
+    for (exe, manager, command) in cases {
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"binary").unwrap();
+
+        let removed = uninstall_everything_for(&probe_in(temp.path()), &data, Some(exe.clone()));
+
+        assert!(
+            exe.exists(),
+            "{manager} installed this, so uninstall must not take it"
+        );
+        assert!(!removed.binary_removed, "{manager}");
+        let owner = removed
+            .binary_managed_by
+            .as_ref()
+            .unwrap_or_else(|| panic!("{manager}'s ownership has to be reported"));
+        assert_eq!(owner.manager, manager);
+        assert_eq!(owner.command, command);
+        // `print_json` writes exactly this pretty string, so this is the output
+        // a person or a script is given.
+        let report = serde_json::to_string_pretty(&removed).unwrap();
+        assert!(
+            report.contains(&format!("\"command\": \"{command}\"")),
+            "the report has to say how it goes: {report}"
+        );
+
+        // A dry run names the owner too: it is the run that is supposed to say
+        // what the real one would do.
+        let dry = uninstall_everything_for(
+            &SetupOptions {
+                dry_run: true,
+                ..probe_in(temp.path())
+            },
+            &data,
+            Some(exe.clone()),
+        );
+        assert!(exe.exists());
+        assert!(!dry.binary_removed);
+        assert_eq!(
+            dry.binary_managed_by
+                .as_ref()
+                .map(|owner| owner.command.as_str()),
+            Some(command),
+            "a dry run says whose it is and how it goes"
+        );
+    }
+}
+
+/// The manager keeps a link in front of the versioned file, and a run handed
+/// the link is still holding the manager's binary.
+#[cfg(unix)]
+#[test]
+fn a_link_in_front_of_a_managed_binary_is_left_too() {
+    let temp = TempDir::new().unwrap();
+    let data = temp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+
+    let target = temp.path().join("Cellar/leteo/1.2.3/bin/leteo");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"binary").unwrap();
+    let link = temp.path().join("bin/leteo");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let removed = uninstall_everything_for(&probe_in(temp.path()), &data, Some(link.clone()));
+
+    assert!(link.exists(), "the link is the manager's too");
+    assert!(target.exists());
+    assert!(!removed.binary_removed);
+    assert_eq!(
+        removed.binary_managed_by.map(|owner| owner.command),
+        Some("brew uninstall leteo".to_owned())
+    );
+}
+
 #[test]
 fn a_file_nobody_here_created_is_not_taken_with_the_rest() {
     let temp = TempDir::new().unwrap();

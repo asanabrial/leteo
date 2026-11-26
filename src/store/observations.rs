@@ -1299,6 +1299,31 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// When this project was last written to, by any path that keeps a memory.
+    ///
+    /// One aggregate rather than the newest row: a revision through a topic key
+    /// and a save that folds into an existing memory both write `updated_at`
+    /// and leave `created_at` where it was, and the save reminder read the
+    /// newest row's `created_at` — so an agent revising one memory for half an
+    /// hour was told, on every prompt past the fifth minute, that it had kept
+    /// nothing. Answering the question the reminder actually asks also stops it
+    /// selecting every column of a row to read one timestamp.
+    pub fn last_write_at(&self, project: Option<&str>) -> Result<Option<String>, StoreError> {
+        let project = project.map(normalize::project);
+        let mut narrowing = Narrowing::new();
+        narrowing.equals("project", project.as_ref());
+        let sql = format!(
+            "SELECT MAX(MAX(datetime(ifnull(updated_at, created_at)), datetime(created_at)))
+             FROM observations WHERE deleted_at IS NULL{}",
+            narrowing.clauses()
+        );
+        Ok(self.connection.query_row(
+            &sql,
+            rusqlite::params_from_iter(narrowing.values()),
+            |row| row.get(0),
+        )?)
+    }
+
     /// How many live memories a project holds, or the whole store when no
     /// project is named.
     ///

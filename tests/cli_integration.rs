@@ -3431,6 +3431,10 @@ fn a_since_date_that_cannot_be_read_is_refused_with_the_formats() {
 fn a_readable_since_covers_exactly_the_rows_after_it() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let database = temp.path().join("leteo-since-range.db");
+    // Read before the rows are written: a run that crossed midnight between the
+    // save and the read would ask with the next day, whose midnight is after
+    // them, and the count would be zero for a reason that is not the filter's.
+    let today = leteo::timestamp::now()[..10].to_owned();
     for title in ["first day", "second day"] {
         leteo(&database)
             .arg("save")
@@ -3441,8 +3445,6 @@ fn a_readable_since_covers_exactly_the_rows_after_it() {
             .assert()
             .success();
     }
-
-    let today = leteo::timestamp::now()[..10].to_owned();
     let inspected = |since: &str| {
         let answer = run_json(
             leteo(&database)
@@ -3473,4 +3475,59 @@ fn a_readable_since_covers_exactly_the_rows_after_it() {
         0,
         "a day after them covers neither"
     );
+}
+
+/// The relation listing reads the same normalized date as the scan.
+///
+/// `conflicts list` filters `r.created_at`, not an observation's, so it has its
+/// own handoff from the parser to the store and the scan's test says nothing
+/// about it. `consolidate` is the one CLI path that writes a relation, so the
+/// store holds one written after the boundary and one query on each side of it.
+#[test]
+fn a_readable_since_covers_the_relation_listing_too() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-since-relations.db");
+    let today = leteo::timestamp::now()[..10].to_owned();
+    for title in ["first day", "second day"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("something worth keeping")
+            .arg("--project")
+            .arg("alpha")
+            .assert()
+            .success();
+    }
+    leteo(&database)
+        .arg("consolidate")
+        .arg("1")
+        .arg("2")
+        .arg("--title")
+        .arg("merged")
+        .arg("--content")
+        .arg("one memory instead of two")
+        .assert()
+        .success();
+
+    let total = |since: &str| {
+        let answer = run_json(
+            leteo(&database)
+                .arg("conflicts")
+                .arg("list")
+                .arg("--project")
+                .arg("alpha")
+                .arg("--since")
+                .arg(since),
+        );
+        answer["total"].as_i64().expect("a listing reports total")
+    };
+
+    // One `supersedes` relation per source, both written by the consolidate.
+    assert_eq!(total(&today), 2, "the relations were written today");
+    assert_eq!(
+        total("2000-01-01"),
+        2,
+        "and a day before them still covers them"
+    );
+    assert_eq!(total("2999-01-01"), 0, "a day after them covers nothing");
 }

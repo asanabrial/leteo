@@ -3420,3 +3420,57 @@ fn a_since_date_that_cannot_be_read_is_refused_with_the_formats() {
         "a readable date on an empty store is an empty page, not a refusal"
     );
 }
+
+/// The date the parser answers is the date the store's filter applies.
+///
+/// The refusal tests show the bad date never reaches SQLite; this shows the
+/// good one still does, at the boundary a person wrote. A bare day becomes its
+/// midnight, so it covers what was saved today, and a day before or after the
+/// rows moves them out of the answer.
+#[test]
+fn a_readable_since_covers_exactly_the_rows_after_it() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-since-range.db");
+    for title in ["first day", "second day"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("something worth keeping")
+            .arg("--project")
+            .arg("alpha")
+            .assert()
+            .success();
+    }
+
+    let today = leteo::timestamp::now()[..10].to_owned();
+    let inspected = |since: &str| {
+        let answer = run_json(
+            leteo(&database)
+                .arg("conflicts")
+                .arg("scan")
+                .arg("--project")
+                .arg("alpha")
+                .arg("--since")
+                .arg(since),
+        );
+        answer["inspected"]
+            .as_i64()
+            .expect("a scan reports inspected")
+    };
+
+    assert_eq!(
+        inspected(&today),
+        2,
+        "a bare day is its midnight, and both rows were saved after it"
+    );
+    assert_eq!(
+        inspected("2000-01-01"),
+        2,
+        "and a day before them covers both"
+    );
+    assert_eq!(
+        inspected("2999-01-01"),
+        0,
+        "a day after them covers neither"
+    );
+}

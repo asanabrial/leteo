@@ -129,10 +129,26 @@ mod tests {
 
     #[test]
     fn an_unreadable_date_argument_names_the_formats() {
-        let refused = parse_argument("yesterday").unwrap_err();
-        let said = refused.to_string();
-        assert!(said.contains("yesterday"), "{said}");
-        assert!(said.contains(ARGUMENT_FORMATS), "{said}");
+        // Everything SQLite would have answered NULL for, plus two shapes a
+        // looser parser is tempted by: a date with no day and an impossible
+        // one, which `datetime` also refuses but by returning NULL rather than
+        // an error.
+        for value in [
+            "",
+            "   ",
+            "yesterday",
+            "now",
+            "-1 day",
+            "2026-02-30",
+            "2026-07",
+        ] {
+            let refused = parse_argument(value).unwrap_err();
+            let said = refused.to_string();
+            assert!(said.contains(ARGUMENT_FORMATS), "{value:?} said {said}");
+            if !value.trim().is_empty() {
+                assert!(said.contains(value.trim()), "{value:?} said {said}");
+            }
+        }
     }
 
     #[test]

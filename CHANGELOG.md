@@ -28,6 +28,18 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A cloud failure's body is read under the bound a success is, and an
+  environment token is never written to `cloud.json`.** `checked_response` read
+  a non-success body with `text()`, which buffers whatever arrives: a broken
+  server answering a request that had already failed with more than the client
+  will ever read from a success filled its memory and the `last_error` stored
+  for it. The body now goes through `read_bounded` at the same limit, and one
+  over it is reported by the sentence that says so. Separately,
+  `ClientConfig::load` copies `LETEO_CLOUD_TOKEN` into the configuration so the
+  client can use it, and `cloud enroll` / `cloud config set` wrote the whole
+  struct back — putting a credential someone had deliberately kept off disk
+  into `cloud.json`. `save` now leaves it out, and `--token` is the one thing
+  that puts a token in the file (#447).
 - **A semantic conflict scan honours `--since` and refuses `--apply`.** The mode
   that spends a model call per pair ignored `--since`, so a caller who bounded
   the work paid for every memory in the project, and it ignored `--apply`, so

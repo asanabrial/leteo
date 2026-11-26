@@ -315,7 +315,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                         config.server = server.trim().to_owned();
                     }
                     if let Some(token) = token {
-                        config.token = token.trim().to_owned();
+                        config.set_token(token);
                     }
                     if !project.is_empty() {
                         config.projects = project.clone();

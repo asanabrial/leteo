@@ -735,6 +735,83 @@ fn cli_hooks_drive_the_session_lifecycle_from_agent_payloads() {
     assert_eq!(stats["total_observations"], json!(1));
 }
 
+/// A token kept in the environment never reaches `cloud.json`.
+///
+/// `LETEO_CLOUD_TOKEN` is how a person keeps a credential off disk. Loading it
+/// into the configuration is how the client uses it, and the two commands that
+/// load and save — `cloud enroll` and `cloud config set` — wrote the whole
+/// struct back, so a token the file had deliberately left out reappeared in it.
+/// The file is what the person chose to keep; `--token` is how they say
+/// otherwise.
+#[test]
+fn an_environment_token_is_used_and_never_written_to_the_cloud_config() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let data_dir = temp.path().join("data");
+    let cloud_config = data_dir.join("cloud.json");
+    let with_environment_token = || {
+        let mut command = bare_leteo();
+        command.arg("--data-dir").arg(&data_dir);
+        command.env_remove("LETEO_CLOUD_SERVER");
+        command.env("LETEO_CLOUD_TOKEN", "an-environment-token");
+        command
+    };
+
+    let enrolled = run_json(
+        with_environment_token()
+            .arg("cloud")
+            .arg("enroll")
+            .arg("--project")
+            .arg("Env--Project"),
+    );
+    assert_eq!(enrolled["project"], json!("env-project"));
+    assert_eq!(enrolled["projects"], json!(["env-project"]));
+    let persisted = std::fs::read_to_string(&cloud_config).expect("cloud config file");
+    assert!(
+        !persisted.contains("an-environment-token"),
+        "a token kept in the environment stays out of the file: {persisted}"
+    );
+
+    // The other command that loads and saves: setting the server writes the
+    // configuration back, and the token is part of it.
+    run_json(
+        with_environment_token()
+            .arg("cloud")
+            .arg("config")
+            .arg("set")
+            .arg("--server")
+            .arg("https://memory.example.com"),
+    );
+    let persisted = std::fs::read_to_string(&cloud_config).expect("cloud config file");
+    assert!(
+        !persisted.contains("an-environment-token"),
+        "and the server being set does not carry it in: {persisted}"
+    );
+
+    // It is still the token the client runs with.
+    let shown = run_json(
+        with_environment_token()
+            .arg("cloud")
+            .arg("config")
+            .arg("show"),
+    );
+    assert_eq!(shown["config"]["token_configured"], json!(true));
+
+    // `--token` is the one thing that says the file may keep it.
+    run_json(
+        with_environment_token()
+            .arg("cloud")
+            .arg("config")
+            .arg("set")
+            .arg("--token")
+            .arg("a-written-token"),
+    );
+    let persisted = std::fs::read_to_string(&cloud_config).expect("cloud config file");
+    assert!(
+        persisted.contains("a-written-token"),
+        "a token given to the command is written: {persisted}"
+    );
+}
+
 #[test]
 fn cli_cloud_configuration_enrollment_and_status_round_trip() {
     let temp = tempfile::tempdir().expect("create CLI test directory");

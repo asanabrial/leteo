@@ -19,6 +19,16 @@ pub struct ClientConfig {
     pub projects: Vec<String>,
     pub poll_interval_seconds: Option<u64>,
     pub enabled: bool,
+    /// Whether `token` came from `LETEO_CLOUD_TOKEN` rather than from the file.
+    ///
+    /// The environment is where a person puts a credential they mean to keep
+    /// off disk. Loading it into the struct is right — the client has to use
+    /// it — but the next `cloud enroll` or `cloud config set` wrote the whole
+    /// struct back, so a token left out of `cloud.json` on purpose reappeared
+    /// in it. `save` omits a token this flag marks, and `set_token` is the one
+    /// thing that clears it.
+    #[serde(skip)]
+    token_from_environment: bool,
 }
 
 impl ClientConfig {
@@ -51,6 +61,7 @@ impl ClientConfig {
             && let Ok(token) = std::env::var("LETEO_CLOUD_TOKEN")
         {
             self.token = token;
+            self.token_from_environment = true;
         }
     }
 
@@ -68,9 +79,21 @@ impl ClientConfig {
         self.projects = projects;
     }
 
+    /// The token this configuration runs with, kept out of the file when the
+    /// environment supplied it.
+    pub fn set_token(&mut self, token: &str) {
+        self.token = token.trim().to_owned();
+        self.token_from_environment = false;
+    }
+
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
-        let mut body = serde_json::to_string_pretty(self).context("serialize cloud config")?;
+        let mut persisted = self.clone();
+        if persisted.token_from_environment {
+            persisted.token.clear();
+        }
+        let mut body =
+            serde_json::to_string_pretty(&persisted).context("serialize cloud config")?;
         body.push('\n');
         // This holds the cloud token. Writing it and restricting it afterwards
         // put it on disk world-readable for as long as the two calls were
@@ -157,6 +180,7 @@ mod tests {
             ],
             poll_interval_seconds: Some(15),
             enabled: true,
+            token_from_environment: false,
         };
         config.save(&path).unwrap();
 
@@ -182,6 +206,7 @@ mod tests {
             projects: vec!["leteo".to_owned()],
             poll_interval_seconds: None,
             enabled: false,
+            token_from_environment: false,
         };
         assert!(!complete.is_runnable());
         assert!(

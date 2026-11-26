@@ -166,7 +166,7 @@ impl RemoteClient {
         let url = self.endpoint_with_query(&path, &[("project", project.to_owned())])?;
         let request = self.authorized(self.client.get(url));
         let response = request.send().await.map_err(RemoteError::Request)?;
-        let response = checked_response(response, "pull chunk").await?;
+        let response = checked_response(response, "pull chunk", MAX_RESPONSE_BYTES).await?;
         let bytes = read_bounded(response, MAX_RESPONSE_BYTES).await?;
         if bytes.is_empty() {
             return Err(RemoteError::InvalidResponse(
@@ -263,7 +263,7 @@ impl RemoteClient {
         operation: &str,
     ) -> Result<T, RemoteError> {
         let response = request.send().await.map_err(RemoteError::Request)?;
-        let response = checked_response(response, operation).await?;
+        let response = checked_response(response, operation, MAX_RESPONSE_BYTES).await?;
         let body = read_bounded(response, MAX_RESPONSE_BYTES).await?;
         serde_json::from_slice(&body)
             .map_err(|error| RemoteError::InvalidResponse(error.to_string()))
@@ -303,12 +303,22 @@ async fn read_bounded(response: reqwest::Response, limit: u64) -> Result<Vec<u8>
 async fn checked_response(
     response: reqwest::Response,
     operation: &str,
+    limit: u64,
 ) -> Result<reqwest::Response, RemoteError> {
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    // The failure body is a message that ends up in `last_error`, and it used
+    // to be `text()`: whatever the server sent, buffered whole. A broken server
+    // could answer a request that had already failed with more than the client
+    // will ever read from a success, and the store kept it. The same bound as a
+    // success applies, and a body over it is reported by the sentence saying
+    // so rather than by its contents.
+    let body = match read_bounded(response, limit).await {
+        Ok(body) => String::from_utf8_lossy(&body).into_owned(),
+        Err(error) => error.to_string(),
+    };
     let envelope = serde_json::from_str::<ErrorEnvelope>(&body).unwrap_or_default();
     let error_code = if status == StatusCode::NOT_FOUND && envelope.error_code.is_empty() {
         "server_unsupported".to_owned()
@@ -419,6 +429,94 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.len(), limit as usize * 4);
+    }
+
+    async fn failing_server(status: StatusCode, bytes: usize) -> std::net::SocketAddr {
+        use axum::{Router, routing::get};
+
+        let app = Router::new().route(
+            "/sync/pull/{chunk_id}",
+            get(move || async move { (status, vec![b'a'; bytes]) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        address
+    }
+
+    /// A failure's body is read under the bound a success is, and the message
+    /// that reaches `last_error` is bounded by it.
+    ///
+    /// `text()` buffered whatever arrived, so a server answering 500 with more
+    /// than the client will ever read from a success filled its memory and the
+    /// store. The sentence that says the body was too large is the answer now.
+    #[tokio::test]
+    async fn a_failing_response_body_is_bounded_before_it_is_stored() {
+        let limit = 4096_u64;
+        let address = failing_server(StatusCode::INTERNAL_SERVER_ERROR, limit as usize * 4).await;
+        let response = Client::new()
+            .get(format!("http://{address}/sync/pull/abcdef01"))
+            .send()
+            .await
+            .unwrap();
+
+        match checked_response(response, "pull chunk", limit).await {
+            Err(RemoteError::Status(error)) => {
+                assert_eq!(error.status, 500);
+                assert!(
+                    error.message.contains("exceeds"),
+                    "the message names the bound it met: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.len() < 200,
+                    "and is not the body it refused: {} bytes",
+                    error.message.len()
+                );
+                assert!(
+                    error.to_string().len() < 300,
+                    "what `last_error` stores is bounded with it"
+                );
+            }
+            other => panic!("expected a status error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_response_inside_the_limit_still_reports_the_server_envelope() {
+        use axum::{Router, routing::get};
+
+        let app = Router::new().route(
+            "/sync/pull/{chunk_id}",
+            get(|| async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    r#"{"error_class":"validation","error_code":"bad_chunk","error":"chunk id is not hex"}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let response = Client::new()
+            .get(format!("http://{address}/sync/pull/abcdef01"))
+            .send()
+            .await
+            .unwrap();
+        match checked_response(response, "pull chunk", 4096).await {
+            Err(RemoteError::Status(error)) => {
+                assert_eq!(error.status, 400);
+                assert_eq!(error.error_class, "validation");
+                assert_eq!(error.error_code, "bad_chunk");
+                assert_eq!(error.message, "chunk id is not hex");
+            }
+            other => panic!("expected a status error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

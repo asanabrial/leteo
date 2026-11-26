@@ -3815,6 +3815,27 @@ fn a_semantic_scan_honours_since_and_refuses_apply() {
             .success();
     }
 
+    // Both sides of the bound: a date-only `--since` the CLI accepts has to
+    // reach the scan as that date. Only the second case would pass on an
+    // unreadable bound, which excludes everything just as a bound after every
+    // memory does.
+    let all = run_json(
+        leteo(&database)
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--semantic")
+            .arg("claude")
+            .arg("--since")
+            .arg("1999-01-01"),
+    );
+    assert_eq!(
+        all["inspected"],
+        serde_json::json!(2),
+        "a bound before the memories inspects both: {all}"
+    );
+
     let preview = run_json(
         leteo(&database)
             .arg("conflicts")

@@ -708,6 +708,27 @@ mod tests {
             (0, 0),
             "an unreadable bound excludes every memory rather than bounding none"
         );
+
+        // And a row whose own timestamp cannot be read is outside a bound, as
+        // `datetime()` is NULL there and the SQL comparison matches nothing.
+        // The fixture's rows are all one format, which is why this is written by
+        // hand rather than aged by the block above.
+        {
+            let connection = rusqlite::Connection::open(store.database_path()).unwrap();
+            connection
+                .execute(
+                    "UPDATE observations SET created_at = 'not a timestamp' \
+                     WHERE title = 'Unrelated note 0 on deployment windows'",
+                    [],
+                )
+                .unwrap();
+        }
+        options.since = Some("1999-01-01 00:00:00".to_owned());
+        let (_, inspected, _) = collect_pairs(&mut store, &options).unwrap();
+        assert_eq!(
+            inspected, 41,
+            "the unreadable row is out, the forty-one readable ones are in"
+        );
     }
 
     #[test]

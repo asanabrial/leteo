@@ -1836,6 +1836,64 @@ fn pruning_keeps_the_newest_copies_and_ignores_a_name_it_cannot_read() {
 }
 
 #[test]
+fn every_opener_of_a_store_that_needs_migrating_takes_its_copy() {
+    use std::sync::Arc;
+    use std::sync::Barrier;
+
+    // The copy used to go straight to its final name, so two openers of a store
+    // that needs migrating both saw no file and the second `VACUUM INTO` met the
+    // first's destination. A refused destination is not `SQLITE_BUSY`, so the
+    // open's retry loop never retried it and one of the two failed with "open
+    // Leteo store". Measured with the release binary on a copy of a real store
+    // at the previous schema: 7 of 20 paired opens failed; after this change, 0
+    // of 20. The rounds are what make the window likely rather than certain to
+    // be hit: the check and the vacuum are separated by nothing a test can hold
+    // open.
+    for round in 0..8 {
+        let (temp, store) = store();
+        let path = store.database_path().to_path_buf();
+        let equal = SCHEMA_VERSION - 1;
+        store
+            .connection
+            .execute_batch(&format!("PRAGMA user_version = {equal}"))
+            .unwrap();
+        drop(store);
+
+        let barrier = Arc::new(Barrier::new(8));
+        let openers = (0..8)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open(StoreConfig::new(path)).map(|store| {
+                        store
+                            .connection
+                            .query_row("PRAGMA user_version", [], |row| row.get::<_, i32>(0))
+                            .unwrap()
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for opener in openers {
+            let version = opener.join().unwrap().unwrap_or_else(|error| {
+                panic!("round {round}: an opener of a store that needs migrating failed: {error}")
+            });
+            assert_eq!(
+                version, SCHEMA_VERSION,
+                "round {round}: and left it migrated"
+            );
+        }
+        assert_eq!(
+            copy_version(&temp.path().join(format!("leteo.db.pre-schema-{equal}"))),
+            Some(equal),
+            "round {round}: with a complete copy of the schema it came from"
+        );
+    }
+}
+
+#[test]
 fn a_complete_copy_left_by_an_earlier_attempt_stands() {
     // `VACUUM INTO` refuses an existing destination, and a copy that reads as a
     // database at this schema is no fresher for being taken again. Taking a
@@ -1884,6 +1942,38 @@ fn a_complete_copy_left_by_an_earlier_attempt_stands() {
 }
 
 #[test]
+fn a_copy_taken_after_another_opener_migrated_is_discarded() {
+    // The vacuum reads the store as it stands, and another opener may have
+    // finished migrating it in the meantime. A file named `pre-schema-26` that
+    // holds schema 27 is not the way back its name promises, and the opener
+    // that won the race has already written the real one: this copy goes, so it
+    // cannot replace or stand beside it.
+    let (temp, store) = store();
+    let path = store.database_path().to_path_buf();
+    let from = SCHEMA_VERSION - 1;
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    backup_before_migrate(&connection, &path, from).unwrap();
+
+    let target = temp.path().join(format!("leteo.db.pre-schema-{from}"));
+    assert!(
+        !target.exists(),
+        "nothing is left under the name, because this store is not at the schema the name would claim"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(temp.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".part"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "and the copy it took goes with it: {leftovers:?}"
+    );
+}
+
+#[test]
 fn a_partial_copy_under_the_final_name_is_replaced_by_a_complete_one() {
     // What a killed `VACUUM INTO` left under the final name in the build before
     // this one: a file the migration never finished writing, which SQLite
@@ -1900,7 +1990,21 @@ fn a_partial_copy_under_the_final_name_is_replaced_by_a_complete_one() {
     drop(store);
 
     let target = temp.path().join(format!("leteo.db.pre-schema-{from}"));
-    std::fs::write(&target, b"half a copy").unwrap();
+    // A copy of this store cut in half: page 1 is intact, so the version reads,
+    // and the pages the header claims are not all there.
+    let whole = temp.path().join("whole.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute("VACUUM INTO ?1", [whole.to_string_lossy().as_ref()])
+        .unwrap();
+    let bytes = std::fs::read(&whole).unwrap();
+    std::fs::remove_file(&whole).unwrap();
+    std::fs::write(&target, &bytes[..bytes.len() / 2]).unwrap();
+    assert_eq!(
+        copy_version(&target),
+        None,
+        "half of a database is not a database, whatever its first page says"
+    );
 
     let reopened = Store::open(StoreConfig::new(path.clone())).unwrap();
 
@@ -1983,6 +2087,11 @@ fn a_copy_that_cannot_be_taken_stops_the_open() {
         outcome.is_err(),
         "a copy that cannot be taken has to be an error, not silence: {outcome:?}"
     );
+    // What the failed vacuum may have written is removed where it can be, but
+    // a `.part` needs a copy that dies after creating its file — a full disk —
+    // to exist at all, and this suite cannot arrange one. A `.part` that
+    // survives is the same file the killed-process story leaves, and nothing
+    // sweeps either.
 }
 
 #[test]

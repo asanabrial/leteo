@@ -46,12 +46,12 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import quality  # noqa: E402  (the path above has to be set first)
+from mcpclient import MCP, PROJECTS, call_json, rank, save_corpus  # noqa: E402
 from scoring import summarise  # noqa: E402
 
 # The corpus each name stands for. The names are what the output and the issue
 # call them; the modules are where the memories and questions live.
 CORPORA = {"ratchet": "corpus", "comparison": "comparison_corpus"}
-PROJECTS = ("alpha-api", "beta-web")
 
 
 class CannotRun(Exception):
@@ -68,8 +68,6 @@ def measure(corpora, limits):
     project names, so one store would answer the second corpus's questions with
     the first corpus's memories.
     """
-    from mcpclient import MCP, call_json, save_corpus
-
     state = os.environ["BENCH_STATE"]
     measured = {}
     for name in corpora:
@@ -101,14 +99,13 @@ def measure(corpora, limits):
                         {"query": question["q"], "limit": limit},
                     )
                     found = [r["id"] for r in reply.get("results") or []]
-                    target = ids[question["target"]]
                     rows.append(
                         dict(
                             kind=question["kind"],
                             q=question["q"],
                             project=question["project"],
                             limit=limit,
-                            rank=found.index(target) + 1 if target in found else None,
+                            rank=rank(found, ids[question["target"]]),
                             results=len(found),
                             bytes=len(text.encode()),
                         )

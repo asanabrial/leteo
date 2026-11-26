@@ -126,3 +126,27 @@ def save_corpus(servers, members):
     if len(set(ids.values())) != len(members):
         raise UnusableReply("two corpus memories were given the same id")
     return ids
+
+
+# The projects every corpus is loaded into, named once.
+#
+# The ratchet and the paired comparison open the same two stores and ask the
+# same questions of them. Two copies of this tuple is how one of them starts a
+# project the other does not, and both keep reporting green while measuring
+# different things.
+PROJECTS = ("alpha-api", "beta-web")
+
+
+def rank(found_ids, target_id):
+    """Where a target came back, one-based, or `None` when it did not.
+
+    The one place the instruments turn a result list into a place, because the
+    ratchet's floors and the paired comparison have to agree about what a hit
+    is. It takes the ids rather than the reply: `precision.py` asks at several
+    limits and scores each list on its own, and the ratchet asks once.
+
+    An absent target and an empty answer both answer `None`. The ratchet counts
+    the empty ones separately, so folding them in here would take that count
+    away; the caller still has the list and decides.
+    """
+    return found_ids.index(target_id) + 1 if target_id in found_ids else None

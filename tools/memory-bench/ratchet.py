@@ -8,7 +8,7 @@ STATE = tempfile.mkdtemp(prefix="leteo-ratchet-")
 os.environ["BENCH_STATE"] = STATE
 
 from corpus import corpus, no_answer, queries
-from mcpclient import MCP, call_json, save_corpus
+from mcpclient import MCP, PROJECTS, call_json, rank, save_corpus
 from quality import PUBLISHED_LIMIT
 import inflection
 
@@ -23,7 +23,6 @@ with open(os.path.join(LETEO_HOME, "settings.json"), "w") as settings:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FLOORS = os.path.join(HERE, "floors.json")
-PROJECTS = ("alpha-api", "beta-web")
 # The first two match many short bodies; the third is a disjunction over words
 # that sit in the long ones, because the preview is the thing most likely to
 # change a reply's size and short bodies never reach it.
@@ -54,10 +53,9 @@ def measure():
         for q in wanted:
             reply, _, dt = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
             found = [r["id"] for r in reply.get("results") or []]
-            target = ids[q["target"]]
-            rank = found.index(target) + 1 if target in found else None
-            ranks[q["kind"]].append(rank)
-            ranks["ALL"].append(rank)
+            place = rank(found, ids[q["target"]])
+            ranks[q["kind"]].append(place)
+            ranks["ALL"].append(place)
             if not found:
                 empty[q["kind"]] += 1
                 empty["ALL"] += 1

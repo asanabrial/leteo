@@ -195,5 +195,37 @@ class TheDefaultTheBinaryApplies(unittest.TestCase):
         self.assertEqual(len(reply.get("results") or []), limit, json.dumps(reply)[:300])
 
 
+class OneRankForBothInstruments(unittest.TestCase):
+    """The ratchet's floors and the paired comparison score a reply alike.
+
+    The two gates are supposed to measure the same thing — one at fixed floors,
+    one against the base binary — and they come apart only if the rank rule or
+    the project list stops being shared. Importing both is what notices: a copy
+    that lands in one of them rebinds a name that was the same object.
+    """
+
+    def test_both_read_the_one_rank_and_the_one_project_list(self):
+        import mcpclient
+        import ratchet
+        from precision import PROJECTS as precision_projects
+        from precision import rank as precision_rank
+
+        self.assertIs(ratchet.rank, mcpclient.rank)
+        self.assertIs(precision_rank, mcpclient.rank)
+        self.assertIs(ratchet.PROJECTS, mcpclient.PROJECTS)
+        self.assertIs(precision_projects, mcpclient.PROJECTS)
+
+    def test_the_shared_rank_answers_what_each_instrument_used_to_compute(self):
+        import ratchet
+        from mcpclient import rank
+
+        found = ["first", "second", "third"]
+        for position, target in enumerate(found, start=1):
+            self.assertEqual(rank(found, target), position)
+            self.assertEqual(ratchet.rank(found, target), position)
+        self.assertIsNone(rank(found, "somewhere else"))
+        self.assertIsNone(rank([], "first"), "an empty answer has no place")
+
+
 if __name__ == "__main__":
     unittest.main()

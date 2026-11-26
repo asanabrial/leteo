@@ -301,6 +301,29 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:leteo-test@127.0.0.1:5432/leteo_test
 
+  # The two plugin packages carry their own contract tests, and nothing ran
+  # them. `tests/plugin_assets.rs` reads the TypeScript as text and pins
+  # wording, which passes on a plugin that no longer behaves; these are the
+  # suites the packages run themselves, on the Node they are published for.
+  # `publish-registries.yml` runs the same suites again before a version
+  # reaches npm.
+  plugins:
+    needs: [lane-guard]
+    if: always() && needs.lane-guard.outputs.skip != 'true'
+    name: Plugin Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: The OpenCode plugin's contract tests
+        working-directory: plugin/opencode
+        run: npm test
+      - name: The Pi package's contract tests
+        working-directory: plugin/pi
+        run: npm test
+
   # Not on the matrix above either, for the same kind of reason: the images are
   # Linux images, so a Windows or macOS runner would either fail to build them
   # or build the same Linux artifact more slowly.

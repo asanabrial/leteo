@@ -3531,3 +3531,74 @@ fn a_readable_since_covers_the_relation_listing_too() {
     );
     assert_eq!(total("2999-01-01"), 0, "a day after them covers nothing");
 }
+
+/// A repair that cannot run does not take the other repairs with it.
+///
+/// The language re-stem reads a row's title as text, so the odd row that makes
+/// the check fail also made `doctor --repair` exit before the index rebuild —
+/// the command a person runs precisely because the store has something wrong in
+/// it. The report names the check that could not run, and everything after it
+/// still runs.
+#[test]
+fn doctor_repair_continues_past_a_row_whose_title_is_not_text() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-blob-repair.db");
+    leteo(&database)
+        .arg("save")
+        .arg("Runs the nightly job")
+        .arg("Every night.")
+        .arg("--project")
+        .arg("alpha")
+        .assert()
+        .success();
+
+    // The state a store written while the stems trigger was missing is in: the
+    // write path itself cannot produce this row.
+    let connection = rusqlite::Connection::open(&database).expect("open the store directly");
+    connection
+        .execute("DROP TRIGGER obs_stems_update", [])
+        .expect("drop the stems trigger");
+    connection
+        .execute("UPDATE observations SET title = x'00ff' WHERE id = 1", [])
+        .expect("write a title that is not text");
+    drop(connection);
+
+    let report = run_json_unhealthy(
+        leteo(&database)
+            .arg("doctor")
+            .arg("--repair")
+            .arg("--check")
+            .arg("memory_language"),
+    );
+    let language = report["checks"]
+        .as_array()
+        .expect("a report holds its checks")
+        .iter()
+        .find(|check| check["code"] == "memory_language")
+        .expect("the language check is in the report");
+    assert_eq!(
+        language["ok"], false,
+        "the check did not run, so it cannot pass: {language}"
+    );
+    assert!(
+        language["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("could not be checked"),
+        "and it says so: {language}"
+    );
+    let failures = report["repair_failed"]
+        .as_array()
+        .expect("the repairs that could not run are named");
+    assert!(
+        failures.iter().any(|line| line
+            .as_str()
+            .unwrap_or_default()
+            .contains("memory language")),
+        "the language re-stem is one of them: {failures:?}"
+    );
+    assert_eq!(
+        report["healthy"], false,
+        "a repair that did not run is not a success: {report}"
+    );
+}

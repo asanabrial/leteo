@@ -780,38 +780,51 @@ impl Store {
             // not is one the triggers did not write that way (it predates
             // migration 23, or was imported), and `--repair` can say what the
             // answer is by reading it again.
-            let effective = self.memory_language();
-            let misrecorded = self.rows_in_another_language()?;
-            let outside: Vec<(String, i64)> = if self.detects_language() {
-                Vec::new()
-            } else {
-                self.stem_language_counts()?
-                    .into_iter()
-                    .filter(|(code, _)| code != effective.code())
-                    .collect()
-            };
-            record(if misrecorded > 0 {
-                DoctorCheck::noted(
-                    "memory_language",
-                    format!(
-                        "{misrecorded} memories are recorded under a language other than the one their words are in, so search stems them wrongly; `leteo doctor --repair` re-stems them"
-                    ),
-                )
-            } else if outside.is_empty() {
-                DoctorCheck::passed("memory_language")
-            } else {
-                let held = outside
-                    .iter()
-                    .map(|(code, count)| format!("{count} in {code}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                DoctorCheck::noted(
-                    "memory_language",
-                    format!(
-                        "a new memory is written in {}, but {held} memories already saved keep the language they were written in and are not converted",
-                        effective.code()
-                    ),
-                )
+            // Both queries ask SQLite to read a row's title and content as
+            // text, and a BLOB makes that function answer an error rather than
+            // a language. Every other check here wraps such a failure in
+            // `could_not_run`; this one used `?`, so the first odd row stopped
+            // the whole report — the one store a diagnostic exists for.
+            let verdict = (|| -> Result<DoctorCheck, StoreError> {
+                let effective = self.memory_language();
+                let misrecorded = self.rows_in_another_language()?;
+                let outside: Vec<(String, i64)> = if self.detects_language() {
+                    Vec::new()
+                } else {
+                    self.stem_language_counts()?
+                        .into_iter()
+                        .filter(|(code, _)| code != effective.code())
+                        .collect()
+                };
+                Ok(if misrecorded > 0 {
+                    DoctorCheck::noted(
+                        "memory_language",
+                        format!(
+                            "{misrecorded} memories are recorded under a language other than the one their words are in, so search stems them wrongly; `leteo doctor --repair` re-stems them"
+                        ),
+                    )
+                } else if outside.is_empty() {
+                    DoctorCheck::passed("memory_language")
+                } else {
+                    let held = outside
+                        .iter()
+                        .map(|(code, count)| format!("{count} in {code}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    DoctorCheck::noted(
+                        "memory_language",
+                        format!(
+                            "a new memory is written in {}, but {held} memories already saved keep the language they were written in and are not converted",
+                            effective.code()
+                        ),
+                    )
+                })
+            })();
+            record(match verdict {
+                Ok(check) => check,
+                Err(error) => {
+                    could_not_run("memory_language", "the language of the memories", &error)
+                }
             });
         }
         if want("semantic_model") {

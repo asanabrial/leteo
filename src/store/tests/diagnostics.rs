@@ -2422,3 +2422,54 @@ fn a_pending_relation_to_a_memory_itself_is_not_a_finding() {
             .any(|check| check.code == "supersession_cycles" && check.ok)
     );
 }
+
+/// A row whose title is not text stops the language check and nothing else.
+///
+/// `leteo_memory_language` reads its arguments as text, so a BLOB makes it
+/// answer an error. Every other check wraps that in `could_not_run`; this one
+/// used `?`, and the whole report stopped at the first odd row — which is
+/// exactly the store a diagnostic exists for.
+#[test]
+fn a_row_whose_title_is_not_text_says_the_language_check_could_not_run() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", "Runs the nightly job", "Every night."))
+        .unwrap();
+    // The stems trigger reads the title through the same function, so a write
+    // gone through it cannot produce such a row: it comes from a store written
+    // while the trigger was missing, which is a state `doctor` itself knows
+    // about. Dropped for the write and put back with the definition the
+    // migrations own.
+    store
+        .connection
+        .execute("DROP TRIGGER obs_stems_update", [])
+        .unwrap();
+    store
+        .connection
+        .execute("UPDATE observations SET title = x'00ff' WHERE id = 1", [])
+        .unwrap();
+    store.restore_full_text_triggers().unwrap();
+
+    let report = store.doctor().unwrap();
+
+    let language = report
+        .checks
+        .iter()
+        .find(|check| check.code == "memory_language")
+        .expect("the language check is part of the report");
+    assert!(!language.ok, "the check did not run, so it cannot pass");
+    let detail = language.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("could not be checked"),
+        "and it has to say that rather than a verdict: {detail}"
+    );
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.code == "full_text_triggers" && check.ok),
+        "every other check still answers: {:?}",
+        report.checks
+    );
+}

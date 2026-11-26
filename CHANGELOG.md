@@ -28,6 +28,14 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A `doctor` check that cannot run no longer takes the report with it.** The
+  `memory_language` check and the repairs around it used `?` where every sibling
+  wraps the failure, so one row `leteo_memory_language` cannot read — a title
+  that is not text, which a store written while the stems trigger was missing
+  holds — stopped the whole report and `doctor --repair` before the index
+  rebuild. The check now answers `could not be checked` like the others, and a
+  repair that cannot run is named in `repair_failed` while the rest still run
+  and the command still exits non-zero (#443).
 - **A `--since` Leteo cannot read is refused instead of answering "nothing".**
   Every relation filter compared `datetime(?)`, and `datetime('yesterday')` is
   NULL, so `conflicts scan --since yesterday` reported `inspected: 0` and exited

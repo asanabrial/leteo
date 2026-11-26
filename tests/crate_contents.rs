@@ -28,6 +28,10 @@ const KNOWN_ABSENT: &[&str] = &["npm/"];
 const NOT_READS: &[&str] = &[
     "docker/Dockerfile",
     "tools/memory-bench/comparison_corpus.py",
+    // `cli_integration.rs` makes a `.git` of its own in a temporary directory,
+    // so a command run there sees a project. Nothing opens the checkout's — in a
+    // worktree that one is a file, which is why the literal is seen at all.
+    ".git",
 ];
 
 fn include_patterns(manifest: &str) -> Vec<String> {

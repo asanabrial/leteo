@@ -8,6 +8,7 @@
     "partial": 0.923,
     "short": 0.937,
     "spanish": 0.968,
+    "stopword": 1.0,
     "typo": 1.0
   },
   "bytes": {
@@ -20,6 +21,7 @@
     "ALL": 2
   },
   "no_answer": {
+    "answered": 8,
     "confident": 0,
     "bytes": 5600
   },

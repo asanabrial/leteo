@@ -1161,6 +1161,33 @@ pub fn fts_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+/// The query's words that carry a subject, each already quoted.
+///
+/// The stops in [`crate::stemming::is_stop_word`] are left out of the `any`
+/// disjunction and the relaxed stages, because a memory that shares only `de`
+/// or `the` with a question is not a partial match to it. The strict
+/// conjunction still asks every word as written: dropping the function words
+/// there widened a paraphrase's row set enough for bm25 to reorder it, and the
+/// ratchet measured the cost. The rule for what a stop word is lives beside
+/// [`crate::stemming::is_stop_word`]; this is the one place a search applies
+/// it, so the stages that use it cannot disagree about which words a question
+/// is.
+///
+/// Measured on the ratchet store, which holds the four memories the issue names
+/// and notes that share only `de`: `fuga de memoria` and `límite de subida` come
+/// back first in both modes, `how many requests per minute` and `which email
+/// provider` come back first (the default through the prefix and nearest
+/// stages, marked partial), and `receta de paella valenciana`, `de la` and `the`
+/// return nothing. The questions the corpus cannot answer that get any reply at
+/// all fell from 23 of 27 to 9 of 27, and no answerable kind's MRR or hit@1
+/// fell.
+pub fn content_terms(query: &str) -> Vec<String> {
+    fts_terms(query)
+        .into_iter()
+        .filter(|term| !crate::stemming::is_stop_word(&unquote_fts_term(term)))
+        .collect()
+}
+
 /// The same words, joined into one query.
 ///
 /// Built from [`fts_terms`] rather than beside it. The two carried the same
@@ -1252,11 +1279,11 @@ pub fn fts_prefix_query(query: &str) -> String {
 /// is still typing, and a space there is them saying a word is finished. This
 /// one is the staged search's retry after the strict conjunction found nothing,
 /// where the fragment can be any word: `storyb` for `storybook`, and
-/// `append-onl` for `append-only`. The terms are [`fts_terms`]'s, so the
-/// quoting, the escaping and the one-word-once rule are shared with the query
-/// this retries rather than written a second time beside it.
+/// `append-onl` for `append-only`. The terms are [`content_terms`]'s, so the
+/// quoting, the escaping, the one-word-once rule and the stop words are shared
+/// with the query this retries rather than written a second time beside it.
 pub fn fts_prefix_terms(query: &str) -> String {
-    fts_terms(query)
+    content_terms(query)
         .into_iter()
         .map(|term| format!("{term}*"))
         .collect::<Vec<_>>()
@@ -2367,6 +2394,32 @@ mod plumbing {
             vec!["\"bm25\"", "\"suelo\"", "\"conflictos\""]
         );
         assert_eq!(fts_terms("uno dos tres").len(), 3);
+    }
+
+    /// A question is the words that carry a subject, and nothing else.
+    ///
+    /// `de` and `the` are not a partial match to anything: they are what the
+    /// fallback used to answer with, and what put five rows ahead of the memory
+    /// a question was about. The union of the languages is what makes `de`
+    /// recognisable here even though the question is too short for detection.
+    #[test]
+    fn a_question_is_only_the_words_that_carry_a_subject() {
+        assert_eq!(
+            content_terms("fuga de memoria"),
+            vec!["\"fuga\"", "\"memoria\""]
+        );
+        assert_eq!(
+            content_terms("How many requests per minute"),
+            vec!["\"requests\"", "\"minute\""],
+            "the question words go, and so does `per`, which is a function word in Italian and Catalan"
+        );
+        assert_eq!(content_terms("which email provider").len(), 2);
+        assert_eq!(content_terms("the"), Vec::<String>::new());
+        assert_eq!(content_terms("de la"), Vec::<String>::new());
+        // The prefix retry is the same question, so a stop word cannot be the
+        // fragment it opens.
+        assert_eq!(fts_prefix_terms("the storyb"), "\"storyb\"*");
+        assert_eq!(fts_prefix_terms("de la"), "");
     }
 
     #[test]

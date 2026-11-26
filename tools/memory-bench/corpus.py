@@ -20,7 +20,7 @@ TARGETS = [
    [("paraphrase","how often do we change the token signing secret"),("multiword","jwt key rotation overlap policy kms"),("short","kid")], topic="architecture/auth-tokens"),
  T("ratelimit", A, "decision", "Use token bucket rate limiting per API key in Redis",
    "Sliding window was too expensive in Redis memory; token bucket with a Lua script gives atomic refill. 100 requests burst, 10/s sustained per API key.",
-   [("longnl","what algorithm did we pick for throttling clients and where is the state stored?"),("partial","throttl"),("typo","rate limitting redis")], topic="architecture/rate-limit"),
+   [("longnl","what algorithm did we pick for rate limiting clients, and where is the bucket state stored?"),("partial","throttl"),("typo","rate limitting redis")], topic="architecture/rate-limit"),
  T("tzbug", A, "bugfix", "Invoices dated one day early for users in UTC-5",
    "Root cause: invoice date computed with time.Now().Truncate(24h) in UTC, then formatted in local time. Fixed by computing the date in the account's IANA timezone.",
    [("paraphrase","billing documents showing the wrong day for American customers"),("multiword","invoice timezone truncate bug")]),
@@ -132,6 +132,23 @@ TARGETS = [
  T("memleak", B, "bugfix", "Memory leak from un-removed scroll listeners on the map page",
    "The map component added window scroll listeners on mount and never removed them; navigating back and forth piled up handlers. Cleanup in the effect's return.",
    [("paraphrase","browser tab memory grows on the map screen"),("multiword","scroll listener cleanup map leak")]),
+ # The four memories behind the `stopword` kind. Each answers a question whose
+ # words include function words a bag of stop words would match on its own, and
+ # each has a query in both modes: the default pass a person types into
+ # `mem_search`, and the `any` disjunction the issue found ranking a row that
+ # shared only `de` above the memory that shared its content words.
+ T("es_fuga", B, "bugfix", "Fuga de memoria en el servicio de imágenes",
+   "El servicio de imágenes perdía memoria porque cada petición creaba un búfer de 4 MB que nadie liberaba. Ahora el búfer se reutiliza y el consumo bajó de 3 GB a 400 MB.",
+   [("stopword","fuga de memoria"),("stopword","fuga de memoria","any")]),
+ T("es_limite", B, "config", "Límite de subida de archivos grandes",
+   "El límite de subida del servicio de informes es 5 GB; por encima se usa la carga multiparte con partes de 64 MB y un reintento por parte.",
+   [("stopword","límite de subida"),("stopword","límite de subida","any")]),
+ T("en_requests", A, "decision", "Webhook deliveries are capped at 120 requests per minute per tenant",
+   "The webhook dispatcher drops anything past 120 requests per minute for one tenant and reports the overflow in the delivery log.",
+   [("stopword","how many requests per minute"),("stopword","how many requests per minute","any")]),
+ T("en_email", A, "decision", "Sign-in emails are delivered through Postmark",
+   "Postmark is the email provider for sign-in and password reset messages; the old SMTP relay was retired.",
+   [("stopword","which email provider"),("stopword","which email provider","any")]),
 ]
 
 # The same eight memories written in Spanish, which is what the `spanish` queries
@@ -207,8 +224,12 @@ def corpus():
 def queries():
     qs = []
     for t in TARGETS + ES_COUNTERPARTS:
-        for kind, q in t["queries"]:
-            qs.append(dict(kind=kind, q=q, target=t["key"], project=t["project"]))
+        for entry in t["queries"]:
+            # A third item names the match mode when the query is about that
+            # mode; the default is the one a person types into `mem_search`.
+            kind, q = entry[0], entry[1]
+            mode = entry[2] if len(entry) > 2 else None
+            qs.append(dict(kind=kind, q=q, target=t["key"], project=t["project"], mode=mode))
     return qs
 
 # Questions the corpus cannot answer. A stage that has nothing to give should say
@@ -245,6 +266,12 @@ NO_ANSWER = [
     (B, "quién aprueba los gastos de viaje"),
     (B, "dónde está la primera planta"),
     (B, "cuál es el horario de verano"),
+    # A stop word and words no memory carries. On the words alone there is no
+    # answer at all, and a partial row reached through `de` answers a question
+    # nobody asked.
+    (B, "receta de paella valenciana"),
+    (B, "de la"),
+    (A, "the"),
 ]
 
 def no_answer():

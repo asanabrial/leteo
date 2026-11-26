@@ -28,6 +28,14 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **`leteo consolidate` files its result in a session of the sources' project.**
+  The replacement takes its project from the first source, and the session was
+  resolved from the working directory: a merge of one project's memories run
+  inside another put the result in a conversation of the directory it ran from,
+  where the next agent to read it met a memory about something else. The
+  session is now resolved from the sources' project, which also lets the command
+  run where no project can be detected — it used to refuse with advice to pass
+  a `--project` flag it does not have (#445).
 - **A `doctor` check that cannot run no longer takes the report with it.** The
   `memory_language` check and the repairs around it used `?` where every sibling
   wraps the failure, so one row `leteo_memory_language` cannot read — a title

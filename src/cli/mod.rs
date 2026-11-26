@@ -552,8 +552,19 @@ pub async fn run(cli: Cli) -> Result<()> {
             // none: a person named the ids, so no `expected_project` is passed.
             // The replacement is filed where the sources are rather than where
             // this command happens to be run from — see
-            // `Store::consolidate_observations`.
-            let session = resolve_write_session(&mut store, None, None, Filing::Elsewhere)?;
+            // `Store::consolidate_observations` — and its session has to be one
+            // of that project's for the same reason: resolved from the working
+            // directory it filed a Y memory in X's conversation. The first
+            // source is the project the store gives the replacement, and reading
+            // it here also lets the command run where no project can be
+            // detected, which it otherwise refused with advice it has no flag to
+            // follow.
+            let source_project = match source_ids.first() {
+                Some(id) => store.get_observation(*id)?.project,
+                None => None,
+            };
+            let session =
+                resolve_write_session(&mut store, None, source_project, Filing::Elsewhere)?;
             let outcome = store.consolidate_observations_from(
                 ConsolidateObservations {
                     session_id: session.id,

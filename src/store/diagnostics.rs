@@ -890,22 +890,22 @@ impl Store {
             );
         }
         if want("topic_key_uniqueness") {
-            // One live memory per key, per project, per scope — and the one
-            // operation that can break it says so once and then nothing does.
+            // One live memory per key, per project, per scope — which is what
+            // the revision lookup a save runs already assumes.
             //
-            // Merging two projects can leave two memories under one
-            // key, because each may have had its own, and the merge reports how
-            // many rather than choosing which to keep. That report is a number
-            // in one reply. After it, the store carries an ambiguity nothing
-            // mentions again, and the cost is not theoretical: the next save
-            // under that key revises whichever row the lookup reaches first and
-            // the other can never be revised by its own key again. Driven on a
-            // merged store, that is exactly what happens, and `doctor` called it
+            // Merging two projects can leave two live memories under one key,
+            // because each may have had its own, and the merge reports how many
+            // rather than choosing which to keep. That report is a number in one
+            // reply. After it, the store carries an ambiguity nothing mentions
+            // again, and the cost is not theoretical: the next save under that
+            // key revises whichever row the lookup reaches first and the other
+            // can never be revised by its own key again. Driven on a merged
+            // store, that is exactly what happens, and `doctor` called it
             // healthy.
             //
             // No `--repair`, deliberately. Which of the two keeps the key is a
             // question about what they say, and Leteo does not read them.
-            record(match shared_topic_keys(&self.connection) {
+            record(match shared_topic_keys(&self.connection, None) {
                 Err(error) => could_not_run("topic_key_uniqueness", "the topic keys", &error),
                 Ok(0) => DoctorCheck::passed("topic_key_uniqueness"),
                 Ok(shared) => DoctorCheck::failed(
@@ -1533,20 +1533,35 @@ impl Store {
 
 /// How many topic keys name more than one live memory in one project and scope.
 ///
-/// Seven milliseconds on a store of four thousand, served by `idx_obs_topic`,
-/// which is the index the revision lookup already uses — the check asks the
-/// same question that lookup asks, and counts the answers it should never have
-/// more than one of.
-fn shared_topic_keys(connection: &Connection) -> Result<i64, rusqlite::Error> {
+/// Served by `idx_obs_topic`, the index the revision lookup already uses — the
+/// check asks the same question that lookup asks, and counts the answers it
+/// should never have more than one of. The superseded test is the `NOT EXISTS`
+/// every listing already pays, so a keyed row is read here the way the save path
+/// reads it.
+///
+/// A superseded memory is not a holder. It is hidden from every listing, and
+/// the revision lookup treats the key it left as the replacement's, so counting
+/// it would call a store unhealthy for a consolidation — a documented operation
+/// whose whole result is one of these relations. `project` narrows the question
+/// to one name, because a merge asks it about the project it just filled.
+pub(super) fn shared_topic_keys(
+    connection: &Connection,
+    project: Option<&str>,
+) -> Result<i64, rusqlite::Error> {
+    let not_superseded = super::relations::not_superseded();
     connection.query_row(
-        "SELECT COUNT(*) FROM (
-                 SELECT 1 FROM observations
-                  WHERE topic_key IS NOT NULL AND trim(topic_key) <> ''
-                    AND deleted_at IS NULL
-                  GROUP BY topic_key, project, scope
+        &format!(
+            "SELECT COUNT(*) FROM (
+                 SELECT 1 FROM observations o
+                  WHERE o.topic_key IS NOT NULL AND trim(o.topic_key) <> ''
+                    AND o.deleted_at IS NULL
+                    AND (?1 IS NULL OR ifnull(o.project, '') = ?1)
+                    AND {not_superseded}
+                  GROUP BY o.topic_key, o.project, o.scope
                  HAVING COUNT(*) > 1
-             )",
-        [],
+             )"
+        ),
+        [project],
         |row| row.get(0),
     )
 }

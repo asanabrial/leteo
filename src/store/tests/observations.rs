@@ -2931,3 +2931,112 @@ fn an_export_carries_the_directory_and_an_import_restores_it() {
     assert_eq!(directory_of("Placed").as_deref(), Some(here.as_str()));
     assert_eq!(directory_of("Unplaced"), None);
 }
+
+/// A revision that would land on another live memory's topic key is refused,
+/// and the refusal names the holder.
+///
+/// A key is what a later save revises by: two live holders make one of them
+/// unreachable by its own key for good, because the lookup revises whichever it
+/// reaches first. The refusal names the holder because that is the whole next
+/// step — revise that memory, or write this one under a key of its own.
+#[test]
+fn a_revision_onto_a_key_another_live_memory_holds_is_refused_with_the_holder() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let holder = store
+        .add_observation(AddObservation {
+            topic_key: Some("auth/jwt".to_owned()),
+            ..observation(
+                "s1",
+                "The JWT model",
+                "tokens are minted where the session opens",
+            )
+        })
+        .unwrap()
+        .observation;
+    let other = store
+        .add_observation(observation(
+            "s1",
+            "The pool size",
+            "eight connections per process",
+        ))
+        .unwrap()
+        .observation;
+
+    let refused = store.update_observation(
+        other.id,
+        None,
+        UpdateObservation {
+            topic_key: Some("auth/jwt".to_owned()),
+            ..UpdateObservation::default()
+        },
+    );
+    let Err(StoreError::TopicKeyHeld {
+        topic_key,
+        holder: named,
+    }) = refused
+    else {
+        panic!("a held key is refused: {refused:?}");
+    };
+    assert_eq!(topic_key, "auth/jwt");
+    assert_eq!(named, holder.id, "the refusal names the holder");
+
+    // Nothing was written: the memory still holds no key of its own.
+    assert_eq!(store.get_observation(other.id).unwrap().topic_key, None);
+
+    // Writing the key the memory already holds is the ordinary revision.
+    let own = store
+        .update_observation(
+            holder.id,
+            None,
+            UpdateObservation {
+                topic_key: Some("auth/jwt".to_owned()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(own.topic_key.as_deref(), Some("auth/jwt"));
+}
+
+/// A move into another project collides the same way, and is refused the same
+/// way: the key travels with the memory.
+#[test]
+fn a_revision_that_moves_a_memory_onto_another_projects_key_is_refused() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store.create_session("s2", "otro", "C:/repo").unwrap();
+    let resident = store
+        .add_observation(AddObservation {
+            session_id: "s2".to_owned(),
+            project: Some("otro".to_owned()),
+            topic_key: Some("pool/size".to_owned()),
+            ..observation("s2", "The pool size elsewhere", "four connections")
+        })
+        .unwrap()
+        .observation;
+    let mover = store
+        .add_observation(AddObservation {
+            topic_key: Some("pool/size".to_owned()),
+            ..observation("s1", "The pool size", "eight connections per process")
+        })
+        .unwrap()
+        .observation;
+
+    let refused = store.update_observation(
+        mover.id,
+        None,
+        UpdateObservation {
+            project: Some("otro".to_owned()),
+            ..UpdateObservation::default()
+        },
+    );
+    let Err(StoreError::TopicKeyHeld { holder: named, .. }) = refused else {
+        panic!("a move onto a held key is refused: {refused:?}");
+    };
+    assert_eq!(named, resident.id);
+    assert_eq!(
+        store.get_observation(mover.id).unwrap().project.as_deref(),
+        Some("leteo"),
+        "nothing moved"
+    );
+}

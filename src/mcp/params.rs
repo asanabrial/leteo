@@ -97,7 +97,8 @@ pub(super) struct UpdateParams {
     pub(super) project: Option<String>,
     /// New scope: project, personal, or global.
     pub(super) scope: Option<String>,
-    /// New topic key.
+    /// New topic key. Two live memories may not share one, so a key another
+    /// memory holds is refused with that memory's id.
     pub(super) topic_key: Option<String>,
 }
 

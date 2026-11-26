@@ -1178,6 +1178,7 @@ fn store_error(error: StoreError) -> CallToolResult {
         StoreError::CrossProjectRelation { .. } => "cross_project_relation",
         StoreError::ProjectNotFound(_) => "project_not_found",
         StoreError::ProjectMismatch { .. } => error_code::PROJECT_MISMATCH,
+        StoreError::TopicKeyHeld { .. } => error_code::TOPIC_KEY_HELD,
         StoreError::SessionHasObservations(_, _) => "session_has_observations",
         StoreError::EmptySearch => "invalid_search",
         StoreError::QueryTooLong { .. } => error_code::QUERY_TOO_LONG,
@@ -1209,6 +1210,7 @@ mod error_code {
     pub const EDIT_NOT_FOUND: &str = "edit_not_found";
     pub const EDIT_AMBIGUOUS: &str = "edit_ambiguous";
     pub const CONSOLIDATION_SOURCES: &str = "consolidation_sources";
+    pub const TOPIC_KEY_HELD: &str = "topic_key_held";
 }
 
 fn structured_error(code: &str, message: impl Into<String>) -> CallToolResult {

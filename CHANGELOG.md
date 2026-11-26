@@ -28,6 +28,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A `--since` Leteo cannot read is refused instead of answering "nothing".**
+  Every relation filter compared `datetime(?)`, and `datetime('yesterday')` is
+  NULL, so `conflicts scan --since yesterday` reported `inspected: 0` and exited
+  zero — the same answer as a store with nothing in it, for a question that was
+  never asked. One parser at the argument boundary reads a date, an instant or a
+  day into the native format, and a refusal names the three shapes it takes
+  (#440).
 - **Uninstall leaves a package-managed binary to its package manager.** `leteo
   uninstall --yes` deleted whatever `current_exe()` pointed at, a Homebrew or
   mise/asdf and an npm install included, and the manager's record then

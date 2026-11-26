@@ -3370,3 +3370,53 @@ fn a_verbose_hook_times_its_phases_on_standard_error() {
         "and the agent's answer is the one it has always been: {answer}"
     );
 }
+
+/// A `--since` SQLite cannot read is refused, not answered with "nothing".
+///
+/// Every relation filter compared `datetime(?3)`, and `datetime('yesterday')`
+/// is NULL: the comparison matched no row, so `conflicts scan --since
+/// yesterday` reported `inspected: 0` and exited zero — the same answer as a
+/// store with nothing in it, for a question that was never asked.
+#[test]
+fn a_since_date_that_cannot_be_read_is_refused_with_the_formats() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-since.db");
+
+    for command in ["list", "scan"] {
+        let refusal = leteo(&database)
+            .arg("conflicts")
+            .arg(command)
+            .arg("--project")
+            .arg("alpha")
+            .arg("--since")
+            .arg("yesterday")
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
+        assert!(
+            stderr.contains("yesterday"),
+            "{command} has to quote the date it could not read: {stderr}"
+        );
+        assert!(
+            stderr.contains(leteo::timestamp::ARGUMENT_FORMATS),
+            "{command} has to name the accepted formats: {stderr}"
+        );
+    }
+
+    // The same command with a readable date answers, so the refusal above is
+    // about the date and not about the command.
+    let answered = run_json(
+        leteo(&database)
+            .arg("conflicts")
+            .arg("list")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--since")
+            .arg("2026-01-01"),
+    );
+    assert_eq!(
+        answered["total"],
+        serde_json::json!(0),
+        "a readable date on an empty store is an empty page, not a refusal"
+    );
+}

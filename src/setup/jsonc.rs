@@ -700,12 +700,30 @@ mod tests {
 
     #[test]
     fn an_existing_member_is_replaced_in_place_and_the_comment_stays() {
-        let text = "{\n  \"mcp\": {\n    // our server\n    \"leteo\": {\n      \"command\": [\"old\"]\n    }\n  }\n}\n";
+        let text = r#"{
+  "mcp": {
+    // our server
+    "leteo": {
+      "command": ["old"]
+    }
+  }
+}
+"#;
         let edited =
             set_member(text, &["mcp"], "leteo", &json!({"command": ["new"]}), "  ").unwrap();
         assert_eq!(
             edited,
-            "{\n  \"mcp\": {\n    // our server\n    \"leteo\": {\n      \"command\": [\n        \"new\"\n      ]\n    }\n  }\n}\n"
+            r#"{
+  "mcp": {
+    // our server
+    "leteo": {
+      "command": [
+        "new"
+      ]
+    }
+  }
+}
+"#
         );
     }
 
@@ -773,11 +791,28 @@ mod tests {
 
     #[test]
     fn the_comma_before_a_multiline_last_member_goes_with_it() {
-        let text = "{\n  \"mcp\": {\n    \"other\": {\n      \"a\": 1,\n    },\n    \"leteo\": {\n      \"type\": \"local\"\n    }\n  }\n}\n";
+        let text = r#"{
+  "mcp": {
+    "other": {
+      "a": 1,
+    },
+    "leteo": {
+      "type": "local"
+    }
+  }
+}
+"#;
         let edited = remove_member(text, &["mcp"], "leteo").unwrap().unwrap();
         assert_eq!(
             edited,
-            "{\n  \"mcp\": {\n    \"other\": {\n      \"a\": 1,\n    }\n  }\n}\n"
+            r#"{
+  "mcp": {
+    "other": {
+      "a": 1,
+    }
+  }
+}
+"#
         );
     }
 

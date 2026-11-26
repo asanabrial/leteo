@@ -1516,9 +1516,20 @@ async fn run_conflicts(store: &mut Store, command: ConflictsCommand) -> Result<(
                     max_insert: Some(max_insert),
                 })?);
             };
+            // `--apply` is the word-mode scan's switch; the semantic scan
+            // writes the verdicts it judges once `--yes` says to pay for them.
+            // Ignoring the flag meant `conflicts scan --apply` with
+            // `LETEO_AGENT_CLI` set returned a preview and applied nothing.
+            if apply {
+                anyhow::bail!(
+                    "--apply belongs to the word-mode scan; the semantic scan writes the \
+                     verdicts it judges, so drop --apply and pass --yes to run it"
+                );
+            }
             let runner = crate::llm::Runner::parse(&semantic)?;
             let options = crate::llm::SemanticOptions {
                 project,
+                since,
                 max_pairs: max_semantic,
                 concurrency,
                 timeout: std::time::Duration::from_secs(timeout_per_call),

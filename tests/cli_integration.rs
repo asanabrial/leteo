@@ -3793,3 +3793,62 @@ fn consolidating_a_source_that_is_not_there_keeps_the_refusal() {
         "the refusal names the id it could not find: {stderr}"
     );
 }
+
+/// The semantic scan honours `--since` and refuses the flag it cannot honour.
+///
+/// `--semantic` is selected by `LETEO_AGENT_CLI` as well as by the flag, and it
+/// ignored `--since` — so a bounded scan paid for every memory in the project —
+/// and ignored `--apply`, so `conflicts scan --apply` returned a preview and
+/// applied nothing.
+#[test]
+fn a_semantic_scan_honours_since_and_refuses_apply() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-semantic-since.db");
+    for title in ["Retry backoff policy", "Retry backoff policy revisited"] {
+        leteo(&database)
+            .arg("save")
+            .arg(title)
+            .arg("the retry backoff doubles every attempt")
+            .arg("--project")
+            .arg("alpha")
+            .assert()
+            .success();
+    }
+
+    let preview = run_json(
+        leteo(&database)
+            .arg("conflicts")
+            .arg("scan")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--semantic")
+            .arg("claude")
+            .arg("--since")
+            .arg("2999-01-01"),
+    );
+    assert_eq!(
+        preview["inspected"],
+        serde_json::json!(0),
+        "a bound after every memory inspects nothing: {preview}"
+    );
+
+    let refusal = leteo(&database)
+        .arg("conflicts")
+        .arg("scan")
+        .arg("--project")
+        .arg("alpha")
+        .arg("--semantic")
+        .arg("claude")
+        .arg("--apply")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&refusal.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("--yes"),
+        "the refusal names what runs a semantic scan instead: {stderr}"
+    );
+    assert!(
+        stderr.contains("--apply"),
+        "and the flag it is refusing: {stderr}"
+    );
+}

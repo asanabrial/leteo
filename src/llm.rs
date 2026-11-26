@@ -142,6 +142,12 @@ impl Runner {
 #[derive(Debug, Clone)]
 pub struct SemanticOptions {
     pub project: String,
+    /// The oldest memory the scan looks at, in the native timestamp format.
+    ///
+    /// The same bound the word-mode scan applies to `created_at`, so a caller
+    /// who asked to bound the work pays for the same memories whichever mode
+    /// the environment happened to select.
+    pub since: Option<String>,
     /// Upper bound on CLI invocations, because each one costs tokens.
     pub max_pairs: usize,
     pub concurrency: usize,
@@ -152,6 +158,7 @@ impl Default for SemanticOptions {
     fn default() -> Self {
         Self {
             project: String::new(),
+            since: None,
             max_pairs: 100,
             concurrency: 5,
             timeout: Duration::from_secs(60),
@@ -211,6 +218,19 @@ pub fn collect_pairs(
     // moment that budget is full. A second, accidental cap on the corpus only
     // made the budget unreachable.
     let observations = store.recent_observations(Some(&project), Some(i64::MAX as usize), false)?;
+    // The bound the word-mode scan applies in SQL, applied here: `datetime(x)`
+    // is NULL for a timestamp it cannot read, and the comparison then matches
+    // nothing, so a row without a readable timestamp is outside the bound in
+    // both modes rather than in one of them.
+    let since = options.since.as_deref().and_then(crate::timestamp::parse);
+    let observations: Vec<_> = observations
+        .into_iter()
+        .filter(|observation| match since {
+            None => true,
+            Some(since) => crate::timestamp::parse(&observation.created_at)
+                .is_some_and(|created| created >= since),
+        })
+        .collect();
     let mut pairs = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut already_judged = 0_usize;
@@ -607,6 +627,59 @@ mod tests {
                 .unwrap();
         }
         (temp, store)
+    }
+
+    /// A `--since` the word-mode scan would apply bounds the semantic one too.
+    ///
+    /// It is the same promise made on both sides of a mode the environment can
+    /// select: `datetime(pos.created_at) >= datetime(?)` in SQL, and a parsed
+    /// comparison here. Ignoring it paid for model calls on memories the caller
+    /// had excluded.
+    #[test]
+    fn a_since_bound_keeps_the_older_memories_out_of_the_scan() {
+        let (_temp, mut store) = store_with_pair();
+        // The store's own connection is idle between calls, and the fixture
+        // ages rows rather than writing through it: `recent_observations` is
+        // what reads these, so `created_at` is what has to move.
+        {
+            let connection = rusqlite::Connection::open(store.database_path()).unwrap();
+            connection
+                .execute(
+                    "UPDATE observations SET created_at = '2020-01-01 00:00:00'",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE observations SET created_at = '2026-01-01 00:00:00' \
+                     WHERE title LIKE 'Retry backoff policy%'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let mut options = SemanticOptions {
+            project: "leteo".to_owned(),
+            ..SemanticOptions::default()
+        };
+        let (_, inspected, _) = collect_pairs(&mut store, &options).unwrap();
+        assert_eq!(
+            inspected, 42,
+            "without a bound, every memory in the project"
+        );
+
+        options.since = Some("2025-01-01 00:00:00".to_owned());
+        let (pairs, inspected, _) = collect_pairs(&mut store, &options).unwrap();
+        assert_eq!(inspected, 2, "only the two memories after the bound");
+        assert!(!pairs.is_empty(), "and they are the pair worth judging");
+
+        options.since = Some("2027-01-01 00:00:00".to_owned());
+        let (pairs, inspected, _) = collect_pairs(&mut store, &options).unwrap();
+        assert_eq!(
+            (inspected, pairs.len()),
+            (0, 0),
+            "a bound after every memory inspects nothing and asks nothing"
+        );
     }
 
     #[test]

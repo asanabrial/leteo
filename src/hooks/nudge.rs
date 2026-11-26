@@ -32,11 +32,14 @@ pub(super) fn save_nudge(
     if (now - started_at).num_minutes() < NUDGE_WARMUP_MINUTES {
         return None;
     }
+    // The latest write of any kind, not the newest row's creation: a revision
+    // keeps `created_at` and moves `updated_at`, and reading the first meant a
+    // session that spent half an hour on one memory was told it had kept
+    // nothing.
     let last_save = store
-        .recent_observations(Some(project), Some(1), true)
+        .last_write_at(Some(project))
         .ok()?
-        .first()
-        .and_then(|observation| parse_sqlite_timestamp(&observation.created_at));
+        .and_then(|at| parse_sqlite_timestamp(&at));
     // Counted from whichever came later: the last thing saved, or the moment
     // this conversation began.
     //

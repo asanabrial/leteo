@@ -1043,7 +1043,22 @@ fn path_basename(path: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
+/// How many times a path has been resolved in this process.
+///
+/// Test-only, and read by the one test that holds [`DirectoryTarget`] to "the
+/// target once and each distinct recorded directory at most once". Counting is
+/// structural: a stopwatch here would measure the machine and the test order.
+///
+/// Thread-local, because the test binary runs its tests at once: a shared
+/// counter would count another test's resolutions and read as this one's.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn canonical_path(path: impl AsRef<Path>) -> PathBuf {
+    #[cfg(test)]
+    RESOLUTIONS.set(RESOLUTIONS.get() + 1);
     let path = path.as_ref();
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let canonical = fs::canonicalize(&absolute).unwrap_or(absolute);
@@ -1141,7 +1156,21 @@ pub(crate) fn session_directory<'a>(
     }
 }
 
-/// Whether a stored session directory names the directory a caller is in.
+/// The fold two directory spellings are compared under.
+fn comparable(value: &str) -> String {
+    let value = value
+        .trim()
+        .trim_end_matches(['/', '\\'])
+        .replace('\\', "/");
+    if cfg!(windows) {
+        value.to_lowercase()
+    } else {
+        value
+    }
+}
+
+/// One directory, resolved once, answering whether a stored session directory
+/// names it for many rows.
 ///
 /// The same directory is written in several ways across machines — a trailing
 /// separator, backslashes from Windows, and on Windows a different case — and
@@ -1152,47 +1181,74 @@ pub(crate) fn session_directory<'a>(
 /// directories and treating them as one would merge the memories of one project
 /// into another. Lives here rather than in `hooks::session`, where it grew,
 /// because the MCP write path and the session-start hook now both ask it.
-pub(crate) fn same_directory(recorded: &str, directory: &Path) -> bool {
-    // A relative recorded directory names no place: `.` is whichever directory
-    // the reader happens to be in, and the canonical comparison below resolved
-    // it against exactly that. One session recorded as `.` after a failed
-    // `current_dir` was therefore offered as a drift candidate in every
-    // repository an MCP server was started in. This sits before the literal
-    // comparison too, or `.` would still equal a detection path of `.`.
-    if !is_absolute_spelling(recorded) {
-        return false;
-    }
+///
+/// The lookup that decides whether a directory's project drifted reads every
+/// session row in the store, and the callers on the session-start path ask it
+/// with the same directory over and over. Resolving both sides per row meant
+/// two `realpath` calls per session of every other project: on a copy of a real
+/// store of 2,668 sessions, `leteo hook session-start` made 5,228 `realpath`
+/// calls. The target is resolved when this is built and each distinct recorded
+/// spelling at most once afterwards, which is the same answer for less
+/// filesystem work — 1 and 464 for the same run.
+///
+/// The cache is keyed by the folded spelling, so the trailing separator and the
+/// backslashes of one directory share an entry. It holds the answers, not the
+/// paths, so nothing here grows with anything but the store's own history.
+pub(crate) struct DirectoryTarget {
+    spelling: String,
+    resolved: PathBuf,
+    answers: std::collections::HashMap<String, bool>,
+}
 
-    fn comparable(value: &str) -> String {
-        let value = value
-            .trim()
-            .trim_end_matches(['/', '\\'])
-            .replace('\\', "/");
-        if cfg!(windows) {
-            value.to_lowercase()
-        } else {
-            value
+impl DirectoryTarget {
+    pub(crate) fn new(directory: &Path) -> Self {
+        Self {
+            spelling: comparable(&directory.to_string_lossy()),
+            // `canonical_path` falls back to the absolute spelling when the path
+            // no longer exists, so this cannot fail and is asked once per call
+            // rather than once per row.
+            resolved: canonical_path(directory),
+            answers: std::collections::HashMap::new(),
         }
     }
 
-    if comparable(recorded) == comparable(&directory.to_string_lossy()) {
-        return true;
-    }
-    // The same directory is also spelled through a symlink: on macOS `/var` is
-    // `/private/var`, detection canonicalizes the path it is given, and a hook
-    // records the cwd it was handed while `mem_session_start` records the
-    // directory the caller named. Comparing only the spelling reads those as two
-    // directories, so a session recorded one way is invisible from the other and
-    // the drift this lookup exists to find is never seen. The resolved forms are
-    // compared instead, with `canonical_path` falling back to the absolute path
-    // when one no longer exists. The spelling check above stays first so the
-    // ordinary case pays no syscall.
-    let recorded = canonical_path(Path::new(recorded));
-    let directory = canonical_path(directory);
-    if cfg!(windows) {
-        path_string(&recorded).eq_ignore_ascii_case(&path_string(&directory))
-    } else {
-        recorded == directory
+    /// Whether `recorded` names this directory, in the order the comparison
+    /// has always used: the relative check, the spelling, the resolved path.
+    pub(crate) fn matches(&mut self, recorded: &str) -> bool {
+        // A relative recorded directory names no place: `.` is whichever
+        // directory the reader happens to be in, and resolving it below would
+        // resolve it against exactly that. One session recorded as `.` after a
+        // failed `current_dir` was therefore offered as a drift candidate in
+        // every repository an MCP server was started in. This sits before the
+        // literal comparison too, or `.` would still equal a detection path of
+        // `.`.
+        if !is_absolute_spelling(recorded) {
+            return false;
+        }
+        let key = comparable(recorded);
+        if let Some(answer) = self.answers.get(&key) {
+            return *answer;
+        }
+        let answer = if key == self.spelling {
+            true
+        } else {
+            // The same directory is also spelled through a symlink: on macOS
+            // `/var` is `/private/var`, detection canonicalizes the path it is
+            // given, and a hook records the cwd it was handed while
+            // `mem_session_start` records the directory the caller named.
+            // Comparing only the spelling reads those as two directories, so a
+            // session recorded one way is invisible from the other and the
+            // drift this lookup exists to find is never seen. The spelling
+            // check above stays first so the ordinary case pays no syscall.
+            let recorded = canonical_path(Path::new(recorded));
+            if cfg!(windows) {
+                path_string(&recorded).eq_ignore_ascii_case(&path_string(&self.resolved))
+            } else {
+                recorded == self.resolved
+            }
+        };
+        self.answers.insert(key, answer);
+        answer
     }
 }
 
@@ -1273,17 +1329,63 @@ mod tests {
     fn a_relative_recorded_directory_matches_no_directory() {
         let here = std::env::current_dir().unwrap();
         assert!(
-            !same_directory(".", &here),
+            !DirectoryTarget::new(&here).matches("."),
             "`.` resolves against the reader"
         );
-        assert!(!same_directory("foo/bar", &here.join("foo").join("bar")));
-        assert!(!same_directory(".", Path::new(".")), "and not even itself");
-        assert!(same_directory(&here.to_string_lossy(), &here));
-        assert!(same_directory("C:/repo/", Path::new(r"C:\repo")));
-        assert!(same_directory(
-            r"\\server\share\x",
-            Path::new("//server/share/x")
-        ));
+        let nested = here.join("foo").join("bar");
+        assert!(!DirectoryTarget::new(&nested).matches("foo/bar"));
+        assert!(
+            !DirectoryTarget::new(Path::new(".")).matches("."),
+            "and not even itself"
+        );
+        assert!(DirectoryTarget::new(&here).matches(&here.to_string_lossy()));
+        assert!(DirectoryTarget::new(Path::new(r"C:\repo")).matches("C:/repo/"));
+        assert!(DirectoryTarget::new(Path::new("//server/share/x")).matches(r"\\server\share\x"));
+    }
+
+    /// One directory, resolved once, however many rows ask about it.
+    ///
+    /// The drift lookup reads every session row in the store with the same
+    /// directory, so resolving both sides per row meant two `realpath` calls
+    /// per session of every other project — 5,228 of them for `leteo hook
+    /// session-start` on a copy of a store with 2,668 sessions. The target is
+    /// resolved when the comparison is built, and a recorded spelling is
+    /// resolved at most once however often it comes back.
+    #[test]
+    fn a_comparison_resolves_its_directory_once_and_each_distinct_recorded_one_at_most_once() {
+        let here = std::env::current_dir().unwrap();
+        let here = here.to_string_lossy().into_owned();
+        let elsewhere = ["/one/directory", "/two/directories"];
+
+        RESOLUTIONS.set(0);
+        let mut target = DirectoryTarget::new(Path::new(&here));
+        assert_eq!(
+            RESOLUTIONS.get(),
+            1,
+            "the target is resolved when the comparison is built, not per row"
+        );
+
+        // Three spellings of one directory and two others, each asked twice.
+        let recorded = [
+            here.as_str(),
+            here.trim_end_matches('/'),
+            &format!("{here}//"),
+            elsewhere[0],
+            elsewhere[1],
+            elsewhere[0],
+        ];
+        for _ in 0..2 {
+            for row in recorded {
+                target.matches(row);
+            }
+        }
+
+        assert_eq!(
+            RESOLUTIONS.get(),
+            1 + elsewhere.len(),
+            "three spellings of the target cost nothing after the spelling comparison, \
+             and each other directory is resolved once"
+        );
     }
 
     /// The working directory is asked about once, not once per caller.

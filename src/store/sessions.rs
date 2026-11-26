@@ -13,7 +13,7 @@ impl Store {
     /// time a session opens.
     ///
     /// The comparison itself stays in Rust: the same directory is written in
-    /// several ways across machines, and `same_directory` folds separators and
+    /// several ways across machines, and the directory comparison folds separators and
     /// case in a way SQL here should not try to copy.
     pub fn session_directories(&self, project: &str) -> Result<Vec<String>, StoreError> {
         let project = normalize::project(project);
@@ -70,7 +70,7 @@ impl Store {
     /// picked silently and the earlier memories stay under the old one.
     ///
     /// The directory comparison is in Rust rather than in SQL for the reason
-    /// [`same_directory`](crate::project::same_directory) gives: the same
+    /// [`DirectoryTarget`](crate::project::DirectoryTarget) gives: the same
     /// directory is written with a trailing separator, with backslashes, and on
     /// Windows with a different case, and SQLite's `LOWER` cannot fold any of
     /// that the way the filesystem means it. So the row filter is only "has a
@@ -93,6 +93,7 @@ impl Store {
         let rows = statement.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
+        let mut target = crate::project::DirectoryTarget::new(Path::new(directory));
         let mut projects = Vec::new();
         for row in rows {
             let (project, recorded) = row?;
@@ -100,7 +101,7 @@ impl Store {
             if project.is_empty() || project == exclude {
                 continue;
             }
-            if !crate::project::same_directory(&recorded, Path::new(directory)) {
+            if !target.matches(&recorded) {
                 continue;
             }
             if !projects.contains(&project) {
@@ -136,12 +137,13 @@ impl Store {
                 row.get::<_, String>(2)?,
             ))
         })?;
+        let mut target = crate::project::DirectoryTarget::new(Path::new(directory));
         for row in rows {
             let (id, recorded_project, recorded) = row?;
             if !is_manual(&id) || normalize::project(&recorded_project) != project {
                 continue;
             }
-            if crate::project::same_directory(&recorded, Path::new(directory)) {
+            if target.matches(&recorded) {
                 return Ok(true);
             }
         }
@@ -168,6 +170,7 @@ impl Store {
     ) -> Result<usize, StoreError> {
         let keep = normalize::project(keep);
         let tx = self.write_transaction()?;
+        let mut target = crate::project::DirectoryTarget::new(Path::new(directory));
         let mut released = Vec::new();
         {
             let mut statement = tx.prepare(
@@ -183,9 +186,7 @@ impl Store {
             })?;
             for row in rows {
                 let (id, project, recorded) = row?;
-                if normalize::project(&project) != keep
-                    && crate::project::same_directory(&recorded, Path::new(directory))
-                {
+                if normalize::project(&project) != keep && target.matches(&recorded) {
                     released.push(id);
                 }
             }

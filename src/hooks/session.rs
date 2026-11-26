@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::{
     Store,
     memory::normalize,
-    project::{ProjectDetection, same_directory},
+    project::{DirectoryTarget, ProjectDetection},
 };
 
 use super::{HookInput, HookOutcome};
@@ -92,11 +92,12 @@ pub(super) fn migrate_directory_project(
     // one. It is kept because the cost of the old shape grows with the number
     // of projects in the store while the question does not: somebody with two
     // hundred projects pays for all of them to answer something about one.
+    let mut target = DirectoryTarget::new(directory);
     let recorded_here = store
         .session_directories(&basename)
         .unwrap_or_default()
         .iter()
-        .any(|recorded| same_directory(recorded, directory));
+        .any(|recorded| target.matches(recorded));
     if !recorded_here {
         return;
     }

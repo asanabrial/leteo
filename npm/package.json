@@ -6,6 +6,9 @@
   "bin": {
     "leteo": "bin/leteo.js"
   },
+  "scripts": {
+    "test": "node --test test/leteo.test.js"
+  },
   "files": [
     "bin/",
     "README.md"

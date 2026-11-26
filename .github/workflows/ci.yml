@@ -562,6 +562,12 @@ jobs:
         env:
           LETEO_MODEL_DIR: ${{ github.workspace }}/assets/model
       - run: python3 tools/semantic/check_binary_size.py target/release/leteo
+      # The npm wrapper's own tests, before the check that runs it against a
+      # release: the libc detection that refuses a musl Linux, and that the
+      # refusal comes before the download rather than after it. `node` is
+      # already required by the step below; this one fails with the reason
+      # instead of leaving it to a later, less specific failure.
+      - run: node --test npm/test/leteo.test.js
       # The release archive's layout run through `install.sh` and the uninstallers
       # on this runner, in temporary directories: the binary has to find the model
       # where the installer put it, and nothing of it may survive an uninstall. The npm

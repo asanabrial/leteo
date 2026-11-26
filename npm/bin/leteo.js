@@ -14,6 +14,7 @@
 
 "use strict";
 
+const { libcFromReport } = require("./libc.js");
 const { createHash } = require("node:crypto");
 const https = require("node:https");
 const { spawnSync, execFileSync } = require("node:child_process");
@@ -69,9 +70,35 @@ function platformKey() {
   return `${process.platform}-${process.arch}`;
 }
 
+// The libc of the Linux Node this is running under, read from the report Node
+// builds for itself.
+//
+// A report that cannot be produced answers glibc: that is what the wrapper
+// assumed before this check existed, and refusing a Linux that might be glibc
+// would break a working install to fix the wording of an error on one that is
+// not.
+function currentLibc() {
+  try {
+    return libcFromReport(process.report.getReport());
+  } catch {
+    return "glibc";
+  }
+}
+
 function resolveTarget() {
   const key = platformKey();
   const target = TARGETS[key];
+  // The Linux builds link glibc, and the release has no musl build. Saying so
+  // here is the whole difference between a platform that is unsupported and a
+  // binary that looks missing: on Alpine the archive verifies, extracts, and
+  // then fails to start with the loader's 404.
+  if (target && key.startsWith("linux-") && currentLibc() === "musl") {
+    fail(
+      `no prebuilt Leteo for ${key} on musl libc: Alpine and other musl-based ` +
+        `systems cannot run the glibc Linux build. Build from source instead: ` +
+        `cargo install leteo`,
+    );
+  }
   if (!target) {
     fail(
       `no prebuilt Leteo for ${key}. Build from source instead: ` +

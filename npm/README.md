@@ -63,7 +63,9 @@ fail without saying so. The three lines above have no such problem: `npx` is on
 your `PATH` and resolves the package itself, every time.
 
 Five platforms have prebuilt binaries: Linux, macOS and Windows on x86-64, and
-Linux and macOS on arm64. Anywhere else, `cargo install leteo` builds it.
+Linux and macOS on arm64. The two Linux builds link glibc, so Alpine and other
+musl-based systems are not among them, and the wrapper says so before it
+downloads anything. Anywhere else, `cargo install leteo` builds it.
 
 ## Environment
 

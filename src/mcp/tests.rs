@@ -4719,6 +4719,53 @@ fn a_suggested_topic_key_is_the_key_a_search_looks_for() {
     assert_eq!(found.results[0].observation.title, title);
 }
 
+/// A key suggested for one script cannot revise a memory written in another.
+///
+/// Every non-Latin title was suggested `decision/general` because the key
+/// alphabet was ASCII, so saving the second under the key the tool gave revised
+/// the first: the tool that exists to make upserts safe was the one losing the
+/// memory. Distinct keys are only half of it — the save has to keep the key the
+/// tool returned, which is why both are asserted here.
+#[test]
+fn a_topic_key_suggested_in_one_script_does_not_revise_another() {
+    let (_temp, server) = test_server(McpOptions::default());
+    {
+        let mut store = server.lock_store().unwrap();
+        store.enroll_project("leteo").unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+    }
+
+    let mut saved = Vec::new();
+    for (title, body) in [
+        ("数据库迁移", "the store moved to a new schema"),
+        ("ترحيل قاعدة البيانات", "the same work described in Arabic"),
+        ("🚀🔥", "an emoji-only title"),
+    ] {
+        let key = server
+            .mem_suggest_topic_key(Parameters(
+                serde_json::from_value(json!({ "title": title, "type": "decision" })).unwrap(),
+            ))
+            .unwrap()
+            .0
+            .topic_key;
+        let saved_now = server
+            .mem_save(Parameters(
+                serde_json::from_value(json!({
+                    "session_id": "s1", "title": title, "type": "decision",
+                    "content": body, "topic_key": key,
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+            .0;
+        assert_eq!(saved_now.status, "inserted", "{title}: {saved_now:?}");
+        saved.push(saved_now.observation.id);
+    }
+
+    let distinct: std::collections::BTreeSet<_> = saved.iter().collect();
+    assert_eq!(distinct.len(), saved.len(), "each title is its own memory");
+}
+
 /// The description names how many rows carry a body, and the constant is the
 /// number it names. A literal in a `#[tool]` attribute cannot read the
 /// constant, so this test is the one place the two are held together.

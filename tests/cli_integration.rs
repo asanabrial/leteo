@@ -208,6 +208,69 @@ fn cli_covers_timeline_context_doctor_and_export_import_round_trip() {
 }
 
 #[test]
+fn a_json_import_dry_run_reports_its_rows_and_writes_none() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-preview-source.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("preview-session")
+            .arg("--project")
+            .arg("preview-project")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A note worth previewing")
+            .arg("The deterministic marker is previewneedle")
+            .arg("--session")
+            .arg("preview-session"),
+    );
+    let export_file = temp.path().join("preview-export.json");
+    run_json(
+        leteo(&database)
+            .arg("export")
+            .arg("--output")
+            .arg(&export_file),
+    );
+
+    let target = temp.path().join("leteo-preview-target.db");
+    let preview = run_json(
+        leteo(&target)
+            .arg("import")
+            .arg(&export_file)
+            .arg("--dry-run"),
+    );
+    assert_eq!(preview["observations_imported"], json!(1));
+    assert_eq!(preview["sessions_imported"], json!(1));
+    // A preview wrote no row, so it has no vector to report either.
+    assert!(
+        preview.get("vectors").is_none(),
+        "a preview reported vectors for rows it did not write: {preview}"
+    );
+
+    let after = run_json(leteo(&target).arg("export"));
+    assert_eq!(
+        after["observations"].as_array().map(Vec::len),
+        Some(0),
+        "the preview kept a memory: {after}"
+    );
+    assert_eq!(
+        after["sessions"].as_array().map(Vec::len),
+        Some(0),
+        "the preview kept a session: {after}"
+    );
+
+    // And the same file still imports for real.
+    let imported = run_json(leteo(&target).arg("import").arg(&export_file));
+    assert_eq!(imported["observations_imported"], json!(1));
+    let after = run_json(leteo(&target).arg("export"));
+    assert_eq!(after["observations"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
 fn cli_saves_into_a_stable_manual_session_when_no_session_is_given() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let database = temp.path().join("leteo-manual.db");

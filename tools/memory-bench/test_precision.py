@@ -29,11 +29,14 @@ from precision import (  # noqa: E402
     limits_from,
     rank_worse,
     resolution,
+    search_arguments,
 )
 
 
-def row(limit=10, kind="short", q="a question", project="alpha-api", rank=1, size=100):
-    return dict(kind=kind, q=q, project=project, limit=limit, rank=rank, results=20, bytes=size)
+def row(limit=10, kind="short", q="a question", project="alpha-api", rank=1, size=100, mode=None):
+    return dict(
+        kind=kind, q=q, project=project, limit=limit, mode=mode, rank=rank, results=20, bytes=size
+    )
 
 
 def questions(count=4, limit=10, rank=None):
@@ -55,6 +58,18 @@ class Pairing(unittest.TestCase):
         with self.assertRaises(CannotRun) as raised:
             compare("ratchet", base + [base[0]], questions(2), (10,))
         self.assertIn("twice", str(raised.exception))
+
+    def test_the_same_words_in_two_modes_are_two_questions(self):
+        # The corpus asks `fuga de memoria` under the default conjunction and
+        # under `any`. They are different questions and the base answers them
+        # differently, so the pairing must keep them apart rather than call the
+        # second one a duplicate of the first.
+        base = [row(mode=None, rank=1), row(mode="any", rank=2)]
+        head = [row(mode=None, rank=1), row(mode="any", rank=1)]
+        report = compare("ratchet", base, head, (10,))
+        self.assertEqual(report["drops"], [])
+        self.assertEqual(len(report["moved"]), 1, report["moved"])
+        self.assertEqual(report["moved"][0]["mode"], "any")
 
     def test_a_limit_nobody_measured_is_refused_rather_than_read_as_no_drop(self):
         with self.assertRaises(CannotRun) as raised:
@@ -161,6 +176,20 @@ class Resolution(unittest.TestCase):
             self.assertIn("no-such-search.rs", str(raised.exception))
         finally:
             quality.SEARCH_RS = original
+
+
+class Measured(unittest.TestCase):
+    def test_a_question_that_names_a_mode_is_asked_in_it(self):
+        self.assertEqual(
+            search_arguments({"q": "fuga de memoria", "mode": "any"}, 10),
+            {"query": "fuga de memoria", "limit": 10, "match_mode": "any"},
+        )
+
+    def test_a_question_without_a_mode_is_asked_as_the_default(self):
+        self.assertEqual(
+            search_arguments({"q": "fuga de memoria"}, 10),
+            {"query": "fuga de memoria", "limit": 10},
+        )
 
 
 @unittest.skipUnless(os.environ.get("LETEO_BIN"), "LETEO_BIN is not set, so the binary under test is not the one on PATH")

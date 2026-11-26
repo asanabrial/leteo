@@ -1,0 +1,17 @@
+name: Probe minimal
+on:
+  push:
+    branches: ["issue-448-*"]
+  workflow_dispatch:
+jobs:
+  path:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - name: hello
+        shell: ${{ matrix.shell }}
+        run: |
+          Write-Host "engine $($PSVersionTable.PSVersion)"

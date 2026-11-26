@@ -782,32 +782,64 @@ pub async fn run(cli: Cli) -> Result<()> {
             } else {
                 Repairs::default()
             };
+            // A repair that cannot run is not a reason to take the report with
+            // it. One odd row — a title that is not text, which the language
+            // functions cannot read — made `?` exit before anything else ran,
+            // and the report that says which check could not run never
+            // printed. The failure is named in `repair_failed` instead, and the
+            // command still exits non-zero: a repair that did not run is not a
+            // success.
+            let mut repair_failed: Vec<String> = Vec::new();
             let restored = repairs
                 .triggers
                 .then(|| store.restore_full_text_triggers())
-                .transpose()?;
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("restoring the full-text triggers: {error}"));
+                    None
+                });
             // Before the rebuild, so the index it builds is of the stems the
             // rows should have and not of the ones they were recorded with.
             let restemmed = repairs
                 .language
                 .then(|| store.restem_to_detected_language())
-                .transpose()?;
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("re-stemming in the memory language: {error}"));
+                    None
+                });
             let rebuilt = repairs
                 .indexes
                 .then(|| store.rebuild_full_text_indexes())
-                .transpose()?;
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("rebuilding the full-text indexes: {error}"));
+                    None
+                });
             let rehashed = repairs
                 .hashes
                 .then(|| store.recompute_stale_hashes())
-                .transpose()?;
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("recomputing stale hashes: {error}"));
+                    None
+                });
             let folded = repairs
                 .types
                 .then(|| store.fold_observation_types())
-                .transpose()?;
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("folding observation types: {error}"));
+                    None
+                });
             let swept_versions = repairs
                 .orphans
                 .then(|| store.remove_orphan_versions())
-                .transpose()?;
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("removing orphan versions: {error}"));
+                    None
+                });
             // The vectors the stage is missing. `doctor --repair` is the one
             // command that says "do it now": the background backfill drains a
             // store on its own schedule, and a one-shot import or a store nobody
@@ -859,6 +891,13 @@ pub async fn run(cli: Cli) -> Result<()> {
                 }
                 if let Some(restemmed) = restemmed {
                     object.insert("restemmed".to_owned(), serde_json::to_value(restemmed)?);
+                }
+                if !repair_failed.is_empty() {
+                    object.insert("healthy".to_owned(), serde_json::Value::Bool(false));
+                    object.insert(
+                        "repair_failed".to_owned(),
+                        serde_json::to_value(&repair_failed)?,
+                    );
                 }
                 if let Some(rehashed) = rehashed {
                     object.insert("rehashed".to_owned(), serde_json::to_value(rehashed)?);

@@ -176,10 +176,21 @@ fn a_package_managed_binary_is_left_and_its_removal_named() {
             "mise uninstall leteo",
         ),
         (
+            temp.path().join(".asdf/installs/leteo/1.2.3/bin/leteo"),
+            "asdf",
+            "asdf uninstall leteo",
+        ),
+        (
             temp.path()
                 .join("_npx/1a19a25e/node_modules/@asanabrial/leteo/vendor/leteo"),
             "npm",
             "npm cache clean --force",
+        ),
+        (
+            temp.path()
+                .join("lib/node_modules/@asanabrial/leteo/vendor/leteo"),
+            "npm",
+            "npm uninstall -g @asanabrial/leteo",
         ),
     ];
 
@@ -204,6 +215,26 @@ fn a_package_managed_binary_is_left_and_its_removal_named() {
             serde_json::to_value(&removed).unwrap()["binary_managed_by"]["command"],
             command,
             "and the report a person or script reads carries it"
+        );
+
+        // A dry run names the owner too: it is the run that is supposed to say
+        // what the real one would do.
+        let dry = uninstall_everything_for(
+            &SetupOptions {
+                dry_run: true,
+                ..probe_in(temp.path())
+            },
+            &data,
+            Some(exe.clone()),
+        );
+        assert!(exe.exists());
+        assert!(!dry.binary_removed);
+        assert_eq!(
+            dry.binary_managed_by
+                .as_ref()
+                .map(|owner| owner.command.as_str()),
+            Some(command),
+            "a dry run says whose it is and how it goes"
         );
     }
 }

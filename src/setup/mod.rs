@@ -810,9 +810,7 @@ fn versioned_package_root(
 /// is a single component.
 fn node_modules_package(executable: &Path) -> Option<String> {
     let components: Vec<_> = executable.components().collect();
-    let index = components
-        .iter()
-        .position(|component| component.as_os_str() == "node_modules")?;
+    let index = node_modules_marker(&components)?;
     let first = components.get(index + 1)?.as_os_str().to_str()?;
     if first.starts_with('@') {
         let second = components.get(index + 2)?.as_os_str().to_str()?;
@@ -820,6 +818,17 @@ fn node_modules_package(executable: &Path) -> Option<String> {
     } else {
         Some(first.to_owned())
     }
+}
+
+/// Where npm's own directory starts, in the components of a path.
+///
+/// The marker alone is the question `setup` refuses on: a package name it
+/// cannot read is still a path npm owns and will delete, and the old check was
+/// on the component, not on what followed it.
+fn node_modules_marker(components: &[std::path::Component<'_>]) -> Option<usize> {
+    components
+        .iter()
+        .position(|component| component.as_os_str() == "node_modules")
 }
 
 /// A binary a package manager installed, and the command that removes it.
@@ -861,7 +870,11 @@ pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
 
     let components: Vec<_> = executable.components().collect();
     let (root, _) = versioned_package_root(&components)?;
-    let name = executable.file_name()?.to_str()?;
+    // The tool's directory, not the file's name: mise on Windows calls the file
+    // `leteo.exe`, and a package may ship a differently named binary inside the
+    // tool it installed. The component after the marker is the formula or tool
+    // the package manager knows.
+    let name = components.get(root + 1)?.as_os_str().to_str()?;
     let manager = match components[root].as_os_str().to_str()? {
         "Cellar" => "Homebrew",
         "installs" => {
@@ -912,7 +925,8 @@ pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
 /// marker because it covers both routes npm has — the `_npx` cache and a global
 /// install — and appears in neither of the places a person installs a binary.
 fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
-    if node_modules_package(executable).is_some() {
+    let components: Vec<_> = executable.components().collect();
+    if node_modules_marker(&components).is_some() {
         anyhow::bail!(
             "this Leteo is the one npm is holding, at {}, and that path is deleted by \
              `npm cache clean` or by the next version — the hooks written against it would \

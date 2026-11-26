@@ -999,6 +999,13 @@ fn a_package_manager_owns_the_binary_it_installed() {
             "npm",
             "npm uninstall -g @asanabrial/leteo",
         ),
+        // The formula is the directory, not the file: a package can ship a
+        // differently named binary, and `brew` only knows the formula.
+        (
+            temp.path().join("Cellar/leteo/1.2.3/bin/leteo-server"),
+            "Homebrew",
+            "brew uninstall leteo",
+        ),
     ];
 
     for (executable, manager, command) in cases {

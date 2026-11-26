@@ -389,7 +389,6 @@ fn remove_if_empty(removed: &mut Removal, directory: &Path) -> bool {
     false
 }
 
-#[cfg(not(windows))]
 fn remove_binary(removed: &mut Removal, dry_run: bool) {
     let Some(binary) = removed.binary.clone() else {
         return;

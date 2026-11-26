@@ -241,6 +241,33 @@ fn a_package_managed_binary_is_left_and_its_removal_named() {
     }
 }
 
+/// The manager keeps a link in front of the versioned file, and a run handed
+/// the link is still holding the manager's binary.
+#[cfg(unix)]
+#[test]
+fn a_link_in_front_of_a_managed_binary_is_left_too() {
+    let temp = TempDir::new().unwrap();
+    let data = temp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+
+    let target = temp.path().join("Cellar/leteo/1.2.3/bin/leteo");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"binary").unwrap();
+    let link = temp.path().join("bin/leteo");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let removed = uninstall_everything_for(&probe_in(temp.path()), &data, Some(link.clone()));
+
+    assert!(link.exists(), "the link is the manager's too");
+    assert!(target.exists());
+    assert!(!removed.binary_removed);
+    assert_eq!(
+        removed.binary_managed_by.map(|owner| owner.command),
+        Some("brew uninstall leteo".to_owned())
+    );
+}
+
 #[test]
 fn a_file_nobody_here_created_is_not_taken_with_the_rest() {
     let temp = TempDir::new().unwrap();

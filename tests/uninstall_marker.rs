@@ -157,3 +157,54 @@ fn the_binary_prints_the_marker_when_it_removes_and_not_when_it_previews() {
         "the marker is not the first line the uninstall printed: {stderr}"
     );
 }
+
+/// The report a person running `uninstall --yes` reads is where the package
+/// manager's own command has to be.
+///
+/// The binary is copied into a Homebrew `Cellar` and run from there, so
+/// `current_exe()` is the file `brew` owns — the one the removal used to take.
+/// The report is read from the process's own stdout, which is the surface a
+/// person and a script are given.
+#[test]
+fn a_package_managers_binary_is_left_and_the_report_names_the_command() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = temp.path().join("home");
+    let data = temp.path().join("data");
+    let bin = home.join("Cellar").join("leteo").join("1.2.3").join("bin");
+    std::fs::create_dir_all(&bin).expect("create the Cellar directory");
+    std::fs::create_dir_all(&data).expect("create the temporary data directory");
+
+    let binary = bin.join(format!("leteo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_leteo"), &binary).expect("copy the binary");
+
+    let output = Command::new(&binary)
+        .arg("uninstall")
+        .arg("--yes")
+        .env("HOME", &home)
+        .env("LETEO_DATA_DIR", &data)
+        .env_remove("LETEO_DATABASE")
+        .env_remove("LETEO_MODEL_DIR")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("DSH_HOME")
+        .output()
+        .expect("run the binary");
+
+    assert!(
+        output.status.success(),
+        "the uninstall failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the uninstall prints its report");
+    assert_eq!(
+        report["binary_managed_by"]["command"],
+        serde_json::json!("brew uninstall leteo"),
+        "the report has to say how the manager removes it: {report}"
+    );
+    assert_eq!(report["binary_removed"], serde_json::json!(false));
+    assert!(
+        binary.exists(),
+        "the package manager's file is not ours to take"
+    );
+}

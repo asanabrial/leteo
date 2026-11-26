@@ -1007,11 +1007,18 @@ fn a_package_manager_owns_the_binary_it_installed() {
             "brew uninstall leteo",
         ),
         // `.bin` is where a package leaves its links, not a package: naming it
-        // would print a command that removes nothing.
+        // would print a command that removes nothing. Nothing in an ordinary
+        // project's `node_modules` says the install is global, so the command
+        // does not claim it is.
         (
-            temp.path().join("node_modules/.bin/leteo"),
+            temp.path().join("project/node_modules/.bin/leteo"),
             "npm",
-            "npm uninstall -g @asanabrial/leteo",
+            "npm uninstall @asanabrial/leteo",
+        ),
+        (
+            temp.path().join("project/node_modules/leteo/vendor/leteo"),
+            "npm",
+            "npm uninstall leteo",
         ),
         // An `asdf` far above a mise install is a home directory or a mount
         // point, not the manager: only the component above `installs` decides.
@@ -1052,7 +1059,7 @@ fn an_unreadable_npm_package_name_still_belongs_to_npm() {
 
     let owner = package_owner(&executable).expect("npm still owns the path");
     assert_eq!(owner.manager, "npm");
-    assert_eq!(owner.command, "npm uninstall -g @asanabrial/leteo");
+    assert_eq!(owner.command, "npm uninstall @asanabrial/leteo");
 }
 
 #[test]

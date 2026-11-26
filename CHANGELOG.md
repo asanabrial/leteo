@@ -34,8 +34,9 @@ All notable changes to Leteo are documented in this file.
   disagreed with the disk — the next upgrade or reinstall acted on a file that
   was gone. The removal now recognises the same layouts `setup` already knows
   and reports the command that removes it (`brew uninstall leteo`, `mise
-  uninstall leteo`, `npm uninstall -g …`, or `npm cache clean --force` for the
-  `_npx` cache) instead of taking the file (#435).
+  uninstall leteo`, `npm uninstall` or `npm uninstall -g` depending on whether
+  the `node_modules` is a project's or a global prefix, or `npm cache clean
+  --force` for the `_npx` cache) instead of taking the file (#435).
 - **Revising a memory counts as saving, and the reminder knows it.** The "you
   have not kept anything" line read the newest memory's `created_at`, and a
   topic-key revision moves only `updated_at` — so an agent that spent half an

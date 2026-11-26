@@ -397,7 +397,17 @@ fn remove_binary(removed: &mut Removal, dry_run: bool) {
     // leaves the manager's record disagreeing with the disk, and the next
     // upgrade or reinstall acts on a file that is gone. Reported rather than
     // merely left, because `binary_removed: false` alone reads like a failure.
-    if let Some(owner) = super::package_owner(&binary) {
+    //
+    // Asked of the resolved path as well, because a manager keeps a link in
+    // front of the versioned file: `current_exe` resolves it today on both
+    // platforms, and a run that handed us the link itself is still holding the
+    // manager's file.
+    let owner = super::package_owner(&binary).or_else(|| {
+        std::fs::canonicalize(&binary)
+            .ok()
+            .and_then(|resolved| super::package_owner(&resolved))
+    });
+    if let Some(owner) = owner {
         removed.binary_managed_by = Some(owner);
         return;
     }

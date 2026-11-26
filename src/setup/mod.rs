@@ -857,21 +857,30 @@ pub struct PackageOwner {
 pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
     let components: Vec<_> = executable.components().collect();
     if let Some(index) = node_modules_marker(&components) {
-        let cached = components
+        // The components just above `node_modules` are the only thing that says
+        // which npm install this is: `_npx` — at or two above, because the cache
+        // keeps a hash directory between — is the npx cache, `lib` (or nominally
+        // `npm` on Windows) is a global prefix, and anything else is a project.
+        let cache = components[..index]
             .iter()
+            .rev()
+            .take(2)
             .any(|component| component.as_os_str() == "_npx");
-        // The `_npx` entry has no installed package to uninstall, only a cache
-        // directory the next eviction takes; a global install does. A name that
-        // cannot be read falls back to the package Leteo publishes, because the
-        // alternative is a command carrying a path component.
+        let parent = index
+            .checked_sub(1)
+            .and_then(|above| components[above].as_os_str().to_str());
+        // A name that cannot be read falls back to the package Leteo publishes,
+        // because the alternative is a command carrying a path component.
         let package =
             node_modules_package(&components, index).unwrap_or_else(|| NPM_PACKAGE.to_owned());
         return Some(PackageOwner {
             manager: "npm",
-            command: if cached {
+            command: if cache {
                 "npm cache clean --force".to_owned()
-            } else {
+            } else if matches!(parent, Some("lib") | Some("npm")) {
                 format!("npm uninstall -g {package}")
+            } else {
+                format!("npm uninstall {package}")
             },
         });
     }

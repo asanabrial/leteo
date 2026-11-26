@@ -560,6 +560,17 @@ pub enum StoreError {
         expected: String,
         actual: String,
     },
+    /// A revision would put two live memories under one topic key.
+    ///
+    /// A key is a memory's identity for a later save: the revision lookup
+    /// revises whichever live holder it reaches first, so a second live holder
+    /// makes the other unreachable by its own key for good. The holder is
+    /// named because naming it is the whole next step — revise that memory, or
+    /// write this one under a key of its own.
+    #[error(
+        "topic key {topic_key:?} is already held by memory {holder} in this project; revise that memory, or write this one under a key of its own"
+    )]
+    TopicKeyHeld { topic_key: String, holder: i64 },
     #[error("session {0} still has {1} observation(s)")]
     SessionHasObservations(String, i64),
     #[error("prompt not found: {0}")]

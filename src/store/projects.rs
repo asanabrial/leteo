@@ -906,15 +906,7 @@ impl Store {
         }
         result.sources_merged.push(source);
 
-        result.topic_key_collisions = tx.query_row(
-            "SELECT COUNT(*) FROM (
-                 SELECT topic_key FROM observations
-                  WHERE deleted_at IS NULL AND topic_key IS NOT NULL
-                    AND ifnull(project, '') = ?1
-                  GROUP BY topic_key, scope HAVING COUNT(*) > 1)",
-            [&canonical],
-            |row| row.get(0),
-        )?;
+        result.topic_key_collisions = super::diagnostics::shared_topic_keys(&tx, Some(&canonical))?;
         result.canonical_created = !canonical_existed;
         tx.commit()?;
         Ok((result, left_behind))
@@ -1052,15 +1044,7 @@ impl Store {
         // Counted after every source has moved rather than once per source: two
         // sources can each bring a memory under the same key, and the collision
         // only exists once both are in. See `MergeResult::topic_key_collisions`.
-        result.topic_key_collisions = tx.query_row(
-            "SELECT COUNT(*) FROM (
-                 SELECT topic_key FROM observations
-                  WHERE deleted_at IS NULL AND topic_key IS NOT NULL
-                    AND ifnull(project, '') = ?1
-                  GROUP BY topic_key, scope HAVING COUNT(*) > 1)",
-            [&canonical],
-            |row| row.get(0),
-        )?;
+        result.topic_key_collisions = super::diagnostics::shared_topic_keys(&tx, Some(&canonical))?;
 
         // Only when something actually moved: asking to merge a name nothing
         // holds into another name nothing holds changes nothing, and saying a

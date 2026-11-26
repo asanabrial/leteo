@@ -18,6 +18,9 @@ pub mod wizard;
 use render::*;
 
 pub const SERVER_NAME: &str = "leteo";
+/// The package npm publishes, named wherever a sentence tells somebody to use
+/// or remove it.
+pub const NPM_PACKAGE: &str = "@asanabrial/leteo";
 pub const MEMORY_PROTOCOL_BEGIN: &str =
     "<!-- BEGIN LETEO MEMORY PROTOCOL - managed by leteo setup -->";
 pub const MEMORY_PROTOCOL_END: &str = "<!-- END LETEO MEMORY PROTOCOL -->";
@@ -802,6 +805,119 @@ fn versioned_package_root(
         })
 }
 
+/// The package a `node_modules` path holds, when its name can be read.
+///
+/// A scoped name is two components, an unscoped one a single component. A dot
+/// entry is layout rather than a package — `.bin` holds the links a package
+/// declares, and naming it in `npm uninstall -g` would print a command that
+/// removes nothing — so it answers `None` like an unreadable name does.
+fn node_modules_package(components: &[std::path::Component<'_>], index: usize) -> Option<String> {
+    let first = components.get(index + 1)?.as_os_str().to_str()?;
+    if first.starts_with('.') {
+        return None;
+    }
+    if first.starts_with('@') {
+        let second = components.get(index + 2)?.as_os_str().to_str()?;
+        Some(format!("{first}/{second}"))
+    } else {
+        Some(first.to_owned())
+    }
+}
+
+/// Where npm's own directory starts, in the components of a path.
+///
+/// The marker alone is the question: a name that cannot be read, or that is a
+/// dot entry rather than a package, is still a path npm owns and will delete.
+fn node_modules_marker(components: &[std::path::Component<'_>]) -> Option<usize> {
+    components
+        .iter()
+        .position(|component| component.as_os_str() == "node_modules")
+}
+
+/// A binary a package manager installed, and the command that removes it.
+///
+/// The third thing this module has to say about the layouts
+/// [`stable_package_path`] recognises: `setup` prefers the link a versioned
+/// install keeps, [`refuse_a_path_that_will_not_be_there`] declines to write an
+/// npm path that will disappear, and an uninstall must not take the file at all.
+/// Deleting it leaves the manager's record disagreeing with the disk, and the
+/// next upgrade or reinstall acts on a file that is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PackageOwner {
+    /// What installed it: `Homebrew`, `mise`, `asdf` or `npm`.
+    pub manager: &'static str,
+    /// The command that removes it, as somebody would type it.
+    pub command: String,
+}
+
+/// The package manager that owns this executable, if one does.
+///
+/// `None` is the ordinary case — a binary somebody downloaded or built — and is
+/// the only case where deleting the file is the right thing to do.
+pub(crate) fn package_owner(executable: &Path) -> Option<PackageOwner> {
+    let components: Vec<_> = executable.components().collect();
+    if let Some(index) = node_modules_marker(&components) {
+        // The components just above `node_modules` are the only thing that says
+        // which npm install this is: `_npx` — at or two above, because the cache
+        // keeps a hash directory between — is the npx cache, `lib` (or nominally
+        // `npm` on Windows) is a global prefix, and anything else is a project.
+        let cache = components[..index]
+            .iter()
+            .rev()
+            .take(2)
+            .any(|component| component.as_os_str() == "_npx");
+        let parent = index
+            .checked_sub(1)
+            .and_then(|above| components[above].as_os_str().to_str());
+        // A name that cannot be read falls back to the package Leteo publishes,
+        // because the alternative is a command carrying a path component.
+        let package =
+            node_modules_package(&components, index).unwrap_or_else(|| NPM_PACKAGE.to_owned());
+        return Some(PackageOwner {
+            manager: "npm",
+            command: if cache {
+                "npm cache clean --force".to_owned()
+            } else if matches!(parent, Some("lib") | Some("npm")) {
+                format!("npm uninstall -g {package}")
+            } else {
+                format!("npm uninstall {package}")
+            },
+        });
+    }
+
+    let (root, _) = versioned_package_root(&components)?;
+    // The tool's directory, not the file's name: mise on Windows calls the file
+    // `leteo.exe`, and a package may ship a differently named binary inside the
+    // tool it installed. The component after the marker is the formula or tool
+    // the package manager knows.
+    let name = components.get(root + 1)?.as_os_str().to_str()?;
+    let manager = match components[root].as_os_str().to_str()? {
+        "Cellar" => "Homebrew",
+        "installs" => {
+            // mise and asdf keep the same `installs/<tool>/<version>` shape;
+            // which one this is, only the directory immediately above it says.
+            // An `asdf` anywhere higher up is somebody's home directory or mount
+            // point, not the manager — a mise install underneath one must not
+            // be told to run `asdf uninstall`.
+            let parent = root
+                .checked_sub(1)
+                .and_then(|index| components[index].as_os_str().to_str());
+            if parent == Some("asdf") || parent == Some(".asdf") {
+                "asdf"
+            } else {
+                "mise"
+            }
+        }
+        _ => return None,
+    };
+    let command = match manager {
+        "Homebrew" => format!("brew uninstall {name}"),
+        "asdf" => format!("asdf uninstall {name}"),
+        _ => format!("mise uninstall {name}"),
+    };
+    Some(PackageOwner { manager, command })
+}
+
 /// Refuse to write a path that the package manager owns.
 ///
 /// `setup` writes the absolute path of the running binary into an agent's
@@ -824,17 +940,16 @@ fn versioned_package_root(
 /// marker because it covers both routes npm has — the `_npx` cache and a global
 /// install — and appears in neither of the places a person installs a binary.
 fn refuse_a_path_that_will_not_be_there(executable: &Path) -> Result<()> {
-    let managed = executable
-        .components()
-        .any(|component| component.as_os_str() == "node_modules");
-    if managed {
+    let components: Vec<_> = executable.components().collect();
+    if node_modules_marker(&components).is_some() {
         anyhow::bail!(
             "this Leteo is the one npm is holding, at {}, and that path is deleted by \
              `npm cache clean` or by the next version — the hooks written against it would \
              then fail silently. Point your client at the wrapper instead, which stays \
-             put:\n\n  \"command\": \"npx\", \"args\": [\"-y\", \"@asanabrial/leteo\", \"mcp\"]\n\n\
+             put:\n\n  \"command\": \"npx\", \"args\": [\"-y\", \"{}\", \"mcp\"]\n\n\
              Or install Leteo itself and run this again: https://github.com/asanabrial/leteo#install",
-            executable.display()
+            executable.display(),
+            NPM_PACKAGE
         );
     }
     Ok(())

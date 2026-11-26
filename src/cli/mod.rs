@@ -399,17 +399,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     let mut config = store_config(&cli)?;
-    // A hook gives up before the agent that launched it does. The number is on
-    // the event — see `HookEvent::store_wait` — because it is the event that
-    // knows how long anybody is waiting.
-    //
-    // And it is one budget for the whole process, not one per statement: an
-    // event that writes twice — a session created and then a prompt — would
-    // otherwise spend it twice and outlast its agent. See
-    // `StoreConfig::single_busy_budget`.
+    // A hook gives up before the agent that launched it does, and it writes
+    // without making vectors: what differs about its store is `hooks`'s to say.
     if let Command::Hook { event, .. } = &cli.command {
-        config.busy_timeout = crate::hooks::HookEvent::from(*event).store_wait();
-        config.single_busy_budget = true;
+        crate::hooks::HookEvent::store_config(&mut config, crate::hooks::HookEvent::from(*event));
     }
     let data_directory = config
         .database_path
@@ -667,15 +660,6 @@ pub async fn run(cli: Cli) -> Result<()> {
                 eprintln!("leteo search: {}", crate::mcp::MORE_MATCHED_HINT);
             }
             print_json(&found)?;
-            // A one-shot process has no background backfill, and this search just
-            // loaded the model to answer: spending a bounded slice of that load on
-            // the vectors the store is missing is what fills an existing store for
-            // somebody who only ever runs the CLI. The stage itself wrote nothing;
-            // this runs after the answer is printed, is bounded, and a store it
-            // cannot write is not an error.
-            if let Err(error) = store.backfill_step(crate::store::semantic_stage::BACKFILL_BUDGET) {
-                tracing::debug!(%error, "the CLI could not fill vectors after the search");
-            }
         }
         Command::Prompt {
             content,

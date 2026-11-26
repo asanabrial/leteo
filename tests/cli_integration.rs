@@ -3217,3 +3217,92 @@ fn cli_prune_skips_a_project_that_holds_a_soft_deleted_memory_and_still_prunes_t
         .expect("the empty project is named");
     assert_eq!(empty["result"]["sessions_deleted"], json!(1), "{empty}");
 }
+
+/// What `doctor` says about the store's vectors, as the number it states.
+fn vector_coverage(database: &Path, model: &Path) -> String {
+    let report = run_json(
+        leteo(database)
+            .env("LETEO_MODEL_DIR", model)
+            .arg("doctor")
+            .arg("--check")
+            .arg("semantic_vectors"),
+    );
+    report["checks"][0]["detail"]
+        .as_str()
+        .expect("the semantic_vectors check has a detail")
+        .to_owned()
+}
+
+/// A hook writes its memories without vectors, and a search that answers exits
+/// without giving them one either.
+///
+/// Both used to spend the model on a path that had already answered. A
+/// `subagent-stop` loaded a 13 MB model and ran it inside the budget its agent
+/// was counting down, and every `leteo search` embedded up to 1,024 memories
+/// after printing its answer, in a process with no background of its own. What
+/// fills the vectors is the backfill a long-lived MCP server runs, and
+/// `doctor --repair` is the command for somebody who has none.
+#[test]
+fn a_hook_and_a_search_leave_the_vectors_to_the_backfill() {
+    let Some(model) = repository_model() else {
+        return;
+    };
+    let temp = tempfile::tempdir().expect("create the test directory");
+    let database = temp.path().join("leteo.db");
+    let payload = json!({
+        "session_id": "backfill-session",
+        "cwd": temp.path(),
+        "stdout": "## Key Learnings:\n\
+            1. Rotate JWT signing keys every 30 days with a kid header\n\
+            2. Signing keys live in KMS and tokens carry the kid of the key that signed them\n\
+            3. The verifier accepts the current and the previous signing key for 48 hours\n\
+            4. Retired signing keys are removed from KMS after the overlap window\n\
+            5. Every signature rotation is logged with the kid it introduced and retired",
+    });
+
+    bare_leteo()
+        .env("LETEO_MODEL_DIR", &model)
+        .arg("--database")
+        .arg(&database)
+        .arg("hook")
+        .arg("subagent-stop")
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+
+    let after_the_hook = vector_coverage(&database, &model);
+    assert!(
+        after_the_hook.starts_with("0 of 5"),
+        "a hook makes no vector: {after_the_hook}"
+    );
+
+    // A search reaches the semantic stage — it loaded the model to rank — and
+    // still leaves the store's vectors where they were.
+    bare_leteo()
+        .env("LETEO_MODEL_DIR", &model)
+        .arg("--database")
+        .arg(&database)
+        .arg("search")
+        .arg("rotación de las claves de firma")
+        .assert()
+        .success();
+    let after_the_search = vector_coverage(&database, &model);
+    assert!(
+        after_the_search.starts_with("0 of 5"),
+        "a search answers and exits, and the backfill is not its work: {after_the_search}"
+    );
+
+    bare_leteo()
+        .env("LETEO_MODEL_DIR", &model)
+        .arg("--database")
+        .arg(&database)
+        .arg("doctor")
+        .arg("--repair")
+        .assert()
+        .success();
+    let after_the_repair = vector_coverage(&database, &model);
+    assert!(
+        after_the_repair.contains("every one of the 5"),
+        "and `doctor --repair` is what fills them: {after_the_repair}"
+    );
+}

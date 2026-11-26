@@ -9,13 +9,18 @@ is unset, because the fallback is whatever `leteo` is on PATH and a check
 against an installed release is not a check of this build.
 """
 import argparse
+import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 os.environ.setdefault("BENCH_STATE", os.path.join(tempfile.gettempdir(), "leteo-precision-selfcheck"))
 
+import precision  # noqa: E402
 import quality  # noqa: E402
 from precision import (  # noqa: E402
     CannotRun,
@@ -225,6 +230,56 @@ class OneRankForBothInstruments(unittest.TestCase):
             self.assertEqual(ratchet.rank(found, target), position)
         self.assertIsNone(rank(found, "somewhere else"))
         self.assertIsNone(rank([], "first"), "an empty answer has no place")
+
+
+class ExitCodes(unittest.TestCase):
+    """The contract the command publishes: 0 clean, 1 a drop, 2 could not run.
+
+    Nothing else calls `main`, so a refactor that let a failed measurement fall
+    through to a clean report would leave CI green while measuring nothing.
+    """
+
+    def reports(self, rank):
+        return {"ratchet": [row(q=f"question {index}", rank=rank) for index in range(4)]}
+
+    def run_main(self, base, head):
+        with mock.patch.object(precision, "measure_binary", side_effect=[base, head]):
+            with redirect_stdout(io.StringIO()):
+                return precision.main(
+                    ["--base", __file__, "--head", __file__, "--limits", "10", "--corpora", "ratchet"]
+                )
+
+    def test_a_lost_place_exits_one(self):
+        self.assertEqual(self.run_main(self.reports(rank=1), self.reports(rank=4)), 1)
+
+    def test_an_unchanged_run_exits_zero(self):
+        self.assertEqual(self.run_main(self.reports(rank=2), self.reports(rank=2)), 0)
+
+    def test_a_comparison_that_could_not_run_exits_two(self):
+        with mock.patch.object(precision, "measure_binary", side_effect=CannotRun("no binary")):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    precision.main(
+                        ["--base", __file__, "--head", __file__, "--limits", "10", "--corpora", "ratchet"]
+                    ),
+                    2,
+                )
+
+    def test_a_child_that_exited_non_zero_is_not_a_clean_run(self):
+        finished = subprocess.CompletedProcess(["child"], 1, stdout="", stderr="the child broke")
+        with tempfile.TemporaryDirectory() as state:
+            with mock.patch.object(precision.subprocess, "run", return_value=finished):
+                with self.assertRaises(CannotRun) as raised:
+                    precision.measure_binary(__file__, ("ratchet",), (10,), state)
+        self.assertIn("exit 1", str(raised.exception))
+
+    def test_a_child_that_wrote_no_ranks_is_not_a_clean_run(self):
+        finished = subprocess.CompletedProcess(["child"], 0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as state:
+            with mock.patch.object(precision.subprocess, "run", return_value=finished):
+                with self.assertRaises(CannotRun) as raised:
+                    precision.measure_binary(__file__, ("ratchet",), (10,), state)
+        self.assertIn("wrote no readable ranks", str(raised.exception))
 
 
 if __name__ == "__main__":

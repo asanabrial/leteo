@@ -232,22 +232,27 @@ function Read-UserPath {
 }
 
 # Tells running programs the environment changed, as the API this replaced did.
-# See `install.ps1` for why a registry write is not enough on its own.
+# See `install.ps1` for why a registry write is not enough on its own, and why
+# the whole body is caught: the value is already written by the time this runs.
 function Send-EnvironmentChange {
-    if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
-        Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
+    try {
+        if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
+            Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
 public static extern System.IntPtr SendMessageTimeout(
     System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam,
     uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
 '@
-    }
-    $result = [UIntPtr]::Zero
-    $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
-        [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
-    )
-    if ($sent -eq [IntPtr]::Zero) {
-        Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+        }
+        $result = [UIntPtr]::Zero
+        $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
+            [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
+        )
+        if ($sent -eq [IntPtr]::Zero) {
+            Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+        }
+    } catch {
+        Write-Warning "the environment change could not be broadcast ($($_.Exception.Message)); start a new session rather than a new terminal"
     }
 }
 
@@ -266,14 +271,17 @@ function Write-UserPath([string]$Value) {
     }
 }
 
-# An entry that names the directory through a variable, or with a trailing
-# separator, is that entry, for the reason `install.ps1` gives beside its own
-# copy of this: removing only the raw text would leave it on the PATH.
+# One spelling for a PATH entry, for the reason `install.ps1` gives beside its
+# own copy: an entry names the same directory through a variable, with another
+# separator, or with a trailing one, and removing only the exact text would
+# leave it on the PATH.
+function Get-ComparablePath([string]$Entry) {
+    [Environment]::ExpandEnvironmentVariables($Entry).Replace('/', '\').TrimEnd('\')
+}
+
 function Test-SamePathEntry([string]$Entry) {
     if (-not $Entry) { return $false }
-    $target = $installDir.TrimEnd('\', '/')
-    $Entry -eq $installDir -or
-        [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd('\', '/') -eq $target
+    (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
 }
 
 try {

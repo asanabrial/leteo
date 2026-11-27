@@ -76,11 +76,14 @@ function Assert-Succeeded([string]$What) {
     }
 }
 
+# The same spelling the scripts fold to: variables expanded, separators
+# folded, a trailing one dropped.
+function Get-ComparablePath([string]$Entry) {
+    [Environment]::ExpandEnvironmentVariables($Entry).Replace('/', '\').TrimEnd('\')
+}
+
 function Test-NamesInstallDir([string]$Entry) {
-    $Entry -and (
-        [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd('\', '/') -eq
-            $installDir.TrimEnd('\', '/')
-    )
+    $Entry -and (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
 }
 
 function Assert-Markers([string]$Where) {
@@ -218,15 +221,21 @@ while ($true) {
         if (-not $variable) {
             throw "cannot spell $installDir through a variable; the variable pass needs it under TEMP, LOCALAPPDATA or USERPROFILE"
         }
-        $registry.SetValue('Path', "$seed;$variable", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        $literal = $installDir + '\'
+        $slashed = $installDir.Replace('\', '/')
+        $registry.SetValue(
+            'Path',
+            "$seed;$variable;$literal;$slashed",
+            [Microsoft.Win32.RegistryValueKind]::ExpandString
+        )
         & (Join-Path $PSScriptRoot 'install.ps1')
-        Assert-Succeeded 'install.ps1 with a variable-spelled entry'
+        Assert-Succeeded 'install.ps1 with the install directory already there'
         $named = @((Read-Raw) -split ';' | Where-Object { Test-NamesInstallDir $_ })
-        if ($named.Count -ne 1) {
-            throw "with '$variable' already there, install left $($named.Count) entries for ${installDir}: $(Read-Raw)"
+        if ($named.Count -ne 3) {
+            throw "with three spellings of ${installDir} already there, install left $($named.Count): $(Read-Raw)"
         }
         & (Join-Path $installDir 'uninstall.ps1') -Yes
-        Assert-Succeeded 'uninstall.ps1 with a variable-spelled entry'
+        Assert-Succeeded 'uninstall.ps1 with the install directory spelled three ways'
         $named = @((Read-Raw) -split ';' | Where-Object { Test-NamesInstallDir $_ })
         if ($named.Count -ne 0) {
             throw "uninstall left '$($named -join ';')' on the user PATH: $(Read-Raw)"

@@ -207,21 +207,29 @@ try {
     # `RegistryKey.SetValue` does not, so Explorer and every terminal opened
     # from it would keep the PATH they started with until the next logon —
     # while the installer says to open a new terminal.
+    #
+    # Everything here is caught: the value is already written when this runs, so
+    # a host that refuses `Add-Type` must not turn a successful install into a
+    # failure. What it costs is a warning and the old advice.
     function Send-EnvironmentChange {
-        if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
-            Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
+        try {
+            if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
+                Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
 [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
 public static extern System.IntPtr SendMessageTimeout(
     System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam,
     uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
 '@
-        }
-        $result = [UIntPtr]::Zero
-        $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
-            [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
-        )
-        if ($sent -eq [IntPtr]::Zero) {
-            Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+            }
+            $result = [UIntPtr]::Zero
+            $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
+                [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
+            )
+            if ($sent -eq [IntPtr]::Zero) {
+                Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+            }
+        } catch {
+            Write-Warning "the environment change could not be broadcast ($($_.Exception.Message)); start a new session rather than a new terminal"
         }
     }
 
@@ -240,15 +248,20 @@ public static extern System.IntPtr SendMessageTimeout(
         }
     }
 
-    # An entry that names the directory through a variable, or with a trailing
-    # separator, is that entry: matching only the exact text would add a second
-    # copy of a directory already on the PATH. The comparison folds those two
-    # spellings; what gets written stays exactly as it was read.
+    # One spelling for a PATH entry: variables expanded, separators folded, a
+    # trailing one dropped. Windows accepts `C:/dir` for `C:\dir`, and an entry
+    # names the same directory whatever it ends with.
+    function Get-ComparablePath([string]$Entry) {
+        [Environment]::ExpandEnvironmentVariables($Entry).Replace('/', '\').TrimEnd('\')
+    }
+
+    # An entry that names the directory through a variable, or with a separator
+    # spelled differently, is that entry: matching only the exact text would add
+    # a second copy of a directory already on the PATH. What gets written stays
+    # exactly as it was read.
     function Test-SamePathEntry([string]$Entry) {
         if (-not $Entry) { return $false }
-        $target = $installDir.TrimEnd('\', '/')
-        $Entry -eq $installDir -or
-            [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd('\', '/') -eq $target
+        (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
     }
 
     $added = $false

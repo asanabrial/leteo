@@ -598,3 +598,8 @@ jobs:
       # for a release, and which cause it names when SHA256SUMS or the release is
       # missing, unanswered, or lacks what it needs. No network is touched.
       - run: sh tools/winget/tests/check.sh
+      # `tools/registry/install-publisher.sh` behind stand-in `curl` and
+      # `sha256sum`: the digest refusal, the unknown-platform branch and the
+      # version assertion, none of which a release dispatch reaches before the
+      # day it matters. `tar` is real, so the archive has to extract.
+      - run: sh tools/registry/tests/check.sh

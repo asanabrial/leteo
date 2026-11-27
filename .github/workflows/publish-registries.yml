@@ -250,6 +250,10 @@ jobs:
       # here, read off the v1.8.16 release's assets and confirmed by running the
       # extracted binary: a bumped version is a change somebody reviews, and an
       # asset replaced under the same tag stops the job instead of publishing.
+      # The body is `tools/registry/install-publisher.sh` so that it runs
+      # somewhere other than a release dispatch: `tools/registry/tests/check.sh`
+      # holds it behind stand-in `curl` and `sha256sum` and exercises the digest
+      # refusal, the unknown-platform branch and the version assertion.
       - name: Install mcp-publisher
         env:
           MCP_PUBLISHER: "1.8.16"
@@ -259,20 +263,8 @@ jobs:
           SHA256_DARWIN_ARM64: "5193b2c55627027cbda652ae8577aa3221fcff9ad743a011f830e81f361fa061"
         run: |
           set -euo pipefail
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
-          case "$os/$arch" in
-            linux/amd64) digest="$SHA256_LINUX_AMD64" ;;
-            linux/arm64) digest="$SHA256_LINUX_ARM64" ;;
-            darwin/amd64) digest="$SHA256_DARWIN_AMD64" ;;
-            darwin/arm64) digest="$SHA256_DARWIN_ARM64" ;;
-            *) echo "::error::No sha256 recorded for mcp-publisher $MCP_PUBLISHER on $os/$arch."; exit 1 ;;
-          esac
-          archive="mcp-publisher_${os}_${arch}.tar.gz"
-          curl -fsSLO "https://github.com/modelcontextprotocol/registry/releases/download/v$MCP_PUBLISHER/$archive"
-          printf '%s  %s\n' "$digest" "$archive" | sha256sum -c -
-          tar -xzf "$archive" mcp-publisher
-          ./mcp-publisher --version
+          sh tools/registry/install-publisher.sh \
+            --platform "$(uname -s | tr '[:upper:]' '[:lower:]')/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
       # The registry believes this repository owns `io.github.asanabrial/leteo`
       # because the OIDC token says which repository the job is running in.
       - run: ./mcp-publisher login github-oidc

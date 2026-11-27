@@ -250,6 +250,8 @@ public static extern System.IntPtr SendMessageTimeout(
         }
     }
 
+    # Writes the value, and returns whether the change reached running programs:
+    # the closing advice is the one thing that depends on the answer.
     function Write-UserPath([string]$Value) {
         if ($environment) {
             $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString

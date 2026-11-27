@@ -195,8 +195,13 @@ while ($true) {
         Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1'
         Show-State 'after install'
         Assert-Markers 'after install'
-        if (@((Read-Raw) -split ';') -notcontains $installDir) {
-            throw "after install: $installDir was not added to the user PATH: $(Read-Raw)"
+        # The seeded value with the entry appended and nothing else. Compared
+        # whole because the comparison after uninstall is whole: an empty entry
+        # install invented and one of the runner's it dropped would cancel out
+        # somewhere in between, and this is where that is caught.
+        $expected = "$seed;$installDir"
+        if ((Read-Raw) -cne $expected) {
+            throw "after install: the PATH reads '$(Read-Raw)', not '$expected'"
         }
 
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1' @{ Yes = $true }

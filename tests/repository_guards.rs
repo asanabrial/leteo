@@ -934,6 +934,109 @@ fn normalised_pattern(pattern: &str) -> String {
         .collect()
 }
 
+/// Only the jobs that publish hold a write token in the release.
+///
+/// `release.yml` granted `contents: write` and `packages: write` to the whole
+/// workflow, so the licence check and the five builds held tokens that could
+/// write releases and packages, and four of those jobs run third-party actions.
+/// #503 moved each write scope to the job that uses it. This holds that: the
+/// workflow-level block names reads only, and a job may write a scope only when
+/// it is one of the four named here, each because it publishes something —
+/// `publish` the release, `container` and `container-manifest` the image, and
+/// `registries` the dispatch the registry workflow runs from.
+///
+/// A job that adds `permissions:` and forgets a read it needs fails at run
+/// time, in a release; that is the cost of the narrowing, and this guard does
+/// not measure which reads each job needs.
+#[test]
+fn only_the_publishing_jobs_hold_a_write_token_in_the_release() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow =
+        std::fs::read_to_string(root.join(".github").join("workflows").join("release.yml"))
+            .expect("read release.yml");
+    let lines: Vec<&str> = workflow.lines().collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+
+    let jobs_at = lines
+        .iter()
+        .position(|line| line.trim_end() == "jobs:")
+        .expect("release.yml has a jobs block");
+    let mut problems: Vec<String> = lines[..jobs_at]
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.trim_end() == "permissions:")
+        .map(|(at, _)| permission_entries(&lines, at))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, _, access)| access == "write")
+        .map(|(line, scope, _)| format!("release.yml:{line}: the workflow grants {scope}: write"))
+        .collect();
+
+    let mut headers: Vec<(usize, String)> = Vec::new();
+    for (at, line) in lines.iter().enumerate().skip(jobs_at + 1) {
+        let trimmed = line.trim_start();
+        if indent(line) == 2
+            && !trimmed.starts_with('-')
+            && let Some(name) = trimmed.trim_end().strip_suffix(':')
+            && !name.contains(' ')
+        {
+            headers.push((at, name.to_owned()));
+        }
+    }
+    let allowed: [(&str, &[&str]); 4] = [
+        ("publish", &["contents"]),
+        ("container", &["packages"]),
+        ("container-manifest", &["packages"]),
+        ("registries", &["actions"]),
+    ];
+    for (index, (at, job)) in headers.iter().enumerate() {
+        let end = headers
+            .get(index + 1)
+            .map(|(next, _)| *next)
+            .unwrap_or(lines.len());
+        let block = lines[*at + 1..end]
+            .iter()
+            .position(|line| line.trim_end() == "    permissions:");
+        let Some(offset) = block else { continue };
+        for (line, scope, access) in permission_entries(&lines, at + 1 + offset) {
+            if access != "write" {
+                continue;
+            }
+            let permitted = allowed
+                .iter()
+                .any(|(name, scopes)| name == job && scopes.contains(&scope.as_str()));
+            if !permitted {
+                problems.push(format!("release.yml:{line}: {job} grants {scope}: write"));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The `scope: access` pairs under the `permissions:` line at `at`, with the
+/// line number each was found on.
+fn permission_entries(lines: &[&str], at: usize) -> Vec<(usize, String, String)> {
+    let base = lines[at].len() - lines[at].trim_start().len();
+    let mut entries = Vec::new();
+    for (offset, line) in lines.iter().enumerate().skip(at + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if line.len() - trimmed.len() <= base {
+            break;
+        }
+        if let Some((scope, access)) = trimmed.split_once(':') {
+            entries.push((
+                offset + 1,
+                scope.trim().to_owned(),
+                access.trim().to_owned(),
+            ));
+        }
+    }
+    entries
+}
+
 /// Every `metadata-action` step in `release.yml` derives the version alike.
 ///
 /// `docker/metadata-action` computes `org.opencontainers.image.version` from

@@ -95,6 +95,12 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - name: The versions trusted publishing needs
         run: node --version && npm --version
+      # The wrapper's own tests, on the bytes about to reach npm. CI runs them
+      # on the branch, but a dispatch for an older tag publishes whatever that
+      # tag carries, and nothing asked it before this.
+      - name: The wrapper's tests, before anything reaches npm
+        working-directory: npm
+        run: npm test
       # `npm/` and not the repository root: the wrapper is a subdirectory on
       # purpose, kept out of the crate by `exclude` in Cargo.toml.
       - name: Publish unless npm already has it
@@ -125,6 +131,12 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      # The package's tests, before anything reaches npm. The Pi package is a
+      # plugin like the OpenCode one, and a manual dispatch can name an older
+      # tag whose code never passed them.
+      - name: The package's tests, before anything reaches npm
+        working-directory: plugin/pi
+        run: npm test
       # npm attaches a trusted publisher to a package that already exists, so
       # the first version of this one cannot arrive through OIDC at all — it
       # has to be published once by hand, with the owner's second factor. Left

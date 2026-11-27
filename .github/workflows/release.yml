@@ -4,12 +4,53 @@ on:
   push:
     tags: ["v*"]
 
+# Every job starts read-only, and the two that publish grant themselves what
+# they write. A workflow-wide write token used to be handed to every job,
+# including the three that only read and the four that run third-party actions.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
+  # A tag is a promise that the commit passed, and nothing here asked. This job
+  # reads the CI runs for the tagged commit before any other job starts and
+  # refuses the release unless the newest one finished successfully. A run still
+  # in progress is a refusal rather than a wait: a release that waited would
+  # hold a write token on a runner until somebody looked.
+  ci-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: The tagged commit carries a green CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          latest=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+            --jq 'if ([.workflow_runs[] | select(.name == "CI")] | length) == 0
+                  then "none"
+                  else ([.workflow_runs[] | select(.name == "CI")]
+                        | sort_by(.created_at) | last
+                        | "\(.status) \(.conclusion)")
+                  end')
+          case "$latest" in
+            "completed success")
+              echo "the newest CI run for $SHA finished successfully"
+              ;;
+            none)
+              echo "::error::no CI run exists for $SHA. A tag may only name a commit CI has run on: push it to a branch and wait for the run before tagging."
+              exit 1
+              ;;
+            *)
+              echo "::error::the newest CI run for $SHA is not a finished success: $latest. A tag on a commit without a green CI run does not publish."
+              exit 1
+              ;;
+          esac
+
   licenses:
+    needs: [ci-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -31,8 +72,10 @@ jobs:
             grep -m1 '^## ' CHANGELOG.md
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2
         with:
           tool: cargo-about
       # `-c` because `cargo about` reads `about.toml` from the working
@@ -102,8 +145,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
       # The Windows README promises nothing to install first — not even the
@@ -155,6 +199,9 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # `gh release create` writes the release; nothing else in this job writes.
+    permissions:
+      contents: write
     steps:
       # `--verify-tag` below shells out to git, and a job that only downloads
       # artifacts has no repository to shell out in: it failed with "fatal: not
@@ -195,6 +242,10 @@ jobs:
   container:
     needs: build
     runs-on: ${{ matrix.runner }}
+    # The image is pushed to GHCR; the checkout only reads.
+    permissions:
+      contents: read
+      packages: write
     strategy:
       # So that a failing leg does not cancel the other mid-push, and so one
       # run says whether one architecture broke or both. Either setting can
@@ -212,8 +263,8 @@ jobs:
             platform: linux/arm64
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -256,7 +307,7 @@ jobs:
       # shape regardless of these labels; what the labels buy is provenance
       # for whoever pulls, not the link.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -266,7 +317,7 @@ jobs:
       # tag would leave whichever finished last as the whole image and the other
       # architecture unreachable. The tags are applied once, by the merge.
       - id: built
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/Dockerfile
@@ -302,14 +353,17 @@ jobs:
   container-manifest:
     needs: container
     runs-on: ubuntu-latest
+    # The final tag is applied here; the artifacts come from this same run.
+    permissions:
+      packages: write
     steps:
       - uses: actions/download-artifact@v7
         with:
           path: /tmp/digests
           pattern: digest-*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -319,7 +373,7 @@ jobs:
       # is the reference is stated at that step and not here, because it used to
       # be said in both places and in both directions.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |

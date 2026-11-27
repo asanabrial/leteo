@@ -1635,10 +1635,18 @@ impl Store {
         // prompts, fusing raised accuracy from 22.4% to 23.1% — two prompts —
         // and took the query from 5.3ms to 9.4ms, on the one path that runs
         // before every single thing the user types.
-        let terms = normalize::fts_any_of(&normalize::prompt_terms(prompt));
+        let words = normalize::prompt_terms(prompt);
+        let terms = normalize::fts_any_of(&words);
         if terms.is_empty() {
             return Ok(Vec::new());
         }
+        // The words that could say what the prompt is about, as against the
+        // function words that hold a sentence together. A candidate is allowed
+        // to be found by either, but not by the second alone: `write a haiku
+        // about the sea` shares `the` with `The cache is invalidated on deploy`,
+        // and the median of a store whose titles all begin "The" puts that
+        // memory over a floor that was computed from nothing but that word.
+        let content = content_words(&words);
         // Narrowed to the project inside the index rather than only after the
         // join: see `normalize::fts_within_project`. Every prompt used to be
         // scored against every memory of every project.
@@ -1714,15 +1722,73 @@ impl Store {
         // semantic check also adds a median 22.5 ms (p90 29.3) to a hook that
         // takes 10, because the hook never loads the model today.
         //
+        // And a candidate has to match a word the prompt is *about*. The floor
+        // stays computed over the whole match, function words included -- that
+        // is the median the shipped rule was measured with -- but a function
+        // word is no longer allowed to carry a memory over it alone. On the
+        // labelled set in `tools/memory-bench/session_cost_data/labels.hint.tsv`
+        // -- 40 prompts in two languages against 16 memories -- that took the
+        // prompts nothing bears on from 3 spoken to 1, with the 19 of 25
+        // related prompts named unchanged and the unrelated lines named down
+        // from 10 to 8.
+        //
+        // Dropping the function words from the query instead is a different
+        // change and a worse one, measured in `normalize::prompt_terms`: it
+        // moves the median, which is computed from what the query returns.
+        //
         // The label is a person's, and a hint that is right when read can be
         // scored a miss, so these numbers rank bars against each other; they
         // are not the hint's accuracy.
-        Ok(scored
+        let mut named: Vec<MemoryRef> = scored
             .into_iter()
             .filter(|(_, rank)| worth_naming(*rank, median))
-            .take(limit)
             .map(|(memory, _)| memory)
-            .collect())
+            .collect();
+        // The floor is computed over everything the prompt matched, function
+        // words included, and that stays: it is the same query the store sizes
+        // the median from. What changes is only who may be *named*, so the
+        // filter is after the floor and nothing is backfilled from below it.
+        if !content.is_empty() && !named.is_empty() {
+            let held = self.named_by_content(&content, &project, &named)?;
+            named.retain(|memory| held.contains(&memory.id));
+        }
+        named.truncate(limit);
+        Ok(named)
+    }
+
+    /// Which of `named` are matched by a word the prompt is actually about.
+    ///
+    /// One query carrying the candidates' own ids, rather than a second sample
+    /// of the same depth: a candidate can rank below the sample on the content
+    /// words alone while the whole prompt's longer query lifted it into the
+    /// one that was read, and dropping it for not appearing in a list that was
+    /// never asked about it would be an accident of the sample.
+    fn named_by_content(
+        &self,
+        words: &[String],
+        project: &str,
+        named: &[MemoryRef],
+    ) -> Result<std::collections::HashSet<i64>, StoreError> {
+        let terms = normalize::fts_any_of(words);
+        let terms = normalize::fts_within_project(&terms, project).unwrap_or(terms);
+        let placeholders = (0..named.len())
+            .map(|offset| format!("?{}", offset + 3))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT o.id {} AND o.id IN ({placeholders})",
+            prompt_match_clause()
+        ))?;
+        let mut values: Vec<rusqlite::types::Value> = vec![terms.into(), project.to_owned().into()];
+        values.extend(named.iter().map(|memory| memory.id.into()));
+        let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+            row.get::<_, i64>(0)
+        })?;
+        let mut held = std::collections::HashSet::new();
+        for id in rows {
+            held.insert(id?);
+        }
+        Ok(held)
     }
 }
 
@@ -1742,17 +1808,43 @@ impl Store {
 /// that a summary heads almost none of those. A prompt carries no `type`, so
 /// there is nothing here for a caller to name.
 pub(crate) fn prompt_recall_sql() -> String {
-    let not_superseded = super::relations::not_superseded();
     format!(
         "SELECT o.id, ifnull(o.sync_id, '') AS sync_id, o.type, o.title,
                 bm25(observations_fts, {BM25_WEIGHTS}) AS rank
-         FROM observations_fts fts CROSS JOIN observations o ON o.id = fts.rowid
+         {}
+         ORDER BY rank LIMIT ?3",
+        prompt_match_clause()
+    )
+}
+
+/// The words of a prompt that are not function words in any language the store
+/// knows, in the order they were written.
+///
+/// Empty means the prompt was all function words, and then there is nothing for
+/// the rule to exclude and every candidate stands as it did.
+fn content_words(words: &[String]) -> Vec<String> {
+    words
+        .iter()
+        .filter(|word| !crate::stemming::is_function_word(word))
+        .cloned()
+        .collect()
+}
+
+/// The `FROM` and `WHERE` every read of the prompt hint shares.
+///
+/// One statement rather than two because the second read — the one that asks
+/// whether a candidate matched a content word — must consider exactly the rows
+/// the first one did. A hand-written second copy is how these two stop agreeing
+/// when one of them gains a condition.
+fn prompt_match_clause() -> String {
+    let not_superseded = super::relations::not_superseded();
+    format!(
+        "FROM observations_fts fts CROSS JOIN observations o ON o.id = fts.rowid
          WHERE observations_fts MATCH ?1 AND o.deleted_at IS NULL
            AND LOWER(o.project) = ?2
            AND o.type <> 'session_summary'
            AND trim(ifnull(o.title, '')) <> ''
-           AND {not_superseded}
-         ORDER BY rank LIMIT ?3"
+           AND {not_superseded}"
     )
 }
 

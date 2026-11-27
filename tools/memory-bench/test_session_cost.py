@@ -19,6 +19,7 @@ import tempfile
 import unittest
 
 import comparison_corpus
+import hint_corpus
 import session_cost as sc
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -101,16 +102,20 @@ class Labels(unittest.TestCase):
 
     def test_score_separates_silent_named_and_wrong(self):
         res = [
-            dict(label="neutral", best=[], injected=[], tokens=0, rc=0, ms=1),
-            dict(label="neutral", best=[], injected=[3], tokens=40, rc=0, ms=2),
-            dict(label="related", best=[1], injected=[1, 2], tokens=60, rc=0, ms=3),
-            dict(label="related", best=[1], injected=[2], tokens=30, rc=0, ms=4),
-            dict(label="related", best=[1], injected=[], tokens=0, rc=1, ms=5),
+            dict(label="neutral", best=[], injected=[], tokens=0, bytes=0, rc=0, ms=1),
+            dict(label="neutral", best=[], injected=[3], tokens=40, bytes=100, rc=0, ms=2),
+            dict(label="related", best=[1], injected=[1, 2], tokens=60, bytes=150, rc=0, ms=3),
+            dict(label="related", best=[1], injected=[2], tokens=30, bytes=75, rc=0, ms=4),
+            dict(label="related", best=[1], injected=[], tokens=0, bytes=0, rc=1, ms=5),
         ]
         s = sc.score(res)
         self.assertEqual((s["neutral_silent"], s["neutral"]), (1, 2))
-        self.assertEqual((s["related_named"], s["related"], s["related_spoke_wrong"]), (1, 3, 1))
+        self.assertEqual((s["neutral_spoke"], s["related_named"], s["related"], s["related_spoke_wrong"]), (1, 1, 3, 1))
         self.assertEqual((s["tokens_neutral"], s["tokens_total"], s["hook_failures"]), (40, 130, 1))
+        # Four memories named, one of them a labelled one: precision counts every
+        # line on every prompt, not only the prompts that had a right memory.
+        self.assertEqual((s["named"], s["named_right"], s["precision"]), (4, 1, 0.25))
+        self.assertEqual((s["bytes_neutral"], s["bytes_total"]), (100, 325))
 
     def test_the_example_labels_name_the_memories_the_fixture_builder_writes(self):
         # The fixture is the comparison corpus in write order, so id N is the
@@ -125,6 +130,23 @@ class Labels(unittest.TestCase):
             self.assertEqual(" | ".join(titles[i] for i in ids), c[7], line)
         kinds = {line.split("\t")[3] for line in rows}
         self.assertEqual(kinds, {"synthetic", "real"}, "the example should exercise both replay paths")
+
+    def test_the_hint_labels_name_the_memories_the_hint_fixture_writes(self):
+        # The hint fixture is `hint_corpus` in write order, so id N is the Nth
+        # memory. The two files are edited apart -- the prompts are prose and the
+        # memories are code -- so this is what keeps an insert from renaming a
+        # hit to the memory below it.
+        titles = {i: m["title"] for i, m in enumerate(hint_corpus.corpus(), 1)}
+        rows = (HERE / "session_cost_data" / "labels.hint.tsv").read_text().splitlines()[1:]
+        self.assertEqual(len(rows), 40)
+        labels = [line.split("\t")[5] for line in rows]
+        self.assertEqual((labels.count("related"), labels.count("neutral")), (25, 15))
+        for line in rows:
+            c = line.split("\t")
+            ids = [int(x) for x in c[6].split(",") if x]
+            self.assertEqual(" | ".join(titles[i] for i in ids), c[7], line)
+            self.assertEqual(c[2], "hint-lab", line)
+        self.assertEqual({line.split("\t")[3] for line in rows}, {"synthetic"})
 
     def test_the_committed_inputs_are_what_the_defaults_read(self):
         data = HERE / "session_cost_data"

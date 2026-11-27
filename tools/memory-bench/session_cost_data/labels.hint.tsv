@@ -1,0 +1,41 @@
+id	created_at	project	source	prompt	label	best_memory_ids	best_memory_titles	rationale
+s1	2026-01-01 00:00:00	hint-lab	synthetic	how do we page through the orders list without slowing down near the end?	related	1	Keyset pagination for the orders list	The memory is the paging decision.
+s2	2026-01-01 00:00:00	hint-lab	synthetic	what backoff do clients use when a call fails?	related	2	Retries use exponential backoff with jitter	Names the retry policy.
+s3	2026-01-01 00:00:00	hint-lab	synthetic	how often do we rotate the JWT signing key?	related	3	JWT signing keys rotate every thirty days	The rotation cadence.
+s4	2026-01-01 00:00:00	hint-lab	synthetic	why did postgres run out of connections when traffic spiked?	related	4	Postgres ran out of connections under load	The root cause and fix.
+s5	2026-01-01 00:00:00	hint-lab	synthetic	when is the cache invalidated?	related	5	The cache is invalidated on deploy	The deploy-time invalidation.
+s6	2026-01-01 00:00:00	hint-lab	synthetic	how do I find every log line for one request?	related	6	Structured logs carry a request id	The request id in the logs.
+s7	2026-01-01 00:00:00	hint-lab	synthetic	when is the deploy freeze this quarter?	related	7	The deploy freeze is the last Friday of the quarter	The freeze rule.
+s8	2026-01-01 00:00:00	hint-lab	synthetic	where are the feature flags evaluated?	related	8	Feature flags are evaluated server-side	Server-side evaluation.
+s9	2026-01-01 00:00:00	hint-lab	synthetic	can the orders list use the keyset cursor for deep pages?	related	1	Keyset pagination for the orders list	The paging decision again.
+s10	2026-01-01 00:00:00	hint-lab	synthetic	does a rollback serve the old cached assets?	related	5	The cache is invalidated on deploy	Invalidation and rollback.
+s11	2026-01-01 00:00:00	hint-lab	synthetic	which key signs the tokens and when does it change?	related	3	JWT signing keys rotate every thirty days	Rotation and overlap.
+s12	2026-01-01 00:00:00	hint-lab	synthetic	is the flag check done in the API or the bundle?	related	8	Feature flags are evaluated server-side	Where the flag is read.
+s13	2026-01-01 00:00:00	hint-lab	synthetic	what happens to a handler when the pool is shared?	related	4	Postgres ran out of connections under load	One injected pool.
+s14	2026-01-01 00:00:00	hint-lab	synthetic	qué índice usa la consulta de los pedidos activos	related	9	Índice parcial para los pedidos activos	El índice parcial.
+s15	2026-01-01 00:00:00	hint-lab	synthetic	por qué las facturas salían con la fecha de un día antes	related	10	Corregido: las facturas llevaban la fecha de un día antes	La zona horaria.
+s16	2026-01-01 00:00:00	hint-lab	synthetic	quién revisa el despliegue nocturno	related	11	El despliegue nocturno lo revisa la guardia	La guardia.
+s17	2026-01-01 00:00:00	hint-lab	synthetic	en qué zona horaria se calcula la nómina	related	12	La nómina se calcula en la zona horaria de la cuenta	La zona de la cuenta.
+s18	2026-01-01 00:00:00	hint-lab	synthetic	cuánto espera el webhook entre reintentos	related	13	El webhook reintenta cada cinco minutos	Los cinco minutos.
+s19	2026-01-01 00:00:00	hint-lab	synthetic	el buscador encuentra una palabra sin tilde	related	14	El buscador ignora las tildes	El plegado de tildes.
+s20	2026-01-01 00:00:00	hint-lab	synthetic	por qué la caché servía la versión vieja tras desplegar	related	15	Corregido: la caché servía la versión vieja tras desplegar	La clave sin invalidar.
+s21	2026-01-01 00:00:00	hint-lab	synthetic	dónde se guardan los informes mensuales	related	16	Los informes se guardan en Parquet	Parquet por mes.
+s22	2026-01-01 00:00:00	hint-lab	synthetic	el índice parcial de pedidos archivados	related	9	Índice parcial para los pedidos activos	El índice parcial otra vez.
+s23	2026-01-01 00:00:00	hint-lab	synthetic	cuántas veces reintenta el webhook antes de la cola muerta	related	13	El webhook reintenta cada cinco minutos	Los reintentos y la cola.
+s24	2026-01-01 00:00:00	hint-lab	synthetic	se pliegan las tildes al buscar	related	14	El buscador ignora las tildes	El plegado al indexar.
+s25	2026-01-01 00:00:00	hint-lab	synthetic	el CSV de los informes o el Parquet	related	16	Los informes se guardan en Parquet	El formato de los informes.
+s26	2026-01-01 00:00:00	hint-lab	synthetic	recommend a paella recipe for six people	neutral			Nothing in the store is about cooking.
+s27	2026-01-01 00:00:00	hint-lab	synthetic	what is the capital of Portugal	neutral			General knowledge.
+s28	2026-01-01 00:00:00	hint-lab	synthetic	how do I renew my passport	neutral			Personal paperwork.
+s29	2026-01-01 00:00:00	hint-lab	synthetic	which gym is open on Sunday	neutral			Local errand.
+s30	2026-01-01 00:00:00	hint-lab	synthetic	write a haiku about the sea	neutral			Creative writing.
+s31	2026-01-01 00:00:00	hint-lab	synthetic	how much does a train ticket to Barcelona cost	neutral			Travel.
+s32	2026-01-01 00:00:00	hint-lab	synthetic	what's the weather in Lisbon tomorrow	neutral			Weather.
+s33	2026-01-01 00:00:00	hint-lab	synthetic	suggest a name for a cat	neutral			Naming.
+s34	2026-01-01 00:00:00	hint-lab	synthetic	receta de paella valenciana para seis personas	neutral			The prompt the hint answered with database memories.
+s35	2026-01-01 00:00:00	hint-lab	synthetic	cómo pido cita en el médico	neutral			Personal paperwork.
+s36	2026-01-01 00:00:00	hint-lab	synthetic	cuál es la capital de Portugal	neutral			General knowledge.
+s37	2026-01-01 00:00:00	hint-lab	synthetic	escríbeme un correo para pedir vacaciones	neutral			Creative writing.
+s38	2026-01-01 00:00:00	hint-lab	synthetic	qué película me recomiendas para esta noche	neutral			Entertainment.
+s39	2026-01-01 00:00:00	hint-lab	synthetic	cómo cambio la contraseña del wifi de casa	neutral			Home network.
+s40	2026-01-01 00:00:00	hint-lab	synthetic	cuánto cuesta un billete de tren a Barcelona	neutral			Travel.

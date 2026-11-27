@@ -963,6 +963,61 @@ fn a_prompt_is_read_past_its_opening_words() {
     );
 }
 
+/// A function word alone is not evidence that a memory is about the prompt.
+///
+/// The floor is relative to the median of what the prompt matched, and a
+/// store whose titles share a function word — every one of these begins "The"
+/// — has a median made of that word. `write a haiku about the sea` scored
+/// above it and was handed "The cache is invalidated on deploy": one content
+/// word in common with the store, none with the prompt.
+///
+/// The second half is the cost the rule is not allowed to have: a prompt that
+/// does share a subject word still gets its memory, and the floor is still
+/// computed from the whole match, not from the content words alone.
+#[test]
+fn a_function_word_alone_is_not_evidence_of_a_subject() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for (title, body) in [
+        (
+            "The deploy freeze is the last Friday",
+            "no production deploy goes out on that day",
+        ),
+        (
+            "The retry policy uses jitter",
+            "clients back off with jitter when a call fails",
+        ),
+        (
+            "The reports are written in Parquet",
+            "the monthly reports land in Parquet",
+        ),
+        (
+            "The cache is invalidated on deploy",
+            "a deploy clears the tagged cache entries",
+        ),
+    ] {
+        store
+            .add_observation(observation("s1", title, body))
+            .unwrap();
+    }
+
+    let named = store
+        .prompt_matches("write a haiku about the sea", "leteo", 3)
+        .unwrap();
+    assert!(
+        named.is_empty(),
+        "`the` is the only word in common, and it says nothing: {named:?}"
+    );
+
+    let named = store
+        .prompt_matches("when is the cache invalidated on deploy", "leteo", 3)
+        .unwrap();
+    assert!(
+        !named.is_empty() && named.iter().all(|memory| memory.title.contains("cache")),
+        "a shared subject word still names its memory: {named:?}"
+    );
+}
+
 /// Search reads two indexes, and each rescues what the other loses.
 ///
 /// The stemmed index is what lets a question asked with a different ending

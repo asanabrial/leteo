@@ -93,8 +93,9 @@ impl Store {
             // The id names a state file, so it is refused rather than cut, and
             // refused before any row lands: the transaction is one statement
             // wide at this point and an error takes the whole import with it.
-            let id = session.id.trim();
-            if let Some(refusal) = normalize::session_id_refusal(id) {
+            // The row keeps the spelling it arrived with — the observations,
+            // prompts and tombstones of this file point at that spelling.
+            if let Some(refusal) = normalize::session_id_refusal(&session.id) {
                 return Err(invalid_parameter(refusal));
             }
             // Bounded rather than refused: a file written before the bound
@@ -117,7 +118,7 @@ impl Store {
                  (id, project, directory, started_at, ended_at, summary)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    id,
+                    session.id,
                     project,
                     directory,
                     started_at,

@@ -39,9 +39,10 @@ All notable changes to Leteo are documented in this file.
   names a different session, and a 10,000-character one named a state file no
   filesystem accepts. A project name is refused the same way where it is
   declared, and cut at 128 at the doors that cannot refuse — prompts, JSON
-  import and Engram adoption — so one project stays under one name. Topic keys
-  keep the 120 bytes the normaliser already applied, now named and published
-  (#493).
+  import, Engram adoption and replication, where an error retries the same
+  mutation for ever and the cursor cannot advance — so one project stays under
+  one name. Topic keys keep the 120 bytes the normaliser already applied, now
+  named and published (#493).
 - **Installing or uninstalling Leteo on Windows leaves the rest of the user
   PATH exactly as it was.** Both scripts read the value with
   `[Environment]::GetEnvironmentVariable('Path','User')`, which hands back every

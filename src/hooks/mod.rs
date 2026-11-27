@@ -591,6 +591,12 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         project = recorded_project(store, project, &directory.to_string_lossy());
     }
     let (mut session_id, session_reason) = resolve_session_id(input, &project);
+    // Whether the id came from the payload or was derived for this hook. A
+    // refused id is derived too, and the drift fold below can change the
+    // project it was derived from: re-deriving only the blank case filed one
+    // capture under two sessions, one from the guess and one from the recorded
+    // project the replay used.
+    let derived_session = input.session_id.trim().is_empty() || session_reason.is_some();
 
     // An existing session owns its project, exactly as the MCP tools treat it.
     // An agent that changes directory mid-session would otherwise split one
@@ -658,7 +664,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         if let Some(recorded) = drifted.first() {
             project = recorded.clone();
             outcome.project = project.clone();
-            if input.session_id.trim().is_empty() {
+            if derived_session {
                 let (derived, reason) = resolve_session_id(input, &project);
                 session_id = derived;
                 outcome.session_id = session_id.clone();

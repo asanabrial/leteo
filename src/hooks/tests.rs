@@ -1012,6 +1012,55 @@ fn a_guessed_project_gives_way_to_the_one_the_directory_recorded() {
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
 }
 
+/// A refused id is derived again when the drift fold changes the project.
+///
+/// The id is derived from the name detection gives the checkout, and then the
+/// directory's history replaces that name with the project it recorded.
+/// Re-deriving only a blank payload id left the refused one pointing at
+/// detection's name, while the spool replay — which marks a refused id as
+/// derived — used the recorded project. One capture could land in two sessions.
+#[test]
+fn a_refused_session_id_is_derived_from_the_project_the_directory_recorded() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path().join("api");
+    std::fs::create_dir_all(&workspace).unwrap();
+    // Detection reads the remote, so the name it gives is not a guess and the
+    // only thing that can move the project is the directory's history.
+    git_remote(&workspace, "new-name");
+    let mut store = Store::open(StoreConfig::new(temp.path().join("hooks.db"))).unwrap();
+    store
+        .create_session("earlier", "old-name", &workspace.to_string_lossy())
+        .unwrap();
+
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "s".repeat(10_000),
+            cwd: workspace.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.project, "old-name", "{outcome:?}");
+    let expected = crate::mcp::manual_session_id("old-name");
+    assert_eq!(outcome.session_id, expected, "{outcome:?}");
+    assert_eq!(
+        store.get_session(&expected).unwrap().project,
+        "old-name",
+        "the capture and its session are under the recorded project"
+    );
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("at most 128 bytes")),
+        "{:?}",
+        outcome.warnings
+    );
+}
+
 /// With no history the guess stands, because dropping the session would drop
 /// what the agent captures. What it may not do is pass for a finding.
 #[test]
@@ -2166,7 +2215,7 @@ fn an_unusable_session_id_or_project_is_replaced_and_says_so() {
 
     // A blank or control-bearing id is the same refusal, and an id a host
     // actually sends is kept as it is.
-    for unusable in ["", "   "] {
+    for unusable in ["", "   ", "a\0b", "a\tb"] {
         let input = HookInput {
             session_id: unusable.to_owned(),
             ..HookInput::default()

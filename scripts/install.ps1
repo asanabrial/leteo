@@ -290,8 +290,9 @@ public static extern System.IntPtr SendMessageTimeout(
         $userPath = Read-UserPath
         # The value is written back exactly as it was read, empty entries
         # included: they are the person's, and rewriting text Leteo does not own
-        # is the defect this whole block exists to avoid. The one `;` that is
-        # not theirs is the one that would be added to an empty value.
+        # is the defect this whole block exists to avoid. The only `;` written is
+        # the one between their value and the entry; an empty value gets the
+        # entry alone.
         $entries = @($userPath -split ';')
         $missing = -not ($entries | Where-Object { Test-SamePathEntry $_ })
         if ($missing) {

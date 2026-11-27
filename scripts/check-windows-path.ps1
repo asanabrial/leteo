@@ -180,8 +180,8 @@ while ($true) {
         # comes back byte for byte. The `;;` is always seeded, because an empty
         # entry is what a filtering write drops and a runner that happens to have
         # one is not a test of that; so is the `;` it ends with, because a value
-        # ending in a separator is a shape install has to extend without
-        # inventing an entry and uninstall has to hand back unchanged.
+        # ending in a separator holds an empty entry that has to survive the
+        # entry being added after it and then taken away again.
         $seed = "$originalRaw;;" + ($markers -join ';') + ';'
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
         Show-State 'seeded'
@@ -196,9 +196,9 @@ while ($true) {
         Show-State 'after install'
         Assert-Markers 'after install'
         # The seeded value with the entry appended and nothing else. Compared
-        # whole because the comparison after uninstall is whole: an empty entry
-        # install invented and one of the runner's it dropped would cancel out
-        # somewhere in between, and this is where that is caught.
+        # whole because the comparison after uninstall is whole: a byte install
+        # added and one of the runner's it dropped would cancel out in between,
+        # and this is where either is caught.
         $expected = "$seed;$installDir"
         if ((Read-Raw) -cne $expected) {
             throw "after install: the PATH reads '$(Read-Raw)', not '$expected'"
@@ -293,6 +293,21 @@ while ($true) {
             throw "from an empty PATH, uninstall left the value '$(Read-Raw)' where the environment API deletes it"
         }
         Write-Host 'an empty user PATH gets Leteo alone, with no empty entry'
+
+        # A value that exists but is empty. Install writes its entry into it and
+        # uninstall takes it away, leaving no value: nothing tells the
+        # uninstaller whether the value was there before the install, and the
+        # environment API deleted it in both cases. What is held is that no
+        # entry of the person's appears or disappears on the way.
+        $registry.SetValue('Path', '', [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 from an existing empty value'
+        if ((Read-Raw) -ne $installDir) {
+            throw "from an existing empty value, install wrote '$(Read-Raw)' instead of just $installDir"
+        }
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an existing empty value' @{ Yes = $true }
+        if ($null -ne $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
+            throw "from an existing empty value, uninstall left '$(Read-Raw)' where the environment API deletes it"
+        }
 
         Write-Host "the rest of the user PATH survived install and uninstall under $($PSVersionTable.PSVersion)"
     } finally {

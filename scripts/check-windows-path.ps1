@@ -90,7 +90,7 @@ $originalKind = if ($originalExists) { Read-Kind } else { $null }
 function Invoke-Script([string]$Path, [string]$What, [hashtable]$Parameters = @{}) {
     & $Path @Parameters
     if (-not $?) {
-        throw "$What did not succeed (exit code $LASTEXITCODE)"
+        throw "$What did not succeed"
     }
 }
 

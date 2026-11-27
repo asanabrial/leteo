@@ -202,8 +202,8 @@ if ((Test-Path $dataDir) -and -not $handled) {
 # Off Windows there is no registry to read: `tools/semantic/check_install.sh`
 # runs this file under pwsh on the Linux runners to exercise everything below
 # it, where the environment API is what those flows have always used. On
-# Windows the fallback is a warning rather than silence, because it is the
-# behaviour this change removed.
+# Windows the fallback is a warning rather than silence: it is the API that
+# expands every `%VAR%` and stores plain text.
 #
 # The five functions below are the same five `install.ps1` carries, in the same
 # order and shape, and cannot be shared with it: each script is fetched and run

@@ -105,20 +105,20 @@ mod fallback {
     /// Files a data directory can hold that Leteo did not write: two migration
     /// copies a glob would take, and a person's note, which is what keeps the
     /// data directory itself.
-    ///
-    /// `backup-20260802.db` is deliberately not here: `DATA_DIR_PREFIXES` names
-    /// `backup-` as Leteo's own, and `a_data_directory_of_only_leteos_own_files_
-    /// goes_entirely` holds the binary to the same rule. The issue that asked
-    /// for this test listed a `backup-2026/` among the survivors; that would be
-    /// the opposite of what the delivered fix and its unit test say.
     const STRANGERS: &[&str] = &[
         "leteo.db.bak-before-migrate",
         "leteo.db.pre-schema-7",
         "notes.txt",
     ];
 
-    /// An entry the prefix list owns, whole.
-    const OWNED_BACKUP: &str = "backup-20260802.db";
+    /// The two shapes the prefix list claims: `leteo backup` writes the file,
+    /// and a directory of that name is Leteo's too, because `DATA_DIR_PREFIXES`
+    /// in `src/setup/removal/mod.rs` names the prefix and
+    /// `a_data_directory_of_only_leteos_own_files_goes_entirely` holds the
+    /// binary to it. The issue that asked for this test listed a `backup-2026/`
+    /// among the survivors, which is the opposite of that rule; the fixture
+    /// holds both shapes and the assertion below is the rule's answer.
+    const OWNED_BACKUPS: &[&str] = &["backup-20260802.db", "backup-2026/keep.txt"];
 
     fn write(path: &Path) {
         if let Some(parent) = path.parent() {
@@ -139,7 +139,9 @@ mod fallback {
             write(&data.join(owned));
         }
         write(&data.join("hooks").join("hook.sh"));
-        write(&data.join(OWNED_BACKUP));
+        for backup in OWNED_BACKUPS {
+            write(&data.join(backup));
+        }
         for stranger in STRANGERS {
             write(&data.join(stranger));
         }
@@ -167,6 +169,15 @@ mod fallback {
             String::from_utf8_lossy(&output.stderr)
         );
 
+        // The fallback block's own lines, so a run that took the binary's path
+        // cannot pass by leaving the filesystem in the same shape.
+        for line in ["no binary to ask", "removing Leteo's files from"] {
+            assert!(
+                stdout.contains(line),
+                "the shell fallback did not run: {line:?} is missing from\n{stdout}"
+            );
+        }
+
         for owned in leteo::setup::DATA_DIR_FILES {
             assert!(
                 !data.join(owned).exists(),
@@ -177,10 +188,12 @@ mod fallback {
             !data.join("hooks").exists(),
             "the hooks directory survived the fallback:\n{stdout}"
         );
-        assert!(
-            !data.join(OWNED_BACKUP).exists(),
-            "a backup named with the prefix Leteo owns survived the fallback:\n{stdout}"
-        );
+        for backup in OWNED_BACKUPS {
+            assert!(
+                !data.join(backup).exists(),
+                "{backup} is named by the prefix Leteo owns and survived the fallback:\n{stdout}"
+            );
+        }
         assert!(
             !install.join("uninstall.sh").exists(),
             "the installer's own script survived the fallback:\n{stdout}"

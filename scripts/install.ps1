@@ -275,7 +275,7 @@ public static extern System.IntPtr SendMessageTimeout(
         (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
     }
 
-    $added = $false
+    $missing = $false
     $notified = $true
     try {
         $userPath = Read-UserPath
@@ -284,8 +284,8 @@ public static extern System.IntPtr SendMessageTimeout(
         # is the defect this whole block exists to avoid. The one `;` that is
         # not theirs is the one that would be added to an empty value.
         $entries = @($userPath -split ';')
-        $added = -not ($entries | Where-Object { Test-SamePathEntry $_ })
-        if ($added) {
+        $missing = -not ($entries | Where-Object { Test-SamePathEntry $_ })
+        if ($missing) {
             $value = if ($userPath) { "$userPath;$installDir" } else { $installDir }
             $notified = Write-UserPath $value
         }
@@ -295,7 +295,7 @@ public static extern System.IntPtr SendMessageTimeout(
         }
     }
     Write-Host ""
-    if ($added) {
+    if ($missing) {
         Write-Host "Installed, and $installDir was added to your PATH."
         if ($notified) {
             Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."

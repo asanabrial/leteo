@@ -54,8 +54,12 @@ fn functions(script: &str) -> BTreeMap<String, Vec<String>> {
                 .expect("a function has a name")
                 .to_owned();
             name = Some(declared);
+            // The declaration is compared too, and its brace counts: starting
+            // from zero ended the capture at the first nested block's `}`, which
+            // left the fallbacks and the final comparison unchecked.
             body.clear();
-            depth = 0;
+            body.push(trimmed.to_owned());
+            depth = trimmed.matches('{').count() as i32 - trimmed.matches('}').count() as i32;
         }
     }
     assert!(name.is_none(), "{script} ends inside a function");

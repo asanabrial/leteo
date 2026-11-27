@@ -15,10 +15,10 @@
 # plain text — but because whichever engine a user happens to run is the one
 # that has to be right, and only a run under it says so.
 #
-# Needs a built `leteo.exe` (the checkout's `target\debug` by default) and a
-# release archive the installer can fetch: the script assembles both and serves
-# them from loopback, so it exercises the real `install.ps1` rather than a copy
-# of its PATH logic.
+# Needs a built `leteo.exe` (the checkout's `target\debug` by default): the
+# cargo step before it in `ci.yml` makes one, and the script assembles the
+# release archive around that binary and serves it from loopback, so it
+# exercises the real `install.ps1` rather than a copy of its PATH logic.
 #
 # What it cannot see is whether a running program received the
 # `WM_SETTINGCHANGE` the scripts broadcast after writing: that needs a

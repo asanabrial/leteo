@@ -219,10 +219,15 @@ try {
     $openError = $_.Exception.Message
 }
 if ($onWindows -and -not $environment) {
-    # Loud, as `install.ps1` explains: the fallback can freeze the variables in
-    # the rest of the PATH.
-    $why = if ($openError) { $openError } else { 'the key is there but cannot be opened for writing' }
-    Write-Warning "could not open HKCU:\Environment ($why); the rest of your PATH may have its variables frozen"
+    # Loud, because the fallback is the API that expands every `%VAR%` and
+    # stores plain text: the rest of the PATH can be frozen by it.
+    if ($openError) {
+        Write-Warning "could not open HKCU:\Environment ($openError); the rest of your PATH may have its variables frozen"
+    } else {
+        # `OpenSubKey` returns null, rather than throwing, when the key does
+        # not exist: a machine that never set a user variable has none.
+        Write-Warning 'HKCU:\Environment does not exist; the Path Leteo writes is plain text'
+    }
 }
 
 function Read-UserPath {

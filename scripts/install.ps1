@@ -188,8 +188,13 @@ try {
     if ($onWindows -and -not $environment) {
         # Loud, because the fallback is the API that expands every `%VAR%` and
         # stores plain text: the rest of the PATH can be frozen by it.
-        $why = if ($openError) { $openError } else { 'the key is there but cannot be opened for writing' }
-        Write-Warning "could not open HKCU:\Environment ($why); the rest of your PATH may have its variables frozen"
+        if ($openError) {
+            Write-Warning "could not open HKCU:\Environment ($openError); the rest of your PATH may have its variables frozen"
+        } else {
+            # `OpenSubKey` returns null, rather than throwing, when the key does
+            # not exist: a machine that never set a user variable has none.
+            Write-Warning 'HKCU:\Environment does not exist; the Path Leteo writes is plain text'
+        }
     }
 
     function Read-UserPath {
@@ -213,7 +218,8 @@ try {
     #
     # Everything here is caught: the value is already written when this runs, so
     # a host that refuses `Add-Type` must not turn a successful install into a
-    # failure. What it costs is a warning and the old advice.
+    # failure. What it costs is a warning and a closing line that asks for a new
+    # session rather than a new terminal.
     function Send-EnvironmentChange {
         try {
             if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {

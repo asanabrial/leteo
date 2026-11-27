@@ -172,8 +172,10 @@ while ($true) {
     try {
         # The runner's own value, empty entries and all, so the comparisons
         # below hold what the scripts promise: everything they did not write
-        # comes back byte for byte.
-        $seed = if ($originalRaw) { "$originalRaw;" + ($markers -join ';') } else { $markers -join ';' }
+        # comes back byte for byte. The `;;` is always seeded, because an empty
+        # entry is what a filtering write drops and a runner that happens to end
+        # its PATH with `;` is not a test of that.
+        $seed = "$originalRaw;;" + ($markers -join ';')
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
         Show-State 'seeded'
         Assert-Markers 'seeded'

@@ -171,13 +171,11 @@ try {
     # following it. Leteo owns one entry on this value; the rest are read with
     # `DoNotExpandEnvironmentNames` and written back with the kind they had.
     #
-    # Off Windows there is no registry to read. `install.ps1` is not what the
-    # script harness runs there — `uninstall.ps1` is — but the two read and
-    # write this value the same way, and a copy that fails where the other
-    # falls back is the drift that makes the pair disagree. They cannot share a
-    # file: each is fetched and run on its own (`irm ... | iex` here, and the
-    # uninstaller ships beside the binary), so the copy is the price of the
-    # distribution and both are held by `scripts/check-windows-path.ps1`.
+    # The four functions below are the same four `uninstall.ps1` carries, in the
+    # same order and shape. The two scripts cannot share a file — each is
+    # fetched and run on its own (`irm ... | iex` here, and the uninstaller
+    # ships beside the binary) — so keeping the copies textually parallel is
+    # what stops a change to one from missing the other.
     $onWindows = ($env:OS -eq 'Windows_NT')
     $environment = $null
     try {
@@ -190,44 +188,79 @@ try {
         # environment API expands every `%VAR%` and stores plain text.
         Write-Warning "could not open HKCU:\Environment; the rest of your PATH may have its variables frozen"
     }
-    $added = $false
-    try {
-        $userPath = if ($environment) {
-            [string]$environment.GetValue(
+
+    function Read-UserPath {
+        if ($environment) {
+            return [string]$environment.GetValue(
                 'Path',
                 '',
                 [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
             )
+        }
+        [string][Environment]::GetEnvironmentVariable('Path', 'User')
+    }
+
+    # Tells running programs the environment changed.
+    #
+    # `[Environment]::SetEnvironmentVariable(..., 'User')`, which this replaced,
+    # broadcasts `WM_SETTINGCHANGE` for `Environment` after writing. A
+    # `RegistryKey.SetValue` does not, so Explorer and every terminal opened
+    # from it would keep the PATH they started with until the next logon —
+    # while the installer says to open a new terminal.
+    function Send-EnvironmentChange {
+        if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
+            Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+        }
+        $result = [UIntPtr]::Zero
+        $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
+            [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
+        )
+        if ($sent -eq [IntPtr]::Zero) {
+            Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+        }
+    }
+
+    function Write-UserPath([string]$Value) {
+        if ($environment) {
+            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            try {
+                $kind = $environment.GetValueKind('Path')
+            } catch {
+                # No value of the user's own, which is what the default is for.
+            }
+            $environment.SetValue('Path', $Value, $kind)
+            Send-EnvironmentChange
         } else {
-            [string][Environment]::GetEnvironmentVariable('Path', 'User')
+            [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
         }
-        # An entry that names the directory through a variable is that entry:
-        # `%LOCALAPPDATA%\leteo\bin` and the expanded path are one thing, and
-        # matching only the raw text would add a second copy of it. The
-        # comparison expands; what gets written stays exactly as it was read.
-        function Test-SamePathEntry([string]$Entry) {
-            $Entry -eq $installDir -or
-                [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
-        }
+    }
+
+    # An entry that names the directory through a variable, or with a trailing
+    # separator, is that entry: matching only the exact text would add a second
+    # copy of a directory already on the PATH. The comparison folds those two
+    # spellings; what gets written stays exactly as it was read.
+    function Test-SamePathEntry([string]$Entry) {
+        if (-not $Entry) { return $false }
+        $target = $installDir.TrimEnd('\', '/')
+        $Entry -eq $installDir -or
+            [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd('\', '/') -eq $target
+    }
+
+    $added = $false
+    try {
+        $userPath = Read-UserPath
         # Empty entries dropped rather than kept: a value starting with `;` has
         # an empty entry, and Windows reads an empty entry of PATH as the
         # current directory.
         $entries = @($userPath -split ';' | Where-Object { $_ })
         $added = -not ($entries | Where-Object { Test-SamePathEntry $_ })
         if ($added) {
-            $value = (@($entries) + $installDir) -join ';'
-            if ($environment) {
-                $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
-                try {
-                    $kind = $environment.GetValueKind('Path')
-                } catch {
-                    # No Path value of the user's own yet, which is what
-                    # `ExpandString` is for.
-                }
-                $environment.SetValue('Path', $value, $kind)
-            } else {
-                [Environment]::SetEnvironmentVariable('Path', $value, 'User')
-            }
+            Write-UserPath ((@($entries) + $installDir) -join ';')
         }
     } finally {
         if ($environment) {

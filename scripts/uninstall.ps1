@@ -190,8 +190,8 @@ if ((Test-Path $dataDir) -and -not $handled) {
     }
 }
 
-# The PATH entry, matched exactly rather than by substring: a user PATH holding
-# `C:\tools\leteo-extras` must survive removing `C:\...\leteo\bin`.
+# The PATH entry, matched by directory rather than by substring: a user PATH
+# holding `C:\tools\leteo-extras` must survive removing `C:\...\leteo\bin`.
 #
 # Read and written through the registry with `DoNotExpandEnvironmentNames` and
 # with the value's own kind, for the reason `install.ps1` gives beside the same
@@ -204,6 +204,11 @@ if ((Test-Path $dataDir) -and -not $handled) {
 # it, where the environment API is what those flows have always used. On
 # Windows the fallback is a warning rather than silence, because it is the
 # behaviour this change removed.
+#
+# The four functions below are the same four `install.ps1` carries, in the same
+# order and shape, and cannot be shared with it: each script is fetched and run
+# on its own. Keeping the copies textually parallel is what stops a change to
+# one from missing the other.
 $onWindows = ($env:OS -eq 'Windows_NT')
 $environment = $null
 try {
@@ -226,6 +231,26 @@ function Read-UserPath {
     [string][Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
+# Tells running programs the environment changed, as the API this replaced did.
+# See `install.ps1` for why a registry write is not enough on its own.
+function Send-EnvironmentChange {
+    if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
+        Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+    }
+    $result = [UIntPtr]::Zero
+    $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
+        [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
+    )
+    if ($sent -eq [IntPtr]::Zero) {
+        Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+    }
+}
+
 function Write-UserPath([string]$Value) {
     if ($environment) {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
@@ -235,17 +260,20 @@ function Write-UserPath([string]$Value) {
             # No value of the user's own, which is what the default is for.
         }
         $environment.SetValue('Path', $Value, $kind)
+        Send-EnvironmentChange
     } else {
         [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
     }
 }
 
-# An entry that names the directory through a variable is that entry, for the
-# reason `install.ps1` gives beside its own copy of this: removing only the raw
-# text would leave `%LOCALAPPDATA%\leteo\bin` on the PATH after uninstalling.
+# An entry that names the directory through a variable, or with a trailing
+# separator, is that entry, for the reason `install.ps1` gives beside its own
+# copy of this: removing only the raw text would leave it on the PATH.
 function Test-SamePathEntry([string]$Entry) {
+    if (-not $Entry) { return $false }
+    $target = $installDir.TrimEnd('\', '/')
     $Entry -eq $installDir -or
-        [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
+        [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd('\', '/') -eq $target
 }
 
 try {

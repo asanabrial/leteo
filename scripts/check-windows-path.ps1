@@ -77,7 +77,10 @@ function Assert-Succeeded([string]$What) {
 }
 
 function Test-NamesInstallDir([string]$Entry) {
-    $Entry -and [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
+    $Entry -and (
+        [Environment]::ExpandEnvironmentVariables($Entry).TrimEnd('\', '/') -eq
+            $installDir.TrimEnd('\', '/')
+    )
 }
 
 function Assert-Markers([string]$Where) {
@@ -193,9 +196,9 @@ while ($true) {
             throw "after uninstall: the PATH reads '$(Read-Raw)', not the '$(($seeded -join ';'))' it was seeded with"
         }
 
-        # An entry that names the install directory through a variable is that
-        # entry: the installer must not add a second copy of it, and the
-        # uninstaller must take it away.
+        # An entry that names the install directory through a variable, and
+        # with a trailing separator, is that entry: the installer must not add a
+        # second copy of it, and the uninstaller must take it away.
         #
         # The variable is found by expanding it back rather than by trusting the
         # spelling: `$env:TEMP` on the runners is the 8.3 form of the directory
@@ -206,8 +209,8 @@ while ($true) {
             if (-not $prefix -or -not $installDir.StartsWith("$prefix\", [StringComparison]::OrdinalIgnoreCase)) {
                 continue
             }
-            $candidate = "%$name%" + $installDir.Substring($prefix.Length)
-            if ([Environment]::ExpandEnvironmentVariables($candidate) -eq $installDir) {
+            $candidate = "%$name%" + $installDir.Substring($prefix.Length) + '\'
+            if ([Environment]::ExpandEnvironmentVariables($candidate).TrimEnd('\', '/') -eq $installDir.TrimEnd('\', '/')) {
                 $variable = $candidate
                 break
             }

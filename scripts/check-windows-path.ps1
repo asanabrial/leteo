@@ -240,21 +240,25 @@ while ($true) {
         }
         $literal = $installDir + '\'
         $slashed = $installDir.Replace('\', '/')
-        $seededWithSpellings = "$seed;$variable;$literal;$slashed"
-        $registry.SetValue('Path', $seededWithSpellings, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the install directory already there'
-        # The whole value, not a count of entries: install must add nothing when
-        # the directory is already there in any spelling, and comparing the
-        # bytes says so without the check restating how an entry folds.
-        if ((Read-Raw) -cne $seededWithSpellings) {
-            throw "with three spellings of ${installDir} already there, install rewrote the PATH: $(Read-Raw)"
+        # Each spelling on its own: seeded together, install stops at the first
+        # one it recognises, so nothing would say whether it recognises the
+        # others — and the install side is half the claim. The whole value is
+        # compared, not a count of entries, so a spelling left behind and an
+        # entry dropped cannot cancel out.
+        foreach ($spelling in @($variable, $literal, $slashed)) {
+            $withSpelling = "$seed;$spelling"
+            $registry.SetValue('Path', $withSpelling, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') "install.ps1 with $spelling already there"
+            if ((Read-Raw) -cne $withSpelling) {
+                throw "with $spelling on the PATH, install rewrote it: $(Read-Raw)"
+            }
+            Invoke-Script (Join-Path $installDir 'uninstall.ps1') "uninstall.ps1 with $spelling on the PATH" @{ Yes = $true }
+            if ((Read-Raw) -cne $seed) {
+                throw "after removing $spelling, the PATH reads '$(Read-Raw)', not '$seed'"
+            }
+            Assert-Markers "after removing $spelling"
         }
-        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the install directory spelled three ways' @{ Yes = $true }
-        if ((Read-Raw) -cne $seed) {
-            throw "after removing three spellings of ${installDir}, the PATH reads '$(Read-Raw)', not '$seed'"
-        }
-        Assert-Markers 'after a variable-spelled removal'
-        Write-Host 'an entry spelled with a variable is the same entry, added once and removed'
+        Write-Host 'an entry spelled with a variable, a trailing separator or a slash is the same entry, added once and removed'
 
         # A value the user keeps as plain text stays plain text: the scripts
         # promise the kind they found, not an expandable value every time.

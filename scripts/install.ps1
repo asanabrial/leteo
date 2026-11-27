@@ -160,14 +160,164 @@ try {
         Set-ItemProperty -Path $registryKey -Name 'NoRepair'             -Value 1 -Type DWord
     }
 
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (($userPath -split ';') -notcontains $installDir) {
-        [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')
-        Write-Host ""
+    # The PATH entry, read and written as the registry holds it.
+    #
+    # `[Environment]::GetEnvironmentVariable('Path','User')` hands back every
+    # `%VAR%` already expanded, and `SetEnvironmentVariable` stores the result
+    # as a plain string. Measured on `windows-latest` under both PowerShell
+    # engines: `%USERPROFILE%\.cargo\bin;...` came back as
+    # `C:\Users\runneradmin\.cargo\bin;...` and the value's kind went from
+    # `ExpandString` to `String`, so every entry that names a variable stopped
+    # following it. Leteo owns one entry on this value; the rest are read with
+    # `DoNotExpandEnvironmentNames` and written back with the kind they had.
+    #
+    # The five functions below are the same five `uninstall.ps1` carries, in the
+    # same order and shape. The two scripts cannot share a file — each is
+    # fetched and run on its own (`irm ... | iex` here, and the uninstaller
+    # ships beside the binary) — and `tests/script_parity.rs` compares both
+    # copies line for line, a line that is only a comment aside, failing when
+    # one has changed and the other has not.
+    $onWindows = ($env:OS -eq 'Windows_NT')
+    $environment = $null
+    $openError = $null
+    try {
+        $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    } catch {
+        $environment = $null
+        $openError = $_.Exception.Message
+    }
+    if ($onWindows -and -not $environment) {
+        # Loud, because the fallback is the API that expands every `%VAR%` and
+        # stores plain text: the rest of the PATH can be frozen by it.
+        if ($openError) {
+            Write-Warning "could not open HKCU:\Environment ($openError); the rest of your PATH may have its variables frozen"
+        } else {
+            # `OpenSubKey` returns null, rather than throwing, when the key does
+            # not exist: a machine that never set a user variable has none.
+            Write-Warning 'HKCU:\Environment does not exist; the Path Leteo writes is plain text'
+        }
+    }
+
+    function Read-UserPath {
+        if ($environment) {
+            return [string]$environment.GetValue(
+                'Path',
+                '',
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        }
+        [string][Environment]::GetEnvironmentVariable('Path', 'User')
+    }
+
+    # Tells running programs the environment changed.
+    #
+    # `[Environment]::SetEnvironmentVariable(..., 'User')`, which this replaced,
+    # broadcasts `WM_SETTINGCHANGE` for `Environment` after writing. A
+    # `RegistryKey.SetValue` does not, so Explorer and every terminal opened
+    # from it would keep the PATH they started with until the next logon —
+    # while the installer says to open a new terminal.
+    #
+    # Everything here is caught: the value is already written when this runs, so
+    # a host that refuses `Add-Type` must not turn a successful install into a
+    # failure. What it costs is a warning and a closing line that asks for a new
+    # session rather than a new terminal.
+    function Send-EnvironmentChange {
+        try {
+            if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
+                Add-Type -Namespace Leteo -Name EnvironmentBroadcast -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+            }
+            $broadcast = [IntPtr]0xffff          # HWND_BROADCAST
+            $settingChange = 0x001A           # WM_SETTINGCHANGE
+            $abortIfHung = 0x0002             # SMTO_ABORTIFHUNG
+            $timeoutMs = 5000
+            $result = [UIntPtr]::Zero
+            $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
+                $broadcast, $settingChange, [UIntPtr]::Zero, 'Environment', $abortIfHung, $timeoutMs, [ref]$result
+            )
+            if ($sent -eq [IntPtr]::Zero) {
+                Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+                return $false
+            }
+            return $true
+        } catch {
+            Write-Warning "the environment change could not be broadcast ($($_.Exception.Message)); start a new session rather than a new terminal"
+            return $false
+        }
+    }
+
+    # Writes the value, and returns whether the announcement went out: the closing
+    # advice is the one thing that depends on it. It is true when the broadcast
+    # was made, which does not say every window heard it: one that is not
+    # responding may be skipped.
+    function Write-UserPath([string]$Value) {
+        if ($environment) {
+            $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+            # Asked rather than caught: a failure to read the kind of a value
+            # that is there is not the same thing as the value being absent,
+            # and only the absent case has a default.
+            if ($null -ne $environment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
+                $kind = $environment.GetValueKind('Path')
+            }
+            $environment.SetValue('Path', $Value, $kind)
+            return Send-EnvironmentChange
+        }
+        [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+        return $true
+    }
+
+    # One spelling for a PATH entry: variables expanded, separators folded, a
+    # trailing one dropped. Windows accepts `C:/dir` for `C:\dir`, and an entry
+    # names the same directory whatever it ends with.
+    function Get-ComparablePath([string]$Entry) {
+        [Environment]::ExpandEnvironmentVariables($Entry).Replace('/', '\').TrimEnd('\')
+    }
+
+    # An entry that names the directory through a variable, or with a separator
+    # spelled differently, is that entry: matching only the exact text would add
+    # a second copy of a directory already on the PATH. What gets written stays
+    # exactly as it was read.
+    function Test-SamePathEntry([string]$Entry) {
+        if (-not $Entry) { return $false }
+        (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
+    }
+
+    $missing = $false
+    $announced = $true
+    try {
+        $userPath = Read-UserPath
+        # The value is written back exactly as it was read, empty entries
+        # included: they are the person's, and rewriting text Leteo does not own
+        # is the defect this whole block exists to avoid. The only `;` written is
+        # the one between their value and the entry; an empty value gets the
+        # entry alone.
+        $entries = @($userPath -split ';')
+        $missing = -not ($entries | Where-Object { Test-SamePathEntry $_ })
+        if ($missing) {
+            $value = if ($userPath) { "$userPath;$installDir" } else { $installDir }
+            $announced = Write-UserPath $value
+        }
+    } finally {
+        if ($environment) {
+            $environment.Close()
+        }
+    }
+    Write-Host ""
+    if ($missing) {
         Write-Host "Installed, and $installDir was added to your PATH."
-        Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."
+        if ($announced) {
+            Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."
+        } else {
+            # The broadcast that tells Explorer the environment changed did not
+            # go out, so a terminal opened from the menu would still lack the
+            # entry — the advice has to be the one that works.
+            Write-Host "Sign out and back in, then run 'leteo setup' to configure your agents."
+        }
     } else {
-        Write-Host ""
         Write-Host "Installed. Run 'leteo setup' to configure your agents."
     }
     Write-Host "To remove it: 'leteo uninstall', or Leteo in Settings > Installed apps."

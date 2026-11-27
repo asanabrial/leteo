@@ -248,6 +248,19 @@ jobs:
           # event's own `before` is the commit that was the tip; every other event
           # leaves it empty and the guard falls back to `origin/main`.
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+      # The one thing the unit suite cannot reach: the two PowerShell scripts
+      # that own Leteo's PATH entry, run as scripts, in both engines Windows
+      # ships. `check-windows-path.ps1` says what they would do to a value they
+      # do not own and what it holds instead; this step only has to run it under
+      # the engine a user might happen to have.
+      - name: The Windows scripts leave the rest of the user PATH alone (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/check-windows-path.ps1
+      - name: The Windows scripts leave the rest of the user PATH alone (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-path.ps1
 
   # Not on the matrix above, and not a trade-off that was weighed: this job
   # needs the `services:` block below, and GitHub runs service containers on

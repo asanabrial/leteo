@@ -28,6 +28,20 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Installing or uninstalling Leteo on Windows leaves the rest of the user
+  PATH exactly as it was.** Both scripts read the value with
+  `[Environment]::GetEnvironmentVariable('Path','User')`, which hands back every
+  `%VAR%` already expanded, and wrote it back through `SetEnvironmentVariable`,
+  which stores plain text. Measured on `windows-latest` under both Windows
+  PowerShell 5.1 and PowerShell 7: `%USERPROFILE%\.cargo\bin;...` came back as
+  `C:\Users\runneradmin\.cargo\bin;...` and the value's kind changed from
+  `ExpandString` to `String`, so every entry naming a variable stopped following
+  it. They now read `HKCU:\Environment` with `DoNotExpandEnvironmentNames` and
+  write it back exactly as it was read and with the kind it had — empty entries
+  included, which are the user's — except that an empty value no longer gets a
+  leading `;` from the entry being added. The windows legs of CI run the real
+  scripts against a release archive they build and serve locally, under both
+  engines (#448).
 - **A cloud failure's body is read under the bound a success is, and an
   environment token is never written to `cloud.json`.** `checked_response` read
   a non-success body with `text()`, which buffers whatever arrives: a broken

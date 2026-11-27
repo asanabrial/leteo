@@ -188,7 +188,7 @@ try {
     if ($onWindows -and -not $environment) {
         # Loud, because the fallback is the API that expands every `%VAR%` and
         # stores plain text: the rest of the PATH can be frozen by it.
-        $why = if ($openError) { $openError } else { 'the key or its Path value could not be opened for writing' }
+        $why = if ($openError) { $openError } else { 'the key is there but cannot be opened for writing' }
         Write-Warning "could not open HKCU:\Environment ($why); the rest of your PATH may have its variables frozen"
     }
 

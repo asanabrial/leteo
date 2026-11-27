@@ -221,7 +221,7 @@ try {
 if ($onWindows -and -not $environment) {
     # Loud, as `install.ps1` explains: the fallback can freeze the variables in
     # the rest of the PATH.
-    $why = if ($openError) { $openError } else { 'the key or its Path value could not be opened for writing' }
+    $why = if ($openError) { $openError } else { 'the key is there but cannot be opened for writing' }
     Write-Warning "could not open HKCU:\Environment ($why); the rest of your PATH may have its variables frozen"
 }
 
@@ -305,10 +305,12 @@ try {
         $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
         if ($kept.Count -ne $entries.Count) {
             Say "  removing $installDir from your PATH"
-            if (@($kept | Where-Object { $_ }).Count -eq 0) {
-                # Nothing of the person's is left. Removing the value rather
-                # than storing an empty one is what `SetEnvironmentVariable`
-                # did, and it is the state a machine that never set a PATH has.
+            if ($kept.Count -eq 0) {
+                # The value held Leteo's entry and nothing else. Removing the
+                # value rather than storing an empty one is what
+                # `SetEnvironmentVariable` did, and it is the state a machine
+                # that never set a PATH has. An entry of the person's that is
+                # empty still counts and is written back below.
                 if ($environment) {
                     $environment.DeleteValue('Path', $false)
                     $notified = Send-EnvironmentChange

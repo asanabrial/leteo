@@ -23,13 +23,12 @@ fn indent(line: &str) -> usize {
 /// helpers, from the line that decides `$onWindows` through the closing brace
 /// of `Test-SamePathEntry`.
 ///
-/// A region rather than one capture per function. Two earlier versions ended a
-/// function by counting braces and, when that miscounted, compared a prefix of
-/// both copies and passed: the rest of the function went unread. This one has no
-/// brace count to get wrong — it starts at a line both scripts have and ends at
-/// the brace that closes the last helper, opened at the same indentation the
-/// region started at. If that brace is not there, the test says so instead of
-/// comparing less.
+/// A region rather than one capture per function, and bounded by two things both
+/// scripts have: the line that decides `$onWindows`, and the brace that closes
+/// `Test-SamePathEntry` at the indentation the region started at. No brace
+/// count decides where a function ends — a count that comes out wrong compares a
+/// prefix of both copies and passes. If the closing brace is not found, this
+/// panics instead of comparing less.
 ///
 /// Comments are dropped because the two copies explain themselves to a reader
 /// who has one of them open, and those sentences differ on purpose. What has to

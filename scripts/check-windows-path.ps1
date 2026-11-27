@@ -162,7 +162,8 @@ while ($true) {
                 # starts; the wait below is what makes another attempt worth it.
             }
             # Outside the catch: a response that is not 200 is not an answer
-            # either, and the old placement let every attempt pass with no wait.
+            # either, so the wait belongs between attempts whichever way one
+            # fails. Inside the catch, fifty of these could pass with no wait.
             Start-Sleep -Milliseconds $waitMs
         }
         if (-not $server -and -not $launched.HasExited) {

@@ -116,6 +116,28 @@ pub fn project(value: &str) -> String {
     value
 }
 
+/// A project name at a door that cannot refuse, bounded rather than dropped.
+///
+/// [`project_refusal`] is the rule for a caller who can be told to send another
+/// name. This one is for the two places that cannot: a prompt, whose refusal
+/// would lose the question it answers, and an adoption, whose refusal would
+/// abandon a whole Engram store halfway. Both used to keep the name at whatever
+/// size it arrived, and a 60 KB one is as costly in the prompts column as a
+/// title is in a reply.
+///
+/// The cut is at the same [`PROJECT_MAX_BYTES`] and the control characters go
+/// with a different question in mind: [`project`] folds whitespace only, and a
+/// NUL left in a name is one the opening block prints into every bullet.
+pub fn adopted_project(value: &str) -> String {
+    let folded: String = project(value)
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    let mut folded = folded;
+    truncate_bytes(&mut folded, PROJECT_MAX_BYTES);
+    folded
+}
+
 /// The last segment of a path, or the whole value when it is not one.
 ///
 /// Both separators, because a name written on Windows arrives with backslashes
@@ -312,12 +334,22 @@ pub fn judgment_text(raw: Option<&str>, max_bytes: usize) -> Option<String> {
 /// of `mem_get_observation`, sitting in the full-text column weighted highest
 /// of the six, where one memory can outrank the store.
 ///
-/// Bounded by the body's number and not by `TITLE_CHARS`: 140 is what a title
+/// Bounded by [`TITLE_MAX_BYTES`] and not by `TITLE_CHARS`: 140 is what a title
 /// is *shown* at, and on a real store of 4,013 the longest is 195 characters
 /// with 67 past 140, so cutting to the display bound would take the end off
 /// titles somebody wrote on purpose. This cuts nothing anybody has.
-pub fn title(raw: &str, max_bytes: usize) -> String {
-    truncate_content(one_line(&strip_private(raw)), max_bytes)
+pub fn title(raw: &str) -> String {
+    truncate_content(one_line(&strip_private(raw)), TITLE_MAX_BYTES)
+}
+
+/// The length of the title the bound cut, after redaction, or `None`.
+///
+/// The sibling of [`cut_length`], and for the same reason: a title that was
+/// mostly one `<private>` span is not cut, and reporting it as cut would send a
+/// caller shortening a name the store kept whole.
+pub fn title_cut(raw: &str) -> Option<usize> {
+    let folded = one_line(&strip_private(raw));
+    (folded.len() > TITLE_MAX_BYTES).then_some(folded.len())
 }
 
 pub fn fields(
@@ -332,7 +364,7 @@ pub fn fields(
     let (content, hash) = stored_content(raw_content, max_content_bytes);
     Fields {
         kind: kind(raw_kind),
-        title: title(raw_title, max_content_bytes),
+        title: title(raw_title),
         content,
         project: raw_project.map(project).filter(|value| !value.is_empty()),
         scope: scope(raw_scope).to_owned(),
@@ -365,7 +397,9 @@ pub fn prompt_fields(
     max_content_bytes: usize,
 ) -> (String, String) {
     let content = truncate_content(strip_private(raw_content), max_content_bytes);
-    let project = raw_project.map(project).unwrap_or_default();
+    // Bounded, not refused: see [`adopted_project`]. This door is the one that
+    // must keep the prompt.
+    let project = raw_project.map(adopted_project).unwrap_or_default();
     (content, project)
 }
 
@@ -489,7 +523,7 @@ pub fn topic_key(value: Option<&str>) -> Option<String> {
         .map(|segment| segment.split_whitespace().collect::<Vec<_>>().join("-"))
         .collect::<Vec<_>>()
         .join("/");
-    truncate_bytes(&mut normalized, 120);
+    truncate_bytes(&mut normalized, TOPIC_KEY_MAX_BYTES);
     Some(normalized).filter(|key| !key.is_empty())
 }
 
@@ -1074,6 +1108,97 @@ pub fn cut_length(raw: &str, max_bytes: usize) -> Option<usize> {
 /// this number. Cut there and then shown under this bound, which would have
 /// fitted them whole.
 pub(crate) const TITLE_CHARS: usize = 140;
+
+/// The bound on the title a memory is stored with, in bytes.
+///
+/// A title is a name for a memory, and every listing that returns the row
+/// carries it: one saved at 60,000 characters made `mem_save` answer with
+/// 50,319 bytes, and the search that found it with 50,181. The body has had
+/// its own bound, `max_observation_length`, for longer, and the title borrowed
+/// it, so the body's cap was also the title's and no title was cut below fifty
+/// thousand bytes.
+///
+/// 1024 holds the longest title on a real store whole: 195 characters, measured
+/// over 4,013, is 780 bytes in a four-byte script, so any title anybody wrote
+/// fits, with room for a longer one. Past it the text is no longer a name: it
+/// is the memory's first paragraph, in the column weighted highest by search.
+pub const TITLE_MAX_BYTES: usize = 1024;
+
+/// The bound on a session id, in bytes.
+///
+/// An id names a row and a state file — the hint nudge opens
+/// `<session-id>.nudge` — so it cannot be cut, and one of 10,000 characters
+/// made every later hook in that session print `File name too long (os error
+/// 63)`. A UUID is 36 bytes and an OpenCode id 30; 128 is generous for any
+/// host's spelling and short enough for any filesystem's component limit.
+pub const SESSION_ID_MAX_BYTES: usize = 128;
+
+/// The bound on a project name, in bytes.
+///
+/// A project name is a single directory's name with the noise folded out of
+/// it, and it is printed into every opening block. 128 is a filesystem's own
+/// component limit, which is the widest a real one gets.
+pub const PROJECT_MAX_BYTES: usize = 128;
+
+/// The bound on a topic key, in bytes.
+///
+/// The key is matched exactly and shown beside the memory; 120 was the number
+/// in the normaliser before it was named, and nothing published moves.
+pub const TOPIC_KEY_MAX_BYTES: usize = 120;
+
+/// The first control character a value holds, if any.
+///
+/// Ids and project names are refused rather than folded: a tab or a NUL in a
+/// session id is a different id on a filesystem than in the store, and a
+/// project name carrying a newline starts a second bullet in the opening block
+/// — the reason [`project`] folds whitespace at all. A value that needed
+/// folding to be safe is not the value the caller named.
+pub fn control_character(value: &str) -> Option<char> {
+    value.chars().find(|character| character.is_control())
+}
+
+/// Why `value` cannot name a session, or `None` when it can.
+pub fn session_id_refusal(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        return Some("a session id cannot be blank".to_owned());
+    }
+    if value.len() > SESSION_ID_MAX_BYTES {
+        return Some(format!(
+            "a session id is at most {SESSION_ID_MAX_BYTES} bytes, and this one is {}",
+            value.len()
+        ));
+    }
+    control_character(value).map(|character| {
+        format!(
+            "a session id cannot hold the control character U+{:04X}",
+            character as u32
+        )
+    })
+}
+
+/// Why `value` cannot name a project, or `None` when it can.
+///
+/// The bound is measured on the folded name, which is the one stored: [`project`]
+/// folds whitespace and keeps the last path segment, and a name still carrying
+/// a control character afterwards was not made safe by the folding.
+pub fn project_refusal(value: &str) -> Option<String> {
+    let project = project(value);
+    if project.is_empty() {
+        return Some("a project name has to hold a letter or a digit".to_owned());
+    }
+    if project.len() > PROJECT_MAX_BYTES {
+        return Some(format!(
+            "a project name is at most {PROJECT_MAX_BYTES} bytes, and this one is {}",
+            project.len()
+        ));
+    }
+    control_character(&project).map(|character| {
+        format!(
+            "a project name cannot hold the control character U+{:04X}",
+            character as u32
+        )
+    })
+}
 
 /// Shortens a one-line value to `max_chars`, cutting between words.
 ///
@@ -2803,5 +2928,79 @@ mod idempotence_tests {
                 assert!(!one_line.contains('\u{fffd}'), "{bound}{offset:+}");
             }
         }
+    }
+
+    /// A title is bounded by its own number, and says when it cut one.
+    ///
+    /// It was bounded by the body's — `fields` passed `max_observation_length`
+    /// — so no title was ever cut below the fifty thousand bytes a body may
+    /// have: `mem_save` with a 60,000-character title answered with 50,319
+    /// bytes, and every search that returned the row paid for it. 1024 keeps
+    /// every title a real store holds: 195 characters, the longest measured
+    /// over 4,013, is 780 bytes in a four-byte script.
+    #[test]
+    fn a_title_past_its_own_bound_is_cut_and_says_so() {
+        let long = "palabra".repeat(10_000);
+        let stored = title(&long);
+        assert!(stored.len() <= TITLE_MAX_BYTES, "{}", stored.len());
+        assert!(stored.ends_with("... [truncated]"), "{stored}");
+        assert_eq!(title_cut(&long), Some(long.len()));
+
+        let longest = "記".repeat(195);
+        assert_eq!(title_cut(&longest), None);
+        assert_eq!(title(&longest), longest);
+        // Redaction happens before the bound sees the text: a title that was
+        // almost all one private span was not cut, and reporting it as cut
+        // would send the caller shortening a name the store kept whole.
+        let hidden = format!("<private>{}</private>", "x".repeat(60_000));
+        assert_eq!(title_cut(&hidden), None);
+    }
+
+    /// A project name at a door that cannot refuse is bounded, not dropped.
+    ///
+    /// A prompt with a 60 KB project keeps the question and loses the tail of
+    /// the name; an adoption does the same for every table, so the memories of
+    /// one project stay under one name. A NUL goes with it, because folding
+    /// whitespace does not remove one and the opening block prints the name
+    /// into a bullet.
+    #[test]
+    fn a_lossy_door_bounds_a_project_rather_than_dropping_it() {
+        assert_eq!(adopted_project("Leteo Project"), "leteo project");
+        assert_eq!(adopted_project("a\0b"), "ab");
+        assert_eq!(adopted_project("   "), "");
+        assert_eq!(
+            adopted_project(&"p".repeat(PROJECT_MAX_BYTES + 1)).len(),
+            PROJECT_MAX_BYTES
+        );
+        // The cut lands on a character boundary in any script.
+        let wide = "記".repeat(PROJECT_MAX_BYTES);
+        assert!(adopted_project(&wide).len() <= PROJECT_MAX_BYTES);
+        assert!(!adopted_project(&wide).contains('\u{fffd}'));
+    }
+
+    /// Ids and project names are refused rather than cut.
+    ///
+    /// A cut id names a different session, and a cut project name files the
+    /// memory under a folder nobody has. Both are what the refusal says, with
+    /// the bound in it, so a caller can tell what to send instead.
+    #[test]
+    fn an_id_or_a_project_is_refused_rather_than_cut() {
+        for blank in ["", "   ", "\t"] {
+            assert!(session_id_refusal(blank).is_some(), "{blank:?}");
+        }
+        assert!(session_id_refusal(&"s".repeat(SESSION_ID_MAX_BYTES)).is_none());
+        assert!(session_id_refusal(&"s".repeat(SESSION_ID_MAX_BYTES + 1)).is_some());
+        assert!(session_id_refusal("a\0b").is_some());
+        assert!(session_id_refusal("a\tb").is_some());
+
+        assert!(project_refusal("Leteo Project").is_none());
+        assert!(project_refusal(&"p".repeat(PROJECT_MAX_BYTES)).is_none());
+        assert!(project_refusal(&"p".repeat(PROJECT_MAX_BYTES + 1)).is_some());
+        assert!(project_refusal("   ").is_some());
+        // Newlines and tabs are folded out of a project name by `project`, so
+        // what is refused is what folding could not make safe.
+        assert!(project_refusal("a\nb").is_none());
+        assert!(project_refusal("a\0b").is_some());
+        assert!(project_refusal("a\u{7}b").is_some());
     }
 }

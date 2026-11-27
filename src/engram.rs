@@ -466,7 +466,7 @@ fn normalize_observations(connection: &Connection, max_content_bytes: usize) -> 
     };
     for (id, kind, title, content, created_at) in rows {
         let kind = crate::memory::normalize::kind(&kind);
-        let title = crate::memory::normalize::title(&title, max_content_bytes);
+        let title = crate::memory::normalize::title(&title);
         let (content, hash) = crate::memory::normalize::stored_content(&content, max_content_bytes);
         let from = created_at
             .as_deref()
@@ -722,7 +722,10 @@ fn normalize_projects(connection: &Connection, tables: &[&str]) -> Result<()> {
             .query_map([], |row| row.get(0))?
             .collect::<Result<_, _>>()?;
         for spelling in spellings {
-            let normalized = crate::memory::normalize::project(&spelling);
+            // Cut rather than refused, and cut the same way in every table so
+            // the memories of one project stay together: an adoption that
+            // stopped on a name would abandon the store it was carrying.
+            let normalized = crate::memory::normalize::adopted_project(&spelling);
             if normalized == spelling {
                 continue;
             }
@@ -1680,6 +1683,31 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
                     [&format!("{}tail", "y".repeat(bound + 100))],
                 )
                 .unwrap();
+            // The project name is the same defect as the title, one column
+            // over, and adoption cannot refuse one: it cuts it in every table
+            // so the memories of one project stay together.
+            let long_project = "p".repeat(crate::memory::normalize::PROJECT_MAX_BYTES + 500);
+            source
+                .execute(
+                    "INSERT INTO sessions (id, project, directory, started_at)
+                     VALUES ('s3', ?1, '/tmp/long', datetime('now'))",
+                    [&long_project],
+                )
+                .unwrap();
+            source
+                .execute(
+                    "INSERT INTO observations (sync_id, session_id, type, title, content, project)
+                     VALUES ('obs-long-project', 's3', 'decision', 'Filed far out', 'body', ?1)",
+                    [&long_project],
+                )
+                .unwrap();
+            source
+                .execute(
+                    "INSERT INTO user_prompts (session_id, content, project)
+                     VALUES ('s3', 'which project is this?', ?1)",
+                    [&long_project],
+                )
+                .unwrap();
             source
                 .execute(
                     "INSERT INTO memory_relations
@@ -1735,7 +1763,11 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(long_title.len(), bound, "the title is cut to the bound too");
+        assert_eq!(
+            long_title.len(),
+            crate::memory::normalize::TITLE_MAX_BYTES,
+            "the title is cut to its own bound, not the body's"
+        );
         assert!(long_title.ends_with("... [truncated]"), "{long_title}");
 
         let (summary, directory): (String, String) = connection
@@ -1780,6 +1812,24 @@ folded   title  ', 'kept <private>secret</private> visible', 'proj')",
             "a prompt is cut to the same bound"
         );
         assert_eq!(prompt_project, "leteo", "the fold every query narrows by");
+
+        // One cut name, the same in all three tables: a project that is split
+        // into two under different prefixes is two projects nothing can join.
+        let expected = "p".repeat(crate::memory::normalize::PROJECT_MAX_BYTES);
+        for (table, clause) in [
+            ("sessions", "id = 's3'"),
+            ("observations", "sync_id = 'obs-long-project'"),
+            ("prompts", "session_id = 's3'"),
+        ] {
+            let adopted: String = connection
+                .query_row(
+                    &format!("SELECT project FROM {table} WHERE {clause}"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(adopted, expected, "{table} kept a project past the bound");
+        }
 
         let (reason, evidence, confidence): (String, String, Option<f64>) = connection
             .query_row(

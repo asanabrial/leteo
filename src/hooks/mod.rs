@@ -511,17 +511,25 @@ pub(crate) fn pending_capture(
     }
     let directory = resolve_directory(&input.cwd);
     let detection = detect_project(&directory);
-    let project = resolve_project(input, &detection);
-    let session_id = resolve_session_id(input, &project);
+    // The reasons are dropped here: a capture that reached the spool is one
+    // whose store could not be opened, and the replay through `run_event` asks
+    // the same questions again with somewhere to put the answer.
+    let (project, _) = resolve_project(input, &detection);
+    let (session_id, _) = resolve_session_id(input, &project);
     let named_by_agent = !input
         .project
         .as_deref()
         .unwrap_or_default()
         .trim()
         .is_empty();
+    let refused_session = normalize::session_id_refusal(input.session_id.trim()).is_some();
     let unsettled = spool::Unsettled {
         guessed: !named_by_agent && detection.is_guess(),
-        derived_session: input.session_id.trim().is_empty(),
+        // A refused id falls back to the derived one here, and the replay has
+        // to fall back too: carrying the refused id through would make
+        // `create_session` refuse the replay and drop the entry, which is the
+        // one copy of a subagent's learning.
+        derived_session: input.session_id.trim().is_empty() || refused_session,
     };
     Some((
         capture_of(input, &session_id, &project),
@@ -567,7 +575,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     let detected = std::time::Instant::now();
     let directory = resolve_directory(&input.cwd);
     let detection = detect_project(&directory);
-    let mut project = resolve_project(input, &detection);
+    let (mut project, project_reason) = resolve_project(input, &detection);
     let named_by_agent = !input
         .project
         .as_deref()
@@ -582,7 +590,13 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     if guessed {
         project = recorded_project(store, project, &directory.to_string_lossy());
     }
-    let mut session_id = resolve_session_id(input, &project);
+    let (mut session_id, session_reason) = resolve_session_id(input, &project);
+    // Whether the id came from the payload or was derived for this hook. A
+    // refused id is derived too, and the drift fold below can change the
+    // project it was derived from: re-deriving only the blank case filed one
+    // capture under two sessions, one from the guess and one from the recorded
+    // project the replay used.
+    let derived_session = input.session_id.trim().is_empty() || session_reason.is_some();
 
     // An existing session owns its project, exactly as the MCP tools treat it.
     // An agent that changes directory mid-session would otherwise split one
@@ -594,6 +608,8 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         session_id: session_id.clone(),
         ..HookOutcome::default()
     };
+    outcome.warnings.extend(project_reason);
+    outcome.warnings.extend(session_reason);
     if project.is_empty() {
         outcome
             .warnings
@@ -648,9 +664,11 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
         if let Some(recorded) = drifted.first() {
             project = recorded.clone();
             outcome.project = project.clone();
-            if input.session_id.trim().is_empty() {
-                session_id = resolve_session_id(input, &project);
+            if derived_session {
+                let (derived, reason) = resolve_session_id(input, &project);
+                session_id = derived;
                 outcome.session_id = session_id.clone();
+                outcome.warnings.extend(reason);
             }
         }
     }

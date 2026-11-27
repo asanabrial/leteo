@@ -350,10 +350,17 @@ fn the_projects_recorded_in_a_directory_come_back_newest_first() {
     store.create_session("s4", "folded", "C:\\repo\\").unwrap();
     // Neither an empty project nor an empty directory is a choice to offer.
     store.create_session("s5", "ghost", "").unwrap();
-    store.create_session("s6", "", "C:/repo").unwrap();
 
     let database = store.database_path().to_path_buf();
     let aged = rusqlite::Connection::open(&database).unwrap();
+    // Written by hand: `create_session` refuses a blank project now, and a
+    // store that predates the refusal can still hold one. The listing is what
+    // has to skip it either way.
+    aged.execute(
+        "INSERT INTO sessions (id, project, directory) VALUES ('s6', '', 'C:/repo')",
+        [],
+    )
+    .unwrap();
     aged.execute(
         "UPDATE sessions SET started_at = '2026-01-01 00:00:00' WHERE id = 's1'",
         [],
@@ -734,4 +741,63 @@ fn releasing_a_directory_leaves_only_its_own_project_recorded_there() {
         "each changed session is queued for a peer, and only those"
     );
     assert_eq!(store.release_directory_to("C:/repo", "here").unwrap(), 0);
+}
+
+/// A session id names a row and a state file, and a project name a row and a
+/// bullet in the opening block: both are refused rather than cut.
+///
+/// A cut id is a different session — `mem_session_start` with 5,000 characters
+/// was accepted and echoed — and a 10,000-character one made every later hook
+/// print `File name too long (os error 63)`; `a\0b` even shared the state file
+/// of `a_b`.
+#[test]
+fn an_id_or_a_project_that_cannot_name_a_row_is_refused() {
+    let (_temp, mut store) = store();
+    let too_long_id = "s".repeat(normalize::SESSION_ID_MAX_BYTES + 1);
+    for refused in [too_long_id.as_str(), "", "   ", "a\0b"] {
+        let error = store.create_session(refused, "leteo", "C:/repo");
+        assert!(
+            matches!(error, Err(StoreError::InvalidParameter(_))),
+            "{refused:?} was accepted"
+        );
+    }
+    assert!(store.create_session("ok", "leteo", "C:/repo").is_ok());
+
+    let too_long_project = "p".repeat(normalize::PROJECT_MAX_BYTES + 1);
+    for refused in [too_long_project.as_str(), "   ", "a\0b"] {
+        let error = store.create_session("s2", refused, "C:/repo");
+        assert!(
+            matches!(error, Err(StoreError::InvalidParameter(_))),
+            "{refused:?} was accepted"
+        );
+    }
+
+    // A memory cannot file under a project the opening block cannot hold
+    // either — on the save or on the update that moves it.
+    let mut memory = observation("ok", "Something", "body");
+    memory.project = Some(too_long_project.clone());
+    assert!(matches!(
+        store.add_observation(memory),
+        Err(StoreError::InvalidParameter(_))
+    ));
+    let saved = store
+        .add_observation(observation("ok", "Something", "body"))
+        .unwrap()
+        .observation;
+    assert!(matches!(
+        store.update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                project: Some(too_long_project),
+                ..UpdateObservation::default()
+            },
+        ),
+        Err(StoreError::InvalidParameter(_))
+    ));
+    assert_eq!(
+        store.get_observation(saved.id).unwrap().project.as_deref(),
+        Some("leteo"),
+        "the memory stayed where it was"
+    );
 }

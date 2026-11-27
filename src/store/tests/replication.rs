@@ -66,6 +66,92 @@ fn a_pulled_session_never_records_a_relative_directory() {
     assert_eq!(store.get_session("remote-session").unwrap().directory, "");
 }
 
+/// A pulled name this store cannot hold is adopted, never refused.
+///
+/// `apply_pulled_sync_mutation` fails the whole pull on any error and does not
+/// advance the cursor, so refusing a peer's legacy blank project, long project
+/// or long session id retries the same mutation for ever and stops everything
+/// behind it. The session's project and the memory's project go through the
+/// same lossy door as an import and an adoption; the id is the row key a
+/// peer's memories already point at, and no hook on this machine names it.
+#[test]
+fn a_pulled_name_past_the_bound_is_adopted_rather_than_refused() {
+    let (_temp, mut store) = store();
+    let long_project = "p".repeat(normalize::PROJECT_MAX_BYTES + 500);
+    let bounded = "p".repeat(normalize::PROJECT_MAX_BYTES);
+    let long_id = "s".repeat(normalize::SESSION_ID_MAX_BYTES + 500);
+
+    let mut seq: i64 = 0;
+    let pull_session = |store: &mut Store, seq: &mut i64, id: &str, project: &str| {
+        *seq += 1;
+        let mutation = SyncMutation {
+            seq: *seq,
+            target_key: "cloud".to_owned(),
+            entity: "session".to_owned(),
+            entity_key: id.to_owned(),
+            op: crate::sync::OP_UPSERT.to_owned(),
+            payload: serde_json::json!({
+                "id": id,
+                "project": project,
+                "directory": "/tmp/repo",
+                "started_at": "2026-07-27T12:00:00Z"
+            })
+            .to_string(),
+            source: "remote".to_owned(),
+            project: "leteo".to_owned(),
+            occurred_at: "2026-07-27T12:00:00Z".to_owned(),
+            acked_at: None,
+        };
+        store.apply_pulled(&mutation).unwrap()
+    };
+
+    assert!(pull_session(&mut store, &mut seq, "blank", ""));
+    assert!(pull_session(&mut store, &mut seq, "long", &long_project));
+    assert!(pull_session(&mut store, &mut seq, "control", "a\0b"));
+    assert!(pull_session(&mut store, &mut seq, &long_id, "leteo"));
+
+    assert_eq!(store.get_session("blank").unwrap().project, "");
+    assert_eq!(store.get_session("long").unwrap().project, bounded);
+    assert_eq!(store.get_session("control").unwrap().project, "ab");
+    assert_eq!(store.get_session(&long_id).unwrap().project, "leteo");
+
+    // The memory a peer sends carries its own project, and it is the same cut.
+    seq += 1;
+    let mutation = SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: "obs-long".to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": "obs-long",
+            "session_id": "long",
+            "type": "decision",
+            "title": "Filed far out",
+            "content": "body",
+            "project": long_project,
+            "scope": "project",
+            "created_at": "2026-07-27T12:00:00Z",
+            "updated_at": "2026-07-27T12:00:00Z",
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-07-27T12:00:00Z".to_owned(),
+        acked_at: None,
+    };
+    assert!(store.apply_pulled(&mutation).unwrap());
+    let stored = store
+        .connection()
+        .query_row(
+            "SELECT project FROM observations WHERE sync_id = 'obs-long'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some(bounded.as_str()));
+}
+
 /// A session the sender recorded without a directory is applied on the peer as
 /// one without a directory, not as a placeholder.
 ///

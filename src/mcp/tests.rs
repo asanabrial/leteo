@@ -464,6 +464,117 @@ fn error_payload(result: &CallToolResult) -> serde_json::Value {
         .expect("structured error payload")
 }
 
+/// A title is a name, and the save says when its bound cut one.
+///
+/// It used to share the body's fifty thousand bytes, so `mem_save` with a
+/// 60,000-character title answered with 50,319 bytes and nothing said the title
+/// had been touched.
+#[test]
+fn a_long_title_is_cut_and_the_save_says_so() {
+    let (_temp, server) = test_server(McpOptions::default());
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("long-title", "leteo", "C:/workspace")
+            .unwrap();
+    }
+    let long = "palabra".repeat(10_000);
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "long-title",
+                "title": long,
+                "content": "body",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let cut = saved
+        .title_storage_truncation
+        .expect("the save says the title was cut");
+    assert_eq!(cut.original_bytes, long.len());
+    assert_eq!(cut.stored_bytes, saved.observation.title.len());
+    assert!(
+        saved.observation.title.len() <= crate::memory::normalize::TITLE_MAX_BYTES,
+        "{}",
+        saved.observation.title.len()
+    );
+    assert!(
+        saved.observation.title.ends_with("... [truncated]"),
+        "{}",
+        saved.observation.title
+    );
+}
+
+/// The update door reports a title cut the way the save door does.
+///
+/// `mem_update` is the other full-body write, and it had the same body-only
+/// bound on the field beside the body. A reply that cut a title and said
+/// nothing leaves the caller believing the name it sent is the name stored.
+#[test]
+fn a_long_title_is_cut_on_update_and_the_reply_says_so() {
+    let (_temp, server) = test_server(McpOptions::default());
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("update-title", "leteo", "C:/workspace")
+            .unwrap();
+    }
+    let saved = server
+        .mem_save(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "update-title",
+                "title": "A short name",
+                "content": "body",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let long = "palabra".repeat(10_000);
+    let updated = server
+        .mem_update(Parameters(
+            serde_json::from_value(json!({
+                "id": saved.observation.id,
+                "expected_project": "leteo",
+                "title": long,
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let cut = updated
+        .title_storage_truncation
+        .expect("the update says the title was cut");
+    assert_eq!(cut.original_bytes, long.len());
+    assert_eq!(cut.stored_bytes, updated.observation.title.len());
+    assert!(
+        updated.observation.title.len() <= crate::memory::normalize::TITLE_MAX_BYTES,
+        "{}",
+        updated.observation.title.len()
+    );
+}
+
+/// An id that cannot name a row is refused with the bound in the message.
+#[test]
+fn a_session_id_past_its_bound_is_refused_by_session_start() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let long = "s".repeat(5_000);
+    let refused = match server.mem_session_start(Parameters(
+        serde_json::from_value(json!({ "id": long })).unwrap(),
+    )) {
+        Ok(_) => panic!("a 5,000-character session id was accepted"),
+        Err(refused) => refused,
+    };
+    let payload = error_payload(&refused);
+    let said = payload.to_string();
+    assert!(
+        said.contains("at most 128 bytes"),
+        "the refusal names the bound: {said}"
+    );
+}
+
 #[test]
 fn listings_preview_the_body_and_only_mem_get_observation_returns_it_whole() {
     let (_temp, server) = test_server(McpOptions::default());

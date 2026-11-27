@@ -46,23 +46,62 @@ fn resolve_directory_against(cwd: &str, process: Option<PathBuf>) -> PathBuf {
     }
 }
 
-pub(super) fn resolve_project(input: &HookInput, detection: &ProjectDetection) -> String {
-    input
+/// The project this hook files under, and the reason a named one was not used.
+///
+/// A hook cannot hand a caller an error and wait: a refused project name would
+/// leave the event with nothing to record, and the agent in front of it with a
+/// failure it cannot fix. So the name it would have used is refused, the
+/// detected one is used in its place, and the sentence travels back with the
+/// answer — `100,000` characters of project made every session-start in that
+/// directory print a 100 KB warning, which is the opposite of telling anybody.
+pub(super) fn resolve_project(
+    input: &HookInput,
+    detection: &ProjectDetection,
+) -> (String, Option<String>) {
+    let detected = normalize::project(&detection.project);
+    let Some(named) = input
         .project
         .as_deref()
-        .map(normalize::project)
-        .filter(|project| !project.is_empty())
-        .unwrap_or_else(|| normalize::project(&detection.project))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return (detected, None);
+    };
+    match normalize::project_refusal(named) {
+        None => (normalize::project(named), None),
+        Some(refusal) => {
+            let used = if detected.is_empty() {
+                "an empty project".to_owned()
+            } else {
+                format!("\"{detected}\"")
+            };
+            (
+                detected,
+                Some(format!("{refusal}; filed under {used} instead")),
+            )
+        }
+    }
 }
 
 /// Uses the agent's own session identifier when it sends one, so several agents
 /// can share a project without clobbering each other's sessions.
-pub(super) fn resolve_session_id(input: &HookInput, project: &str) -> String {
+///
+/// The same fallback as [`resolve_project`], for the same reason, and it is the
+/// id a state file is named after: a 10,000-character one made every later hook
+/// in that session print `File name too long (os error 63)` and lose its state.
+pub(super) fn resolve_session_id(input: &HookInput, project: &str) -> (String, Option<String>) {
     let session_id = input.session_id.trim();
     if session_id.is_empty() {
-        crate::mcp::manual_session_id(project)
-    } else {
-        session_id.to_owned()
+        return (crate::mcp::manual_session_id(project), None);
+    }
+    match normalize::session_id_refusal(session_id) {
+        None => (session_id.to_owned(), None),
+        Some(refusal) => (
+            crate::mcp::manual_session_id(project),
+            Some(format!(
+                "{refusal}; this hook is recorded under an id derived from its project instead"
+            )),
+        ),
     }
 }
 

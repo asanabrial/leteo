@@ -216,6 +216,13 @@ fn apply_session_upsert_tx(
     if payload.id.trim().is_empty() {
         return Err(invalid_parameter("session sync payload id is required"));
     }
+    // The id is the row key and a peer's memories already point at it, so it
+    // is taken as it arrives. Refusing it here is not a door a caller can
+    // answer: `apply_pulled_sync_mutation` fails the whole pull on any error
+    // and does not advance the cursor, so the next attempt fetches the same
+    // page and fails identically. A name only becomes a state file when this
+    // machine's own hook resolves it, and no hook names a peer's session.
+    //
     // The project, spelled the way this store spells it. `create_session`
     // normalises and this did not, so a session sent as `Leteo` was stored as
     // `Leteo` — and every query that narrows by project compares against the
@@ -225,7 +232,7 @@ fn apply_session_upsert_tx(
     //
     // The third of these found today. The observation path had it, was fixed,
     // and neither of its two siblings was looked at.
-    let project = normalize::project(&payload.project);
+    let project = normalize::adopted_project(&payload.project);
     // And the summary, which nothing normalised on either path: see
     // `normalize::session_summary`.
     let summary = normalize::session_summary(payload.summary.as_deref(), max_content_bytes);
@@ -351,11 +358,16 @@ fn apply_observation_upsert_tx(
     // its own and had fallen behind on five of them, so a memory arriving over
     // the wire kept its private tags, ignored the length cap, and could put back
     // the very type the canonical-types migration had folded away.
+    // The project goes through the lossy door first, for the reason the
+    // session's does: a pull fails as a whole and retries the same mutation, so
+    // a name this store cannot hold stops the peer's sync for ever instead of
+    // being refused to somebody who could fix it.
+    let project = payload.project.as_deref().map(normalize::adopted_project);
     let (kind, title, content, project, scope, topic_key, normalized_hash) = normalize::fields(
         &payload.kind,
         &payload.title,
         &payload.content,
-        payload.project.as_deref(),
+        project.as_deref(),
         &payload.scope,
         payload.topic_key.as_deref(),
         max_content_bytes,
@@ -487,7 +499,7 @@ fn apply_observation_version_upsert_tx(
     } else {
         payload.replaced_at
     };
-    let title = normalize::title(&payload.title, max_content_bytes);
+    let title = normalize::title(&payload.title);
     let content = normalize::stored_content(&payload.content, max_content_bytes).0;
     crate::store::observations::snapshot_observation_version_tx(
         tx,

@@ -201,6 +201,13 @@ fn insert_observation_tx(
     fields: normalize::Fields,
 ) -> Result<Observation, StoreError> {
     let (kind, title, content, project, scope, topic_key, hash) = fields.into_parts();
+    // Both observation write paths insert through here, so a project the
+    // opening block cannot hold is refused once rather than twice.
+    if let Some(ref project) = project
+        && let Some(refusal) = normalize::project_refusal(project)
+    {
+        return Err(invalid_parameter(refusal));
+    }
     let sync_id = normalize::sync_id("obs");
     let directory = normalize::directory(directory);
     tx.execute(
@@ -928,7 +935,7 @@ impl Store {
             .unwrap_or_else(|| previous_kind.clone());
         let title = input
             .title
-            .map(|value| normalize::title(&value, max_length))
+            .map(|value| normalize::title(&value))
             .unwrap_or(current.title);
         // The body this write stores, and — for a find/replace — the length the
         // storage bound saw before it cut. The caller never held the edited
@@ -965,6 +972,11 @@ impl Store {
             .map(|value| normalize::project(&value))
             .map(|value| (!value.is_empty()).then_some(value))
             .unwrap_or(current.project);
+        if let Some(ref project) = project
+            && let Some(refusal) = normalize::project_refusal(project)
+        {
+            return Err(invalid_parameter(refusal));
+        }
         let scope = input
             .scope
             .map(|value| normalize::scope(&value).to_owned())

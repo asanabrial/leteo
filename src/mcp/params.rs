@@ -25,9 +25,10 @@ use super::*;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SaveParams {
-    /// Session identifier. Defaults to the project's open session active in the last 30 minutes, which two agents working at once share, else manual-save-{project}.
+    /// Session identifier, at most 128 bytes and with no control characters. Defaults to the project's open session active in the last 30 minutes, which two agents working at once share, else manual-save-{project}.
     pub(super) session_id: Option<String>,
-    /// Short searchable title.
+    /// Short searchable title, stored at up to 1024 bytes: a longer one is cut,
+    /// and `title_storage_truncation` says by how much.
     pub(super) title: String,
     /// Full observation content.
     pub(super) content: Option<String>,
@@ -41,8 +42,9 @@ pub(super) struct SaveParams {
     pub(super) kind: String,
     /// Name of the tool that produced the observation.
     pub(super) tool_name: Option<String>,
-    /// Project owning this observation. Accepted only when it matches the
-    /// detected project, the process override, or a project the store knows.
+    /// Project owning this observation, at most 128 bytes. Accepted only when
+    /// it matches the detected project, the process override, or a project the
+    /// store knows.
     pub(super) project: Option<String>,
     /// Must be user_selected_after_ambiguous_project, and only after the user
     /// picked one of available_projects from an ambiguous_project error.
@@ -55,7 +57,9 @@ pub(super) struct SaveParams {
     /// another one will not return it.
     #[serde(default = "default_scope")]
     pub(super) scope: String,
-    /// Stable key used to revise an evolving observation instead of inserting another.
+    /// Stable key used to revise an evolving observation instead of inserting
+    /// another, at most 120 bytes: a longer one is cut, because a key is
+    /// matched exactly and a cut one would stop matching what it names.
     pub(super) topic_key: Option<String>,
     /// Link this memory to the question it answers: the prompt this process
     /// last recorded, else the session's last one, else — only when no
@@ -79,7 +83,8 @@ pub(super) struct UpdateParams {
     /// New observation category. One of: bugfix, decision, policy, architecture, discovery, pattern, config, preference.
     #[serde(rename = "type")]
     pub(super) kind: Option<String>,
-    /// New title.
+    /// New title, stored at up to 1024 bytes; a longer one is cut and reported
+    /// in `title_storage_truncation`.
     pub(super) title: Option<String>,
     /// New content: the whole body. Refused together with `find`.
     pub(super) content: Option<String>,
@@ -97,8 +102,9 @@ pub(super) struct UpdateParams {
     pub(super) project: Option<String>,
     /// New scope: project, personal, or global.
     pub(super) scope: Option<String>,
-    /// New topic key. Two live memories may not share one, so a key another
-    /// memory holds is refused with that memory's id.
+    /// New topic key, at most 120 bytes: a longer one is cut. Two live
+    /// memories may not share one, so a key another memory holds is refused
+    /// with that memory's id.
     pub(super) topic_key: Option<String>,
 }
 
@@ -201,7 +207,9 @@ pub(super) struct ConsolidateParams {
     /// Memory scope: project, personal, or global.
     #[serde(default = "default_scope")]
     pub(super) scope: String,
-    /// Stable key used to revise an evolving observation instead of inserting another.
+    /// Stable key used to revise an evolving observation instead of inserting
+    /// another, at most 120 bytes: a longer one is cut, because a key is
+    /// matched exactly and a cut one would stop matching what it names.
     pub(super) topic_key: Option<String>,
 }
 
@@ -306,11 +314,14 @@ pub(super) struct SavePromptParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionStartParams {
-    /// Unique session identifier. Also accepted as `session_id`, which is what
-    /// every tool that writes to a session calls it.
+    /// Unique session identifier, at most 128 bytes and with no control
+    /// characters; blank, longer or control-bearing ids are refused. Also
+    /// accepted as `session_id`, which is what every tool that writes to a
+    /// session calls it.
     #[serde(alias = "session_id")]
     pub(super) id: String,
-    /// Optional explicit project; otherwise it is detected from directory or cwd.
+    /// Optional explicit project, at most 128 bytes and with no control
+    /// characters; otherwise it is detected from directory or cwd.
     pub(super) project: Option<String>,
     /// Working directory for this session.
     pub(super) directory: Option<String>,

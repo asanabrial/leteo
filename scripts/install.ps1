@@ -174,12 +174,21 @@ try {
     # Off Windows there is no registry to read. `install.ps1` is not what the
     # script harness runs there — `uninstall.ps1` is — but the two read and
     # write this value the same way, and a copy that fails where the other
-    # falls back is the drift that makes the pair disagree.
+    # falls back is the drift that makes the pair disagree. They cannot share a
+    # file: each is fetched and run on its own (`irm ... | iex` here, and the
+    # uninstaller ships beside the binary), so the copy is the price of the
+    # distribution and both are held by `scripts/check-windows-path.ps1`.
+    $onWindows = ($env:OS -eq 'Windows_NT')
     $environment = $null
     try {
         $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
     } catch {
         $environment = $null
+    }
+    if ($onWindows -and -not $environment) {
+        # Loud, because the fallback is the behaviour this change removed: the
+        # environment API expands every `%VAR%` and stores plain text.
+        Write-Warning "could not open HKCU:\Environment; the rest of your PATH may have its variables frozen"
     }
     $added = $false
     try {

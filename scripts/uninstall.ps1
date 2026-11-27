@@ -201,12 +201,18 @@ if ((Test-Path $dataDir) -and -not $handled) {
 #
 # Off Windows there is no registry to read: `tools/semantic/check_install.sh`
 # runs this file under pwsh on the Linux runners to exercise everything below
-# it, where the environment API is what those flows have always used.
+# it, where the environment API is what those flows have always used. On
+# Windows the fallback is a warning rather than silence, because it is the
+# behaviour this change removed.
+$onWindows = ($env:OS -eq 'Windows_NT')
 $environment = $null
 try {
     $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
 } catch {
     $environment = $null
+}
+if ($onWindows -and -not $environment) {
+    Write-Warning "could not open HKCU:\Environment; the rest of your PATH may have its variables frozen"
 }
 
 function Read-UserPath {
@@ -222,7 +228,13 @@ function Read-UserPath {
 
 function Write-UserPath([string]$Value) {
     if ($environment) {
-        $environment.SetValue('Path', $Value, $environment.GetValueKind('Path'))
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        try {
+            $kind = $environment.GetValueKind('Path')
+        } catch {
+            # No value of the user's own, which is what the default is for.
+        }
+        $environment.SetValue('Path', $Value, $kind)
     } else {
         [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
     }
@@ -236,17 +248,22 @@ function Test-SamePathEntry([string]$Entry) {
         [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
 }
 
-$userPath = Read-UserPath
-if ($userPath) {
-    $entries = @($userPath -split ';' | Where-Object { $_ })
-    $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
-    if ($kept.Count -ne $entries.Count) {
-        Say "  removing $installDir from your PATH"
-        Write-UserPath ($kept -join ';')
+try {
+    $userPath = Read-UserPath
+    if ($userPath) {
+        $entries = @($userPath -split ';' | Where-Object { $_ })
+        $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
+        if ($kept.Count -ne $entries.Count) {
+            Say "  removing $installDir from your PATH"
+            Write-UserPath ($kept -join ';')
+        }
     }
-}
-if ($environment) {
-    $environment.Close()
+} finally {
+    # Closed on the way out of a failure too, as `install.ps1` does: a writable
+    # handle held for the rest of the script is a handle nothing will release.
+    if ($environment) {
+        $environment.Close()
+    }
 }
 
 if (Test-Path $registryKey) {

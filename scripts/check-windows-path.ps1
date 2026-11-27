@@ -10,8 +10,10 @@
 # it.
 #
 # Run by the windows legs of `ci.yml`, once under Windows PowerShell 5.1
-# (`shell: powershell`) and once under PowerShell 7 (`shell: pwsh`), because the
-# two engines read the value differently.
+# (`shell: powershell`) and once under PowerShell 7 (`shell: pwsh`). Not because
+# the engines differ — measured, both read the value expanded and store it as
+# plain text — but because whichever engine a user happens to run is the one
+# that has to be right, and only a run under it says so.
 #
 # Needs a built `leteo.exe` (the checkout's `target\debug` by default) and a
 # release archive the installer can fetch: the script assembles both and serves
@@ -68,6 +70,16 @@ try {
     $originalKind = $null
 }
 
+function Assert-Succeeded([string]$What) {
+    if (-not $?) {
+        throw "$What did not succeed (exit code $LASTEXITCODE)"
+    }
+}
+
+function Test-NamesInstallDir([string]$Entry) {
+    $Entry -and [Environment]::ExpandEnvironmentVariables($Entry) -eq $installDir
+}
+
 function Assert-Markers([string]$Where) {
     $entries = @((Read-Raw) -split ';')
     foreach ($marker in $markers) {
@@ -87,12 +99,6 @@ try {
     Compress-Archive -Path (Join-Path $dist $package) -DestinationPath (Join-Path $dist "$package.zip") -Force
     $hash = (Get-FileHash (Join-Path $dist "$package.zip") -Algorithm SHA256).Hash.ToLower()
     "$hash  $package.zip" | Set-Content -Encoding ascii (Join-Path $dist 'SHA256SUMS')
-
-    # A free port, asked for and released before the server takes it.
-    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $probe.Start()
-    $port = $probe.LocalEndpoint.Port
-    $probe.Stop()
 
     $serverScript = Join-Path $temp 'serve.ps1'
     @'
@@ -114,23 +120,42 @@ while ($true) {
 }
 '@ | Set-Content -Encoding ascii $serverScript
     $engine = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $server = Start-Process -FilePath $engine -PassThru -ArgumentList @(
-        '-NoProfile', '-File', "`"$serverScript`"", "`"$dist`"", "$port"
-    )
-    # Answered rather than slept through: a busy runner takes longer than any
-    # fixed wait that would still be short enough here, and the installer's
-    # failure would read as a PATH defect.
-    $ready = $false
-    for ($attempt = 0; $attempt -lt 50 -and -not $ready; $attempt++) {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://localhost:$port/SHA256SUMS"
-            $ready = $response.StatusCode -eq 200
-        } catch {
-            Start-Sleep -Milliseconds 200
+    # A port is asked for, released, and taken again by another process, so a
+    # server that does not answer is retried on a fresh one rather than being
+    # reported as a PATH failure. Answered rather than slept through, for the
+    # same reason: a busy runner takes longer than any fixed wait short enough
+    # to be useful here.
+    $server = $null
+    $port = $null
+    for ($round = 0; $round -lt 3 -and -not $server; $round++) {
+        $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $probe.Start()
+        $candidate = $probe.LocalEndpoint.Port
+        $probe.Stop()
+        $launched = Start-Process -FilePath $engine -PassThru -ArgumentList @(
+            '-NoProfile', '-File', "`"$serverScript`"", "`"$dist`"", "$candidate"
+        )
+        for ($attempt = 0; $attempt -lt 50; $attempt++) {
+            if ($launched.HasExited) {
+                break
+            }
+            try {
+                $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://localhost:$candidate/SHA256SUMS"
+                if ($response.StatusCode -eq 200) {
+                    $server = $launched
+                    $port = $candidate
+                    break
+                }
+            } catch {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        if (-not $server -and -not $launched.HasExited) {
+            Stop-Process -Id $launched.Id -Force -ErrorAction SilentlyContinue
         }
     }
-    if (-not $ready) {
-        throw "the archive server never answered on port $port"
+    if (-not $server) {
+        throw "the archive server never answered on three ports"
     }
 
     try {
@@ -145,6 +170,7 @@ while ($true) {
         $env:LETEO_DATA_DIR = $dataDir
 
         & (Join-Path $PSScriptRoot 'install.ps1')
+        Assert-Succeeded 'install.ps1'
         Show-State 'after install'
         Assert-Markers 'after install'
         if (@((Read-Raw) -split ';') -notcontains $installDir) {
@@ -152,6 +178,7 @@ while ($true) {
         }
 
         & (Join-Path $installDir 'uninstall.ps1') -Yes
+        Assert-Succeeded 'uninstall.ps1'
         Show-State 'after uninstall'
         Assert-Markers 'after uninstall'
         if (@((Read-Raw) -split ';') -contains $installDir) {
@@ -190,21 +217,34 @@ while ($true) {
         }
         $registry.SetValue('Path', "$seed;$variable", [Microsoft.Win32.RegistryValueKind]::ExpandString)
         & (Join-Path $PSScriptRoot 'install.ps1')
-        $named = @((Read-Raw) -split ';' | Where-Object {
-            $_ -and [Environment]::ExpandEnvironmentVariables($_) -eq $installDir
-        })
+        Assert-Succeeded 'install.ps1 with a variable-spelled entry'
+        $named = @((Read-Raw) -split ';' | Where-Object { Test-NamesInstallDir $_ })
         if ($named.Count -ne 1) {
             throw "with '$variable' already there, install left $($named.Count) entries for ${installDir}: $(Read-Raw)"
         }
         & (Join-Path $installDir 'uninstall.ps1') -Yes
-        $named = @((Read-Raw) -split ';' | Where-Object {
-            $_ -and [Environment]::ExpandEnvironmentVariables($_) -eq $installDir
-        })
+        Assert-Succeeded 'uninstall.ps1 with a variable-spelled entry'
+        $named = @((Read-Raw) -split ';' | Where-Object { Test-NamesInstallDir $_ })
         if ($named.Count -ne 0) {
             throw "uninstall left '$($named -join ';')' on the user PATH: $(Read-Raw)"
         }
         Assert-Markers 'after a variable-spelled removal'
         Write-Host 'an entry spelled with a variable is the same entry, added once and removed'
+
+        # A value the user keeps as plain text stays plain text: the scripts
+        # promise the kind they found, not an expandable value every time.
+        $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::String)
+        & (Join-Path $PSScriptRoot 'install.ps1')
+        Assert-Succeeded 'install.ps1 on a plain-text PATH'
+        if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
+            throw "install turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
+        }
+        & (Join-Path $installDir 'uninstall.ps1') -Yes
+        Assert-Succeeded 'uninstall.ps1 on a plain-text PATH'
+        if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
+            throw "uninstall turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
+        }
+        Write-Host 'a plain-text PATH stays plain text'
 
         # A user with no PATH of their own. The installer used to write
         # `"$userPath;$installDir"`, which from an empty value starts with `;` —
@@ -212,6 +252,7 @@ while ($true) {
         # current directory.
         $registry.DeleteValue('Path', $false)
         & (Join-Path $PSScriptRoot 'install.ps1')
+        Assert-Succeeded 'install.ps1 from an empty PATH'
         if ((Read-Raw) -ne $installDir) {
             throw "from an empty PATH, install wrote '$(Read-Raw)' instead of just $installDir"
         }
@@ -219,6 +260,7 @@ while ($true) {
             throw "from an empty PATH, install wrote a $((Read-Kind)) value, so every variable in it would be frozen"
         }
         & (Join-Path $installDir 'uninstall.ps1') -Yes
+        Assert-Succeeded 'uninstall.ps1 from an empty PATH'
         if (Read-Raw) {
             throw "from an empty PATH, uninstall left '$(Read-Raw)'"
         }

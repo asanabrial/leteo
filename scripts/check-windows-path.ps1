@@ -315,7 +315,7 @@ while ($true) {
         # current directory.
         $registry.DeleteValue('Path', $false)
         Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 from an empty PATH'
-        if ((Read-Raw) -ne $installDir) {
+        if ((Read-Raw) -cne $installDir) {
             throw "from an empty PATH, install wrote '$(Read-Raw)' instead of just $installDir"
         }
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
@@ -336,7 +336,7 @@ while ($true) {
             throw "with nothing but an empty entry on the PATH, install wrote '$(Read-Raw)'"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with nothing but an empty entry on the PATH' @{ Yes = $true }
-        if (-not (Test-ValueExists) -or (Read-Raw) -ne '') {
+        if (-not (Test-ValueExists) -or (Read-Raw) -cne '') {
             throw "with nothing but an empty entry, uninstall left '$(Read-Raw)' instead of an empty value"
         }
 
@@ -347,7 +347,7 @@ while ($true) {
         # entry of the person's appears or disappears on the way.
         $registry.SetValue('Path', '', [Microsoft.Win32.RegistryValueKind]::ExpandString)
         Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 from an existing empty value'
-        if ((Read-Raw) -ne $installDir) {
+        if ((Read-Raw) -cne $installDir) {
             throw "from an existing empty value, install wrote '$(Read-Raw)' instead of just $installDir"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an existing empty value' @{ Yes = $true }

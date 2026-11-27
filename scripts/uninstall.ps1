@@ -277,8 +277,8 @@ public static extern System.IntPtr SendMessageTimeout(
 }
 
 # Writes the value, and returns whether the announcement went out: the closing
-# advice is the one thing that depends on it. A nonzero return says the
-# broadcast was made, not that every window heard it — one that is not
+# advice is the one thing that depends on it. It is true when the broadcast
+# was made, which does not say every window heard it: one that is not
 # responding may be skipped.
 function Write-UserPath([string]$Value) {
     if ($environment) {

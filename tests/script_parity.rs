@@ -30,10 +30,11 @@ fn indent(line: &str) -> usize {
 /// prefix of both copies and passes. If the closing brace is not found, this
 /// panics instead of comparing less.
 ///
-/// Comments are dropped because the two copies explain themselves to a reader
-/// who has one of them open, and those sentences differ on purpose. What has to
-/// match is the code, the here-string containing the P/Invoke declaration
-/// included.
+/// A line that is only a comment is dropped, because the two copies explain
+/// themselves to a reader who has one of them open and those sentences differ on
+/// purpose. The code is what has to match — a trailing comment on a code line
+/// included, since the comparison keeps the line whole — and so is the
+/// here-string containing the P/Invoke declaration.
 fn shared_region(script: &str) -> Vec<String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")

@@ -260,6 +260,33 @@ while ($true) {
         }
         Write-Host 'an entry spelled with a variable, a trailing separator or a slash is the same entry, added once and removed'
 
+        # An entry that merely starts with the install directory's text, and two
+        # copies of the entry itself: an entry is folded before it is compared,
+        # so the lookalike has to survive both directions and the duplicate has
+        # to go entirely.
+        $lookalike = "${installDir}-extras"
+        $withLookalike = "$seed;$lookalike"
+        $registry.SetValue('Path', $withLookalike, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 beside an entry that starts with the install directory'
+        if ((Read-Raw) -cne "$withLookalike;$installDir") {
+            throw "beside $lookalike, install wrote '$(Read-Raw)'"
+        }
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 beside an entry that starts with the install directory' @{ Yes = $true }
+        if ((Read-Raw) -cne $withLookalike) {
+            throw "removing ${installDir} took $lookalike with it: $(Read-Raw)"
+        }
+        $twice = "$seed;$installDir;$installDir"
+        $registry.SetValue('Path', $twice, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the entry there twice'
+        if ((Read-Raw) -cne $twice) {
+            throw "with two copies of ${installDir} there, install wrote '$(Read-Raw)'"
+        }
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the entry there twice' @{ Yes = $true }
+        if ((Read-Raw) -cne $seed) {
+            throw "with two copies of ${installDir} there, uninstall left '$(Read-Raw)', not '$seed'"
+        }
+        Write-Host 'an entry that starts with the install directory is not the install directory'
+
         # A value the user keeps as plain text stays plain text: the scripts
         # promise the kind they found, not an expandable value every time.
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::String)

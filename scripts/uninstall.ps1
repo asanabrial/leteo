@@ -206,8 +206,9 @@ if ((Test-Path $dataDir) -and -not $handled) {
 #
 # The five functions below are the same five `install.ps1` carries, in the same
 # order and shape, and cannot be shared with it: each script is fetched and run
-# on its own. `tests/script_parity.rs` compares the code of both copies, comments
-# aside, failing when one has changed and the other has not.
+# on its own. `tests/script_parity.rs` compares both copies line for line, a line
+# that is only a comment aside, failing when one has changed and the other has
+# not.
 $onWindows = ($env:OS -eq 'Windows_NT')
 $environment = $null
 $openError = $null

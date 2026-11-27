@@ -7,7 +7,7 @@ from collections import defaultdict
 STATE = tempfile.mkdtemp(prefix="leteo-ratchet-")
 os.environ["BENCH_STATE"] = STATE
 
-from corpus import corpus, no_answer, queries
+from corpus import corpus, no_answer, absent_words, queries
 from mcpclient import MCP, PROJECTS, call_json, rank, save_corpus
 from quality import PUBLISHED_LIMIT
 import inflection
@@ -101,6 +101,19 @@ def measure():
             confident=confident,
             bytes=round(statistics.mean(no_answer_bytes)) if no_answer_bytes else 0,
         )
+
+        # Single absent words, which exist to be *not* corrected. The hint is
+        # the only place a correction is said; the rows themselves are flagged
+        # `partial` like every other relaxed stage, so the flag alone cannot
+        # tell a corrected answer from a merely widened one.
+        absent = absent_words()
+        corrected = 0
+        for q in absent:
+            reply, _, _ = call_json(servers[q["project"]], "mem_search", {"query": q["q"], "limit": PUBLISHED_LIMIT})
+            hint = reply.get("hint") or ""
+            if "instead of" in hint:
+                corrected += 1
+        absent_stats = dict(total=len(absent), corrected=corrected)
     finally:
         for m in servers.values():
             try:
@@ -115,7 +128,8 @@ def measure():
     # measured in one store written in Spanish.
     strict = inflection.measure(STATE)
     return dict(mrr=mrr, hit1=hit1, inflection=strict, counts={k: len(v) for k, v in ranks.items()}, bytes=sizes,
-                empty={k: empty[k] for k in ranks}, median_ms=statistics.median(millis), no_answer=no_answer_stats)
+                empty={k: empty[k] for k in ranks}, median_ms=statistics.median(millis), no_answer=no_answer_stats,
+                absent=absent_stats)
 
 
 def ceiling(measured):
@@ -145,6 +159,10 @@ def propose(got):
         "no_answer": {"answered": got["no_answer"]["answered"],
                       "confident": got["no_answer"]["confident"],
                       "bytes": ceiling(got["no_answer"]["bytes"])},
+        # A ceiling too, and the one this kind exists for: a correctly spelt
+        # word the store does not hold must not be answered as another one. Zero
+        # is the number it can be read against.
+        "absent": {"corrected": got["absent"]["corrected"]},
     }
 
 
@@ -200,6 +218,18 @@ def judge(got, floors):
             breaches.append(f"no-answer {name}: measured {value}, ceiling {ceiling}")
         elif value < ceiling:
             raisable.append(f"no-answer {name}: measured {value} is below its ceiling {ceiling}")
+    # Absent words rewritten as another word. The same ceiling shape as the
+    # no-answer counts, and for the same reason: a stage that has nothing to say
+    # about a word the store never held should say nothing about it.
+    for name, ceiling in floors.get("absent", {}).items():
+        value = got["absent"].get(name)
+        if value is None:
+            raise CannotRun(f"floors.json bounds absent {name!r}, which was not measured "
+                            f"(measured: {sorted(got['absent'])})")
+        if value > ceiling:
+            breaches.append(f"absent {name}: measured {value}, ceiling {ceiling}")
+        elif value < ceiling:
+            raisable.append(f"absent {name}: measured {value} is below its ceiling {ceiling}")
     return breaches, raisable
 
 
@@ -227,6 +257,8 @@ def main():
     na = got["no_answer"]
     print(f"  no-answer {na['answered']}/{na['total']} answered, {na['confident']} with no caveat, "
           f"mean {na['bytes']} bytes  ceiling {floors.get('no_answer', {})}")
+    ab = got["absent"]
+    print(f"  absent    {ab['corrected']}/{ab['total']} corrected  ceiling {floors.get('absent', {})}")
     breaches, raisable = judge(got, floors)
     for line in raisable:
         print("RAISE?", line)

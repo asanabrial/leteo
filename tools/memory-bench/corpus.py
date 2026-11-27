@@ -88,7 +88,7 @@ TARGETS = [
    "CanvasKit renderer downloads a 2 MB wasm on first load. HTML renderer is lighter but text measurement differs; we keep CanvasKit and preload the wasm.",
    [("paraphrase","why is the flutter web first load heavy"),("partial","canvask"),("typo","canvaskit wasm prelaod")]),
  T("csp", B, "decision", "Strict Content Security Policy with nonces",
-   "Inline scripts are allowed only with a per-request nonce. third-party analytics loaded via a proxied domain so the policy stays strict.",
+   "Inline scripts are allowed only with a per-request nonce; the CSP header is built per response. third-party analytics loaded via a proxied domain so the policy stays strict.",
    [("paraphrase","how do we allow inline scripts safely"),("short","csp"),("multiword","content security policy nonce analytics")], topic="architecture/security-headers"),
  T("infinite", B, "bugfix", "Infinite re-render loop in the search filters",
    "useEffect depended on an object literal recreated every render, so it set state on every render. Memoized the filter object with useMemo.",
@@ -276,6 +276,32 @@ NO_ANSWER = [
 
 def no_answer():
     return [dict(kind="no_answer", q=q, project=p) for p, q in NO_ANSWER]
+
+# Single absent words: correctly spelt words the corpus does not hold, of the
+# shape somebody types when the store has never been told the thing they are
+# asking about. They are not questions, because the correction stage reads words
+# rather than a sentence, and one word is the whole label: a rewrite of any of
+# them is an answer to a question nobody asked.
+#
+# The first seven are what a real store was measured doing — `insurance` came
+# back as eight rows about `instance`, `paella` as eight about `falla`, neither
+# flagged. The last three are absent here and near nothing the corpus holds, so
+# they say whether the rules refuse everything or only the awkward cases.
+ABSENT_WORDS = [
+    (B, "paella"),
+    (A, "saml"),
+    (A, "insurance"),
+    (B, "seguro"),
+    (B, "nómina"),
+    (A, "guitar"),
+    (B, "muestreo"),
+    (A, "photosynthesis"),
+    (B, "ballena"),
+    (A, "kayak"),
+]
+
+def absent_words():
+    return [dict(kind="absent", q=q, project=p) for p, q in ABSENT_WORDS]
 
 if __name__ == "__main__":
     c = corpus(); q = queries()

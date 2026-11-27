@@ -2009,6 +2009,198 @@ fn a_missing_unstemmed_index_does_not_fail_a_correction() {
     );
 }
 
+/// An absent word is not rewritten into a word it only resembles.
+///
+/// The seven below were the observed rewrites on a real store: a correctly
+/// spelt word the store does not hold came back as rows for another one, with
+/// no `partial` flag and only a hint. Each of the candidate words is seeded
+/// here, in a memory of the language it belongs to, so a correction that still
+/// fires is a correction these rules failed to refuse — not a missing word.
+#[test]
+fn an_absent_word_is_not_read_as_a_word_it_only_resembles() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for (title, content) in [
+        ("Fallos de la pasarela", "la falla del servicio de pagos"),
+        ("Manifiestos del cluster", "el fichero yaml del despliegue"),
+        (
+            "Instancias del pool",
+            "una instancia por núcleo del servidor",
+        ),
+        ("Importes y moneda", "el importe en euro se redondea"),
+        (
+            "Convenciones de nombres",
+            "naming conventions for the modules",
+        ),
+        ("Rama de integración", "hay que quitar la dependencia vieja"),
+        (
+            "Muestras del perfilador",
+            "una muestra del perfil por minuto",
+        ),
+    ] {
+        store
+            .add_observation(observation("s1", title, content))
+            .unwrap();
+    }
+
+    for absent in [
+        "paella",
+        "saml",
+        "insurance",
+        "seguro",
+        "nómina",
+        "guitar",
+        "muestreo",
+    ] {
+        let (_, _, corrections) = store
+            .search_with_more_and_corrections(absent, SearchOptions::default())
+            .unwrap();
+        assert!(
+            corrections.is_empty(),
+            "{absent} is a word of its own and must not be rewritten: {corrections:?}"
+        );
+    }
+}
+
+/// The typos the anchors still have to keep resolving.
+///
+/// An insertion that lengthens the word is the shape the corpus's `typo` kind
+/// leans on, and it is the one a second-edit rule leaves alone.
+#[test]
+fn typical_typos_still_resolve_under_the_anchors() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "Fixed connection pool exhaustion under load",
+            "one pgxpool.Pool is built in main and injected",
+        ))
+        .unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "Upload multipart files",
+            "the upload streams each part to storage",
+        ))
+        .unwrap();
+
+    let (_, _, corrections) = store
+        .search_with_more_and_corrections("conection pool", SearchOptions::default())
+        .unwrap();
+    assert_eq!(
+        corrections,
+        vec![Correction {
+            asked: "conection".to_owned(),
+            used: "connection".to_owned(),
+        }],
+        "an insertion inside a word is still read as the word held"
+    );
+
+    let (_, _, corrections) = store
+        .search_with_more_and_corrections("uplod multipart", SearchOptions::default())
+        .unwrap();
+    assert_eq!(
+        corrections,
+        vec![Correction {
+            asked: "uplod".to_owned(),
+            used: "upload".to_owned(),
+        }],
+        "a second insertion is still read as the word held"
+    );
+}
+
+/// A corrected answer marks every row it found, the way the relaxed stages do.
+///
+/// The rows match words other than the ones typed, and an agent reading the page
+/// without knowing that treats a typo's answer as an exact one.
+#[test]
+fn a_corrected_answer_is_flagged_partial() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "Fixed connection pool exhaustion under load",
+            "one pgxpool.Pool is built in main and injected",
+        ))
+        .unwrap();
+
+    let (found, _, corrections) = store
+        .search_with_more_and_corrections("conection pool exaustion", SearchOptions::default())
+        .unwrap();
+    assert_eq!(corrections.len(), 2, "the correction stage ran");
+    assert!(!found.is_empty(), "the corrected query answered: {found:?}");
+    assert!(
+        found.iter().all(|result| result.partial),
+        "every row of a corrected answer says so: {found:?}"
+    );
+}
+
+/// A correction does not cross languages.
+///
+/// The store records each memory under the language it was written in, and a
+/// word held only by memories of another language is not a word this question
+/// was about. Read directly, because the refusal is only observable through the
+/// correction the stage reports, and a correction that crossed languages would
+/// usually match nothing and be dropped before it could be reported — the rule
+/// stops the crossing rather than the reporting.
+#[test]
+fn a_correction_does_not_cross_languages() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "Despliegue nocturno",
+            "los informes del servicio se revisan y las bases se limpian",
+        ))
+        .unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "Session store",
+            "the session store keeps the token in redis",
+        ))
+        .unwrap();
+
+    assert_eq!(
+        store.query_language("los tests de las sesiones del servicio"),
+        crate::settings::Interface::Spanish,
+        "a question with Spanish function words is Spanish"
+    );
+    assert_eq!(
+        store.query_language("the session store"),
+        crate::settings::Interface::English,
+        "a question with an English function word is English"
+    );
+
+    assert!(
+        store
+            .term_is_in_language("informes", crate::settings::Interface::Spanish)
+            .unwrap(),
+        "the Spanish memory holding `informes` is Spanish"
+    );
+    assert!(
+        !store
+            .term_is_in_language("informes", crate::settings::Interface::English)
+            .unwrap(),
+        "and it is not also an English word"
+    );
+    assert!(
+        !store
+            .term_is_in_language("session", crate::settings::Interface::Spanish)
+            .unwrap(),
+        "`session` is held only by the English memory"
+    );
+    assert!(
+        store
+            .term_is_in_language("session", crate::settings::Interface::English)
+            .unwrap(),
+        "which is where it is held"
+    );
+}
+
 /// The topic-key lookup answers first and is not exempt from what every other
 /// stage hides. It used to carry a copy of the visibility clause, and the copy
 /// had dropped the project's `LOWER`; it reads the shared one now, and a memory a

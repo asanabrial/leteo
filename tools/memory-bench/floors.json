@@ -25,6 +25,9 @@
     "confident": 0,
     "bytes": 5600
   },
+  "absent": {
+    "corrected": 0
+  },
   "inflection": {
     "ca": 1.0,
     "de": 1.0,

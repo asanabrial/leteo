@@ -44,6 +44,46 @@ const TYPO_LONG_DISTANCE: usize = 2;
 /// The length at or below which only [`TYPO_SHORT_DISTANCE`] applies.
 const TYPO_SHORT_TERM_CHARS: usize = 5;
 
+/// Whether `candidate` is close enough to `asked` to be called the same word
+/// misspelt, beyond what the edit budget already settles.
+///
+/// Two anchors and one length rule, each measured on the labelled set in
+/// `tools/memory-bench/corpus.py` rather than chosen by eye:
+///
+/// - **The first and last characters are kept.** A typo moves letters inside a
+///   word far more often than it changes where the word begins or ends. Four of
+///   the observed absent words were rewritten into one that starts differently
+///   (`paella`→`falla`, `saml`→`yaml`, `seguro`→`euro`, `guitar`→`quitar`) and
+///   two into one that ends differently (`nómina`→`naming`,
+///   `muestreo`→`muestra`); the ratchet's own store rewrites `saml` to `same`,
+///   which the last anchor refuses. No typo the corpus holds changes either
+///   character.
+/// - **A second edit has to make the word longer.** `insurance`→`instance`,
+///   `muestreo`→`muestra` and `nómina`→`naming` are all two edits onto a word
+///   that is the same length or shorter: a real word losing or swapping a
+///   letter is as often another word as it is a typo. What the rule costs is a
+///   same-length transposition such as `dispaly`→`display`, which is two edits
+///   on a plain Levenshtein and is refused here; the ratchet's `typo` kind
+///   carries that as a measured cost rather than as a surprise, and it answers
+///   the question through the widened stage instead.
+///
+/// Both were confirmed against the whole corpus: the `typo` kind still resolves
+/// every question.
+fn correction_is_plausible(asked: &str, candidate: &str, distance: usize) -> bool {
+    let asked: Vec<char> = asked.chars().flat_map(char::to_lowercase).collect();
+    let candidate: Vec<char> = candidate.chars().flat_map(char::to_lowercase).collect();
+    let (Some(asked_first), Some(candidate_first)) = (asked.first(), candidate.first()) else {
+        return false;
+    };
+    let (Some(asked_last), Some(candidate_last)) = (asked.last(), candidate.last()) else {
+        return false;
+    };
+    if asked_first != candidate_first || asked_last != candidate_last {
+        return false;
+    }
+    !(distance >= 2 && candidate.len() <= asked.len())
+}
+
 /// A term the query asked for that the index does not hold, and the word the
 /// vocabulary holds that the search read it as.
 ///
@@ -628,8 +668,16 @@ impl Store {
             && !any
             && let Some((corrected, said)) = self.corrected_fts(query)?
         {
-            let retried = self.fused_observations(&corrected, any, &options, limit)?;
+            let mut retried = self.fused_observations(&corrected, any, &options, limit)?;
             if !retried.is_empty() {
+                // Every row of a corrected answer was found by words other than
+                // the ones typed, which is the same claim `partial` already
+                // carries for the prefix, fragment, widened and nearest stages.
+                // Left unmarked, the page reads as an exact match beside a hint
+                // that says otherwise.
+                for candidate in &mut retried {
+                    candidate.partial = true;
+                }
                 matched = retried;
                 corrections = said;
             }
@@ -823,17 +871,24 @@ impl Store {
                 return Ok(None);
             }
         };
+        let language = self.query_language(query);
         for ((index, asked), used) in unknown.into_iter().zip(nearest) {
             match used {
-                Some(used) => {
+                Some(used) if self.term_is_in_language(&used, language)? => {
                     corrected[index] = normalize::quote_fts_term(&used);
                     said.push(Correction { asked, used });
                 }
-                // One word the vocabulary cannot place makes the whole
-                // corrected conjunction fail exactly as the original did, so
-                // there is nothing to gain by correcting the rest and something
-                // to lose by reporting a correction that changed no answer.
-                None => return Ok(None),
+                // A word held only by memories written in another language is
+                // not a word this question was about: `nómina` is not `naming`,
+                // and reading it as one answered a question nobody asked. The
+                // substitution is refused rather than looked past, because the
+                // next-nearest word was not what the index said either.
+                //
+                // When the store names one language every row is written under
+                // it, so this settles nothing there; it is the store that
+                // detects languages where the rule can tell `nómina` from
+                // `naming`, and that store is the one this protects.
+                _ => return Ok(None),
             }
         }
         Ok(Some((corrected, said)))
@@ -869,6 +924,54 @@ impl Store {
                     false,
                 )
                 .is_empty())
+    }
+
+    /// The language the query was asked in, as far as this store can tell.
+    ///
+    /// A store that names one writes every memory under it, so that is the only
+    /// answer its rows can hold. A store that detects reads this question's own
+    /// words the way it reads a memory's title and body, which is the same
+    /// detector that decided what language every row was recorded under — and
+    /// it needs three recognised function words of one language to say
+    /// anything, so a two-word question answers English there, exactly as it
+    /// would for a memory written in two words.
+    pub(super) fn query_language(&self, query: &str) -> crate::settings::Interface {
+        if self.detects_language() {
+            crate::stemming::detect("", query)
+        } else {
+            self.memory_language()
+        }
+    }
+
+    /// Whether the unstemmed index holds `term` in a live memory of `language`.
+    ///
+    /// The language a memory was recorded under is the one its stems row keeps,
+    /// and every memory has one — including the memories in a language with no
+    /// stemmer, which migration 23 records rather than leaves out.
+    ///
+    /// Read after a candidate is chosen rather than during the scan: the scan
+    /// visits every vocabulary row and a language lookup per row would cost more
+    /// than the answer is worth, while a search corrects one or two words.
+    pub(super) fn term_is_in_language(
+        &self,
+        term: &str,
+        language: crate::settings::Interface,
+    ) -> Result<bool, StoreError> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT EXISTS(
+                 SELECT 1 FROM {FTS_EXACT} fts
+                 CROSS JOIN observations o ON o.id = fts.rowid
+                 CROSS JOIN observation_stems s ON s.observation_id = fts.rowid
+                 WHERE {FTS_EXACT} MATCH ?1 AND o.deleted_at IS NULL AND s.language = ?2)"
+        ))?;
+        let held = statement.query_row(
+            params![
+                normalize::quote_fts_term(term),
+                crate::stemming::code(language)
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        Ok(held)
     }
 
     /// Creates the vocabulary table this connection reads, once.
@@ -927,7 +1030,7 @@ impl Store {
                     continue;
                 }
                 let distance = levenshtein(word, &term);
-                if distance > budgets[index] {
+                if distance > budgets[index] || !correction_is_plausible(word, &term, distance) {
                     continue;
                 }
                 let better = match &best[index] {

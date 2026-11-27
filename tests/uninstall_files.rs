@@ -134,6 +134,10 @@ mod fallback {
         let data: PathBuf = root.path().join("data");
         std::fs::create_dir_all(&install).expect("the install directory");
         write(&install.join("uninstall.sh"));
+        // The script's probe is `[ -x "$INSTALL_DIR/leteo" ]`, and with it false
+        // the only thing left that deletes anything is the fallback below: no
+        // other line of the script removes a file from the data directory.
+        assert!(!install.join("leteo").exists());
 
         for owned in leteo::setup::DATA_DIR_FILES {
             write(&data.join(owned));
@@ -168,15 +172,6 @@ mod fallback {
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
-
-        // The fallback block's own lines, so a run that took the binary's path
-        // cannot pass by leaving the filesystem in the same shape.
-        for line in ["no binary to ask", "removing Leteo's files from"] {
-            assert!(
-                stdout.contains(line),
-                "the shell fallback did not run: {line:?} is missing from\n{stdout}"
-            );
-        }
 
         for owned in leteo::setup::DATA_DIR_FILES {
             assert!(

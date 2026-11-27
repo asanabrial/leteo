@@ -76,8 +76,13 @@ $originalKind = if ($originalExists) { Read-Kind } else { $null }
 # Runs a script and holds its outcome. `$?` is read on the line after the
 # invocation, inside the same scope: read from a separate function it is the
 # status of whatever that function ran, not of the call before it.
-function Invoke-Script([string]$Path, [string]$What, [string[]]$Arguments = @()) {
-    & $Path @Arguments
+#
+# The arguments are a hashtable, not an array, because an array splatted here is
+# positional: a lone `-Yes` reached `uninstall.ps1` as a value, not as a switch,
+# and the whole uninstaller pass never ran. Only the windows leg could say so —
+# this script needs a registry to start.
+function Invoke-Script([string]$Path, [string]$What, [hashtable]$Parameters = @{}) {
+    & $Path @Parameters
     if (-not $?) {
         throw "$What did not succeed (exit code $LASTEXITCODE)"
     }
@@ -185,7 +190,7 @@ while ($true) {
             throw "after install: $installDir was not added to the user PATH: $(Read-Raw)"
         }
 
-        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1' @('-Yes')
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1' @{ Yes = $true }
         Show-State 'after uninstall'
         Assert-Markers 'after uninstall'
         if (@((Read-Raw) -split ';') -contains $installDir) {
@@ -230,7 +235,7 @@ while ($true) {
         if ((Read-Raw) -cne $seededWithSpellings) {
             throw "with three spellings of ${installDir} already there, install rewrote the PATH: $(Read-Raw)"
         }
-        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the install directory spelled three ways' @('-Yes')
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the install directory spelled three ways' @{ Yes = $true }
         if ((Read-Raw) -cne $seed) {
             throw "after removing three spellings of ${installDir}, the PATH reads '$(Read-Raw)', not '$seed'"
         }
@@ -244,7 +249,7 @@ while ($true) {
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
             throw "install turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
         }
-        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 on a plain-text PATH' @('-Yes')
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 on a plain-text PATH' @{ Yes = $true }
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
             throw "uninstall turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
         }
@@ -265,7 +270,7 @@ while ($true) {
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
             throw "from an empty PATH, install wrote a $((Read-Kind)) value, so every variable in it would be frozen"
         }
-        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an empty PATH' @('-Yes')
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an empty PATH' @{ Yes = $true }
         if ($null -ne $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
             throw "from an empty PATH, uninstall left the value '$(Read-Raw)' where the environment API deletes it"
         }

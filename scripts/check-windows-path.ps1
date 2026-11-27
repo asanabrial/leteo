@@ -57,6 +57,16 @@ function Read-Kind {
     $registry.GetValueKind('Path')
 }
 
+# The value is there, even when it holds an empty string, which is what
+# separates a value the person emptied from one that was never there.
+function Test-ValueExists {
+    $null -ne $registry.GetValue(
+        'Path',
+        $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    )
+}
+
 function Show-State([string]$Where) {
     Write-Host "  $Where"
     Write-Host "    raw : $(Read-Raw)"
@@ -65,11 +75,7 @@ function Show-State([string]$Where) {
 
 # The value as it was, so the runner is left the way it was found even when an
 # assertion below fails.
-$originalExists = $null -ne $registry.GetValue(
-    'Path',
-    $null,
-    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-)
+$originalExists = Test-ValueExists
 $originalRaw = if ($originalExists) { Read-Raw } else { '' }
 $originalKind = if ($originalExists) { Read-Kind } else { $null }
 
@@ -316,10 +322,23 @@ while ($true) {
             throw "from an empty PATH, install wrote a $((Read-Kind)) value, so every variable in it would be frozen"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an empty PATH' @{ Yes = $true }
-        if ($null -ne $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
+        if (Test-ValueExists) {
             throw "from an empty PATH, uninstall left the value '$(Read-Raw)' where the environment API deletes it"
         }
         Write-Host 'an empty user PATH gets Leteo alone, with no empty entry'
+
+        # Nothing but the person's empty entry once the entry goes: `;` and the
+        # install directory leave one empty entry, which is an empty value and
+        # not an absent one. Deleting it would take an entry the person had.
+        $registry.SetValue('Path', ";$installDir", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with nothing but an empty entry on the PATH'
+        if ((Read-Raw) -cne ";$installDir") {
+            throw "with nothing but an empty entry on the PATH, install wrote '$(Read-Raw)'"
+        }
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with nothing but an empty entry on the PATH' @{ Yes = $true }
+        if (-not (Test-ValueExists) -or (Read-Raw) -ne '') {
+            throw "with nothing but an empty entry, uninstall left '$(Read-Raw)' instead of an empty value"
+        }
 
         # A value that exists but is empty. Install writes its entry into it and
         # uninstall takes it away, leaving no value: nothing tells the
@@ -332,7 +351,7 @@ while ($true) {
             throw "from an existing empty value, install wrote '$(Read-Raw)' instead of just $installDir"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an existing empty value' @{ Yes = $true }
-        if ($null -ne $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
+        if (Test-ValueExists) {
             throw "from an existing empty value, uninstall left '$(Read-Raw)' where the environment API deletes it"
         }
 

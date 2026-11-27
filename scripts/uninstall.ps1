@@ -276,8 +276,10 @@ public static extern System.IntPtr SendMessageTimeout(
     }
 }
 
-# Writes the value, and returns whether the change reached running programs:
-# the closing advice is the one thing that depends on the answer.
+# Writes the value, and returns whether the announcement went out: the closing
+# advice is the one thing that depends on it. A nonzero return says the
+# broadcast was made, not that every window heard it — one that is not
+# responding may be skipped.
 function Write-UserPath([string]$Value) {
     if ($environment) {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
@@ -306,7 +308,7 @@ function Test-SamePathEntry([string]$Entry) {
     (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
 }
 
-$notified = $true
+$announced = $true
 try {
     $userPath = Read-UserPath
     if ($userPath) {
@@ -324,12 +326,12 @@ try {
                 # empty still counts and is written back below.
                 if ($environment) {
                     $environment.DeleteValue('Path', $false)
-                    $notified = Send-EnvironmentChange
+                    $announced = Send-EnvironmentChange
                 } else {
                     [Environment]::SetEnvironmentVariable('Path', '', 'User')
                 }
             } else {
-                $notified = Write-UserPath ($kept -join ';')
+                $announced = Write-UserPath ($kept -join ';')
             }
         }
     }
@@ -388,7 +390,7 @@ if ((Test-Path $installDir) -and -not (Get-ChildItem -Force $installDir)) {
 }
 
 Say ""
-if ($notified) {
+if ($announced) {
     Say "Leteo is gone. Open a new terminal for the PATH change to take effect."
 } else {
     Say "Leteo is gone. Sign out and back in for the PATH change to take effect."

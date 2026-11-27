@@ -250,8 +250,10 @@ public static extern System.IntPtr SendMessageTimeout(
         }
     }
 
-    # Writes the value, and returns whether the change reached running programs:
-    # the closing advice is the one thing that depends on the answer.
+    # Writes the value, and returns whether the announcement went out: the closing
+    # advice is the one thing that depends on it. A nonzero return says the
+    # broadcast was made, not that every window heard it — one that is not
+    # responding may be skipped.
     function Write-UserPath([string]$Value) {
         if ($environment) {
             $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
@@ -285,7 +287,7 @@ public static extern System.IntPtr SendMessageTimeout(
     }
 
     $missing = $false
-    $notified = $true
+    $announced = $true
     try {
         $userPath = Read-UserPath
         # The value is written back exactly as it was read, empty entries
@@ -297,7 +299,7 @@ public static extern System.IntPtr SendMessageTimeout(
         $missing = -not ($entries | Where-Object { Test-SamePathEntry $_ })
         if ($missing) {
             $value = if ($userPath) { "$userPath;$installDir" } else { $installDir }
-            $notified = Write-UserPath $value
+            $announced = Write-UserPath $value
         }
     } finally {
         if ($environment) {
@@ -307,7 +309,7 @@ public static extern System.IntPtr SendMessageTimeout(
     Write-Host ""
     if ($missing) {
         Write-Host "Installed, and $installDir was added to your PATH."
-        if ($notified) {
+        if ($announced) {
             Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."
         } else {
             # The broadcast that tells Explorer the environment changed did not

@@ -54,6 +54,11 @@ pub(super) struct SaveOutput {
     /// then rather than left to notice months later that a summary has no name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
+    /// Set when the title bound cut the title: what was stored is shorter
+    /// than what was written. The title is a name, so the cut is reported
+    /// beside the body's rather than folded into it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) title_storage_truncation: Option<Truncation>,
     #[serde(flatten)]
     pub(super) project_context: ProjectEnvelope,
     pub(super) observation: SavedMemory,
@@ -158,6 +163,7 @@ impl SaveOutput {
             judgment_id,
             candidates: candidates.into_iter().map(Into::into).collect(),
             storage_truncation: None,
+            title_storage_truncation: None,
             replaced_bytes: value.replaced.map(|replaced| replaced.bytes),
             session_id: None,
             caveats: Vec::new(),
@@ -1356,6 +1362,9 @@ pub(super) struct ObservationResultOutput {
     /// than what was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) storage_truncation: Option<Truncation>,
+    /// Set when the title bound cut a new title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) title_storage_truncation: Option<Truncation>,
     /// Bytes of the body this update replaced, when it changed the title or
     /// body. Absent for a read, and for a change that only moved metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]

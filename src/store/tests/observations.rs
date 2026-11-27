@@ -3040,3 +3040,66 @@ fn a_revision_that_moves_a_memory_onto_another_projects_key_is_refused() {
         "nothing moved"
     );
 }
+
+/// A title is bounded by its own number on both write paths and on the wire.
+///
+/// The title used to share the body's fifty thousand bytes, so a 60,000-byte
+/// one was stored at 50,000 and answered whole: `mem_save` replied with 50,319
+/// bytes, and every search that returned the row paid for them.
+#[test]
+fn a_title_past_its_bound_is_cut_on_both_write_paths_and_on_the_wire() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let long = "palabra".repeat(10_000);
+    let bound = normalize::TITLE_MAX_BYTES;
+
+    let saved = store
+        .add_observation(observation("s1", &long, "body"))
+        .unwrap()
+        .observation;
+    assert!(saved.title.len() <= bound, "{}", saved.title.len());
+    assert!(saved.title.ends_with("... [truncated]"), "{}", saved.title);
+
+    let updated = store
+        .update_observation(
+            saved.id,
+            None,
+            UpdateObservation {
+                title: Some(long.clone()),
+                ..UpdateObservation::default()
+            },
+        )
+        .unwrap();
+    assert!(updated.title.len() <= bound, "{}", updated.title.len());
+
+    let mutation = SyncMutation {
+        seq: 11,
+        target_key: "cloud".to_owned(),
+        entity: "observation".to_owned(),
+        entity_key: saved.sync_id.clone(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": saved.sync_id,
+            "session_id": "s1",
+            "type": "bugfix",
+            "title": long,
+            "content": "body",
+            "project": "leteo",
+            "scope": "project",
+            "created_at": saved.created_at,
+            "updated_at": saved.updated_at,
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: saved.updated_at.clone(),
+        acked_at: None,
+    };
+    assert!(store.apply_pulled(&mutation).unwrap());
+    let replicated = store.get_observation(saved.id).unwrap();
+    assert!(
+        replicated.title.len() <= bound,
+        "a peer's title is bounded too: {}",
+        replicated.title.len()
+    );
+}

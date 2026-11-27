@@ -803,3 +803,25 @@ fn a_pulled_session_delete_leaves_tombstones_for_the_prompts_it_takes() {
         "the session delete took the prompt without a tombstone, so a backfill brings it back"
     );
 }
+
+/// A prompt keeps the question when its project name is past the bound.
+///
+/// Refusing the prompt would lose the question a person asked; the project is
+/// attribution, so it is cut at the published bound instead, and every listing
+/// that carries it stops paying for a name nobody can read.
+#[test]
+fn a_prompt_with_an_oversized_project_keeps_the_question() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let long = "p".repeat(normalize::PROJECT_MAX_BYTES + 500);
+    let prompt = store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "what did we decide?".to_owned(),
+            project: Some(long),
+        })
+        .unwrap();
+    assert_eq!(prompt.content, "what did we decide?");
+    let expected = "p".repeat(normalize::PROJECT_MAX_BYTES);
+    assert_eq!(prompt.project, expected);
+}

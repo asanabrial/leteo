@@ -28,6 +28,20 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A title, a session id, a project name and a topic key each have one
+  published bound.** The title took the body's `max_observation_length`, so
+  `mem_save` with a 60,000-character title answered with 50,319 bytes and every
+  search that returned the row paid for it; it is cut at 1024 bytes now, the
+  number its schema description states, and `mem_save` and `mem_update` report
+  the cut in `title_storage_truncation` beside the body's. A session id over
+  128 bytes, blank, or holding a control character is refused at
+  `mem_session_start`, the hooks and the replicated session upsert — a cut id
+  names a different session, and a 10,000-character one named a state file no
+  filesystem accepts. A project name is refused the same way where it is
+  declared, and cut at 128 at the doors that cannot refuse — prompts, JSON
+  import and Engram adoption — so one project stays under one name. Topic keys
+  keep the 120 bytes the normaliser already applied, now named and published
+  (#493).
 - **Installing or uninstalling Leteo on Windows leaves the rest of the user
   PATH exactly as it was.** Both scripts read the value with
   `[Environment]::GetEnvironmentVariable('Path','User')`, which hands back every

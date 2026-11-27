@@ -252,7 +252,17 @@ impl Store {
         directory: &str,
         declared: bool,
     ) -> Result<Session, StoreError> {
+        // Every local creator passes here, and the replicated one in
+        // `wire.rs` refuses the same way, so an id a filesystem cannot name and
+        // a project the opening block cannot hold are stopped at both doors.
+        let id = id.trim();
+        if let Some(refusal) = normalize::session_id_refusal(id) {
+            return Err(invalid_parameter(refusal));
+        }
         let project = normalize::project(project);
+        if let Some(refusal) = normalize::project_refusal(&project) {
+            return Err(invalid_parameter(refusal));
+        }
         // Every local creator passes here, so this is where a relative
         // directory is kept out: see `recordable_directory`.
         let directory = crate::project::recordable_directory(directory);

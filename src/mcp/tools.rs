@@ -95,6 +95,7 @@ impl LeteoMcpServer {
         let prompt_sync_id = prompt_sync_id.flatten();
         let content_cut =
             crate::memory::normalize::cut_length(&content, store.max_observation_length());
+        let title_cut = crate::memory::normalize::title_cut(&params.title);
         let outcome = store
             .add_observation_from(
                 AddObservation {
@@ -146,6 +147,8 @@ impl LeteoMcpServer {
         saved.session_id = chosen_session;
         saved.storage_truncation =
             crate::mcp::output::storage_truncation(content_cut, stored_bytes);
+        saved.title_storage_truncation =
+            crate::mcp::output::storage_truncation(title_cut, saved.observation.title.len());
         let mut hints = Vec::new();
         if let Some(scope) = refiled {
             hints.push(scope);
@@ -200,6 +203,10 @@ impl LeteoMcpServer {
         let content_cut = params.content.as_deref().and_then(|content| {
             crate::memory::normalize::cut_length(content, store.max_observation_length())
         });
+        let title_cut = params
+            .title
+            .as_deref()
+            .and_then(crate::memory::normalize::title_cut);
         let outcome = store
             .update_observation_with_replaced(
                 params.id,
@@ -233,10 +240,15 @@ impl LeteoMcpServer {
             .filter(|replaced| replaced.shrunk)
             .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes));
         crate::mcp::output::append_hint(&mut hint, caveats_note);
+        let stored_title = observation.title.len();
         Ok(Json(ObservationResultOutput {
             observation,
             directory: None,
             storage_truncation: crate::mcp::output::storage_truncation(content_cut, stored_bytes),
+            title_storage_truncation: crate::mcp::output::storage_truncation(
+                title_cut,
+                stored_title,
+            ),
             replaced_bytes: replaced.map(|replaced| replaced.bytes),
             hint,
             versions: Vec::new(),
@@ -566,6 +578,7 @@ impl LeteoMcpServer {
             observation,
             directory,
             storage_truncation: None,
+            title_storage_truncation: None,
             replaced_bytes: None,
             hint: caveats_note,
             versions: versions.into_iter().map(Into::into).collect(),

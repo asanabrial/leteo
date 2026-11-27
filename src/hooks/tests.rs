@@ -2127,6 +2127,75 @@ fn an_agent_is_told_which_language_to_remember_in() {
     assert!(recovered.contains("español"), "{recovered}");
 }
 
+/// A hook cannot ask a person to fix a name, so an id or a project it cannot
+/// use is replaced by one it can, and the sentence says which.
+///
+/// The replacement is the point: a 10,000-character id was stored and then
+/// named the hint state file, so every later hook in that session printed
+/// `File name too long (os error 63)` and lost it; a 100,000-character project
+/// made every session-start in that directory print a 100 KB warning.
+#[test]
+fn an_unusable_session_id_or_project_is_replaced_and_says_so() {
+    let detection = crate::project::ProjectDetection {
+        project: "leteo".to_owned(),
+        source: crate::project::SOURCE_GIT_ROOT.to_owned(),
+        path: "H:/REPO/leteo".to_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    };
+
+    let input = HookInput {
+        session_id: "s".repeat(10_000),
+        ..HookInput::default()
+    };
+    let (id, reason) = resolve_session_id(&input, "leteo");
+    assert_eq!(id, crate::mcp::manual_session_id("leteo"));
+    assert!(
+        reason.unwrap().contains("at most 128 bytes"),
+        "the refusal names the bound"
+    );
+
+    let input = HookInput {
+        project: Some("p".repeat(100_000)),
+        ..HookInput::default()
+    };
+    let (project, reason) = resolve_project(&input, &detection);
+    assert_eq!(project, "leteo");
+    assert!(reason.unwrap().contains("at most 128 bytes"));
+
+    // A blank or control-bearing id is the same refusal, and an id a host
+    // actually sends is kept as it is.
+    for unusable in ["", "   "] {
+        let input = HookInput {
+            session_id: unusable.to_owned(),
+            ..HookInput::default()
+        };
+        let (id, _) = resolve_session_id(&input, "leteo");
+        assert_eq!(id, crate::mcp::manual_session_id("leteo"));
+    }
+    let input = HookInput {
+        session_id: "abc-123".to_owned(),
+        ..HookInput::default()
+    };
+    assert_eq!(
+        resolve_session_id(&input, "leteo"),
+        ("abc-123".to_owned(), None)
+    );
+
+    // The spool replay derives the fallback id too. A refused id kept in the
+    // entry would make `create_session` refuse the replay and drop it, which
+    // is the one copy of a subagent's learning that the spool holds.
+    let input = HookInput {
+        session_id: "s".repeat(10_000),
+        stdout: "a learning".to_owned(),
+        cwd: "C:/repo".to_owned(),
+        ..HookInput::default()
+    };
+    let (_, _, unsettled) = crate::hooks::pending_capture(&input).expect("a capture");
+    assert!(unsettled.derived_session);
+}
+
 #[test]
 fn an_agent_that_names_no_project_falls_back_to_the_detected_one() {
     // An agent may send `project` and leave it empty — a template filled in
@@ -2148,7 +2217,7 @@ fn an_agent_that_names_no_project_falls_back_to_the_detected_one() {
             ..HookInput::default()
         };
         assert_eq!(
-            resolve_project(&input, &detection),
+            resolve_project(&input, &detection).0,
             "leteo",
             "{empty:?} must not become the project"
         );
@@ -2160,7 +2229,7 @@ fn an_agent_that_names_no_project_falls_back_to_the_detected_one() {
         project: Some("  Chosen-Project  ".to_owned()),
         ..HookInput::default()
     };
-    assert_eq!(resolve_project(&input, &detection), "chosen-project");
+    assert_eq!(resolve_project(&input, &detection).0, "chosen-project");
 }
 
 #[test]

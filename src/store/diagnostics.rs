@@ -90,7 +90,17 @@ impl Store {
         let mut result = ImportResult::default();
 
         for session in &data.sessions {
-            let project = normalize::project(&session.project);
+            // The id names a state file, so it is refused rather than cut, and
+            // refused before any row lands: the transaction is one statement
+            // wide at this point and an error takes the whole import with it.
+            let id = session.id.trim();
+            if let Some(refusal) = normalize::session_id_refusal(id) {
+                return Err(invalid_parameter(refusal));
+            }
+            // Bounded rather than refused: a file written before the bound
+            // existed still has to come back, and every table is cut the same
+            // way so one project does not split in two.
+            let project = normalize::adopted_project(&session.project);
             let started_at = nonempty_or_now(&session.started_at);
             // The summary is read back in every `mem_context`, so the import
             // door applies the same redaction and bound the local and
@@ -107,7 +117,7 @@ impl Store {
                  (id, project, directory, started_at, ended_at, summary)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    session.id,
+                    id,
                     project,
                     directory,
                     started_at,
@@ -127,7 +137,7 @@ impl Store {
             // This one stripped the private span and stopped there, so an
             // export could plant a newline followed by a bullet that a later
             // listing renders as if it were another memory.
-            let title = normalize::title(&observation.title, max_length);
+            let title = normalize::title(&observation.title);
             let content = normalize::truncate_content(
                 normalize::strip_private(&observation.content),
                 max_length,
@@ -135,7 +145,7 @@ impl Store {
             let project = observation
                 .project
                 .as_deref()
-                .map(normalize::project)
+                .map(normalize::adopted_project)
                 .filter(|value| !value.is_empty());
             let scope = normalize::scope(&observation.scope);
             let topic_key = normalize::topic_key(observation.topic_key.as_deref());
@@ -189,7 +199,7 @@ impl Store {
             if version.observation_sync_id.trim().is_empty() || version.revision <= 0 {
                 continue;
             }
-            let title = normalize::title(&version.title, max_length);
+            let title = normalize::title(&version.title);
             let content =
                 normalize::truncate_content(normalize::strip_private(&version.content), max_length);
             let replaced_at = nonempty_or_now(&version.replaced_at);
@@ -212,7 +222,7 @@ impl Store {
             };
             let content =
                 normalize::truncate_content(normalize::strip_private(&prompt.content), max_length);
-            let project = normalize::project(&prompt.project);
+            let project = normalize::adopted_project(&prompt.project);
             let created_at = nonempty_or_now(&prompt.created_at);
             result.prompts_imported += tx.execute(
                 "INSERT INTO prompts (sync_id, session_id, content, project, created_at)
@@ -237,7 +247,7 @@ impl Store {
             let project = tombstone
                 .project
                 .as_deref()
-                .map(normalize::project)
+                .map(normalize::adopted_project)
                 .unwrap_or_default();
             result.prompt_tombstones_imported += tx.execute(
                 "INSERT OR IGNORE INTO prompt_deletions (sync_id, session_id, project, deleted_at)

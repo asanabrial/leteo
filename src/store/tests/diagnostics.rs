@@ -1561,6 +1561,79 @@ fn json_import_folds_types() {
     );
 }
 
+/// An import bounds the fields a save bounds, and refuses an id it cannot use.
+///
+/// The title was the body's bound here too, and a project name was folded but
+/// never sized, so restoring a file written before the bound planted a 60 KB
+/// name in every table at once. The session id is the one that cannot be cut:
+/// it names a state file, and a cut id is a different session — so the import
+/// says which id is unusable instead of splitting the store in two.
+#[test]
+fn an_import_bounds_the_title_and_the_project_and_refuses_an_unusable_id() {
+    let (_temp, mut store) = store();
+    let long_title = "t".repeat(crate::memory::normalize::TITLE_MAX_BYTES + 500);
+    let long_project = "p".repeat(crate::memory::normalize::PROJECT_MAX_BYTES + 500);
+    let export = serde_json::json!({
+        "version": "0.1.0",
+        "exported_at": "2026-07-28 17:00:39",
+        "sessions": [
+            {"id": "s1", "project": long_project, "directory": "/repo",
+             "started_at": "2026-07-28 17:00:39"}
+        ],
+        "observations": [
+            {"id": 1, "sync_id": "obs-long", "session_id": "s1", "type": "decision",
+             "title": long_title, "content": "body", "project": long_project,
+             "scope": "project", "revision_count": 1, "duplicate_count": 1,
+             "created_at": "2026-07-28 17:00:39", "updated_at": "2026-07-28 17:00:39"}
+        ],
+        "prompts": [
+            {"id": 1, "sync_id": "prompt-long", "session_id": "s1",
+             "content": "why?", "project": long_project,
+             "created_at": "2026-07-28 17:00:39"}
+        ]
+    })
+    .to_string();
+    store.import_json(&export).unwrap();
+
+    let expected = "p".repeat(crate::memory::normalize::PROJECT_MAX_BYTES);
+    for table in ["sessions", "observations", "prompts"] {
+        let project: String = store
+            .connection()
+            .query_row(&format!("SELECT project FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(project, expected, "{table} kept a project past the bound");
+    }
+    let title: String = store
+        .connection()
+        .query_row("SELECT title FROM observations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        title.len(),
+        crate::memory::normalize::TITLE_MAX_BYTES,
+        "the title is cut to its own bound"
+    );
+
+    let unusable = "s".repeat(crate::memory::normalize::SESSION_ID_MAX_BYTES + 1);
+    let export = serde_json::json!({
+        "version": "0.1.0",
+        "exported_at": "2026-07-28 17:00:39",
+        "sessions": [
+            {"id": unusable, "project": "leteo", "directory": "/repo",
+             "started_at": "2026-07-28 17:00:39"}
+        ],
+        "observations": null,
+        "prompts": null
+    })
+    .to_string();
+    let refused = store.import_json(&export);
+    assert!(
+        matches!(refused, Err(StoreError::InvalidParameter(_))),
+        "{refused:?}"
+    );
+}
+
 /// `doctor --repair` folds the types an older adoption copied verbatim.
 ///
 /// The fold is the same `normalize::kind` the save door uses, so the repair and

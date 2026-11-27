@@ -216,6 +216,9 @@ fn apply_session_upsert_tx(
     if payload.id.trim().is_empty() {
         return Err(invalid_parameter("session sync payload id is required"));
     }
+    if let Some(refusal) = normalize::session_id_refusal(&payload.id) {
+        return Err(invalid_parameter(refusal));
+    }
     // The project, spelled the way this store spells it. `create_session`
     // normalises and this did not, so a session sent as `Leteo` was stored as
     // `Leteo` — and every query that narrows by project compares against the
@@ -226,6 +229,9 @@ fn apply_session_upsert_tx(
     // The third of these found today. The observation path had it, was fixed,
     // and neither of its two siblings was looked at.
     let project = normalize::project(&payload.project);
+    if let Some(refusal) = normalize::project_refusal(&project) {
+        return Err(invalid_parameter(refusal));
+    }
     // And the summary, which nothing normalised on either path: see
     // `normalize::session_summary`.
     let summary = normalize::session_summary(payload.summary.as_deref(), max_content_bytes);
@@ -487,7 +493,7 @@ fn apply_observation_version_upsert_tx(
     } else {
         payload.replaced_at
     };
-    let title = normalize::title(&payload.title, max_content_bytes);
+    let title = normalize::title(&payload.title);
     let content = normalize::stored_content(&payload.content, max_content_bytes).0;
     crate::store::observations::snapshot_observation_version_tx(
         tx,

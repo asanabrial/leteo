@@ -66,6 +66,53 @@ fn a_pulled_session_never_records_a_relative_directory() {
     assert_eq!(store.get_session("remote-session").unwrap().directory, "");
 }
 
+/// A pulled session is held to the same two bounds as one created here.
+///
+/// The replicated door normalises the project and the summary and refused a
+/// relative directory, so the id and the project name were the two things it
+/// took as they arrived: a peer could put a state-file name too long for a
+/// filesystem, or a project the opening block cannot hold, into a store that
+/// refuses both locally.
+#[test]
+fn a_pulled_session_with_an_id_or_project_past_the_bound_is_refused() {
+    let (_temp, mut store) = store();
+    let never = "s".repeat(normalize::SESSION_ID_MAX_BYTES + 1);
+    let long_project = "p".repeat(normalize::PROJECT_MAX_BYTES + 1);
+    for (id, project) in [
+        (never.as_str(), "leteo"),
+        ("remote-session", long_project.as_str()),
+        ("a\0b", "leteo"),
+        ("remote-session", "a\0b"),
+    ] {
+        let mutation = SyncMutation {
+            seq: 1,
+            target_key: "cloud".to_owned(),
+            entity: "session".to_owned(),
+            entity_key: id.to_owned(),
+            op: crate::sync::OP_UPSERT.to_owned(),
+            payload: serde_json::json!({
+                "id": id,
+                "project": project,
+                "directory": "/tmp/repo",
+                "started_at": "2026-07-27T12:00:00Z"
+            })
+            .to_string(),
+            source: "remote".to_owned(),
+            project: project.to_owned(),
+            occurred_at: "2026-07-27T12:00:00Z".to_owned(),
+            acked_at: None,
+        };
+        assert!(
+            matches!(
+                store.apply_pulled(&mutation),
+                Err(StoreError::InvalidParameter(_))
+            ),
+            "{id:?}/{project:?} was applied"
+        );
+    }
+    assert!(store.get_session("remote-session").is_err());
+}
+
 /// A session the sender recorded without a directory is applied on the peer as
 /// one without a directory, not as a placeholder.
 ///

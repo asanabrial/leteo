@@ -174,8 +174,9 @@ try {
     # The five functions below are the same five `uninstall.ps1` carries, in the
     # same order and shape. The two scripts cannot share a file — each is
     # fetched and run on its own (`irm ... | iex` here, and the uninstaller
-    # ships beside the binary) — so keeping the copies textually parallel is
-    # what stops a change to one from missing the other.
+    # ships beside the binary) — and `tests/script_parity.rs` compares the code
+    # of both copies, comments aside, failing when one has changed and the other
+    # has not.
     $onWindows = ($env:OS -eq 'Windows_NT')
     $environment = $null
     $openError = $null

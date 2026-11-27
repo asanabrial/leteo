@@ -178,9 +178,11 @@ while ($true) {
         # The runner's own value, empty entries and all, so the comparisons
         # below hold what the scripts promise: everything they did not write
         # comes back byte for byte. The `;;` is always seeded, because an empty
-        # entry is what a filtering write drops and a runner that happens to end
-        # its PATH with `;` is not a test of that.
-        $seed = "$originalRaw;;" + ($markers -join ';')
+        # entry is what a filtering write drops and a runner that happens to have
+        # one is not a test of that; so is the `;` it ends with, because a value
+        # ending in a separator is a shape install has to extend without
+        # inventing an entry and uninstall has to hand back unchanged.
+        $seed = "$originalRaw;;" + ($markers -join ';') + ';'
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
         Show-State 'seeded'
         Assert-Markers 'seeded'

@@ -178,15 +178,18 @@ try {
     # what stops a change to one from missing the other.
     $onWindows = ($env:OS -eq 'Windows_NT')
     $environment = $null
+    $openError = $null
     try {
         $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
     } catch {
         $environment = $null
+        $openError = $_.Exception.Message
     }
     if ($onWindows -and -not $environment) {
-        # Loud, because the fallback is the behaviour this change removed: the
-        # environment API expands every `%VAR%` and stores plain text.
-        Write-Warning "could not open HKCU:\Environment; the rest of your PATH may have its variables frozen"
+        # Loud, because the fallback is the API that expands every `%VAR%` and
+        # stores plain text: the rest of the PATH can be frozen by it.
+        $why = if ($openError) { $openError } else { 'the key or its Path value could not be opened for writing' }
+        Write-Warning "could not open HKCU:\Environment ($why); the rest of your PATH may have its variables frozen"
     }
 
     function Read-UserPath {
@@ -231,9 +234,12 @@ public static extern System.IntPtr SendMessageTimeout(
             )
             if ($sent -eq [IntPtr]::Zero) {
                 Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+                return $false
             }
+            return $true
         } catch {
             Write-Warning "the environment change could not be broadcast ($($_.Exception.Message)); start a new session rather than a new terminal"
+            return $false
         }
     }
 
@@ -247,10 +253,10 @@ public static extern System.IntPtr SendMessageTimeout(
                 $kind = $environment.GetValueKind('Path')
             }
             $environment.SetValue('Path', $Value, $kind)
-            Send-EnvironmentChange
-        } else {
-            [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+            return Send-EnvironmentChange
         }
+        [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+        return $true
     }
 
     # One spelling for a PATH entry: variables expanded, separators folded, a
@@ -270,6 +276,7 @@ public static extern System.IntPtr SendMessageTimeout(
     }
 
     $added = $false
+    $notified = $true
     try {
         $userPath = Read-UserPath
         # The value is written back exactly as it was read, empty entries
@@ -280,7 +287,7 @@ public static extern System.IntPtr SendMessageTimeout(
         $added = -not ($entries | Where-Object { Test-SamePathEntry $_ })
         if ($added) {
             $value = if ($userPath) { "$userPath;$installDir" } else { $installDir }
-            Write-UserPath $value
+            $notified = Write-UserPath $value
         }
     } finally {
         if ($environment) {
@@ -290,7 +297,14 @@ public static extern System.IntPtr SendMessageTimeout(
     Write-Host ""
     if ($added) {
         Write-Host "Installed, and $installDir was added to your PATH."
-        Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."
+        if ($notified) {
+            Write-Host "Open a new terminal, then run 'leteo setup' to configure your agents."
+        } else {
+            # The broadcast that tells Explorer the environment changed did not
+            # go out, so a terminal opened from the menu would still lack the
+            # entry — the advice has to be the one that works.
+            Write-Host "Sign out and back in, then run 'leteo setup' to configure your agents."
+        }
     } else {
         Write-Host "Installed. Run 'leteo setup' to configure your agents."
     }

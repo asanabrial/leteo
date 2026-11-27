@@ -211,13 +211,18 @@ if ((Test-Path $dataDir) -and -not $handled) {
 # one from missing the other.
 $onWindows = ($env:OS -eq 'Windows_NT')
 $environment = $null
+$openError = $null
 try {
     $environment = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
 } catch {
     $environment = $null
+    $openError = $_.Exception.Message
 }
 if ($onWindows -and -not $environment) {
-    Write-Warning "could not open HKCU:\Environment; the rest of your PATH may have its variables frozen"
+    # Loud, as `install.ps1` explains: the fallback can freeze the variables in
+    # the rest of the PATH.
+    $why = if ($openError) { $openError } else { 'the key or its Path value could not be opened for writing' }
+    Write-Warning "could not open HKCU:\Environment ($why); the rest of your PATH may have its variables frozen"
 }
 
 function Read-UserPath {
@@ -254,9 +259,12 @@ public static extern System.IntPtr SendMessageTimeout(
         )
         if ($sent -eq [IntPtr]::Zero) {
             Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
+            return $false
         }
+        return $true
     } catch {
         Write-Warning "the environment change could not be broadcast ($($_.Exception.Message)); start a new session rather than a new terminal"
+        return $false
     }
 }
 
@@ -268,10 +276,10 @@ function Write-UserPath([string]$Value) {
             $kind = $environment.GetValueKind('Path')
         }
         $environment.SetValue('Path', $Value, $kind)
-        Send-EnvironmentChange
-    } else {
-        [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+        return Send-EnvironmentChange
     }
+    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+    return $true
 }
 
 # One spelling for a PATH entry, for the reason `install.ps1` gives beside its
@@ -287,6 +295,7 @@ function Test-SamePathEntry([string]$Entry) {
     (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
 }
 
+$notified = $true
 try {
     $userPath = Read-UserPath
     if ($userPath) {
@@ -296,7 +305,19 @@ try {
         $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
         if ($kept.Count -ne $entries.Count) {
             Say "  removing $installDir from your PATH"
-            Write-UserPath ($kept -join ';')
+            if (@($kept | Where-Object { $_ }).Count -eq 0) {
+                # Nothing of the person's is left. Removing the value rather
+                # than storing an empty one is what `SetEnvironmentVariable`
+                # did, and it is the state a machine that never set a PATH has.
+                if ($environment) {
+                    $environment.DeleteValue('Path', $false)
+                    $notified = Send-EnvironmentChange
+                } else {
+                    [Environment]::SetEnvironmentVariable('Path', '', 'User')
+                }
+            } else {
+                $notified = Write-UserPath ($kept -join ';')
+            }
         }
     }
 } finally {
@@ -354,4 +375,8 @@ if ((Test-Path $installDir) -and -not (Get-ChildItem -Force $installDir)) {
 }
 
 Say ""
-Say "Leteo is gone. Open a new terminal for the PATH change to take effect."
+if ($notified) {
+    Say "Leteo is gone. Open a new terminal for the PATH change to take effect."
+} else {
+    Say "Leteo is gone. Sign out and back in for the PATH change to take effect."
+}

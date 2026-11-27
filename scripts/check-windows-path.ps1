@@ -130,7 +130,10 @@ while ($true) {
     # to be useful here.
     $server = $null
     $port = $null
-    for ($round = 0; $round -lt 3 -and -not $server; $round++) {
+    $rounds = 3
+    $attempts = 50
+    $waitMs = 200
+    for ($round = 0; $round -lt $rounds -and -not $server; $round++) {
         $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
         $probe.Start()
         $candidatePort = $probe.LocalEndpoint.Port
@@ -138,7 +141,7 @@ while ($true) {
         $launched = Start-Process -FilePath $engine -PassThru -ArgumentList @(
             '-NoProfile', '-File', "`"$serverScript`"", "`"$dist`"", "$candidatePort"
         )
-        for ($attempt = 0; $attempt -lt 50; $attempt++) {
+        for ($attempt = 0; $attempt -lt $attempts; $attempt++) {
             if ($launched.HasExited) {
                 break
             }
@@ -150,7 +153,7 @@ while ($true) {
                     break
                 }
             } catch {
-                Start-Sleep -Milliseconds 200
+                Start-Sleep -Milliseconds $waitMs
             }
         }
         if (-not $server -and -not $launched.HasExited) {
@@ -158,7 +161,7 @@ while ($true) {
         }
     }
     if (-not $server) {
-        throw "the archive server never answered on three ports"
+        throw "the archive server never answered on $rounds ports"
     }
 
     try {
@@ -218,18 +221,12 @@ while ($true) {
         }
         $literal = $installDir + '\'
         $slashed = $installDir.Replace('\', '/')
-        $registry.SetValue(
-            'Path',
-            "$seed;$variable;$literal;$slashed",
-            [Microsoft.Win32.RegistryValueKind]::ExpandString
-        )
-        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the install directory already there'
-        # Counted, because the check does not restate how the scripts fold an
-        # entry: install adds nothing when the directory is already there in any
-        # spelling. What follows compares the whole value with what was seeded,
-        # so a spelling left behind and a runner entry dropped cannot cancel out
-        # in a count, and the runner's empty entries are held too.
         $seededWithSpellings = "$seed;$variable;$literal;$slashed"
+        $registry.SetValue('Path', $seededWithSpellings, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the install directory already there'
+        # The whole value, not a count of entries: install must add nothing when
+        # the directory is already there in any spelling, and comparing the
+        # bytes says so without the check restating how an entry folds.
         if ((Read-Raw) -cne $seededWithSpellings) {
             throw "with three spellings of ${installDir} already there, install rewrote the PATH: $(Read-Raw)"
         }
@@ -269,8 +266,8 @@ while ($true) {
             throw "from an empty PATH, install wrote a $((Read-Kind)) value, so every variable in it would be frozen"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an empty PATH' @('-Yes')
-        if (Read-Raw) {
-            throw "from an empty PATH, uninstall left '$(Read-Raw)'"
+        if ($null -ne $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
+            throw "from an empty PATH, uninstall left the value '$(Read-Raw)' where the environment API deletes it"
         }
         Write-Host 'an empty user PATH gets Leteo alone, with no empty entry'
 

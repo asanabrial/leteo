@@ -133,20 +133,20 @@ while ($true) {
     for ($round = 0; $round -lt 3 -and -not $server; $round++) {
         $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
         $probe.Start()
-        $candidate = $probe.LocalEndpoint.Port
+        $candidatePort = $probe.LocalEndpoint.Port
         $probe.Stop()
         $launched = Start-Process -FilePath $engine -PassThru -ArgumentList @(
-            '-NoProfile', '-File', "`"$serverScript`"", "`"$dist`"", "$candidate"
+            '-NoProfile', '-File', "`"$serverScript`"", "`"$dist`"", "$candidatePort"
         )
         for ($attempt = 0; $attempt -lt 50; $attempt++) {
             if ($launched.HasExited) {
                 break
             }
             try {
-                $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://localhost:$candidate/SHA256SUMS"
+                $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://localhost:$candidatePort/SHA256SUMS"
                 if ($response.StatusCode -eq 200) {
                     $server = $launched
-                    $port = $candidate
+                    $port = $candidatePort
                     break
                 }
             } catch {
@@ -188,10 +188,10 @@ while ($true) {
         # Not only the markers: every entry that was there is still there, in
         # the order it was in. Empty entries are the one thing the installer
         # drops, which is the `;` this check exists for.
-        $seeded = @($seed -split ';' | Where-Object { $_ })
-        $after = @((Read-Raw) -split ';' | Where-Object { $_ })
-        if (($after -join ';') -ne ($seeded -join ';')) {
-            throw "after uninstall: the PATH reads '$(Read-Raw)', not the '$(($seeded -join ';'))' it was seeded with"
+        $seedEntries = @($seed -split ';' | Where-Object { $_ })
+        $afterEntries = @((Read-Raw) -split ';' | Where-Object { $_ })
+        if (($afterEntries -join ';') -ne ($seedEntries -join ';')) {
+            throw "after uninstall: the PATH reads '$(Read-Raw)', not the '$($seedEntries -join ';')' it was seeded with"
         }
 
         # An entry that names the install directory through a variable, and
@@ -207,9 +207,9 @@ while ($true) {
             if (-not $prefix -or -not $installDir.StartsWith("$prefix\", [StringComparison]::OrdinalIgnoreCase)) {
                 continue
             }
-            $candidate = "%$name%" + $installDir.Substring($prefix.Length) + '\'
-            if ([Environment]::ExpandEnvironmentVariables($candidate).TrimEnd('\', '/') -eq $installDir.TrimEnd('\', '/')) {
-                $variable = $candidate
+            $spelling = "%$name%" + $installDir.Substring($prefix.Length) + '\'
+            if ([Environment]::ExpandEnvironmentVariables($spelling).TrimEnd('\', '/') -eq $installDir.TrimEnd('\', '/')) {
+                $variable = $spelling
                 break
             }
         }
@@ -224,19 +224,20 @@ while ($true) {
             [Microsoft.Win32.RegistryValueKind]::ExpandString
         )
         Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the install directory already there'
-        # Counted rather than matched: the check does not restate how the
-        # scripts fold an entry, it holds that install adds nothing when the
-        # directory is already there in any spelling, and that uninstall takes
-        # all three away. An unchanged count is the whole assertion.
-        $seeded = @($seed -split ';' | Where-Object { $_ }).Count
-        $after = @((Read-Raw) -split ';' | Where-Object { $_ })
-        if ($after.Count -ne $seeded + 3) {
-            throw "with three spellings of ${installDir} already there, install changed the PATH from $($seeded + 3) entries to $($after.Count): $(Read-Raw)"
+        # Counted, because the check does not restate how the scripts fold an
+        # entry: install adds nothing when the directory is already there in any
+        # spelling. What follows the uninstall compares the whole value, so a
+        # spelling left behind and one of the runner's own entries dropped
+        # cannot cancel out in a count.
+        $seedCount = $seedEntries.Count
+        $installedEntries = @((Read-Raw) -split ';' | Where-Object { $_ })
+        if ($installedEntries.Count -ne $seedCount + 3) {
+            throw "with three spellings of ${installDir} already there, install changed the PATH from $($seedCount + 3) entries to $($installedEntries.Count): $(Read-Raw)"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the install directory spelled three ways' @('-Yes')
-        $after = @((Read-Raw) -split ';' | Where-Object { $_ })
-        if ($after.Count -ne $seeded) {
-            throw "uninstall left $($after.Count - $seeded) of the three spellings of ${installDir}: $(Read-Raw)"
+        $remainingEntries = @((Read-Raw) -split ';' | Where-Object { $_ })
+        if (($remainingEntries -join ';') -ne ($seedEntries -join ';')) {
+            throw "after removing three spellings of ${installDir}, the PATH reads '$(Read-Raw)', not '$($seedEntries -join ';')'"
         }
         Assert-Markers 'after a variable-spelled removal'
         Write-Host 'an entry spelled with a variable is the same entry, added once and removed'

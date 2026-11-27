@@ -171,7 +171,7 @@ try {
     # following it. Leteo owns one entry on this value; the rest are read with
     # `DoNotExpandEnvironmentNames` and written back with the kind they had.
     #
-    # The four functions below are the same four `uninstall.ps1` carries, in the
+    # The five functions below are the same five `uninstall.ps1` carries, in the
     # same order and shape. The two scripts cannot share a file — each is
     # fetched and run on its own (`irm ... | iex` here, and the uninstaller
     # ships beside the binary) — so keeping the copies textually parallel is
@@ -221,9 +221,13 @@ public static extern System.IntPtr SendMessageTimeout(
     uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
 '@
             }
+            $broadcast = [IntPtr]0xffff          # HWND_BROADCAST
+            $settingChange = 0x001A           # WM_SETTINGCHANGE
+            $abortIfHung = 0x0002             # SMTO_ABORTIFHUNG
+            $timeoutMs = 5000
             $result = [UIntPtr]::Zero
             $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
-                [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
+                $broadcast, $settingChange, [UIntPtr]::Zero, 'Environment', $abortIfHung, $timeoutMs, [ref]$result
             )
             if ($sent -eq [IntPtr]::Zero) {
                 Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
@@ -236,10 +240,11 @@ public static extern System.IntPtr SendMessageTimeout(
     function Write-UserPath([string]$Value) {
         if ($environment) {
             $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
-            try {
+            # Asked rather than caught: a failure to read the kind of a value
+            # that is there is not the same thing as the value being absent,
+            # and only the absent case has a default.
+            if ($null -ne $environment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
                 $kind = $environment.GetValueKind('Path')
-            } catch {
-                # No value of the user's own, which is what the default is for.
             }
             $environment.SetValue('Path', $Value, $kind)
             Send-EnvironmentChange

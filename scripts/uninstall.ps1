@@ -205,7 +205,7 @@ if ((Test-Path $dataDir) -and -not $handled) {
 # Windows the fallback is a warning rather than silence, because it is the
 # behaviour this change removed.
 #
-# The four functions below are the same four `install.ps1` carries, in the same
+# The five functions below are the same five `install.ps1` carries, in the same
 # order and shape, and cannot be shared with it: each script is fetched and run
 # on its own. Keeping the copies textually parallel is what stops a change to
 # one from missing the other.
@@ -244,9 +244,13 @@ public static extern System.IntPtr SendMessageTimeout(
     uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
 '@
         }
+        $broadcast = [IntPtr]0xffff          # HWND_BROADCAST
+        $settingChange = 0x001A           # WM_SETTINGCHANGE
+        $abortIfHung = 0x0002             # SMTO_ABORTIFHUNG
+        $timeoutMs = 5000
         $result = [UIntPtr]::Zero
         $sent = [Leteo.EnvironmentBroadcast]::SendMessageTimeout(
-            [IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 0x0002, 5000, [ref]$result
+            $broadcast, $settingChange, [UIntPtr]::Zero, 'Environment', $abortIfHung, $timeoutMs, [ref]$result
         )
         if ($sent -eq [IntPtr]::Zero) {
             Write-Warning 'the environment change could not be broadcast; start a new session rather than a new terminal'
@@ -259,10 +263,9 @@ public static extern System.IntPtr SendMessageTimeout(
 function Write-UserPath([string]$Value) {
     if ($environment) {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
-        try {
+        # Asked rather than caught, as `install.ps1` does and explains.
+        if ($null -ne $environment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
             $kind = $environment.GetValueKind('Path')
-        } catch {
-            # No value of the user's own, which is what the default is for.
         }
         $environment.SetValue('Path', $Value, $kind)
         Send-EnvironmentChange

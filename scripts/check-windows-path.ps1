@@ -65,30 +65,22 @@ function Show-State([string]$Where) {
 
 # The value as it was, so the runner is left the way it was found even when an
 # assertion below fails.
-$originalRaw = Read-Raw
-$originalKind = $null
-try {
-    $originalKind = Read-Kind
-} catch {
-    # A runner whose user has no PATH value of their own, which is a state the
-    # check has an empty-value pass for.
-    $originalKind = $null
-}
+$originalExists = $null -ne $registry.GetValue(
+    'Path',
+    $null,
+    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+)
+$originalRaw = if ($originalExists) { Read-Raw } else { '' }
+$originalKind = if ($originalExists) { Read-Kind } else { $null }
 
-function Assert-Succeeded([string]$What) {
+# Runs a script and holds its outcome. `$?` is read on the line after the
+# invocation, inside the same scope: read from a separate function it is the
+# status of whatever that function ran, not of the call before it.
+function Invoke-Script([string]$Path, [string]$What, [string[]]$Arguments = @()) {
+    & $Path @Arguments
     if (-not $?) {
         throw "$What did not succeed (exit code $LASTEXITCODE)"
     }
-}
-
-# The same spelling the scripts fold to: variables expanded, separators
-# folded, a trailing one dropped.
-function Get-ComparablePath([string]$Entry) {
-    [Environment]::ExpandEnvironmentVariables($Entry).Replace('/', '\').TrimEnd('\')
-}
-
-function Test-NamesInstallDir([string]$Entry) {
-    $Entry -and (Get-ComparablePath $Entry) -eq (Get-ComparablePath $installDir)
 }
 
 function Assert-Markers([string]$Where) {
@@ -180,16 +172,14 @@ while ($true) {
         $env:LETEO_INSTALL_DIR = $installDir
         $env:LETEO_DATA_DIR = $dataDir
 
-        & (Join-Path $PSScriptRoot 'install.ps1')
-        Assert-Succeeded 'install.ps1'
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1'
         Show-State 'after install'
         Assert-Markers 'after install'
         if (@((Read-Raw) -split ';') -notcontains $installDir) {
             throw "after install: $installDir was not added to the user PATH: $(Read-Raw)"
         }
 
-        & (Join-Path $installDir 'uninstall.ps1') -Yes
-        Assert-Succeeded 'uninstall.ps1'
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1' @('-Yes')
         Show-State 'after uninstall'
         Assert-Markers 'after uninstall'
         if (@((Read-Raw) -split ';') -contains $installDir) {
@@ -233,17 +223,20 @@ while ($true) {
             "$seed;$variable;$literal;$slashed",
             [Microsoft.Win32.RegistryValueKind]::ExpandString
         )
-        & (Join-Path $PSScriptRoot 'install.ps1')
-        Assert-Succeeded 'install.ps1 with the install directory already there'
-        $named = @((Read-Raw) -split ';' | Where-Object { Test-NamesInstallDir $_ })
-        if ($named.Count -ne 3) {
-            throw "with three spellings of ${installDir} already there, install left $($named.Count): $(Read-Raw)"
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the install directory already there'
+        # Counted rather than matched: the check does not restate how the
+        # scripts fold an entry, it holds that install adds nothing when the
+        # directory is already there in any spelling, and that uninstall takes
+        # all three away. An unchanged count is the whole assertion.
+        $seeded = @($seed -split ';' | Where-Object { $_ }).Count
+        $after = @((Read-Raw) -split ';' | Where-Object { $_ })
+        if ($after.Count -ne $seeded + 3) {
+            throw "with three spellings of ${installDir} already there, install changed the PATH from $($seeded + 3) entries to $($after.Count): $(Read-Raw)"
         }
-        & (Join-Path $installDir 'uninstall.ps1') -Yes
-        Assert-Succeeded 'uninstall.ps1 with the install directory spelled three ways'
-        $named = @((Read-Raw) -split ';' | Where-Object { Test-NamesInstallDir $_ })
-        if ($named.Count -ne 0) {
-            throw "uninstall left '$($named -join ';')' on the user PATH: $(Read-Raw)"
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the install directory spelled three ways' @('-Yes')
+        $after = @((Read-Raw) -split ';' | Where-Object { $_ })
+        if ($after.Count -ne $seeded) {
+            throw "uninstall left $($after.Count - $seeded) of the three spellings of ${installDir}: $(Read-Raw)"
         }
         Assert-Markers 'after a variable-spelled removal'
         Write-Host 'an entry spelled with a variable is the same entry, added once and removed'
@@ -251,13 +244,11 @@ while ($true) {
         # A value the user keeps as plain text stays plain text: the scripts
         # promise the kind they found, not an expandable value every time.
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::String)
-        & (Join-Path $PSScriptRoot 'install.ps1')
-        Assert-Succeeded 'install.ps1 on a plain-text PATH'
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 on a plain-text PATH'
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
             throw "install turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
         }
-        & (Join-Path $installDir 'uninstall.ps1') -Yes
-        Assert-Succeeded 'uninstall.ps1 on a plain-text PATH'
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 on a plain-text PATH' @('-Yes')
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
             throw "uninstall turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
         }
@@ -268,16 +259,14 @@ while ($true) {
         # an empty entry, and Windows reads an empty entry of PATH as the
         # current directory.
         $registry.DeleteValue('Path', $false)
-        & (Join-Path $PSScriptRoot 'install.ps1')
-        Assert-Succeeded 'install.ps1 from an empty PATH'
+        Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 from an empty PATH'
         if ((Read-Raw) -ne $installDir) {
             throw "from an empty PATH, install wrote '$(Read-Raw)' instead of just $installDir"
         }
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
             throw "from an empty PATH, install wrote a $((Read-Kind)) value, so every variable in it would be frozen"
         }
-        & (Join-Path $installDir 'uninstall.ps1') -Yes
-        Assert-Succeeded 'uninstall.ps1 from an empty PATH'
+        Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 from an empty PATH' @('-Yes')
         if (Read-Raw) {
             throw "from an empty PATH, uninstall left '$(Read-Raw)'"
         }
@@ -290,12 +279,11 @@ while ($true) {
         }
     }
 } finally {
-    if ($originalKind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
-        $registry.SetValue('Path', $originalRaw, [Microsoft.Win32.RegistryValueKind]::ExpandString)
-    } elseif ($originalRaw -and $originalKind) {
+    if ($originalExists) {
+        # Back as it was, an empty value included: the check must not turn a
+        # value somebody had into an absent one.
         $registry.SetValue('Path', $originalRaw, $originalKind)
     } else {
-        # There was no value before the check and there is no value to put back.
         $registry.DeleteValue('Path', $false)
     }
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue

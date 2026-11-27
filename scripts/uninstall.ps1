@@ -194,10 +194,9 @@ if ((Test-Path $dataDir) -and -not $handled) {
 # holding `C:\tools\leteo-extras` must survive removing `C:\...\leteo\bin`.
 #
 # Read and written through the registry with `DoNotExpandEnvironmentNames` and
-# with the value's own kind, for the reason `install.ps1` gives beside the same
-# lines: the environment API expands every `%VAR%` entry and stores the result
-# as a plain string, so a removal would freeze every other entry at whatever the
-# variables meant the day Leteo was uninstalled.
+# with the value's own kind: the environment API expands every `%VAR%` entry and
+# stores the result as a plain string, so a removal would freeze every other
+# entry at whatever the variables meant the day Leteo was uninstalled.
 #
 # Off Windows there is no registry to read: `tools/semantic/check_install.sh`
 # runs this file under pwsh on the Linux runners to exercise everything below
@@ -242,8 +241,11 @@ function Read-UserPath {
 }
 
 # Tells running programs the environment changed, as the API this replaced did.
-# See `install.ps1` for why a registry write is not enough on its own, and why
-# the whole body is caught: the value is already written by the time this runs.
+# A registry write on its own does not reach them: Explorer, and every terminal
+# opened from it, keep the environment they started with until the next logon.
+# Everything here is caught because the value is already written when this runs,
+# so a host that refuses `Add-Type` must not turn a finished uninstall into a
+# failure.
 function Send-EnvironmentChange {
     try {
         if (-not ('Leteo.EnvironmentBroadcast' -as [type])) {
@@ -276,7 +278,9 @@ public static extern System.IntPtr SendMessageTimeout(
 function Write-UserPath([string]$Value) {
     if ($environment) {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
-        # Asked rather than caught, as `install.ps1` does and explains.
+        # Asked rather than caught: a failure to read the kind of a value that
+        # is there is not the same thing as the value being absent, and only the
+        # absent case has a default.
         if ($null -ne $environment.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) {
             $kind = $environment.GetValueKind('Path')
         }
@@ -287,10 +291,9 @@ function Write-UserPath([string]$Value) {
     return $true
 }
 
-# One spelling for a PATH entry, for the reason `install.ps1` gives beside its
-# own copy: an entry names the same directory through a variable, with another
-# separator, or with a trailing one, and removing only the exact text would
-# leave it on the PATH.
+# One spelling for a PATH entry: an entry names the same directory through a
+# variable, with another separator, or with a trailing one, and removing only
+# the exact text would leave it on the PATH.
 function Get-ComparablePath([string]$Entry) {
     [Environment]::ExpandEnvironmentVariables($Entry).Replace('/', '\').TrimEnd('\')
 }
@@ -304,8 +307,8 @@ $notified = $true
 try {
     $userPath = Read-UserPath
     if ($userPath) {
-        # Empty entries are kept, for the reason `install.ps1` gives beside its
-        # own copy: the rest of the value is the person's, byte for byte.
+        # Empty entries are kept: the rest of the value is the person's, byte
+        # for byte.
         $entries = @($userPath -split ';')
         $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
         if ($kept.Count -ne $entries.Count) {
@@ -328,8 +331,8 @@ try {
         }
     }
 } finally {
-    # Closed on the way out of a failure too, as `install.ps1` does: a writable
-    # handle held for the rest of the script is a handle nothing will release.
+    # Closed on the way out of a failure too: a writable handle held for the
+    # rest of the script is a handle nothing will release.
     if ($environment) {
         $environment.Close()
     }

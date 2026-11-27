@@ -158,8 +158,12 @@ while ($true) {
                     break
                 }
             } catch {
-                Start-Sleep -Milliseconds $waitMs
+                # A refused connection is the usual answer while the server
+                # starts; the wait below is what makes another attempt worth it.
             }
+            # Outside the catch: a response that is not 200 is not an answer
+            # either, and the old placement let every attempt pass with no wait.
+            Start-Sleep -Milliseconds $waitMs
         }
         if (-not $server -and -not $launched.HasExited) {
             Stop-Process -Id $launched.Id -Force -ErrorAction SilentlyContinue

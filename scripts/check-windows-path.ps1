@@ -19,6 +19,11 @@
 # release archive the installer can fetch: the script assembles both and serves
 # them from loopback, so it exercises the real `install.ps1` rather than a copy
 # of its PATH logic.
+#
+# What it cannot see is whether a running program received the
+# `WM_SETTINGCHANGE` the scripts broadcast after writing: that needs a
+# top-level window and a message loop in this process. The value and its kind
+# in the registry are what this holds.
 
 [CmdletBinding()]
 param(

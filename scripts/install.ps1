@@ -272,13 +272,15 @@ public static extern System.IntPtr SendMessageTimeout(
     $added = $false
     try {
         $userPath = Read-UserPath
-        # Empty entries dropped rather than kept: a value starting with `;` has
-        # an empty entry, and Windows reads an empty entry of PATH as the
-        # current directory.
-        $entries = @($userPath -split ';' | Where-Object { $_ })
+        # The value is written back exactly as it was read, empty entries
+        # included: they are the person's, and rewriting text Leteo does not own
+        # is the defect this whole block exists to avoid. The one `;` that is
+        # not theirs is the one that would be added to an empty value.
+        $entries = @($userPath -split ';')
         $added = -not ($entries | Where-Object { Test-SamePathEntry $_ })
         if ($added) {
-            Write-UserPath ((@($entries) + $installDir) -join ';')
+            $value = if ($userPath) { "$userPath;$installDir" } else { $installDir }
+            Write-UserPath $value
         }
     } finally {
         if ($environment) {

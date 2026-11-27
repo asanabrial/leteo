@@ -162,7 +162,10 @@ while ($true) {
     }
 
     try {
-        $seed = ((@($originalRaw) + $markers) | Where-Object { $_ }) -join ';'
+        # The runner's own value, empty entries and all, so the comparisons
+        # below hold what the scripts promise: everything they did not write
+        # comes back byte for byte.
+        $seed = if ($originalRaw) { "$originalRaw;" + ($markers -join ';') } else { $markers -join ';' }
         $registry.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
         Show-State 'seeded'
         Assert-Markers 'seeded'
@@ -185,13 +188,10 @@ while ($true) {
         if (@((Read-Raw) -split ';') -contains $installDir) {
             throw "after uninstall: $installDir is still on the user PATH: $(Read-Raw)"
         }
-        # Not only the markers: every entry that was there is still there, in
-        # the order it was in. Empty entries are the one thing the installer
-        # drops, which is the `;` this check exists for.
-        $seedEntries = @($seed -split ';' | Where-Object { $_ })
-        $afterEntries = @((Read-Raw) -split ';' | Where-Object { $_ })
-        if (($afterEntries -join ';') -ne ($seedEntries -join ';')) {
-            throw "after uninstall: the PATH reads '$(Read-Raw)', not the '$($seedEntries -join ';')' it was seeded with"
+        # Not only the markers: the value is the one it was seeded with, byte
+        # for byte, so an empty entry the runner had is still an empty entry.
+        if ((Read-Raw) -cne $seed) {
+            throw "after uninstall: the PATH reads '$(Read-Raw)', not the '$seed' it was seeded with"
         }
 
         # An entry that names the install directory through a variable, and
@@ -226,18 +226,16 @@ while ($true) {
         Invoke-Script (Join-Path $PSScriptRoot 'install.ps1') 'install.ps1 with the install directory already there'
         # Counted, because the check does not restate how the scripts fold an
         # entry: install adds nothing when the directory is already there in any
-        # spelling. What follows the uninstall compares the whole value, so a
-        # spelling left behind and one of the runner's own entries dropped
-        # cannot cancel out in a count.
-        $seedCount = $seedEntries.Count
-        $installedEntries = @((Read-Raw) -split ';' | Where-Object { $_ })
-        if ($installedEntries.Count -ne $seedCount + 3) {
-            throw "with three spellings of ${installDir} already there, install changed the PATH from $($seedCount + 3) entries to $($installedEntries.Count): $(Read-Raw)"
+        # spelling. What follows compares the whole value with what was seeded,
+        # so a spelling left behind and a runner entry dropped cannot cancel out
+        # in a count, and the runner's empty entries are held too.
+        $seededWithSpellings = "$seed;$variable;$literal;$slashed"
+        if ((Read-Raw) -cne $seededWithSpellings) {
+            throw "with three spellings of ${installDir} already there, install rewrote the PATH: $(Read-Raw)"
         }
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 with the install directory spelled three ways' @('-Yes')
-        $remainingEntries = @((Read-Raw) -split ';' | Where-Object { $_ })
-        if (($remainingEntries -join ';') -ne ($seedEntries -join ';')) {
-            throw "after removing three spellings of ${installDir}, the PATH reads '$(Read-Raw)', not '$($seedEntries -join ';')'"
+        if ((Read-Raw) -cne $seed) {
+            throw "after removing three spellings of ${installDir}, the PATH reads '$(Read-Raw)', not '$seed'"
         }
         Assert-Markers 'after a variable-spelled removal'
         Write-Host 'an entry spelled with a variable is the same entry, added once and removed'
@@ -252,6 +250,9 @@ while ($true) {
         Invoke-Script (Join-Path $installDir 'uninstall.ps1') 'uninstall.ps1 on a plain-text PATH' @('-Yes')
         if ((Read-Kind) -ne [Microsoft.Win32.RegistryValueKind]::String) {
             throw "uninstall turned a plain-text PATH into a $((Read-Kind)) one: $(Read-Raw)"
+        }
+        if ((Read-Raw) -cne $seed) {
+            throw "after a plain-text round trip, the PATH reads '$(Read-Raw)', not '$seed'"
         }
         Write-Host 'a plain-text PATH stays plain text'
 

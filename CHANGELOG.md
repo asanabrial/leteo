@@ -37,10 +37,11 @@ All notable changes to Leteo are documented in this file.
   `C:\Users\runneradmin\.cargo\bin;...` and the value's kind changed from
   `ExpandString` to `String`, so every entry naming a variable stopped following
   it. They now read `HKCU:\Environment` with `DoNotExpandEnvironmentNames` and
-  write it back with the kind it had; the installer drops empty entries instead
-  of starting an empty PATH with `;`, which Windows reads as the current
-  directory. The windows legs of CI run the real scripts against a release
-  archive they build and serve locally, under both engines (#448).
+  write it back exactly as it was read and with the kind it had — empty entries
+  included, which are the user's — except that an empty value no longer gets a
+  leading `;` from the entry being added. The windows legs of CI run the real
+  scripts against a release archive they build and serve locally, under both
+  engines (#448).
 - **A cloud failure's body is read under the bound a success is, and an
   environment token is never written to `cloud.json`.** `checked_response` read
   a non-success body with `text()`, which buffers whatever arrives: a broken

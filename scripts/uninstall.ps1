@@ -290,7 +290,9 @@ function Test-SamePathEntry([string]$Entry) {
 try {
     $userPath = Read-UserPath
     if ($userPath) {
-        $entries = @($userPath -split ';' | Where-Object { $_ })
+        # Empty entries are kept, for the reason `install.ps1` gives beside its
+        # own copy: the rest of the value is the person's, byte for byte.
+        $entries = @($userPath -split ';')
         $kept = @($entries | Where-Object { -not (Test-SamePathEntry $_) })
         if ($kept.Count -ne $entries.Count) {
             Say "  removing $installDir from your PATH"

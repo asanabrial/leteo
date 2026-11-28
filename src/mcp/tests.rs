@@ -548,11 +548,11 @@ fn a_long_title_is_cut_on_update_and_the_reply_says_so() {
         .title_storage_truncation
         .expect("the update says the title was cut");
     assert_eq!(cut.original_bytes, long.len());
-    assert_eq!(cut.stored_bytes, updated.observation.title.len());
+    assert_eq!(cut.stored_bytes, updated.observation.memory.title.len());
     assert!(
-        updated.observation.title.len() <= crate::memory::normalize::TITLE_MAX_BYTES,
+        updated.observation.memory.title.len() <= crate::memory::normalize::TITLE_MAX_BYTES,
         "{}",
-        updated.observation.title.len()
+        updated.observation.memory.title.len()
     );
 }
 
@@ -1946,7 +1946,15 @@ fn a_save_records_the_prompt_this_process_is_answering() {
             .unwrap(),
         ))
         .unwrap();
-    let prompt_sync_id = prompt.0.prompt.sync_id;
+    assert_eq!(prompt.0.prompt.session_id, "linked");
+    // No tool hands a prompt's sync id back any more; the store is where the
+    // link is made from, and this is the row that link names.
+    let prompt_sync_id = server
+        .lock_store()
+        .unwrap()
+        .latest_session_prompt_sync_id("linked")
+        .unwrap()
+        .expect("the prompt was just written");
 
     let linked = server
         .mem_save(Parameters(
@@ -2978,6 +2986,28 @@ fn every_write_surface_reports_the_storage_cut() {
         .0;
     assert_storage_cut(updated.storage_truncation, bound, "update");
 
+    // The merge is the fifth full-body write and reported no cut at all: a
+    // 40 kB replacement was stored short with the reply saying nothing.
+    let long_title = "palabra".repeat(10_000);
+    let merged = server
+        .mem_consolidate(Parameters(
+            serde_json::from_value(json!({
+                "expected_project": "leteo",
+                "source_ids": [saved.observation.id, short.observation.id],
+                "type": "note",
+                "title": long_title,
+                "content": over.clone(),
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_storage_cut(merged.storage_truncation, bound, "consolidate");
+    let cut = merged
+        .title_storage_truncation
+        .expect("the merge says the title was cut");
+    assert_eq!(cut.original_bytes, long_title.len());
+
     let prompt = server
         .mem_save_prompt(Parameters(
             serde_json::from_value(json!({
@@ -3036,6 +3066,169 @@ fn every_write_surface_reports_the_storage_cut() {
         .unwrap()
         .0;
     assert_storage_cut(ended.storage_truncation, bound, "session end");
+}
+
+/// A server with session `echo` and two memories in `leteo`, for the five
+/// replies that must not repeat the text they were given.
+fn echo_fixture() -> (tempfile::TempDir, LeteoMcpServer, i64, i64, String) {
+    let (_temp, server) = test_server(McpOptions::default());
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("echo", "leteo", "C:/workspace")
+            .unwrap();
+    }
+    let body = format!(
+        "the-sent-text-must-not-come-back {}",
+        "words that were already typed. ".repeat(40)
+    );
+    assert!(body.len() > PREVIEW_BYTES);
+    let save = |title: &str, content: &str| {
+        server
+            .mem_save(Parameters(
+                serde_json::from_value(json!({
+                    "session_id": "echo",
+                    "type": "decision",
+                    "title": title,
+                    "content": content,
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+            .0
+            .observation
+            .id
+    };
+    // The second memory holds the marker itself, so the reply to marking it is
+    // the one that would show a body it was not sent.
+    let first = save("The first", "seed");
+    let second = save("The second", &body);
+    (_temp, server, first, second, body)
+}
+
+/// Asserts a write reply carries none of the text it was sent, and stays a
+/// reply rather than a record.
+fn assert_no_echo<T: serde::Serialize>(reply: &T, marker: &str, surface: &str) {
+    let bytes = serde_json::to_vec(reply).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains(marker),
+        "the {surface} reply spent {} bytes echoing the request: {text}",
+        bytes.len()
+    );
+    assert!(
+        bytes.len() <= 400,
+        "the {surface} reply is a record again at {} bytes: {text}",
+        bytes.len()
+    );
+}
+
+/// A write answers with the name of what it wrote, not the text it was given.
+///
+/// `mem_save` has answered that way since its reply was bounded; the five other
+/// write tools each sent back a preview of the caller's own words. Measured on
+/// a one-line update: 550 bytes, every one of them text already in the agent's
+/// context, and a marked memory came back at 5,499 bytes.
+#[test]
+fn an_update_does_not_echo_the_text_it_was_given() {
+    let (_temp, server, first, _, body) = echo_fixture();
+    let updated = server
+        .mem_update(Parameters(
+            serde_json::from_value(json!({
+                "id": first,
+                "expected_project": "leteo",
+                "content": body,
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(updated.observation.memory.id, first);
+    assert_no_echo(&updated, "the-sent-text-must-not-come-back", "update");
+}
+
+#[test]
+fn saving_a_prompt_does_not_echo_the_text_it_was_given() {
+    let (_temp, server, _, _, body) = echo_fixture();
+    let prompt = server
+        .mem_save_prompt(Parameters(
+            serde_json::from_value(json!({
+                "session_id": "echo",
+                "project": "leteo",
+                "content": body,
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(prompt.prompt.session_id, "echo");
+    assert_no_echo(&prompt, "the-sent-text-must-not-come-back", "prompt save");
+}
+
+#[test]
+fn marking_a_memory_reviewed_does_not_echo_its_body() {
+    let (_temp, server, _, second, _) = echo_fixture();
+    let marked = server
+        .mem_review(Parameters(
+            serde_json::from_value(json!({
+                "action": "mark_reviewed",
+                "observation_id": second,
+                "expected_project": "leteo",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    let memory = marked
+        .observation
+        .as_ref()
+        .expect("the memory that was marked");
+    assert_eq!(memory.memory.id, second);
+    assert!(memory.review_after.is_some(), "marking winds the clock");
+    assert_no_echo(&marked, "the-sent-text-must-not-come-back", "review");
+}
+
+#[test]
+fn a_consolidation_does_not_echo_the_text_or_ids_it_was_given() {
+    let (_temp, server, first, second, body) = echo_fixture();
+    let merged = server
+        .mem_consolidate(Parameters(
+            serde_json::from_value(json!({
+                "expected_project": "leteo",
+                "source_ids": [first, second],
+                "type": "note",
+                "title": "Both of them",
+                "content": body,
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(merged.observation.memory.title, "Both of them");
+    assert_no_echo(&merged, "the-sent-text-must-not-come-back", "consolidate");
+    let reply = serde_json::to_value(&merged).unwrap();
+    assert!(
+        reply.get("source_ids").is_none(),
+        "the reply lists the sources it was given: {reply}"
+    );
+    assert!(
+        reply.get("relations").is_none(),
+        "the reply carries the relation records at {} bytes: {reply}",
+        serde_json::to_vec(&merged).unwrap().len()
+    );
+}
+
+#[test]
+fn ending_a_session_does_not_echo_its_summary() {
+    let (_temp, server, _, _, body) = echo_fixture();
+    let ended = server
+        .mem_session_end(Parameters(
+            serde_json::from_value(json!({ "id": "echo", "summary": body })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(ended.id, "echo");
+    assert_no_echo(&ended, "the-sent-text-must-not-come-back", "session end");
 }
 
 /// And so does a judgment, for both texts it stores.
@@ -4986,16 +5179,7 @@ fn the_descriptions_publish_the_preview_length_the_code_cuts_at() {
         );
         saying += 1;
     }
-    for expected in [
-        "mem_search",
-        "mem_context",
-        "mem_timeline",
-        "mem_review",
-        "mem_update",
-        "mem_save_prompt",
-        "mem_session_end",
-        "mem_consolidate",
-    ] {
+    for expected in ["mem_search", "mem_context", "mem_timeline", "mem_review"] {
         assert!(
             LeteoMcpServer::router().list_all().iter().any(|tool| {
                 tool.name == expected
@@ -5008,7 +5192,7 @@ fn the_descriptions_publish_the_preview_length_the_code_cuts_at() {
         );
     }
     assert_eq!(
-        saying, 8,
+        saying, 4,
         "a tool started or stopped previewing and the list above did not move"
     );
 }
@@ -5534,9 +5718,15 @@ fn the_seven_tools_that_had_no_test_of_their_own_answer_what_they_promise() {
             summary: Some("Cerrada. <private>secreto</private> Fin.".to_owned()),
         }))
         .unwrap();
-    let summary = ended.session.summary.clone().unwrap_or_default();
+    let summary = server
+        .lock_store()
+        .unwrap()
+        .get_session("s1")
+        .unwrap()
+        .summary
+        .unwrap_or_default();
     assert!(!summary.contains("secreto"), "{summary:?}");
-    assert!(ended.session.ended_at.is_some(), "{:?}", ended.session);
+    assert!(ended.ended_at.is_some(), "{ended:?}");
 
     assert!(
         server
@@ -6528,10 +6718,13 @@ fn a_memory_is_attributed_to_a_question_or_to_none() {
             .mem_save_prompt(Parameters(
                 serde_json::from_value(json!({ "session_id": session, "content": text })).unwrap(),
             ))
+            .unwrap();
+        server
+            .lock_store()
             .unwrap()
-            .0
-            .prompt
-            .sync_id
+            .latest_session_prompt_sync_id(session)
+            .unwrap()
+            .expect("the prompt was just written")
     };
     let save = |value: serde_json::Value| {
         server
@@ -8045,14 +8238,12 @@ fn consolidating_through_the_tool_merges_and_hides_the_sources() {
             .unwrap(),
         ))
         .expect("a merge the caller asked for");
-    assert_eq!(outcome.relations.len(), 2);
-    assert_eq!(outcome.source_ids, vec![first.id, second.id]);
-    assert_eq!(outcome.observation.title, "The merged decision");
-    for relation in &outcome.relations {
-        assert_eq!(relation.relation, "supersedes");
-        assert_eq!(relation.judgment_status, "judged");
-        assert_eq!(relation.source_id, outcome.observation.sync_id);
-    }
+    assert_eq!(outcome.observation.memory.title, "The merged decision");
+    assert_eq!(outcome.observation.memory.kind, "decision");
+    assert_eq!(outcome.observation.project.as_deref(), Some("leteo"));
+    // The two `supersedes` relations are not in the reply, which must not echo
+    // the sources back; the searches and the caveat below are what prove they
+    // were recorded, one per source.
 
     let Json(found) = server
         .mem_search(Parameters(
@@ -8070,7 +8261,7 @@ fn consolidating_through_the_tool_merges_and_hides_the_sources() {
         found
             .results
             .iter()
-            .any(|result| result.observation.id == outcome.observation.id),
+            .any(|result| result.observation.id == outcome.observation.memory.id),
         "the replacement is: {:?}",
         found.results
     );
@@ -8097,7 +8288,10 @@ fn consolidating_through_the_tool_merges_and_hides_the_sources() {
         .unwrap();
     assert_eq!(read.observation.caveats.len(), 1);
     assert_eq!(read.observation.caveats[0].relation, "superseded_by");
-    assert_eq!(read.observation.caveats[0].other_id, outcome.observation.id);
+    assert_eq!(
+        read.observation.caveats[0].other_id,
+        outcome.observation.memory.id
+    );
 }
 
 #[test]
@@ -8835,7 +9029,7 @@ fn the_review_queue_is_the_detected_projects_and_not_the_stores() {
 }
 
 #[test]
-fn marking_a_memory_reviewed_answers_with_a_preview_and_its_caveats() {
+fn marking_a_memory_reviewed_names_it_and_carries_its_caveats_without_the_body() {
     let (_temp, server) = test_server(McpOptions::default());
     let older = {
         let mut store = server.lock_store().unwrap();
@@ -8871,16 +9065,20 @@ fn marking_a_memory_reviewed_answers_with_a_preview_and_its_caveats() {
         .unwrap()
         .0;
     let observation = marked.observation.expect("the memory comes back");
-    assert!(
-        observation.content.len() <= PREVIEW_BYTES,
-        "the description promises {PREVIEW_BYTES} bytes and this was {}",
-        observation.content.len()
-    );
-    assert!(observation.content_truncated);
+    assert_eq!(observation.memory.id, older.id);
+    assert_eq!(observation.memory.title, "Tabs everywhere");
+    assert_eq!(observation.memory.kind, "decision");
     assert_eq!(
         observation.caveats.len(),
         1,
         "the list action says it was overturned, so this one does: {observation:?}"
+    );
+    let bytes = serde_json::to_vec(&observation).unwrap();
+    assert!(
+        bytes.len() < 300,
+        "marking a reviewed memory echoed its body back in {} bytes: {}",
+        bytes.len(),
+        String::from_utf8_lossy(&bytes)
     );
 }
 

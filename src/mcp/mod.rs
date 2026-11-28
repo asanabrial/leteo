@@ -24,7 +24,7 @@ use crate::{
         AddObservation, AddOutcome, AddOutcomeKind, AddPrompt, Candidate, CandidateOptions,
         ConsolidateObservations, DoctorReport, ForeignKeyViolation, JudgeBySemanticParams,
         JudgeRelationParams, MergeResult, Observation, ObservationVersion, PassiveCapture,
-        PassiveCaptureResult, Prompt, Relation, SearchMode, SearchOptions, SearchResult, Session,
+        PassiveCaptureResult, Prompt, SearchMode, SearchOptions, SearchResult, Session,
         SessionSummary, Stats, TimelineEntry, TimelineResult, UpdateObservation, UpdateOutcome,
     },
     memory::normalize,

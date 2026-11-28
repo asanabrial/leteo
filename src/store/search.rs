@@ -1743,6 +1743,9 @@ impl Store {
         // change and a worse one, measured in `normalize::prompt_terms`: it
         // moves the median, which is computed from what the query returns.
         //
+        // The labelled set holds no prompt made only of function words, so the
+        // early return below did not move either figure when it was added.
+        //
         // The label is a person's, and a hint that is right when read can be
         // scored a miss, so these numbers rank bars against each other; they
         // are not the hint's accuracy.

@@ -966,12 +966,11 @@ fn a_prompt_is_read_past_its_opening_words() {
 /// A function word alone is not evidence that a memory is about the prompt.
 ///
 /// `for` is rare enough in a store of four memories to score better than the
-/// floor on its own, and `name for a cat` has nothing to do with paging. The
-/// first title is the one the issue's prompt reached; the other three share a
-/// subject word and keep their places, so the rule has to drop one candidate
-/// and not the set.
-///
-/// The limit is asserted too: it still bounds what comes back.
+/// floor on its own: asking for a name for a cat named the paging decision
+/// until this rule existed. The limit is ten, well past the four memories, so
+/// nothing here is excluded by how many were asked for — the paging memory is
+/// absent because the rule refused it, and the naming memory is present because
+/// the prompt is about it.
 #[test]
 fn a_function_word_alone_is_not_evidence_of_a_subject() {
     let (_temp, mut store) = store();
@@ -1000,15 +999,16 @@ fn a_function_word_alone_is_not_evidence_of_a_subject() {
     }
 
     let named = store
-        .prompt_matches("suggest a name for a cat", "leteo", 3)
+        .prompt_matches("suggest a name for a cat", "leteo", 10)
         .unwrap();
+    let titles: Vec<&str> = named.iter().map(|memory| memory.title.as_str()).collect();
     assert!(
-        !named.is_empty(),
-        "the subject words still name their memories"
+        titles.contains(&"Suggesting a name in the review"),
+        "the memory the prompt is about is named: {titles:?}"
     );
     assert!(
-        named.iter().all(|memory| !memory.title.contains("Keyset")),
-        "`for` is the only word the paging memory shares: {named:?}"
+        !titles.contains(&"Keyset pagination for the orders list"),
+        "`for` is the only word the paging memory shares: {titles:?}"
     );
 
     assert_eq!(
@@ -1023,10 +1023,15 @@ fn a_function_word_alone_is_not_evidence_of_a_subject() {
 
 /// The function words are read from every language, not only English.
 ///
-/// `para` is Spanish and Portuguese, which the exclusive map `detect` counts
-/// does not hold at all. Asking that map would make `para` a subject word, and
-/// a question about dinner would name the index over active orders: it is the
-/// only candidate the floor lets through, and the rule is what refuses it.
+/// `para` is Spanish and Portuguese and `que` is Spanish, French and Catalan,
+/// so the exclusive map `detect` counts holds neither: asking that map this
+/// question answers no for both. Then `que para como` carries content, the
+/// index memory matches two of those words strongly enough to clear the floor,
+/// and it is named. With the lists read as a union, the prompt has no subject
+/// word and is answered with nothing.
+///
+/// The named-memory side of the rule is the English test beside this one; the
+/// only difference between them is which lists a word is looked up in.
 #[test]
 fn a_spanish_function_word_alone_is_not_evidence_either() {
     let (_temp, mut store) = store();
@@ -1037,16 +1042,16 @@ fn a_spanish_function_word_alone_is_not_evidence_either() {
             "el 90% de las filas están archivadas y el índice bajó de 3 GB a 280 MB",
         ),
         (
-            "La receta de la cena de los viernes",
-            "una receta sencilla que se prepara en media hora",
+            "El nombre del gato",
+            "el gato se llama Miso y el nombre que le pusieron consta en la libreta",
         ),
         (
-            "La cena del equipo",
-            "la cena se paga con la tarjeta de la empresa y se apunta la receta",
+            "Sugerir un nombre",
+            "cuando alguien sugiere un nombre, el gato decide y nadie discute",
         ),
         (
-            "Recetas que nadie cocina",
-            "una receta guardada y nunca probada, y una cena que se cancela",
+            "Nombres en la revisión",
+            "el revisor apunta el nombre para el gato del equipo",
         ),
     ] {
         store
@@ -1054,12 +1059,10 @@ fn a_spanish_function_word_alone_is_not_evidence_either() {
             .unwrap();
     }
 
-    let named = store
-        .prompt_matches("receta para la cena", "leteo", 3)
-        .unwrap();
+    let named = store.prompt_matches("que para como", "leteo", 10).unwrap();
     assert!(
         named.is_empty(),
-        "`para` is the only word the index memory shares, and it says nothing about dinner: {named:?}"
+        "`que` and `para` reach the memories and say nothing about the prompt: {named:?}"
     );
 }
 

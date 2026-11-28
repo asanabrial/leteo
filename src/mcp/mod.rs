@@ -468,7 +468,7 @@ impl LeteoMcpServer {
         Err(unknown_project_error(
             &requested,
             &detected,
-            store.list_project_names().unwrap_or_default(),
+            store.list_project_names(),
         ))
     }
 
@@ -777,7 +777,7 @@ fn read_envelope(
     Err(unknown_project_error(
         &project,
         detected,
-        store.list_project_names().unwrap_or_default(),
+        store.list_project_names(),
     ))
 }
 
@@ -1406,8 +1406,15 @@ fn structured_error_with(
 fn unknown_project_error(
     requested: &str,
     detected: &str,
-    known_projects: Vec<String>,
+    known_projects: Result<Vec<String>, StoreError>,
 ) -> CallToolResult {
+    // A listing that failed is not an empty store: answering `unknown_project`
+    // with no alternatives would tell the caller the name is wrong when what
+    // failed was the store's ability to say which names exist.
+    let known_projects = match known_projects {
+        Ok(known) => known,
+        Err(error) => return store_error(error),
+    };
     // A read may name a project while standing nowhere a project was detected,
     // and "this directory resolves to \"\"" is not a sentence. The rest of the
     // refusal is the same one a write gives.

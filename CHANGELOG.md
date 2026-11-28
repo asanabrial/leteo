@@ -28,6 +28,16 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **The MCP surface stops answering cases its siblings answer differently.**
+  `mem_session_start` on an existing id naming another project now answers
+  `session_project_mismatch`, as the write door already did, instead of
+  returning the session while dropping the name it was given; `mem_session_end`
+  accepts `expected_project` and refuses another project's session, like pin,
+  update and delete; `observation` and `id` are input-only aliases of `content`
+  and `observation_id`, so sending both is refused rather than one silently
+  winning; `SaveOutput.hint` says that `mem_session_summary` sets it; and a
+  project listing that failed answers as a store failure instead of
+  `unknown_project` with no alternatives (#465).
 - **A `find` whose occurrences overlap is refused as ambiguous.** `mem_update`
   counts the spans a `find` names so that one naming more than one changes
   nothing, and it counted with `str::matches`, which does not overlap: `111` in

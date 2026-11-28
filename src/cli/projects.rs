@@ -123,15 +123,28 @@ pub(super) struct RefusedSource {
 /// memories and the flag chose the argument. Naming a project that turns out to
 /// be a source therefore means its group, whose canonical keeps the work. A
 /// project in no group has nothing to fold, which is what an empty answer says.
+///
+/// A name the refusal leaves in place answers with the group and no sources:
+/// the person is told which fold was considered and why their project is not in
+/// it, and `--apply` changes nothing, because a run scoped to one project has
+/// no business moving the ones beside it.
 fn groups_naming(stats: &[ProjectStats], named: &str) -> Vec<ProjectGroup> {
     let named = crate::memory::normalize::project(named);
     let names = |project: &str| crate::memory::normalize::project(project) == named;
     similar_project_groups(stats)
         .into_iter()
-        .filter(|group| {
-            names(&group.canonical)
-                || group.sources.iter().any(|source| names(source))
-                || group.skipped.iter().any(|refused| names(&refused.project))
+        .filter_map(|group| {
+            if names(&group.canonical) || group.sources.iter().any(|source| names(source)) {
+                return Some(group);
+            }
+            group
+                .skipped
+                .iter()
+                .any(|refused| names(&refused.project))
+                .then(|| ProjectGroup {
+                    sources: Vec::new(),
+                    ..group
+                })
         })
         .collect()
 }
@@ -153,11 +166,13 @@ fn groups_naming(stats: &[ProjectStats], named: &str) -> Vec<ProjectGroup> {
 /// claimed once — the largest claimant first, so a small project cannot pull a
 /// large one into its own group.
 ///
-/// A source the refusal below leaves in place is claimed too, but only as a
-/// source: it is reported once, in the first group that asked, and it is still
-/// free to be the canonical of its own group. That is the difference between a
-/// project that belongs to someone else's fold and one that owns spellings of
-/// its own.
+/// A source the refusal below leaves in place is claimed like any other. It is
+/// reported once, in the group that asked, and it is not made the canonical of
+/// a later group — which is what keeps a project that was left alone from then
+/// swallowing a larger one. Two projects that share a folder and nothing else
+/// are related, so leaving the source unclaimed would let the lighter of the
+/// two become the name that survives, and that is the direction error this
+/// command exists to stop.
 ///
 /// A directory shared by more than two projects is also no longer evidence of
 /// anything. `H:\REPO` on that store is the parent folder of every repository
@@ -220,11 +235,6 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
     });
 
     let mut claimed = vec![false; stats.len()];
-    // A source judged and left where it is. Reported once, in the first group
-    // that asked, and free to be a canonical later: the fold it was refused
-    // from is not the whole store, and a project of its own can still own a
-    // spelling that shares its folder.
-    let mut refused = vec![false; stats.len()];
     let mut groups = Vec::new();
     for index in order {
         if claimed[index] {
@@ -233,7 +243,7 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
         let taken = related[index]
             .iter()
             .copied()
-            .filter(|other| !claimed[*other] && !refused[*other])
+            .filter(|other| !claimed[*other])
             .collect::<Vec<_>>();
         if taken.is_empty() {
             continue;
@@ -244,18 +254,13 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
             // Judged one source at a time: a source that is a project of its
             // own is not folded, and the empty name the remedy exists for still
             // goes with the others.
+            claimed[other] = true;
             match two_projects(&stats[index], &stats[other]) {
-                Some(reason) => {
-                    refused[other] = true;
-                    skipped.push(RefusedSource {
-                        project: stats[other].name.clone(),
-                        reason,
-                    });
-                }
-                None => {
-                    claimed[other] = true;
-                    sources.push(stats[other].name.clone());
-                }
+                Some(reason) => skipped.push(RefusedSource {
+                    project: stats[other].name.clone(),
+                    reason,
+                }),
+                None => sources.push(stats[other].name.clone()),
             }
         }
         claimed[index] = true;
@@ -664,30 +669,47 @@ mod tests {
         assert_eq!(groups_naming(&stats, "leteo-old"), groups);
     }
 
-    /// A source left where it is can still lead a fold of its own.
+    /// A fold never makes the lighter project the name that survives.
     ///
-    /// `gamma` is a project of its own, so folding it into `beta` is refused.
-    /// That must not also stop `gamma` from folding the spelling that shares
-    /// its folder: the two questions are independent, and answering the first
-    /// by claiming the project for the run would leave the second unreachable.
+    /// The chain the panel built: `almanac` resembles `almanac-old` and refuses
+    /// it, because `almanac-old` holds memories in a folder `almanac` does not
+    /// record; and `almanac-old` shares that folder with a larger project. Leave
+    /// the refused source free to be a canonical and the larger project is
+    /// taken by the smaller one, which is the direction error this command
+    /// exists to stop.
     #[test]
-    fn a_refused_source_is_reported_once_and_can_still_lead_a_fold() {
+    fn a_refused_source_never_becomes_the_canonical_of_a_larger_project() {
         let stats = vec![
-            project("beta", 11, &["/work/alpha", "/work/shared"]),
-            project("gamma", 7, &["/work/shared", "/work/gamma"]),
-            project("gamma-old", 5, &["/work/gamma"]),
+            project("almanac", 11, &["/work/almanac"]),
+            project("delta", 7, &["/work/c"]),
+            project("almanac-old", 3, &["/work/c"]),
         ];
         let groups = similar_project_groups(&stats);
-        assert_eq!(groups.len(), 2, "{groups:?}");
-        assert_eq!(groups[0].canonical, "beta");
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].canonical, "almanac");
         assert!(groups[0].sources.is_empty());
-        assert_eq!(groups[0].skipped[0].project, "gamma");
-        assert_eq!(groups[1].canonical, "gamma");
-        assert_eq!(groups[1].sources, vec!["gamma-old".to_owned()]);
-        assert!(
-            groups[1].skipped.is_empty(),
-            "the spelling that shares gamma's folder moves: {groups:?}"
-        );
+        assert_eq!(groups[0].skipped[0].project, "almanac-old");
+
+        // The invariant behind that: a source never holds more than the name it
+        // moves into.
+        for group in &groups {
+            let canonical = stats
+                .iter()
+                .find(|stats| stats.name == group.canonical)
+                .expect("a canonical from the stats");
+            for source in &group.sources {
+                let source = stats
+                    .iter()
+                    .find(|stats| stats.name == *source)
+                    .expect("a source from the stats");
+                assert!(
+                    canonical.observation_count >= source.observation_count,
+                    "{:?} holds more than {:?} and would move into it: {groups:?}",
+                    source.name,
+                    canonical.name
+                );
+            }
+        }
     }
 
     /// One refused source does not stop the fold the remedy exists for.
@@ -709,6 +731,20 @@ mod tests {
         assert_eq!(groups[0].sources, vec!["alpha".to_owned()]);
         assert_eq!(groups[0].skipped.len(), 1);
         assert_eq!(groups[0].skipped[0].project, "beta-old");
+
+        // Naming the source that moves answers the whole fold.
+        assert_eq!(groups_naming(&stats, "alpha"), groups);
+
+        // Naming the one left in place answers the same group with nothing to
+        // move, so a run scoped to it changes nothing.
+        let scoped = groups_naming(&stats, "beta-old");
+        assert_eq!(scoped.len(), 1, "{scoped:?}");
+        assert_eq!(scoped[0].canonical, "beta");
+        assert!(
+            scoped[0].sources.is_empty(),
+            "a run scoped to a project the fold leaves alone applies nothing: {scoped:?}"
+        );
+        assert_eq!(scoped[0].skipped[0].project, "beta-old");
     }
 
     /// A source with memories but no recorded folder is a name variant.

@@ -1977,6 +1977,39 @@ fn a_fragment_from_inside_a_word_is_found_in_the_title() {
     );
 }
 
+/// A title's accented capitals are folded by the same rule as the term.
+///
+/// The substring stage lowered the title with SQLite's `lower()`, which folds
+/// ASCII only, while the term was lowercased by Rust — so `CONFIGURACIÓN`
+/// stayed `configuraciÓn` on the title's side and `instr` could not find
+/// `guració` in it. The fragment is inside the title and the body carries no
+/// other word the earlier stages could use, so the stage under test is the one
+/// that has to answer.
+#[test]
+fn a_fragment_with_an_accented_capital_is_found_in_the_title() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation(
+            "s1",
+            "CONFIGURACIÓN del servidor",
+            "el archivo de la máquina cambió",
+        ))
+        .unwrap();
+
+    let found = store.search("guració", SearchOptions::default()).unwrap();
+    assert_eq!(
+        found.len(),
+        1,
+        "a fragment of a shouted word with an accent has to find the memory: {found:?}"
+    );
+    assert_eq!(found[0].observation.title, "CONFIGURACIÓN del servidor");
+    assert!(
+        found[0].partial,
+        "a fragment matched less than the whole word, and has to say so"
+    );
+}
+
 /// The title fragment stage wants every word inside the title, never any of
 /// them.
 ///

@@ -408,11 +408,11 @@ pub fn stem_text(text: &str, language: Interface) -> String {
     stemmed
 }
 
-/// Makes the three functions the stem triggers call available on a connection.
+/// Makes the functions this connection's SQL calls available on it.
 ///
-/// All three are needed by an insert or an edit of a memory's text, because the
-/// triggers call them; a delete or an edit of `tool_name`, `type` or `project`
-/// calls none. `named` is the language the setting names, or `None` when it
+/// The three `leteo_stem*` functions are needed by an insert or an edit of a
+/// memory's text, because the triggers call them; a delete or an edit of
+/// `tool_name`, `type` or `project` calls none. `named` is the language the setting names, or `None` when it
 /// names none. `leteo_memory_language(title, content)` is what a row written on
 /// this connection is recorded under: `named` when there is one, and the
 /// language [`detect`] reads from the text when there is not. Both are fixed for
@@ -450,6 +450,17 @@ pub fn register(connection: &Connection, named: Option<Interface>) -> rusqlite::
             (Some(text), Some(language)) => stem_text(&text, language),
             _ => String::new(),
         })
+    })?;
+    // SQLite's own `lower()` folds ASCII only. The substring stage compares a
+    // title against a term Rust has already lowercased with `to_lowercase`, so
+    // `CONFIGURACIÓN` kept its `Ó` on the title's side and `instr` could not
+    // find `guració` in it — the one stage for a half-remembered word was
+    // silent for a memory written in Spanish and shouted. Registered here
+    // because this is the one place a connection is given the functions its SQL
+    // calls.
+    connection.create_scalar_function("leteo_fold", 1, flags, |context| {
+        let text: Option<String> = context.get(0)?;
+        Ok(text.map(|text| text.to_lowercase()))
     })?;
     Ok(())
 }

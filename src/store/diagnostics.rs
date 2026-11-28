@@ -1769,7 +1769,7 @@ fn could_not_run(code: &str, what: &str, error: &dyn std::fmt::Display) -> Docto
 /// A mebibyte is called a megabyte here because that is what every file manager
 /// calls it, and the point of the number is to be recognised next to the size
 /// of the database.
-fn describe_bytes(bytes: i64) -> String {
+pub(super) fn describe_bytes(bytes: i64) -> String {
     const MIB: f64 = 1024.0 * 1024.0;
     const KIB: f64 = 1024.0;
     let bytes_as_float = bytes as f64;

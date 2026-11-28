@@ -2680,3 +2680,16 @@ fn the_doctor_names_the_prompts_a_harness_wrote_and_the_text_they_hold() {
     assert!(report.checks[0].ok);
     assert_eq!(report.checks[0].severity, DoctorSeverity::Info);
 }
+
+/// The figure reads in the unit a file size is read in, and the trunk is exact.
+#[test]
+fn the_byte_figure_reads_in_the_unit_a_file_is_measured_in() {
+    use crate::store::diagnostics::describe_bytes;
+
+    assert_eq!(describe_bytes(0), "0 bytes");
+    assert_eq!(describe_bytes(1023), "1023 bytes");
+    assert_eq!(describe_bytes(1024), "1.0 KB");
+    assert_eq!(describe_bytes(2048), "2.0 KB");
+    assert_eq!(describe_bytes(1024 * 1024), "1.0 MB");
+    assert_eq!(describe_bytes(39_958_700), "38.1 MB");
+}

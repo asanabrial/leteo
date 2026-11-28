@@ -1850,15 +1850,6 @@ fn an_unreadable_hook_payload_says_so_instead_of_pretending_it_was_empty() {
     );
 }
 
-/// A hook answers even when the store cannot be opened at all.
-///
-/// The hook module says it plainly — a malformed payload or a store problem
-/// must never block the user's prompt — and the store used to be opened before
-/// the hook was reached, so the promise was made in one file and broken in
-/// another. A database corrupted, a disk that filled, a drive that went away:
-/// `leteo hook user-prompt-submit` printed a Rust error to stderr and exited 1,
-/// on every prompt, for as long as the file stayed broken.
-///
 /// Prompts older builds kept from messages the harness wrote are named by
 /// `doctor` and removed by `--repair`, through the path a delete takes.
 ///
@@ -1934,6 +1925,15 @@ fn doctor_repairs_the_prompts_older_builds_stored_from_harness_messages() {
     assert_eq!(repaired["healthy"], json!(true));
 }
 
+/// A hook answers even when the store cannot be opened at all.
+///
+/// The hook module says it plainly — a malformed payload or a store problem
+/// must never block the user's prompt — and the store used to be opened before
+/// the hook was reached, so the promise was made in one file and broken in
+/// another. A database corrupted, a disk that filled, a drive that went away:
+/// `leteo hook user-prompt-submit` printed a Rust error to stderr and exited 1,
+/// on every prompt, for as long as the file stayed broken.
+///
 /// `leteo doctor` is the one command that has to keep failing loudly, because
 /// it is what somebody runs to find out what is wrong.
 #[test]

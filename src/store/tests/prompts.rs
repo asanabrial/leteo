@@ -825,3 +825,136 @@ fn a_prompt_with_an_oversized_project_keeps_the_question() {
     let expected = "p".repeat(normalize::PROJECT_MAX_BYTES);
     assert_eq!(prompt.project, expected);
 }
+
+/// The prompts an older build kept from messages the harness wrote.
+///
+/// Nobody typed them and nothing shows them — the recent listing skips them and
+/// 0.5.0 stopped storing new ones — but they stay in the table, in the index and
+/// in the journal. The rule that decides which they are is
+/// [`crate::memory::normalize::is_harness_message`], which skips leading
+/// non-ASCII whitespace that SQLite's `trim` does not, so a store that asked
+/// the question in SQL would count a different set from the hook's own rule.
+#[test]
+fn stored_harness_messages_are_counted_and_removed_as_deletes() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let ask = |store: &mut Store, content: &str| {
+        store
+            .add_prompt(AddPrompt {
+                session_id: "s1".to_owned(),
+                content: content.to_owned(),
+                project: Some("leteo".to_owned()),
+            })
+            .unwrap()
+    };
+    let task = ask(
+        &mut store,
+        "<task-notification>the harnessonlyneedle finished</task-notification>",
+    );
+    let cross = ask(
+        &mut store,
+        "<cross-session-message from=\"other\">hello</cross-session-message>",
+    );
+    // Inserted directly, as an older build left it: the leading non-breaking
+    // space is the row SQL and the hook disagreed on, and `add_prompt` would
+    // have trimmed it before storing.
+    let spaced = "\u{a0}<agent-message>one more</agent-message>".to_owned();
+    store
+        .connection
+        .execute(
+            "INSERT INTO prompts (sync_id, session_id, content, project)
+             VALUES ('spaced', 's1', ?1, 'leteo')",
+            rusqlite::params![&spaced],
+        )
+        .unwrap();
+    let typed = ask(
+        &mut store,
+        "please read <task-notification> in the log and tell me what it says",
+    );
+    let ordinary = ask(&mut store, "what did we decide about the storage engine?");
+
+    let found = store.stored_harness_prompts().unwrap();
+    assert_eq!(found.prompts, 3, "the three the rule catches: {found:?}");
+    assert_eq!(
+        found.bytes,
+        (task.content.len() + cross.content.len() + spaced.len()) as i64,
+        "the text they hold, in UTF-8 bytes"
+    );
+
+    let indexed = |store: &Store, term: &str| -> i64 {
+        store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM prompts_fts WHERE prompts_fts MATCH ?1",
+                [term],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(indexed(&store, "harnessonlyneedle"), 1);
+
+    let removed = store.remove_harness_prompts().unwrap();
+    assert_eq!(removed, found, "the repair removes what the check counted");
+
+    assert_eq!(store.stored_harness_prompts().unwrap().prompts, 0);
+    let left: Vec<i64> = store
+        .connection
+        .prepare("SELECT id FROM prompts ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        left,
+        vec![typed.id, ordinary.id],
+        "a question that quotes the tag is a question somebody typed"
+    );
+    assert_eq!(
+        indexed(&store, "harnessonlyneedle"),
+        0,
+        "the index entry went with the row"
+    );
+
+    // The delete path, not a bare `DELETE`: a peer applies a tombstone and a
+    // journal entry, and neither exists for a row removed any other way.
+    let tombstones: i64 = store
+        .connection
+        .query_row("SELECT COUNT(*) FROM prompt_deletions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(tombstones, 3);
+    let deletes: i64 = store
+        .connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_mutations WHERE entity = 'prompt' AND op = 'delete'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        deletes, 3,
+        "one delete per row, for a project that replicates"
+    );
+}
+
+/// Nothing to remove is not an error and not a claim of work.
+#[test]
+fn a_store_with_no_harness_messages_removes_none() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_prompt(AddPrompt {
+            session_id: "s1".to_owned(),
+            content: "what did we decide about the storage engine?".to_owned(),
+            project: Some("leteo".to_owned()),
+        })
+        .unwrap();
+
+    assert_eq!(store.stored_harness_prompts().unwrap().prompts, 0);
+    assert_eq!(
+        store.remove_harness_prompts().unwrap(),
+        StoredHarnessPrompts::default()
+    );
+}

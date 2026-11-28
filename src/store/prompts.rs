@@ -406,6 +406,77 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+
+    /// The prompts an older build saved from a harness message rather than
+    /// from a person.
+    ///
+    /// Found through [`normalize::is_harness_message`], the one rule, and not
+    /// as an SQL `LIKE` over the prefixes: the rule skips U+00A0, U+0085,
+    /// U+2003 and U+3000 before the prefix and SQLite's `trim` does not, so a
+    /// store's count and the hook's rule would disagree about the same row.
+    /// Reading the rows costs one pass over the table and no index work: 40 ms
+    /// over a 190 MB store holding 16,114 prompts, 40 MB of them, against 50 ms
+    /// for a check that reads nothing at all.
+    pub fn stored_harness_prompts(&self) -> Result<StoredHarnessPrompts, StoreError> {
+        let found = self.harness_prompts()?;
+        Ok(StoredHarnessPrompts {
+            prompts: found.len() as i64,
+            bytes: found.iter().map(|prompt| prompt.content.len() as i64).sum(),
+        })
+    }
+
+    /// Removes those prompts, through the path a delete takes.
+    ///
+    /// The tombstone and the journal entry are what a peer applies, so a repair
+    /// that only ran `DELETE FROM prompts` would leave every copy of the store
+    /// holding the rows it removed. One transaction for the whole set rather
+    /// than one per row, because a store can hold thousands of them.
+    pub fn remove_harness_prompts(&mut self) -> Result<StoredHarnessPrompts, StoreError> {
+        let doomed = self.harness_prompts()?;
+        if doomed.is_empty() {
+            return Ok(StoredHarnessPrompts::default());
+        }
+        let mut removed = StoredHarnessPrompts::default();
+        let tx = self.write_transaction()?;
+        for prompt in &doomed {
+            erase_deleted_prompt_tx(
+                &tx,
+                &prompt.sync_id,
+                &prompt.session_id,
+                &prompt.project,
+                None,
+            )?;
+            let changed = tx.execute("DELETE FROM prompts WHERE id = ?1", [prompt.id])?;
+            if changed == 0 {
+                // Another writer took the row between the read and the
+                // transaction, which cannot happen inside one process but would
+                // make the report claim a row it did not delete.
+                continue;
+            }
+            enqueue_prompt_delete_tx(&tx, prompt)?;
+            removed.prompts += 1;
+            removed.bytes += prompt.content.len() as i64;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// The rows [`Store::stored_harness_prompts`] counts and
+    /// [`Store::remove_harness_prompts`] removes.
+    fn harness_prompts(&self) -> Result<Vec<Prompt>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("SELECT {PROMPT_COLUMNS} FROM prompts"))?;
+        let rows = statement.query_map([], map_prompt)?;
+        let mut found = Vec::new();
+        for prompt in rows {
+            let prompt = prompt?;
+            if normalize::is_harness_message(&prompt.content) {
+                found.push(prompt);
+            }
+        }
+        Ok(found)
+    }
 }
 
 /// The keys of a journalled prompt that survive its deletion.

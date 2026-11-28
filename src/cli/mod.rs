@@ -851,6 +851,18 @@ pub async fn run(cli: Cli) -> Result<()> {
                     repair_failed.push(format!("removing orphan versions: {error}"));
                     None
                 });
+            // The prompts older builds stored from messages the harness wrote.
+            // Through the same delete path as a prompt somebody removes, so the
+            // tombstones and journal entries a peer applies are written; the
+            // report below then describes the store without them.
+            let removed_harness = repairs
+                .harness_prompts
+                .then(|| store.remove_harness_prompts())
+                .transpose()
+                .unwrap_or_else(|error| {
+                    repair_failed.push(format!("removing stored harness prompts: {error}"));
+                    None
+                });
             // The vectors the stage is missing. `doctor --repair` is the one
             // command that says "do it now": the background backfill drains a
             // store on its own schedule, and a one-shot import or a store nobody
@@ -926,6 +938,12 @@ pub async fn run(cli: Cli) -> Result<()> {
                     object.insert(
                         "removed_orphan_versions".to_owned(),
                         serde_json::to_value(swept)?,
+                    );
+                }
+                if let Some(removed) = removed_harness {
+                    object.insert(
+                        "removed_harness_prompts".to_owned(),
+                        serde_json::to_value(removed)?,
                     );
                 }
                 if let Some(check) = check {
@@ -1314,6 +1332,7 @@ struct Repairs {
     hashes: bool,
     types: bool,
     orphans: bool,
+    harness_prompts: bool,
     vectors: bool,
     spool: bool,
 }
@@ -1327,6 +1346,7 @@ impl Repairs {
         hashes: true,
         types: true,
         orphans: true,
+        harness_prompts: true,
         vectors: true,
         spool: true,
     };
@@ -1371,6 +1391,10 @@ impl Repairs {
             }),
             "orphan_versions" => Some(Self {
                 orphans: true,
+                ..Self::default()
+            }),
+            "stored_harness_prompts" => Some(Self {
+                harness_prompts: true,
                 ..Self::default()
             }),
             "semantic_model" | "semantic_vectors" => Some(Self {

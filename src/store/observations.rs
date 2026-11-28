@@ -356,6 +356,26 @@ fn redact_observation_journal_tx(
     )
 }
 
+/// How many times `find` occurs in `body`, counting a match that starts inside
+/// another one.
+///
+/// `str::matches` counts non-overlapping occurrences, so `111` in `1111`
+/// counted once: the edit replaced the first and the published refusal — a
+/// `find` matching more than once changes nothing — did not fire. Each scan
+/// starts one character past the previous match's start, which is where an
+/// overlapping occurrence begins; a `&str` match always starts on a character
+/// boundary, so no occurrence is skipped.
+fn overlapping_occurrences(body: &str, find: &str) -> usize {
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(offset) = body[from..].find(find) {
+        count += 1;
+        from += offset;
+        from += body[from..].chars().next().map_or(1, char::len_utf8);
+    }
+    count
+}
+
 impl Store {
     pub fn timeline(
         &self,
@@ -930,7 +950,7 @@ impl Store {
                     "find and content are two ways to write the body; pass one",
                 ));
             }
-            match current.content.matches(find).count() {
+            match overlapping_occurrences(&current.content, find) {
                 0 => return Err(StoreError::EditNotFound),
                 1 => {}
                 matches => return Err(StoreError::EditAmbiguous { matches }),

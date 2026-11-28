@@ -560,6 +560,38 @@ fn a_find_that_occurs_twice_changes_nothing() {
     assert_eq!(queued(&store), before, "and nothing was journalled");
 }
 
+/// A `find` whose occurrences overlap is refused too: the guarantee is that a
+/// `find` naming more than one span changes nothing, and `111` sits twice in
+/// `1111` though `str::matches` counts one.
+#[test]
+fn an_overlapping_find_is_refused_as_ambiguous_too() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Solapado", "1111"))
+        .unwrap()
+        .observation;
+
+    let refused = store.update_observation_with_replaced(
+        saved.id,
+        None,
+        UpdateObservation {
+            find: Some("111".to_owned()),
+            replace: Some("2".to_owned()),
+            ..UpdateObservation::default()
+        },
+    );
+    assert!(
+        matches!(refused, Err(StoreError::EditAmbiguous { matches: 2 })),
+        "{refused:?}"
+    );
+    assert_eq!(
+        store.get_observation(saved.id).unwrap().content,
+        "1111",
+        "the body is untouched"
+    );
+}
+
 /// A `find` that is not in the body is refused for the same reason, with its own
 /// code: nothing is written and the store is left as it was.
 #[test]

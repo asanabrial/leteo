@@ -450,21 +450,44 @@ pub async fn run(cli: Cli) -> Result<()> {
     if let (Command::Hook { event, verbose }, Err(error)) = (&cli.command, &store) {
         eprintln!("leteo hook: the store could not be opened: {error:#}");
         // A busy store is the one open failure that is not a reason to give up
-        // on the event. A `subagent-stop` capture is the subagent's only copy,
-        // so it is written beside the database for the next open to replay;
-        // every other event is bookkeeping a later one repeats anyway.
+        // on the event. A `subagent-stop` capture is the subagent's only copy
+        // and a prompt is a thing a person typed, so both are written beside
+        // the database for the next open to replay; every other event is
+        // bookkeeping a later one repeats anyway.
         if error.is_busy()
-            && crate::hooks::HookEvent::from(*event) == crate::hooks::HookEvent::SubagentStop
             && let Some((input, _)) = &hook_input
-            && let Some((capture, directory, unsettled)) = crate::hooks::pending_capture(input)
         {
-            let _ = crate::hooks::spool::spool_unsettled(
-                &data_directory,
-                crate::hooks::HookEvent::SubagentStop.hook_event_name(),
-                &capture,
-                &directory,
-                unsettled,
-            );
+            match crate::hooks::HookEvent::from(*event) {
+                crate::hooks::HookEvent::SubagentStop => {
+                    if let Some((capture, directory, unsettled)) =
+                        crate::hooks::pending_capture(input)
+                    {
+                        let _ = crate::hooks::spool::spool_unsettled(
+                            &data_directory,
+                            crate::hooks::HookEvent::SubagentStop.hook_event_name(),
+                            &capture,
+                            &directory,
+                            unsettled,
+                        );
+                    }
+                }
+                crate::hooks::HookEvent::UserPromptSubmit => {
+                    if let Some((session, project, content, directory, unsettled)) =
+                        crate::hooks::pending_prompt(input)
+                    {
+                        let _ = crate::hooks::spool::spool_prompt(
+                            &data_directory,
+                            crate::hooks::HookEvent::UserPromptSubmit.hook_event_name(),
+                            &session,
+                            &project,
+                            &content,
+                            &directory,
+                            unsettled,
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
         if *verbose {
             print_json(&serde_json::json!({
@@ -1102,7 +1125,22 @@ pub async fn run(cli: Cli) -> Result<()> {
             let path = absolutize(&file)?;
             let json = std::fs::read_to_string(&path)
                 .with_context(|| format!("read import file {}", path.display()))?;
-            let imported = store.import_json_with(&json, dry_run)?;
+            let imported = store.import_json_with(&json, dry_run).with_context(|| {
+                // An import commits a batch at a time, so a failure part way
+                // leaves the batches before it in the store. Saying so is the
+                // difference between "nothing happened, try again" and trying
+                // again, which is the whole remedy: the same file resumes,
+                // because every insert is keyed on a sync id. The sentence is
+                // conditional because a file that never parsed failed before
+                // the first batch, and nothing of it was kept.
+                if dry_run {
+                    "count what this import would write (nothing was kept)".to_owned()
+                } else {
+                    "import the file; a failure part way leaves the batches already committed \
+                     in the store, and running the same file again resumes from there"
+                        .to_owned()
+                }
+            })?;
             let mut output = serde_json::to_value(&imported)?;
             // A dry run wrote no row, so there is no vector to give one, and
             // the same rule already holds on the adoption path beside this one.

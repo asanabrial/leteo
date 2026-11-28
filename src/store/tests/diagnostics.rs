@@ -2693,3 +2693,159 @@ fn the_byte_figure_reads_in_the_unit_a_file_is_measured_in() {
     assert_eq!(describe_bytes(1024 * 1024), "1.0 MB");
     assert_eq!(describe_bytes(39_958_700), "38.1 MB");
 }
+
+/// An export with `count` memories, all in one session, each with a marker.
+fn export_with_observations(count: usize) -> ExportData {
+    let observations = (0..count)
+        .map(|index| Observation {
+            id: index as i64 + 1,
+            sync_id: format!("obs-batch-{index:016}"),
+            session_id: "batch-session".to_owned(),
+            kind: "discovery".to_owned(),
+            title: format!("Memory {index}"),
+            content: format!("the batch marker is in memory {index}"),
+            tool_name: None,
+            project: Some("leteo".to_owned()),
+            scope: "project".to_owned(),
+            topic_key: None,
+            revision_count: 1,
+            duplicate_count: 1,
+            last_seen_at: None,
+            review_after: None,
+            prompt_sync_id: None,
+            directory: None,
+            pinned: false,
+            created_at: "2026-07-28 17:00:39".to_owned(),
+            updated_at: "2026-07-28 17:00:39".to_owned(),
+            deleted_at: None,
+        })
+        .collect();
+    ExportData {
+        version: "0.1.0".to_owned(),
+        exported_at: "2026-07-28 17:00:39".to_owned(),
+        sessions: vec![Session {
+            id: "batch-session".to_owned(),
+            project: "leteo".to_owned(),
+            directory: "C:/repo".to_owned(),
+            started_at: "2026-07-28 17:00:39".to_owned(),
+            ended_at: None,
+            summary: None,
+        }],
+        observations,
+        prompts: Vec::new(),
+        relations: Vec::new(),
+        observation_versions: Vec::new(),
+        prompt_tombstones: Vec::new(),
+    }
+}
+
+/// An import larger than one batch keeps every row and indexes the last one.
+///
+/// The batches are invisible from outside except in what they must not change:
+/// the count is the file's, the row in the final chunk is findable after the
+/// one rebuild that closes the import, and the triggers are back. A batch
+/// boundary that dropped a row or skipped the rebuild would fail here.
+#[test]
+fn an_import_writes_more_rows_than_one_batch_and_indexes_them_all() {
+    let (_temp, mut store) = store();
+    let count = crate::store::diagnostics::IMPORT_BATCH_ROWS * 2 + 3;
+    let mut exported = export_with_observations(count);
+    let last = exported.observations.last_mut().expect("the last memory");
+    last.content = "the last chunk carries zarandaja".to_owned();
+
+    let result = store.import(&exported).unwrap();
+    assert_eq!(result.observations_imported, count as i64, "{result:?}");
+
+    assert_eq!(
+        store.export().unwrap().observations.len(),
+        count,
+        "every row of every chunk is there"
+    );
+    assert_eq!(
+        store
+            .search("zarandaja", SearchOptions::default())
+            .unwrap()
+            .len(),
+        1,
+        "the row in the final chunk reached the index the import rebuilt"
+    );
+    let missing = crate::store::schema::missing_full_text_triggers(store.connection()).unwrap();
+    assert!(missing.is_empty(), "the import left without {missing:?}");
+    let report = store.doctor().unwrap();
+    assert!(report.healthy, "{:?}", report.issues);
+}
+
+/// A batch that fails leaves the batches before it, and the next run finishes.
+///
+/// This is what a process killed between batches looks like from the store's
+/// side: the rows up to the last commit are there, the failing batch is not.
+/// The file that killed it — here a memory naming a session the export does not
+/// carry — is not something a second run can complete, so the second run is
+/// given the same file without that row, and it must finish without duplicates.
+#[test]
+fn an_import_that_fails_after_a_batch_keeps_what_the_batches_before_it_wrote() {
+    let (_temp, mut store) = store();
+    let batch = crate::store::diagnostics::IMPORT_BATCH_ROWS;
+    let mut exported = export_with_observations(batch + 2);
+    // The ghost lands in the second chunk, after the first has committed.
+    let mut ghost = exported.observations[0].clone();
+    ghost.sync_id = "obs-batch-ghost".to_owned();
+    ghost.session_id = "a-session-this-export-does-not-carry".to_owned();
+    exported.observations.push(ghost);
+
+    let failed = store.import(&exported);
+    assert!(
+        failed.is_err(),
+        "an observation without its session is refused"
+    );
+    assert_eq!(
+        store.export().unwrap().observations.len(),
+        batch,
+        "the rows the first batch committed are kept, and the failing batch is not"
+    );
+
+    // The same file, minus the row that cannot land.
+    exported
+        .observations
+        .retain(|observation| observation.session_id != "a-session-this-export-does-not-carry");
+    let finished = store.import(&exported).unwrap();
+    assert_eq!(
+        finished.observations_imported, 2,
+        "the second run writes what is missing, not what is there: {finished:?}"
+    );
+    assert_eq!(
+        store.export().unwrap().observations.len(),
+        batch + 2,
+        "and the store holds every row exactly once"
+    );
+    let missing = crate::store::schema::missing_full_text_triggers(store.connection()).unwrap();
+    assert!(
+        missing.is_empty(),
+        "the failed import left without {missing:?}"
+    );
+}
+
+/// A batch that fails keeps none of its rows.
+///
+/// The batch is the unit the commit is made of, so a row written inside one
+/// that fails is not half-kept: either the batch committed or nothing in it
+/// did. This is what keeps a second import from finding half a row.
+#[test]
+fn a_failed_batch_keeps_none_of_its_rows() {
+    let (_temp, mut store) = store();
+    let failed = store.import_batch(false, |tx| {
+        tx.execute(
+            "INSERT INTO sessions (id, project, directory, started_at)
+             VALUES ('failed-batch', 'leteo', '', '2026-07-28 17:00:39')",
+            [],
+        )?;
+        Err(StoreError::InvalidParameter(
+            "a batch that fails".to_owned(),
+        ))
+    });
+    assert!(failed.is_err(), "the closure's error is the batch's");
+    assert!(
+        store.get_session("failed-batch").is_err(),
+        "the row written inside the failed batch is gone"
+    );
+}

@@ -2729,8 +2729,9 @@ fn doctor_repair_says_when_it_could_not_make_a_vector_and_why() {
 
 /// A repair that drops a spool entry says how many went and why.
 ///
-/// The spool is where a subagent's only copy of what it learned waits for a
-/// busy store, so a repair that removes one has to say it did.
+/// The spool is where a subagent's only copy of what it learned, and a prompt
+/// somebody typed, wait for a busy store; a repair that removes one has to say
+/// it did.
 #[test]
 fn doctor_repair_reports_the_spool_entries_it_dropped_and_why() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
@@ -2745,7 +2746,7 @@ fn doctor_repair_reports_the_spool_entries_it_dropped_and_why() {
     );
     let spool = temp.path().join("hooks").join("spool");
     std::fs::create_dir_all(&spool).expect("make the spool directory");
-    std::fs::write(spool.join("00000000000000000001.json"), b"not a capture")
+    std::fs::write(spool.join("00000000000000000001.json"), b"not hook text")
         .expect("leave litter in the spool");
 
     let repaired = run_json(leteo(&database).arg("doctor").arg("--repair"));
@@ -2753,7 +2754,7 @@ fn doctor_repair_reports_the_spool_entries_it_dropped_and_why() {
     assert_eq!(
         repaired["spool"]["dropped_reasons"]
             .as_object()
-            .and_then(|reasons| reasons.get("the entry could not be read as a capture")),
+            .and_then(|reasons| reasons.get("the entry could not be read as hook text")),
         Some(&json!(1)),
         "{repaired}"
     );
@@ -4815,4 +4816,118 @@ fn a_parameter_refusal_carries_a_code() {
         json!("invalid_params"),
         "an unknown field is refused the same way: {unknown}"
     );
+}
+
+/// An import killed between batches is finished by the next run.
+///
+/// The import commits a batch at a time, so a process killed part way has
+/// written the batches before the kill and nothing of the one it was in. Every
+/// insert is keyed on a sync id, so the second run writes only what is missing
+/// and the store ends with each memory exactly once — the acceptance criterion,
+/// measured against a real killed process rather than a simulated failure.
+#[test]
+fn an_import_killed_between_batches_is_finished_by_the_next_run() {
+    const MEMORIES: usize = 4_000;
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("resumable.db");
+    let file = temp.path().join("export.json");
+    let observations: Vec<Value> = (0..MEMORIES)
+        .map(|index| {
+            json!({
+                "id": index + 1,
+                "sync_id": format!("obs-resume-{index:012}"),
+                "session_id": "resume-session",
+                "type": "discovery",
+                "title": format!("Memory {index}"),
+                "content": format!("the resumable marker is in memory {index}"),
+                "project": "resume",
+                "scope": "project",
+                "revision_count": 1,
+                "duplicate_count": 1,
+                "last_seen_at": "2026-07-28 17:00:39",
+                "created_at": "2026-07-28 17:00:39",
+                "updated_at": "2026-07-28 17:00:39",
+            })
+        })
+        .collect();
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "version": "0.1.0",
+            "exported_at": "2026-07-28 17:00:39",
+            "sessions": [{
+                "id": "resume-session",
+                "project": "resume",
+                "directory": "C:/repo",
+                "started_at": "2026-07-28 17:00:39",
+            }],
+            "observations": observations,
+        }))
+        .expect("serialise the export"),
+    )
+    .expect("write the export");
+
+    // Reads do not wait for the writer in a WAL store, so this counts what has
+    // committed while the import is still running.
+    let committed = |database: &Path| -> i64 {
+        rusqlite::Connection::open(database)
+            .and_then(|connection| {
+                connection.busy_timeout(std::time::Duration::from_millis(100))?;
+                connection.query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+            })
+            .unwrap_or(0)
+    };
+
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("leteo"))
+        .env_remove("LETEO_DATABASE")
+        .env_remove("LETEO_DATA_DIR")
+        .env("LETEO_MODEL_URL", "http://127.0.0.1:9")
+        .arg("--database")
+        .arg(&database)
+        .arg("import")
+        .arg(&file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the import");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline && committed(&database) < 500 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let killed_at = committed(&database);
+    assert!(
+        killed_at >= 500,
+        "the import has to commit a batch before the kill gives this test something to resume"
+    );
+    assert!(
+        killed_at < MEMORIES as i64,
+        "the import finished before it could be interrupted, so nothing was resumed"
+    );
+    child.kill().expect("kill the import between batches");
+    child.wait().expect("reap the killed import");
+
+    let second = run_json(leteo(&database).arg("import").arg(&file));
+    let written = second["observations_imported"]
+        .as_i64()
+        .expect("the second import reports its rows");
+    assert_eq!(
+        written + killed_at,
+        MEMORIES as i64,
+        "the second run writes what the kill left, and nothing twice: {second}"
+    );
+
+    let connection = rusqlite::Connection::open(&database).expect("read the finished store");
+    let total: i64 = connection
+        .query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+        .expect("count the memories");
+    let distinct: i64 = connection
+        .query_row(
+            "SELECT COUNT(DISTINCT sync_id) FROM observations",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count the sync ids");
+    assert_eq!(total, MEMORIES as i64, "every memory is there");
+    assert_eq!(distinct, MEMORIES as i64, "and none of them twice");
 }

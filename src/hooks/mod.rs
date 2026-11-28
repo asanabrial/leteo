@@ -72,6 +72,13 @@ pub enum HookEvent {
     SessionStop,
 }
 
+/// How long a prompt hook waits for another writer before keeping the prompt.
+///
+/// One constant, read by `store_wait`. The number is a wait a person sits
+/// behind: a prompt that the store cannot take is spooled, so this bounds how
+/// long the agent waits before the hook gives up and says nothing is lost.
+pub const PROMPT_STORE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
 impl HookEvent {
     /// The agent-facing event name reported back in the hook response.
     /// How many seconds the agent that registered this hook waits before it
@@ -132,14 +139,26 @@ impl HookEvent {
     ///                        before   after   patience
     ///   session-start        9942 ms  9453 ms   10 s
     ///   subagent-stop        9957 ms  8949 ms   10 s
-    ///   user-prompt-submit   4474 ms  4048 ms    5 s
+    ///   user-prompt-submit   4474 ms   300 ms    5 s
     ///   session-stop         2294 ms  2075 ms    3 s
     /// ```
     ///
     /// `session-start` keeps the thinnest margin of the four at 0.55 s, because
     /// it is the one that builds the whole opening context after the write it
     /// could not do. The other three land within a second of the intent.
+    ///
+    /// The prompt is the exception, and it is not a margin: its text is the one
+    /// an event can hand to the spool and have stored later, so waiting the
+    /// agent's patience buys nothing a replay cannot. Against an import holding
+    /// the write lock, the old bound ran 4.05 seconds and dropped the prompt
+    /// (three sent, two stored, in the issue's measurement). At
+    /// [`PROMPT_STORE_WAIT`] the hook returns in about 300 ms — one order of
+    /// magnitude above the 17-60 ms idle medians — and the words are in the
+    /// spool.
     pub fn store_wait(self) -> std::time::Duration {
+        if self == Self::UserPromptSubmit {
+            return PROMPT_STORE_WAIT;
+        }
         let budget =
             std::time::Duration::from_secs(self.agent_timeout_seconds().saturating_sub(1).max(1));
         budget * 9 / 10
@@ -541,6 +560,43 @@ pub(crate) fn pending_capture(
     ))
 }
 
+/// The prompt a `user-prompt-submit` payload describes, worked out without a
+/// store.
+///
+/// [`pending_capture`] for the same reason: the CLI reads the payload before it
+/// opens the store, and a prompt whose open fails busy is still the person's
+/// words. A message the harness wrote returns `None`, which is the rule the
+/// live path applies before it stores one.
+pub(crate) fn pending_prompt(
+    input: &HookInput,
+) -> Option<(String, String, String, String, spool::Unsettled)> {
+    if input.prompt.trim().is_empty() || normalize::is_harness_message(&input.prompt) {
+        return None;
+    }
+    let directory = resolve_directory(&input.cwd);
+    let detection = detect_project(&directory);
+    let (project, _) = resolve_project(input, &detection);
+    let (session_id, _) = resolve_session_id(input, &project);
+    let named_by_agent = !input
+        .project
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty();
+    let refused_session = normalize::session_id_refusal(input.session_id.trim()).is_some();
+    let unsettled = spool::Unsettled {
+        guessed: !named_by_agent && detection.is_guess(),
+        derived_session: input.session_id.trim().is_empty() || refused_session,
+    };
+    Some((
+        session_id,
+        project,
+        input.prompt.clone(),
+        directory.to_string_lossy().into_owned(),
+        unsettled,
+    ))
+}
+
 /// The capture a payload stores, under the session and project already resolved.
 ///
 /// One place for the default producer name, because both doors into the spool —
@@ -916,7 +972,38 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                     project: Some(project.clone()),
                 }) {
                     Ok(_) => outcome.prompt_saved = true,
-                    Err(error) => outcome.warnings.push(said("save prompt", &error)),
+                    Err(error) => {
+                        // A busy store is the one refusal a later open mends,
+                        // and the words are the person's: they are written
+                        // beside the database and stored on the next replay,
+                        // exactly as a subagent's learnings are. Any other
+                        // error would fail the replay the same way, so it is
+                        // said and nothing is kept.
+                        let spooled = error.is_busy()
+                            && spool::spool_prompt(
+                                store.data_dir(),
+                                event.hook_event_name(),
+                                &session_id,
+                                &project,
+                                &input.prompt,
+                                &directory.to_string_lossy(),
+                                spool::Unsettled {
+                                    guessed,
+                                    derived_session,
+                                },
+                            )
+                            .is_ok();
+                        if spooled {
+                            outcome.warnings.push(
+                                "save prompt: another process is writing to the store, so this \
+                                 prompt is kept beside it and stored when the store is free; \
+                                 nothing to do"
+                                    .to_owned(),
+                            );
+                        } else {
+                            outcome.warnings.push(said("save prompt", &error));
+                        }
+                    }
                 }
             }
             // What this conversation has already been handed, so the hint does

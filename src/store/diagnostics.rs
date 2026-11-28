@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// How many rows one import transaction writes before it commits.
+///
+/// The bound is a wait, not a work unit: another writer waits at most one
+/// batch. Measured on a throwaway store taking a 20,000-memory, 86 MB export,
+/// a release build held the write lock for 917 ms at the longest batch, against
+/// 5.1 seconds for the same import in one transaction.
+pub(crate) const IMPORT_BATCH_ROWS: usize = 500;
+
+/// How long an import leaves the write lock free between batches.
+///
+/// See the sleep in `import_batch` for the measurement; the number is SQLite's
+/// largest busy-handler step and the reason a shorter gap does not work.
+const IMPORT_YIELD: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl Store {
     pub fn export(&self) -> Result<ExportData, StoreError> {
         self.export_with_project(None)
@@ -31,10 +45,9 @@ impl Store {
 
     /// A JSON import that reports what it would write without keeping it.
     ///
-    /// The rows are written and counted in the same transaction a real import
-    /// uses, then rolled back, so the counts are what the store would hold and
-    /// nothing survives: not the rows, not the rebuilt indexes, not the
-    /// triggers an import drops and restores on the way through.
+    /// The rows are written and counted in one transaction, then rolled back,
+    /// so the counts are what the store would hold and nothing survives: not
+    /// the rows, not the index entries their triggers wrote.
     pub fn import_json_with(
         &mut self,
         json: &str,
@@ -60,178 +73,70 @@ impl Store {
                 READABLE_EXPORT_VERSIONS.join(" or ")
             )));
         }
-        let max_length = self.config.max_observation_length;
-        let tx = self.write_transaction()?;
-
-        // The indexes are built once at the end rather than row by row on the
-        // way in, which is what an import of any size spends its time on.
-        //
-        // Every insert below fires three triggers, and each of those tokenises
-        // a title and a body through `porter unicode61` — twice for an
-        // observation, which is in two indexes. Measured on a real store of
-        // 4,013 memories, 486 sessions, 1,198 prompts and 326 relations:
-        // 13.3 seconds with the triggers in place, 0.6 to write the rows with
-        // them dropped and 0.9 to rebuild afterwards. Nine times, for the same
-        // rows and the same index — 4,013 either way.
-        //
-        // Inside the transaction, so a failure takes the schema back with the
-        // rows: SQLite rolls DDL back like anything else, and an import that
-        // stopped half way must not leave a store whose indexes have no
-        // triggers keeping them level.
-        let dropped: Vec<&str> = crate::store::schema::FULL_TEXT_TRIGGERS
-            .iter()
-            .copied()
-            .filter(|name| {
-                tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};"))
-                    .is_ok()
-            })
-            .collect();
-
-        let mut result = ImportResult::default();
-
+        // Every session id is read before the first row lands, not when its
+        // batch comes up. While the import was one transaction a refused id
+        // took the whole import with it; with batches it would take only the
+        // batches after it, so a file with one bad id would leave a store that
+        // nobody asked for.
         for session in &data.sessions {
-            // The id names a state file, so it is refused rather than cut, and
-            // refused before any row lands: the transaction is one statement
-            // wide at this point and an error takes the whole import with it.
-            // The row keeps the spelling it arrived with — the observations,
-            // prompts and tombstones of this file point at that spelling.
             if let Some(refusal) = normalize::session_id_refusal(&session.id) {
                 return Err(invalid_parameter(refusal));
             }
-            // Bounded rather than refused: a file written before the bound
-            // existed still has to come back, and every table is cut the same
-            // way so one project does not split in two.
-            let project = normalize::adopted_project(&session.project);
-            let started_at = nonempty_or_now(&session.started_at);
-            // The summary is read back in every `mem_context`, so the import
-            // door applies the same redaction and bound the local and
-            // replicated doors do. Without it a `<private>` span planted in a
-            // handwritten or older export came back in every opening context.
-            let summary = normalize::session_summary(session.summary.as_deref(), max_length);
-            // A relative directory names whatever place the reader stands in,
-            // so every local creator blanks it; the import door was the one
-            // that did not, and the drift check then resolved it against
-            // wherever the agent happened to run.
-            let directory = crate::project::recordable_directory(&session.directory);
-            result.sessions_imported += tx.execute(
-                "INSERT OR IGNORE INTO sessions
-                 (id, project, directory, started_at, ended_at, summary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    session.id,
-                    project,
-                    directory,
-                    started_at,
-                    session.ended_at,
-                    summary
-                ],
-            )? as i64;
+        }
+        let max_length = self.config.max_observation_length;
+        let mut result = ImportResult::default();
+
+        // A preview writes nothing, so it keeps the one transaction it always
+        // had: rolling its batches back one at a time would have an observation
+        // reference a session the previous batch had already rolled back, and a
+        // preview has no writer waiting behind it to justify the work.
+        if dry_run {
+            self.import_batch(true, |tx| {
+                import_sessions(tx, &data.sessions, max_length, &mut result)?;
+                import_observations(tx, &data.observations, max_length, &mut result)?;
+                import_observation_versions(
+                    tx,
+                    &data.observation_versions,
+                    max_length,
+                    &mut result,
+                )?;
+                import_prompts(tx, &data.prompts, max_length, &mut result)?;
+                import_prompt_tombstones(tx, &data.prompt_tombstones, &mut result)?;
+                import_relations(tx, &data.relations, max_length, &mut result)
+            })?;
+            return Ok(result);
         }
 
-        for observation in &data.observations {
-            let sync_id = if observation.sync_id.trim().is_empty() {
-                normalize::sync_id("obs")
-            } else {
-                observation.sync_id.trim().to_owned()
-            };
-            // A title is one line and inside the published bound on every door.
-            // This one stripped the private span and stopped there, so an
-            // export could plant a newline followed by a bullet that a later
-            // listing renders as if it were another memory.
-            let title = normalize::title(&observation.title);
-            let content = normalize::truncate_content(
-                normalize::strip_private(&observation.content),
-                max_length,
-            );
-            let project = observation
-                .project
-                .as_deref()
-                .map(normalize::adopted_project)
-                .filter(|value| !value.is_empty());
-            let scope = normalize::scope(&observation.scope);
-            let topic_key = normalize::topic_key(observation.topic_key.as_deref());
-            let created_at = nonempty_or_now(&observation.created_at);
-            let updated_at = nonempty_or_now(&observation.updated_at);
-            // The type is folded the same way the local and replicated doors
-            // fold it. An export written by a build that stored the caller's
-            // word verbatim — `manual`, `bug` — restores a memory filed where
-            // no filtered search asks for it, which `doctor` then reports as an
-            // unhealthy store. Reading the format back has to apply the rules
-            // writing it applies.
-            let kind = normalize::kind(&observation.kind);
-            result.observations_imported += tx.execute(
-                "INSERT INTO observations
-                 (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
-                  normalized_hash, revision_count, duplicate_count, last_seen_at, review_after,
-                  prompt_sync_id, directory, pinned, created_at, updated_at, deleted_at)
-                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                        ?19, ?20, ?15, ?16, ?17, ?18
-                 WHERE NOT EXISTS (SELECT 1 FROM observations WHERE sync_id = ?1)",
-                params![
-                    sync_id,
-                    observation.session_id,
-                    kind,
-                    title,
-                    content,
-                    observation.tool_name,
-                    project,
-                    scope,
-                    topic_key,
-                    normalize::normalized_hash(&content),
-                    observation.revision_count.max(1),
-                    observation.duplicate_count.max(1),
-                    observation.last_seen_at,
-                    observation.review_after,
-                    observation.pinned,
-                    created_at,
-                    updated_at,
-                    observation.deleted_at,
-                    observation.prompt_sync_id,
-                    normalize::directory(observation.directory.as_deref())
-                ],
-            )? as i64;
+        for batch in data.sessions.chunks(IMPORT_BATCH_ROWS) {
+            self.import_batch(false, |tx| {
+                import_sessions(tx, batch, max_length, &mut result)
+            })?;
+            yield_after_batch(batch.len());
+        }
+
+        for batch in data.observations.chunks(IMPORT_BATCH_ROWS) {
+            self.import_batch(false, |tx| {
+                import_observations(tx, batch, max_length, &mut result)
+            })?;
+            yield_after_batch(batch.len());
         }
 
         // The version history of the memories just restored. Applied through the
         // same helper the live and replicated paths use, so the retention bound
         // and the idempotent identity stay one implementation rather than a
         // third copy that can drift.
-        for version in &data.observation_versions {
-            if version.observation_sync_id.trim().is_empty() || version.revision <= 0 {
-                continue;
-            }
-            let title = normalize::title(&version.title);
-            let content =
-                normalize::truncate_content(normalize::strip_private(&version.content), max_length);
-            let replaced_at = nonempty_or_now(&version.replaced_at);
-            result.observation_versions_imported +=
-                crate::store::observations::snapshot_observation_version_tx(
-                    &tx,
-                    version.observation_sync_id.trim(),
-                    version.revision,
-                    &title,
-                    &content,
-                    &replaced_at,
-                )? as i64;
+        for batch in data.observation_versions.chunks(IMPORT_BATCH_ROWS) {
+            self.import_batch(false, |tx| {
+                import_observation_versions(tx, batch, max_length, &mut result)
+            })?;
+            yield_after_batch(batch.len());
         }
 
-        for prompt in &data.prompts {
-            let sync_id = if prompt.sync_id.trim().is_empty() {
-                normalize::sync_id("prompt")
-            } else {
-                prompt.sync_id.trim().to_owned()
-            };
-            let content =
-                normalize::truncate_content(normalize::strip_private(&prompt.content), max_length);
-            let project = normalize::adopted_project(&prompt.project);
-            let created_at = nonempty_or_now(&prompt.created_at);
-            result.prompts_imported += tx.execute(
-                "INSERT INTO prompts (sync_id, session_id, content, project, created_at)
-                 SELECT ?1, ?2, ?3, ?4, ?5
-                 WHERE NOT EXISTS (SELECT 1 FROM prompts WHERE sync_id = ?1)
-                   AND NOT EXISTS (SELECT 1 FROM prompt_deletions WHERE sync_id = ?1)",
-                params![sync_id, prompt.session_id, content, project, created_at],
-            )? as i64;
+        for batch in data.prompts.chunks(IMPORT_BATCH_ROWS) {
+            self.import_batch(false, |tx| {
+                import_prompts(tx, batch, max_length, &mut result)
+            })?;
+            yield_after_batch(batch.len());
         }
 
         // Engram 0.2.0's prompt tombstones, which Leteo has a home for:
@@ -240,128 +145,57 @@ impl Store {
         // comes back deleted rather than resurrected. `source_inbox_id`, which
         // 0.2.0 also carries here, has no column in this model and is dropped
         // with the rest of the fields Leteo does not hold.
-        for tombstone in &data.prompt_tombstones {
-            let sync_id = tombstone.sync_id.trim();
-            if sync_id.is_empty() {
-                continue;
-            }
-            let project = tombstone
-                .project
-                .as_deref()
-                .map(normalize::adopted_project)
-                .unwrap_or_default();
-            result.prompt_tombstones_imported += tx.execute(
-                "INSERT OR IGNORE INTO prompt_deletions (sync_id, session_id, project, deleted_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    sync_id,
-                    tombstone.session_id,
-                    project,
-                    nonempty_or_now(&tombstone.deleted_at)
-                ],
-            )? as i64;
+        for batch in data.prompt_tombstones.chunks(IMPORT_BATCH_ROWS) {
+            self.import_batch(false, |tx| import_prompt_tombstones(tx, batch, &mut result))?;
+            yield_after_batch(batch.len());
         }
 
         // Relations last: both ends have to exist before a claim about them can
-        // be stored, and the observations were only inserted a moment ago.
-        //
-        // One whose ends are not here is counted rather than dropped in
-        // silence. An export narrowed to a project can hold a relation reaching
-        // a memory that lives in another, and somebody restoring a backup
-        // deserves to know the graph came back with holes.
-        for relation in &data.relations {
-            let sync_id = relation.sync_id.trim();
-            let source_id = relation.source_id.trim();
-            let target_id = relation.target_id.trim();
-            // A pair that joins a memory to itself is refused at the doors that
-            // write relations, so an export holding one came from a build that
-            // did not: dropped and counted, like a relation whose ends are not
-            // here, rather than restored into a store where it would hide the
-            // memory it names.
-            if sync_id.is_empty() || source_id.is_empty() || target_id.is_empty() {
-                result.relations_skipped += 1;
-                continue;
-            }
-            if source_id == target_id {
-                result.relations_skipped += 1;
-                continue;
-            }
-            // The same rules the local and replicated doors apply to a judged
-            // relation: an out-of-range confidence is stored as no confidence,
-            // and both texts are redacted and bounded. `judge_relation` and
-            // `apply_relation_tx` already did this; an import could put back
-            // whatever a handsomer file held.
-            let confidence = relation
-                .confidence
-                .filter(|value| crate::memory::rules::is_confidence(*value));
-            let reason = normalize::judgment_text(relation.reason.as_deref(), max_length);
-            let evidence = normalize::judgment_text(relation.evidence.as_deref(), max_length);
-            let inserted = tx.execute(
-                &format!(
-                    "INSERT INTO memory_relations ({RELATION_INSERT_COLUMNS})
-                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
-                 WHERE NOT EXISTS (SELECT 1 FROM memory_relations WHERE sync_id = ?1)
-                   AND EXISTS (SELECT 1 FROM observations WHERE sync_id = ?2)
-                   AND EXISTS (SELECT 1 FROM observations WHERE sync_id = ?3)"
-                ),
-                params![
-                    sync_id,
-                    source_id,
-                    target_id,
-                    relation.relation,
-                    reason,
-                    evidence,
-                    confidence,
-                    relation.judgment_status,
-                    relation.marked_by_actor,
-                    relation.marked_by_kind,
-                    relation.marked_by_model,
-                    relation.session_id,
-                    nonempty_or_now(&relation.created_at),
-                    nonempty_or_now(&relation.updated_at),
-                ],
-            )? as i64;
-            if inserted == 0 && !relation_is_present(&tx, sync_id)? {
-                result.relations_skipped += 1;
-            } else {
-                result.relations_imported += inserted;
-            }
+        // be stored, and the observations were only inserted a moment ago. Every
+        // observation batch has committed by now, so a relation can reach any of
+        // them whatever chunk it arrived in.
+        for batch in data.relations.chunks(IMPORT_BATCH_ROWS) {
+            self.import_batch(false, |tx| {
+                import_relations(tx, batch, max_length, &mut result)
+            })?;
+            yield_after_batch(batch.len());
         }
-
-        // The indexes built from the rows that are now there, and then the
-        // triggers back.
-        //
-        // In this order and not the other: the rebuild begins by writing the
-        // stems of every memory that has none, and with the triggers already
-        // restored each of those writes would also be indexed one row at a
-        // time, which is the cost dropping them was for, ahead of a rebuild
-        // that replaces it. What must not happen is committing without both.
-        crate::store::schema::rebuild_present_indexes(&tx)?;
-        for name in dropped {
-            if let Some(sql) = crate::store::schema::full_text_trigger_sql(name) {
-                tx.execute_batch(sql)?;
-            }
-        }
-
-        // A dry run stops here. Everything above happened inside the
-        // transaction, so the rollback takes the rows, the rebuilt indexes and
-        // the restored triggers back with it, and the counts are what the store
-        // would have held.
-        if dry_run {
-            tx.rollback()?;
-            return Ok(result);
-        }
-
-        tx.commit()?;
         // A memory is given a vector where it is written, and an import is a
         // write like any other: the rows it restored get vectors now, up to the
         // bound, and the rest are left for the background backfill. Bounded,
         // because an import can be the whole store and its reply must not wait
         // on making vectors for all of it.
         if let Err(error) = self.backfill_vectors(super::semantic_stage::BACKFILL_BUDGET) {
-            tracing::warn!(%error, "the semantic stage could not keep vectors for what was imported");
+            tracing::warn!(
+                %error,
+                "the semantic stage could not keep vectors for what was imported"
+            );
         }
         Ok(result)
+    }
+
+    /// One transaction's worth of an import.
+    ///
+    /// The commit is what another writer waits for, so this is the unit the
+    /// batches exist for. The rows go in with the schema as it stands, triggers
+    /// and all, so the index is right at every commit boundary. That costs the
+    /// import time — the same 20,000-memory export imports in 17.9 seconds this
+    /// way against 5.8 in one transaction, because indexing happens per row
+    /// instead of once in a bulk rebuild — and it buys the wait: 917 ms at the
+    /// longest batch instead of the whole run.
+    pub(super) fn import_batch(
+        &mut self,
+        dry_run: bool,
+        write: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let tx = self.write_transaction()?;
+        write(&tx)?;
+        if dry_run {
+            tx.rollback()?;
+        } else {
+            tx.commit()?;
+        }
+        Ok(())
     }
 
     pub fn doctor(&self) -> Result<DoctorReport, StoreError> {
@@ -1105,20 +939,26 @@ impl Store {
             });
         }
         if want("hook_spool") {
-            // Captures a busy store could not take and no later open has
-            // replayed. A busy store is not damage, and the check says so with
-            // work waiting rather than with a fault, as a warning: the count,
-            // the age of the oldest, and the flag that replays them.
+            // Texts a busy store could not take and no later open has replayed:
+            // a subagent's learnings, or a prompt somebody typed. A busy store
+            // is not damage, and the check says so with work waiting rather than
+            // with a fault, as a warning: the count, the age of the oldest, and
+            // the flag that replays them.
             record(
                 match crate::hooks::spool::pending(&crate::hooks::spool::directory(self.data_dir()))
                 {
-                    Err(error) => could_not_run("hook_spool", "the hook capture spool", &error),
+                    Err(error) => could_not_run("hook_spool", "the hook spool", &error),
                     Ok(spool) if spool.entries == 0 => DoctorCheck::passed("hook_spool"),
                     Ok(spool) => DoctorCheck::warned(
                         "hook_spool",
                         format!(
-                            "{} hook capture(s) are waiting beside the store to be stored and the oldest is {} old; `leteo doctor --repair` replays them",
+                            "{} hook entr{} waiting beside the store to be stored and the oldest is {} old; `leteo doctor --repair` replays them",
                             spool.entries,
+                            if spool.entries == 1 {
+                                "y is"
+                            } else {
+                                "ies are"
+                            },
                             spool
                                 .oldest
                                 .map(crate::hooks::spool::describe_age)
@@ -1780,4 +1620,288 @@ pub(super) fn describe_bytes(bytes: i64) -> String {
     } else {
         format!("{bytes} bytes")
     }
+}
+
+/// Leaves the write lock free after a batch that filled, because another follows.
+///
+/// SQLite has no lock queue: it hands the lock to whichever connection retries
+/// next, and its busy handler backs off to a 100 ms step, so a gap shorter than
+/// that is one a waiting writer misses again and again. Measured with a probe
+/// beside the import, batches committed back to back and the probe sat out the
+/// whole import, waiting for a lock that was free for microseconds between
+/// them. A tenth of a second is the step. Only a full batch is followed by one:
+/// a partial batch ends its table, and an import of a few rows pays nothing.
+fn yield_after_batch(rows: usize) {
+    if rows == IMPORT_BATCH_ROWS {
+        std::thread::sleep(IMPORT_YIELD);
+    }
+}
+
+/// The export's sessions, written in one batch.
+fn import_sessions(
+    tx: &Transaction<'_>,
+    sessions: &[Session],
+    max_length: usize,
+    result: &mut ImportResult,
+) -> Result<(), StoreError> {
+    for session in sessions {
+        // The id names a state file, so it is refused rather than cut — above,
+        // before any row landed. The row keeps the spelling it arrived with:
+        // the observations, prompts and tombstones of this file point at that
+        // spelling.
+        //
+        // Bounded rather than refused: a file written before the bound existed
+        // still has to come back, and every table is cut the same way so one
+        // project does not split in two.
+        let project = normalize::adopted_project(&session.project);
+        let started_at = nonempty_or_now(&session.started_at);
+        // The summary is read back in every `mem_context`, so the import door
+        // applies the same redaction and bound the local and replicated doors
+        // do. Without it a `<private>` span planted in a handwritten or older
+        // export came back in every opening context.
+        let summary = normalize::session_summary(session.summary.as_deref(), max_length);
+        // A relative directory names whatever place the reader stands in, so
+        // every local creator blanks it; the import door was the one that did
+        // not, and the drift check then resolved it against wherever the agent
+        // happened to run.
+        let directory = crate::project::recordable_directory(&session.directory);
+        result.sessions_imported += tx.execute(
+            "INSERT OR IGNORE INTO sessions
+             (id, project, directory, started_at, ended_at, summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                session.id,
+                project,
+                directory,
+                started_at,
+                session.ended_at,
+                summary
+            ],
+        )? as i64;
+    }
+    Ok(())
+}
+
+/// The export's memories, written in one batch.
+fn import_observations(
+    tx: &Transaction<'_>,
+    observations: &[Observation],
+    max_length: usize,
+    result: &mut ImportResult,
+) -> Result<(), StoreError> {
+    for observation in observations {
+        let sync_id = if observation.sync_id.trim().is_empty() {
+            normalize::sync_id("obs")
+        } else {
+            observation.sync_id.trim().to_owned()
+        };
+        // A title is one line and inside the published bound on every door.
+        // This one stripped the private span and stopped there, so an export
+        // could plant a newline followed by a bullet that a later listing
+        // renders as if it were another memory.
+        let title = normalize::title(&observation.title);
+        let content =
+            normalize::truncate_content(normalize::strip_private(&observation.content), max_length);
+        let project = observation
+            .project
+            .as_deref()
+            .map(normalize::adopted_project)
+            .filter(|value| !value.is_empty());
+        let scope = normalize::scope(&observation.scope);
+        let topic_key = normalize::topic_key(observation.topic_key.as_deref());
+        let created_at = nonempty_or_now(&observation.created_at);
+        let updated_at = nonempty_or_now(&observation.updated_at);
+        // The type is folded the same way the local and replicated doors fold
+        // it. An export written by a build that stored the caller's word
+        // verbatim — `manual`, `bug` — restores a memory filed where no filtered
+        // search asks for it, which `doctor` then reports as an unhealthy store.
+        // Reading the format back has to apply the rules writing it applies.
+        let kind = normalize::kind(&observation.kind);
+        result.observations_imported += tx.execute(
+            "INSERT INTO observations
+             (sync_id, session_id, type, title, content, tool_name, project, scope, topic_key,
+              normalized_hash, revision_count, duplicate_count, last_seen_at, review_after,
+              prompt_sync_id, directory, pinned, created_at, updated_at, deleted_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                    ?19, ?20, ?15, ?16, ?17, ?18
+             WHERE NOT EXISTS (SELECT 1 FROM observations WHERE sync_id = ?1)",
+            params![
+                sync_id,
+                observation.session_id,
+                kind,
+                title,
+                content,
+                observation.tool_name,
+                project,
+                scope,
+                topic_key,
+                normalize::normalized_hash(&content),
+                observation.revision_count.max(1),
+                observation.duplicate_count.max(1),
+                observation.last_seen_at,
+                observation.review_after,
+                observation.pinned,
+                created_at,
+                updated_at,
+                observation.deleted_at,
+                observation.prompt_sync_id,
+                normalize::directory(observation.directory.as_deref())
+            ],
+        )? as i64;
+    }
+    Ok(())
+}
+
+/// The export's superseded revisions, written in one batch.
+fn import_observation_versions(
+    tx: &Transaction<'_>,
+    versions: &[ExportObservationVersion],
+    max_length: usize,
+    result: &mut ImportResult,
+) -> Result<(), StoreError> {
+    for version in versions {
+        if version.observation_sync_id.trim().is_empty() || version.revision <= 0 {
+            continue;
+        }
+        let title = normalize::title(&version.title);
+        let content =
+            normalize::truncate_content(normalize::strip_private(&version.content), max_length);
+        let replaced_at = nonempty_or_now(&version.replaced_at);
+        result.observation_versions_imported +=
+            crate::store::observations::snapshot_observation_version_tx(
+                tx,
+                version.observation_sync_id.trim(),
+                version.revision,
+                &title,
+                &content,
+                &replaced_at,
+            )? as i64;
+    }
+    Ok(())
+}
+
+/// The export's prompts, written in one batch.
+fn import_prompts(
+    tx: &Transaction<'_>,
+    prompts: &[Prompt],
+    max_length: usize,
+    result: &mut ImportResult,
+) -> Result<(), StoreError> {
+    for prompt in prompts {
+        let sync_id = if prompt.sync_id.trim().is_empty() {
+            normalize::sync_id("prompt")
+        } else {
+            prompt.sync_id.trim().to_owned()
+        };
+        let content =
+            normalize::truncate_content(normalize::strip_private(&prompt.content), max_length);
+        let project = normalize::adopted_project(&prompt.project);
+        let created_at = nonempty_or_now(&prompt.created_at);
+        result.prompts_imported += tx.execute(
+            "INSERT INTO prompts (sync_id, session_id, content, project, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE NOT EXISTS (SELECT 1 FROM prompts WHERE sync_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM prompt_deletions WHERE sync_id = ?1)",
+            params![sync_id, prompt.session_id, content, project, created_at],
+        )? as i64;
+    }
+    Ok(())
+}
+
+/// The export's prompt tombstones, written in one batch.
+fn import_prompt_tombstones(
+    tx: &Transaction<'_>,
+    tombstones: &[crate::memory::model::PromptTombstone],
+    result: &mut ImportResult,
+) -> Result<(), StoreError> {
+    for tombstone in tombstones {
+        let sync_id = tombstone.sync_id.trim();
+        if sync_id.is_empty() {
+            continue;
+        }
+        let project = tombstone
+            .project
+            .as_deref()
+            .map(normalize::adopted_project)
+            .unwrap_or_default();
+        result.prompt_tombstones_imported += tx.execute(
+            "INSERT OR IGNORE INTO prompt_deletions (sync_id, session_id, project, deleted_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                sync_id,
+                tombstone.session_id,
+                project,
+                nonempty_or_now(&tombstone.deleted_at)
+            ],
+        )? as i64;
+    }
+    Ok(())
+}
+
+/// The export's judged graph, written in one batch.
+fn import_relations(
+    tx: &Transaction<'_>,
+    relations: &[Relation],
+    max_length: usize,
+    result: &mut ImportResult,
+) -> Result<(), StoreError> {
+    for relation in relations {
+        let sync_id = relation.sync_id.trim();
+        let source_id = relation.source_id.trim();
+        let target_id = relation.target_id.trim();
+        // A pair that joins a memory to itself is refused at the doors that
+        // write relations, so an export holding one came from a build that did
+        // not: dropped and counted, like a relation whose ends are not here,
+        // rather than restored into a store where it would hide the memory it
+        // names.
+        if sync_id.is_empty() || source_id.is_empty() || target_id.is_empty() {
+            result.relations_skipped += 1;
+            continue;
+        }
+        if source_id == target_id {
+            result.relations_skipped += 1;
+            continue;
+        }
+        // The same rules the local and replicated doors apply to a judged
+        // relation: an out-of-range confidence is stored as no confidence, and
+        // both texts are redacted and bounded. `judge_relation` and
+        // `apply_relation_tx` already did this; an import could put back
+        // whatever a handsomer file held.
+        let confidence = relation
+            .confidence
+            .filter(|value| crate::memory::rules::is_confidence(*value));
+        let reason = normalize::judgment_text(relation.reason.as_deref(), max_length);
+        let evidence = normalize::judgment_text(relation.evidence.as_deref(), max_length);
+        let inserted = tx.execute(
+            &format!(
+                "INSERT INTO memory_relations ({RELATION_INSERT_COLUMNS})
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+             WHERE NOT EXISTS (SELECT 1 FROM memory_relations WHERE sync_id = ?1)
+               AND EXISTS (SELECT 1 FROM observations WHERE sync_id = ?2)
+               AND EXISTS (SELECT 1 FROM observations WHERE sync_id = ?3)"
+            ),
+            params![
+                sync_id,
+                source_id,
+                target_id,
+                relation.relation,
+                reason,
+                evidence,
+                confidence,
+                relation.judgment_status,
+                relation.marked_by_actor,
+                relation.marked_by_kind,
+                relation.marked_by_model,
+                relation.session_id,
+                nonempty_or_now(&relation.created_at),
+                nonempty_or_now(&relation.updated_at),
+            ],
+        )? as i64;
+        if inserted == 0 && !relation_is_present(tx, sync_id)? {
+            result.relations_skipped += 1;
+        } else {
+            result.relations_imported += inserted;
+        }
+    }
+    Ok(())
 }

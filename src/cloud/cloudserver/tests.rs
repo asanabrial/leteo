@@ -1581,3 +1581,133 @@ async fn a_search_term_is_limited_to_the_published_length() {
         .await;
     assert_eq!(status, StatusCode::OK, "exactly at the limit");
 }
+
+/// A revoked token and a disabled principal are refused on the very next
+/// request, which is the whole of what the administration exists to make true.
+///
+/// The row and the principal are reached through the same store methods the
+/// `cloud admin` commands call, so what is proved here is the refusal the
+/// command ends in and not a second implementation of it.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_revoked_token_and_a_disabled_principal_are_refused_on_their_next_request() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let stamp = unique_stamp();
+    let project = format!("revocation-{stamp}");
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+
+    let push = |token: String, key: String| {
+        let router = server.router();
+        let project = project.clone();
+        async move {
+            let body = json!({
+                "created_by": "test",
+                "entries": [{
+                    "project": project,
+                    "entity": "observation",
+                    "entity_key": key,
+                    "op": crate::sync::OP_UPSERT,
+                    "payload": {
+                        "sync_id": key,
+                        "session_id": format!("session-{key}"),
+                        "project": project,
+                        "type": "note",
+                        "title": "probe",
+                        "content": "revocation probe",
+                        "scope": "project",
+                    },
+                }],
+            });
+            let request = Request::builder()
+                .method("POST")
+                .uri("/sync/mutations/push")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap();
+            router.oneshot(request).await.unwrap().status()
+        }
+    };
+
+    let revoked_name = format!("revoked-{stamp}");
+    let revoked = mint_admin(&server, &config.token_pepper, &revoked_name, &project).await;
+    assert_eq!(
+        push(revoked.clone(), format!("before-{stamp}")).await,
+        StatusCode::OK
+    );
+    // The prefix is what a person kept when the token was printed, because the
+    // raw token is never shown again.
+    let prefix = revoked.rsplit_once('_').unwrap().0.to_owned();
+    let ids = server
+        .state
+        .store
+        .find_managed_token_ids_by_prefix(&prefix)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 1, "the printed prefix names one token");
+    assert_eq!(
+        server
+            .state
+            .store
+            .revoke_managed_token(ids[0], Some("probe"))
+            .await
+            .unwrap(),
+        crate::cloud::TokenRevocation::Revoked
+    );
+    assert_eq!(
+        push(revoked.clone(), format!("after-{stamp}")).await,
+        StatusCode::UNAUTHORIZED,
+        "a revoked token still opens the server"
+    );
+
+    let disabled_name = format!("disabled-{stamp}");
+    let disabled = mint_admin(&server, &config.token_pepper, &disabled_name, &project).await;
+    assert_eq!(
+        push(disabled.clone(), format!("enabled-{stamp}")).await,
+        StatusCode::OK
+    );
+    let principal = server
+        .state
+        .store
+        .find_principal_by_name(&disabled_name)
+        .await
+        .unwrap()
+        .expect("the principal mint_admin created");
+    assert_eq!(
+        server
+            .state
+            .store
+            .set_principal_enabled(principal, false)
+            .await
+            .unwrap(),
+        Some(true)
+    );
+    assert_eq!(
+        push(disabled.clone(), format!("disabled-{stamp}")).await,
+        StatusCode::UNAUTHORIZED,
+        "a disabled principal's live token still opens the server"
+    );
+    assert_eq!(
+        server
+            .state
+            .store
+            .set_principal_enabled(principal, true)
+            .await
+            .unwrap(),
+        Some(true)
+    );
+    assert_eq!(
+        push(disabled.clone(), format!("reenabled-{stamp}")).await,
+        StatusCode::OK,
+        "enabling is the way back for a token nobody revoked"
+    );
+}

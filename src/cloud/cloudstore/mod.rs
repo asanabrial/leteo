@@ -62,6 +62,18 @@ pub struct ManagedTokenIdentity {
     pub revoked: bool,
 }
 
+/// What a revocation found, told apart because each answer calls for a
+/// different next act: a typo must not read as a token already handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenRevocation {
+    /// This call set `revoked_at`.
+    Revoked,
+    /// Somebody had already revoked it; `revoked_at` still names when.
+    AlreadyRevoked,
+    /// No token carried that id.
+    NotFound,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CloudStats {
     pub principals: i64,
@@ -513,6 +525,38 @@ impl CloudStore {
         Ok(())
     }
 
+    /// Enables or disables a principal; `None` when no principal carries that
+    /// id, `Some(false)` when it was already in that state.
+    ///
+    /// Disabling refuses every managed token the principal holds without
+    /// touching them: `resolve_bearer` and the dashboard session both read
+    /// `enabled`, so the tokens stay printed on somebody's terminal and stop
+    /// opening anything. Re-enabling is the same call with `true`, which is why
+    /// the two are one method — a disable with no way back is how an operator
+    /// locks themselves out of their own server.
+    pub async fn set_principal_enabled(
+        &self,
+        principal_id: i64,
+        enabled: bool,
+    ) -> Result<Option<bool>, CloudStoreError> {
+        let result = sqlx::query(
+            "UPDATE cloud_principals SET enabled = $2, updated_at = NOW()
+             WHERE id = $1 AND enabled <> $2",
+        )
+        .bind(principal_id)
+        .bind(enabled)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() > 0 {
+            return Ok(Some(true));
+        }
+        let row = sqlx::query("SELECT 1 FROM cloud_principals WHERE id = $1")
+            .bind(principal_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(if row.is_some() { Some(false) } else { None })
+    }
+
     pub async fn store_managed_token(
         &self,
         principal_id: i64,
@@ -532,6 +576,71 @@ impl CloudStore {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.try_get("id")?)
+    }
+
+    /// The token ids carrying a prefix, for the operator who kept the prefix
+    /// printed at mint time rather than the id.
+    ///
+    /// A prefix is four random bytes and the table has no uniqueness on it, so
+    /// this answers with every match: the caller refuses to guess which of two
+    /// tokens somebody meant.
+    pub async fn find_managed_token_ids_by_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<i64>, CloudStoreError> {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return Err(CloudStoreError::Invalid(
+                "token prefix is required".to_owned(),
+            ));
+        }
+        let rows = sqlx::query(
+            "SELECT id FROM cloud_principal_tokens WHERE token_prefix = $1 ORDER BY id",
+        )
+        .bind(prefix)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| row.try_get("id"))
+            .collect::<Result<_, _>>()
+            .map_err(CloudStoreError::from)
+    }
+
+    /// Revokes a managed token, and says what it found.
+    ///
+    /// The row stays. `resolve_bearer` looks the token up by its hash and needs
+    /// the row to answer `TokenRevoked` rather than `UnknownToken`, and the
+    /// record of what was issued is the audit a revocation should leave. A
+    /// second revoke leaves `revoked_at` and the reason as the first one wrote
+    /// them, which is what [`TokenRevocation::AlreadyRevoked`] says happened.
+    pub async fn revoke_managed_token(
+        &self,
+        token_id: i64,
+        reason: Option<&str>,
+    ) -> Result<TokenRevocation, CloudStoreError> {
+        let result = sqlx::query(
+            "UPDATE cloud_principal_tokens
+             SET revoked_at = NOW(), revocation_reason = $2
+             WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(token_id)
+        .bind(reason.map(str::trim).filter(|reason| !reason.is_empty()))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() > 0 {
+            return Ok(TokenRevocation::Revoked);
+        }
+        // Nothing writes `revoked_at` back to NULL, so a row that still exists
+        // after the update matched nothing is one somebody had already revoked.
+        let row = sqlx::query("SELECT 1 FROM cloud_principal_tokens WHERE id = $1")
+            .bind(token_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(if row.is_some() {
+            TokenRevocation::AlreadyRevoked
+        } else {
+            TokenRevocation::NotFound
+        })
     }
 
     pub async fn grant_project(

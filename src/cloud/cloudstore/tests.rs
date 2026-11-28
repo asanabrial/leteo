@@ -900,3 +900,153 @@ async fn a_pull_never_advances_past_a_push_that_has_not_committed() {
         .await
         .unwrap();
 }
+
+/// A revoke keeps the row and answers which of the three things happened.
+///
+/// A person who mistyped an id and a person whose leaked token was already
+/// revoked need opposite next acts, so "it did not change" is not an answer.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn revoking_a_token_answers_whether_it_was_revoked_already_or_never_existed() {
+    let (store, stamp) = test_store().await;
+    let principal = store
+        .create_principal("human", &format!("revoke-{stamp}"), "admin")
+        .await
+        .unwrap();
+    let hasher =
+        crate::cloud::ManagedTokenHasher::new("a-token-pepper-of-at-least-32-bytes-long").unwrap();
+    let token = crate::cloud::ManagedToken::generate("test");
+    let verifier = hasher.hash(&token.raw).unwrap();
+    let token_id = store
+        .store_managed_token(principal, &token, &verifier, "leaked")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .find_managed_token_ids_by_prefix(&token.prefix)
+            .await
+            .unwrap(),
+        vec![token_id]
+    );
+    assert!(
+        store.find_managed_token_ids_by_prefix("  ").await.is_err(),
+        "an empty prefix matches nothing and is not a lookup"
+    );
+
+    assert_eq!(
+        store
+            .revoke_managed_token(token_id, Some("leaked in a build log"))
+            .await
+            .unwrap(),
+        TokenRevocation::Revoked
+    );
+    assert!(
+        store
+            .find_managed_token(&verifier)
+            .await
+            .unwrap()
+            .expect("the row is kept so the hash still resolves")
+            .revoked,
+        "the next request with the token is refused"
+    );
+
+    assert_eq!(
+        store
+            .revoke_managed_token(token_id, Some("second try"))
+            .await
+            .unwrap(),
+        TokenRevocation::AlreadyRevoked
+    );
+    let row = sqlx::query(
+        "SELECT revocation_reason, revoked_at FROM cloud_principal_tokens WHERE id = $1",
+    )
+    .bind(token_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        row.try_get::<Option<String>, _>("revocation_reason")
+            .unwrap()
+            .as_deref(),
+        Some("leaked in a build log"),
+        "the second call does not overwrite what the first recorded"
+    );
+    let revoked_at: Option<DateTime<Utc>> = row.try_get("revoked_at").unwrap();
+    assert!(revoked_at.is_some());
+
+    assert_eq!(
+        store.revoke_managed_token(-1, None).await.unwrap(),
+        TokenRevocation::NotFound
+    );
+
+    sqlx::query("DELETE FROM cloud_principals WHERE id = $1")
+        .bind(principal)
+        .execute(store.pool())
+        .await
+        .unwrap();
+}
+
+/// Disabling a principal refuses its tokens without touching them, and enabling
+/// it again is the way back.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn disabling_a_principal_refuses_every_token_it_holds_until_it_is_enabled() {
+    let (store, stamp) = test_store().await;
+    let principal = store
+        .create_principal("human", &format!("disable-{stamp}"), "admin")
+        .await
+        .unwrap();
+
+    let hasher =
+        crate::cloud::ManagedTokenHasher::new("a-token-pepper-of-at-least-32-bytes-long").unwrap();
+    let token = crate::cloud::ManagedToken::generate("test");
+    let verifier = hasher.hash(&token.raw).unwrap();
+    store
+        .store_managed_token(principal, &token, &verifier, "test")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.set_principal_enabled(principal, false).await.unwrap(),
+        Some(true)
+    );
+    let identity = store.find_managed_token(&verifier).await.unwrap().unwrap();
+    assert!(
+        !identity.enabled && !identity.revoked,
+        "the token is untouched and refused for its principal: {identity:?}"
+    );
+    assert_eq!(
+        store.set_principal_enabled(principal, false).await.unwrap(),
+        Some(false),
+        "the second disable changes nothing and says so"
+    );
+
+    assert_eq!(
+        store.set_principal_enabled(principal, true).await.unwrap(),
+        Some(true)
+    );
+    assert!(
+        store
+            .find_managed_token(&verifier)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(
+        store.set_principal_enabled(principal, true).await.unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        store.set_principal_enabled(-1, false).await.unwrap(),
+        None,
+        "no such principal is told apart from one already in that state"
+    );
+
+    sqlx::query("DELETE FROM cloud_principals WHERE id = $1")
+        .bind(principal)
+        .execute(store.pool())
+        .await
+        .unwrap();
+}

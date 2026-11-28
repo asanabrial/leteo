@@ -542,6 +542,27 @@ pub enum CloudAdminCommand {
         #[arg(long)]
         revoke: bool,
     },
+    /// Revoke a managed token, so every request carrying it is refused.
+    Revoke {
+        /// Token id, the prefix printed when it was minted, or the token.
+        #[arg(long)]
+        token: String,
+        /// Why it is being revoked, kept with the row.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Disable a principal, refusing every managed token it holds.
+    Disable {
+        /// Principal id, or its display name.
+        #[arg(long)]
+        principal: String,
+    },
+    /// Re-enable a principal, and with it the tokens it still holds.
+    Enable {
+        /// Principal id, or its display name.
+        #[arg(long)]
+        principal: String,
+    },
     /// Pause or resume replication for a project across the whole service.
     ProjectSync {
         #[arg(long)]

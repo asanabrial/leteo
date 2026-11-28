@@ -1681,6 +1681,34 @@ async fn run_cloud_admin(command: &CloudAdminCommand) -> Result<()> {
                 "warning": "store this token now; it is never recoverable",
             }))
         }
+        CloudAdminCommand::Revoke { token, reason } => {
+            let token_id = resolve_token_id(&store, &config.token_pepper, token).await?;
+            match store
+                .revoke_managed_token(token_id, reason.as_deref())
+                .await?
+            {
+                crate::cloud::TokenRevocation::Revoked => print_json(&serde_json::json!({
+                    "token_id": token_id,
+                    "revoked": true,
+                    "already_revoked": false,
+                    "reason": reason,
+                })),
+                crate::cloud::TokenRevocation::AlreadyRevoked => print_json(&serde_json::json!({
+                    "token_id": token_id,
+                    "revoked": false,
+                    "already_revoked": true,
+                })),
+                crate::cloud::TokenRevocation::NotFound => {
+                    anyhow::bail!("no managed token with id {token_id}")
+                }
+            }
+        }
+        CloudAdminCommand::Disable { principal } => {
+            set_principal_enabled(&store, principal, false).await
+        }
+        CloudAdminCommand::Enable { principal } => {
+            set_principal_enabled(&store, principal, true).await
+        }
         CloudAdminCommand::Grant {
             principal,
             project,
@@ -1743,6 +1771,64 @@ async fn resolve_principal(store: &crate::cloud::CloudStore, principal: &str) ->
         .find_principal_by_name(principal)
         .await?
         .with_context(|| format!("no principal named {principal:?}"))
+}
+
+/// Accepts a numeric token id, the prefix printed when it was minted, or the
+/// token itself.
+///
+/// A prefix is four random bytes and the table does not make it unique, so two
+/// tokens carrying one are refused by count: revoking the wrong one of two is
+/// how a live credential survives the incident it was meant to end. The token
+/// itself is the way out of that, and the way somebody holding a leaked token
+/// in a log uses this command without reading the database.
+#[cfg(feature = "cloud-server")]
+async fn resolve_token_id(
+    store: &crate::cloud::CloudStore,
+    pepper: &str,
+    token: &str,
+) -> Result<i64> {
+    let token = token.trim();
+    if let Ok(id) = token.parse::<i64>() {
+        return Ok(id);
+    }
+    let prefixes = store.find_managed_token_ids_by_prefix(token).await?;
+    match prefixes.len() {
+        1 => return Ok(prefixes[0]),
+        count if count > 1 => {
+            return Err(anyhow::anyhow!(
+                "{count} managed tokens carry the prefix {token:?}; pass the token or its id"
+            ));
+        }
+        _ => {}
+    }
+    // Built here and not by the caller: revoking by id or by an unambiguous
+    // prefix needs no pepper, and an operator whose pepper is elsewhere should
+    // not be told they cannot revoke.
+    let hasher = crate::cloud::ManagedTokenHasher::new(pepper)?;
+    let verifier = hasher.hash(token)?;
+    match store.find_managed_token(&verifier).await? {
+        Some(identity) => Ok(identity.token_id),
+        // Never the value: it may be the leaked credential itself.
+        None => anyhow::bail!("no managed token matches that id, prefix or token"),
+    }
+}
+
+/// Applies one of `disable` and `enable` and prints what changed.
+#[cfg(feature = "cloud-server")]
+async fn set_principal_enabled(
+    store: &crate::cloud::CloudStore,
+    principal: &str,
+    enabled: bool,
+) -> Result<()> {
+    let principal_id = resolve_principal(store, principal).await?;
+    match store.set_principal_enabled(principal_id, enabled).await? {
+        Some(changed) => print_json(&serde_json::json!({
+            "principal_id": principal_id,
+            "enabled": enabled,
+            "changed": changed,
+        })),
+        None => anyhow::bail!("no principal with id {principal_id}"),
+    }
 }
 
 /// Makes the store's enrolment say exactly what the config's project list says.

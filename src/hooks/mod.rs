@@ -32,7 +32,10 @@ pub(crate) mod spool;
 #[cfg(test)]
 mod tests;
 
-use context::{memories_due, memory_context, pending_handover, project_memories, prompt_recall};
+use context::{
+    Recalled, UNREADABLE_BLOCK, memories_due, memory_context, pending_handover, project_memories,
+    prompt_recall,
+};
 use nudge::{SessionState, nudge_state_path, save_nudge, sweep_stale_nudges};
 use session::{
     drifted_directory_projects, ensure_session, migrate_directory_project, resolve_directory,
@@ -758,22 +761,32 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             let recall = std::time::Instant::now();
             let recalled = memory_context(store, &project, &settings, &mut outcome);
             outcome.timings.push(PhaseTime::since("recall", recall));
-            if let Some((memory, listed)) = recalled {
-                context.push_str("\n\n");
-                context.push_str(&memory);
-                // What the block lists is in the agent's hands from the first
-                // turn, so the hint must not name it again. Added to whatever
-                // the state holds rather than replacing it: a session start
-                // can be a resume, and the hints named before it are still in
-                // the transcript.
-                if !listed.memories.is_empty() && !input.transient_hints {
-                    let state_path = nudge_state_path(store, &session_id);
-                    let mut state = SessionState::read(state_path.as_ref());
-                    state.remember_listed(&listed);
-                    if let Err(error) = state.write(state_path.as_ref()) {
-                        outcome.warnings.push(format!("hint state: {error}"));
+            match recalled {
+                Recalled::Found(memory, listed) => {
+                    context.push_str("\n\n");
+                    context.push_str(&memory);
+                    // What the block lists is in the agent's hands from the
+                    // first turn, so the hint must not name it again. Added to
+                    // whatever the state holds rather than replacing it: a
+                    // session start can be a resume, and the hints named before
+                    // it are still in the transcript.
+                    if !listed.memories.is_empty() && !input.transient_hints {
+                        let state_path = nudge_state_path(store, &session_id);
+                        let mut state = SessionState::read(state_path.as_ref());
+                        state.remember_listed(&listed);
+                        if let Err(error) = state.write(state_path.as_ref()) {
+                            outcome.warnings.push(format!("hint state: {error}"));
+                        }
                     }
                 }
+                // The opening used to say nothing at all here, which is the
+                // same shape as a fresh install. The warning names the cause on
+                // stderr; this is the sentence the agent reads.
+                Recalled::Unreadable => {
+                    context.push_str("\n\n");
+                    context.push_str(UNREADABLE_BLOCK);
+                }
+                Recalled::Empty => {}
             }
             // The pairs themselves, not only how many there are. The line below
             // says the number to whoever is watching; this hands the agent
@@ -849,7 +862,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             let recalled = memory_context(store, &project, &settings, &mut outcome);
             outcome.timings.push(PhaseTime::since("recall", recall));
             match recalled {
-                Some((memory, listed)) => {
+                Recalled::Found(memory, listed) => {
                     context.push_str(&memory);
                     if !input.transient_hints {
                         state.remember_listed(&listed);
@@ -862,7 +875,10 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                             crate::sardi::restored(language, listed.memories.len());
                     }
                 }
-                None => context.push_str("No previous memory found for this project."),
+                Recalled::Empty => {
+                    context.push_str("No previous memory found for this project.");
+                }
+                Recalled::Unreadable => context.push_str(UNREADABLE_BLOCK),
             }
             // A conversation with no state file and nothing to record does not
             // get one made for it.

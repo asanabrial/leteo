@@ -491,6 +491,11 @@ pub fn format_context_listed(
     // `fold_session_summaries`, so a session whose summary lives in a
     // `session_summary` memory is kept. Decided here, before the count is
     // taken, so the number of sessions shown is the number of lines printed.
+    //
+    // `Store::recent_sessions` filters the same way before its own limit, so a
+    // store-built list arrives with the rule already applied; this stays
+    // because this function also renders a list assembled by its caller, and a
+    // date with no sentence under it is the line this is about.
     let sessions: Vec<&SessionSummary> = sessions
         .iter()
         .filter(|session| {

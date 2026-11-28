@@ -415,12 +415,12 @@ fn the_projects_recorded_in_a_directory_come_back_newest_first() {
 }
 
 #[test]
-fn the_recent_sessions_are_the_ones_that_recorded_something() {
-    // These five go into the context every session opens with, to say what has
-    // been worked on lately. A session is created the moment a conversation
-    // starts — that is what anything saved later hangs off — so a conversation
-    // that saved nothing and wrote no summary leaves a row that carries no
-    // information at all: same project, no summary, nothing recorded.
+fn the_recent_sessions_are_the_ones_with_something_to_say() {
+    // These go into the context every session opens with, one line each, and
+    // the line is the session's summary. A session without one has nothing to
+    // print — whether it recorded nothing at all or recorded memories that are
+    // listed under their own headings — and it must not take a row the section
+    // could give to a session that has something to say.
     //
     // Measured on a real store: 59 sessions of 483 were empty that way, and of
     // the five most recent for one project, four. The section meant to say what
@@ -441,32 +441,93 @@ fn the_recent_sessions_are_the_ones_that_recorded_something() {
     store
         .end_session("summed", Some("Rewrote the candidate query"))
         .unwrap();
+    // A summary can also be a `session_summary` memory rather than the row's
+    // own column; the caller folds it on, so it has to count here too.
+    store.create_session("folded", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(AddObservation {
+            session_id: "folded".to_owned(),
+            kind: crate::memory::model::SESSION_SUMMARY.to_owned(),
+            title: "A summary kept as a memory".to_owned(),
+            content: "## Goal\nWhat the folded session was for".to_owned(),
+            tool_name: None,
+            project: Some("leteo".to_owned()),
+            scope: "project".to_owned(),
+            topic_key: None,
+            prompt_sync_id: None,
+        })
+        .unwrap();
 
     let recent = store.recent_sessions(Some("leteo"), Some(5)).unwrap();
-    // Compared as a set, because which of the two comes first is not this
-    // test's business and is not stable either. `recent_sessions` orders by
+    // Compared as a set, because which comes first is not this test's business
+    // and is not stable either. `recent_sessions` orders by
     // `MAX(datetime(...)) DESC, s.id DESC`, and `datetime` keeps whole seconds:
-    // with all five written inside one second the ids break the tie and give
-    // "worked" then "summed", but let the clock turn over between the
-    // observation and the summary — which is what a loaded machine does — and
-    // the real activity order takes over and reverses them. Asserting the
-    // sequence made this test report the second hand. What it means to say is
+    // with everything written inside one second the ids break the tie, but let
+    // the clock turn over between the writes — which is what a loaded machine
+    // does — and the real activity order takes over. What it means to say is
     // which sessions are listed at all.
     let mut listed: Vec<&str> = recent.iter().map(|s| s.id.as_str()).collect();
     listed.sort_unstable();
     assert_eq!(
         listed,
-        ["summed", "worked"],
-        "a conversation that recorded nothing has nothing to say"
+        ["folded", "summed"],
+        "only a session with a summary has a line to print"
     );
 
     // Nothing was deleted: an empty session is still the anchor anything saved
-    // later hangs off, and it is still there to be found.
+    // later hangs off, and a conversation that recorded memories but never said
+    // what it was for is still there to be found.
     let all: i64 = store
         .connection
         .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(all, 5);
+    assert_eq!(all, 6);
+}
+
+/// The section fills its rows from the summarised sessions, not from the newest
+/// ones with a summary filtered out afterwards.
+///
+/// The limit used to run first, so three recent sessions with no summary took
+/// three of the five places and the block printed two lines where it had room
+/// for five.
+#[test]
+fn an_unsummarised_session_does_not_take_a_row_from_an_older_summarised_one() {
+    let (_temp, mut store) = store();
+    // Newer than every summarised session: each records a memory, so the old
+    // `HAVING` kept it and the new one does not. Their dates are pushed ahead
+    // because everything here is written inside one second, and the id
+    // tie-break would otherwise hand the newest places to the other three.
+    for (index, id) in ["blank-newest", "blank-middle", "blank-oldest"]
+        .into_iter()
+        .enumerate()
+    {
+        store.create_session(id, "leteo", "C:/repo").unwrap();
+        store
+            .add_observation(observation(id, "Something recorded", "but never a summary"))
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE observations SET created_at = ?1 WHERE session_id = ?2",
+                rusqlite::params![format!("2030-01-01 00:00:0{index}"), id],
+            )
+            .unwrap();
+    }
+    for id in ["said-1", "said-2", "said-3"] {
+        store.create_session(id, "leteo", "C:/repo").unwrap();
+        store
+            .end_session(id, Some(&format!("What {id} was for")))
+            .unwrap();
+    }
+
+    let recent = store.recent_sessions(Some("leteo"), Some(3)).unwrap();
+    let mut listed: Vec<&str> = recent.iter().map(|s| s.id.as_str()).collect();
+    listed.sort_unstable();
+    assert_eq!(
+        listed,
+        ["said-1", "said-2", "said-3"],
+        "the three lines are three summarised sessions, not the newest three"
+    );
 }
 
 /// Ending a session with no summary keeps the one it already had.

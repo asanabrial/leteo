@@ -1200,7 +1200,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_judge",
-        description = "Record a manual verdict on a pending relation surfaced by mem_save. Manual not_conflict verdicts are persisted. A verdict that one memory replaces the other also needs superseding_id, the id of the newer one. Reason and evidence each come back as a 400-byte preview marked `reason_truncated` or `evidence_truncated`.",
+        description = "Record a manual verdict on a pending relation surfaced by mem_save. Manual not_conflict verdicts are persisted. A verdict that one memory replaces the other also needs superseding_id, the id of the newer one, and answers with `superseding_id` and `superseded_id` as integer ids. A reason or evidence cut before storing is reported as `reason_storage_truncation` or `evidence_storage_truncation`.",
         annotations(
             title = "Judge Conflict",
             read_only_hint = false,
@@ -1251,12 +1251,35 @@ impl LeteoMcpServer {
             .map_err(store_error)?;
         let reason_stored = relation.reason.as_deref().map_or(0, str::len);
         let evidence_stored = relation.evidence.as_deref().map_or(0, str::len);
-        let mut output = RelationOutput::from(relation);
+        // A direction is only meaningful on `supersedes`, and the stored row
+        // already has the superseding memory as its source: `judge_relation`
+        // swapped it when the agent's `superseding_id` named the target.
+        let (superseding_id, superseded_id) =
+            if relation.relation == crate::memory::rules::RELATION_SUPERSEDES {
+                (
+                    store
+                        .observation_id_for_sync_id(&relation.source_id)
+                        .map_err(store_error)?,
+                    store
+                        .observation_id_for_sync_id(&relation.target_id)
+                        .map_err(store_error)?,
+                )
+            } else {
+                (None, None)
+            };
+        let mut output = JudgeOutput {
+            relation: relation.relation,
+            status: relation.judgment_status,
+            superseding_id,
+            superseded_id,
+            reason_storage_truncation: None,
+            evidence_storage_truncation: None,
+        };
         output.reason_storage_truncation =
             crate::mcp::output::storage_truncation(reason_cut, reason_stored);
         output.evidence_storage_truncation =
             crate::mcp::output::storage_truncation(evidence_cut, evidence_stored);
-        Ok(Json(JudgeOutput { relation: output }))
+        Ok(Json(output))
     }
 
     #[tool(

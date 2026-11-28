@@ -232,9 +232,32 @@ impl From<Candidate> for CandidateOutput {
     }
 }
 
+/// What a verdict answers, in the ids the agent gave and can check.
+///
+/// The full relation record repeated the request — relation, confidence,
+/// session and the caller's own reason and evidence — and named the two
+/// memories by sync ids the agent never holds, so a wrong direction in a
+/// `supersedes` verdict could not be seen. This says the verdict, whether it
+/// was stored, and which integer id replaced which.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct JudgeOutput {
-    pub(super) relation: RelationOutput,
+    /// The verdict, in the vocabulary `mem_judge` accepts.
+    pub(super) relation: String,
+    /// `judged` once the verdict is stored; a pair is `pending` until then.
+    pub(super) status: String,
+    /// On a `supersedes` verdict, the integer id of the memory that replaces
+    /// the other — the same id `mem_save` and `mem_search` give.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) superseding_id: Option<i64>,
+    /// On a `supersedes` verdict, the integer id of the memory it hides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) superseded_id: Option<i64>,
+    /// Set when the storage bound cut the reason before it was stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reason_storage_truncation: Option<Truncation>,
+    /// The same, for the evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) evidence_storage_truncation: Option<Truncation>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

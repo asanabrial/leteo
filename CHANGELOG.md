@@ -28,6 +28,13 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A timestamp with a `T` and no zone is read as the instant it names.** A
+  pulled prompt carrying `2026-11-24T22:05:00` stayed raw and was compared as
+  text against the space-separated timestamps this store writes; `T` sorts above
+  a space, so on the same day an older prompt counted as newer than its
+  tombstone and a deleted prompt came back. `crate::timestamp::parse` accepts
+  that spelling (read as UTC), and the tombstone check goes through it, so the
+  comparison is by instant rather than by spelling (#469).
 - **The MCP surface stops answering cases its siblings answer differently.**
   `mem_session_start` on an existing id naming another project now answers
   `session_project_mismatch`, as the write door already did, instead of

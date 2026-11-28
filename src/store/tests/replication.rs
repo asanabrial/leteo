@@ -1320,6 +1320,71 @@ fn a_replicated_write_and_a_typed_one_leave_the_same_row() {
     );
 }
 
+/// A pulled prompt whose timestamp is a zone-less `T` is compared as the
+/// instant it names, not as text.
+///
+/// `2026-11-24T22:05:00` sorts after `2026-11-24 22:06:00` as text on the same
+/// day, because `T` is above the space every timestamp this store writes uses.
+/// The tombstone check read that as a newer prompt and put back the prompt
+/// somebody had deleted (#469).
+#[test]
+fn a_zone_less_timestamp_does_not_beat_its_tombstone() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO prompt_deletions (sync_id, deleted_at)
+             VALUES ('pulled', '2026-11-24 22:06:00')",
+            [],
+        )
+        .unwrap();
+
+    let pulled = |seq: i64, created_at: &str| SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: "prompt".to_owned(),
+        entity_key: "pulled".to_owned(),
+        op: crate::sync::OP_UPSERT.to_owned(),
+        payload: serde_json::json!({
+            "sync_id": "pulled",
+            "session_id": "s1",
+            "content": "la pregunta que se borro",
+            "project": "leteo",
+            "created_at": created_at,
+        })
+        .to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-11-24T22:05:00".to_owned(),
+        acked_at: None,
+    };
+    let stored = |store: &Store| -> i64 {
+        store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM prompts WHERE sync_id = 'pulled'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+
+    assert!(
+        store
+            .apply_pulled(&pulled(1, "2026-11-24T22:05:00"))
+            .unwrap()
+    );
+    assert_eq!(stored(&store), 0, "an older prompt stays deleted");
+
+    assert!(
+        store
+            .apply_pulled(&pulled(2, "2026-11-24T22:07:00"))
+            .unwrap()
+    );
+    assert_eq!(stored(&store), 1, "a newer one clears the tombstone");
+}
+
 /// What a peer receives is the memory, minus exactly what is meant to stay home.
 ///
 /// The export guard compares the two memories whole because counting rows is

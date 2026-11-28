@@ -69,11 +69,18 @@ pub(super) fn normalize_mutation_payload(
             // a directory nobody ever wrote from, which is what the drift check
             // reads as evidence.
             body.directory = body.directory.trim().to_owned();
+            // The folded remote is a claim, so a value longer than a remote can
+            // be is not one — the same bound the local door applies.
+            body.remote = body.remote.trim().to_owned();
+            if body.remote.len() > crate::project::REMOTE_MAX_BYTES {
+                body.remote.clear();
+            }
             if body.id.is_empty() {
                 return Err(invalid("session payload id is required"));
             }
             if op == OP_DELETE {
                 body.directory.clear();
+                body.remote.clear();
                 body.started_at.clear();
                 body.ended_at = None;
                 body.summary = None;
@@ -218,6 +225,8 @@ pub(super) struct SessionMutationPayload {
     pub(super) project: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub(super) directory: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub(super) remote: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub(super) started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]

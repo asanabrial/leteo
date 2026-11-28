@@ -5,16 +5,32 @@ impl LeteoMcpServer {
     pub(super) fn router() -> ToolRouter<Self> {
         Self::tool_router()
     }
-    fn read_project(&self) -> Option<(String, String)> {
+    fn read_project(&self, store: &Store) -> Option<crate::project::SettledProject> {
+        let detection = detect_current_project();
         if let Some(default_project) = &self.default_project {
-            return Some((
+            return Some(crate::project::SettledProject::chosen(
+                &detection,
                 default_project.clone(),
                 crate::project::SOURCE_PROCESS_OVERRIDE.to_owned(),
             ));
         }
-        let detection = detect_current_project();
-        (detection.error_hint.is_none() && !detection.project.is_empty())
-            .then_some((detection.project, detection.source))
+        if detection.error_hint.is_some() || detection.project.is_empty() {
+            return None;
+        }
+        // A read answers about the name a write would file under, or the two
+        // disagree about which repository this is — the second one's opening
+        // block listing the first one's memories is the defect this closes.
+        match store.settle_detected_project(&detection) {
+            Ok(settled) => Some(settled),
+            // The read this feeds is about to touch the same connection and
+            // report its own failure; answering for the whole store instead
+            // would be a different answer to the same question.
+            Err(_) => Some(crate::project::SettledProject::chosen(
+                &detection,
+                normalize::project(&detection.project),
+                detection.source.clone(),
+            )),
+        }
     }
 }
 
@@ -191,7 +207,7 @@ impl LeteoMcpServer {
                     &detect_current_project(),
                     ProjectChoice::default(),
                 )?
-                .0,
+                .project,
             ),
             None => None,
         };
@@ -276,8 +292,8 @@ impl LeteoMcpServer {
                 // names this tool as the way to read them, so a listing that
                 // answered about the whole store disagreed with the sentence
                 // that sent the agent here.
-                let fallback = self.read_project();
                 let store = self.lock_store()?;
+                let fallback = self.read_project(&store);
                 let envelope = read_envelope(&store, params.project.as_deref(), fallback.as_ref())?;
                 let project = (!envelope.project.is_empty()).then_some(envelope.project);
                 let applied = params.limit.min(store.max_context_results());
@@ -480,10 +496,10 @@ impl LeteoMcpServer {
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> Result<Json<SearchOutput>, CallToolResult> {
-        let fallback = (!params.all_projects)
-            .then(|| self.read_project())
-            .flatten();
         let store = self.lock_store()?;
+        let fallback = (!params.all_projects)
+            .then(|| self.read_project(&store))
+            .flatten();
         let envelope = if params.all_projects {
             ProjectEnvelope {
                 project_source: SOURCE_ALL_PROJECTS.to_owned(),
@@ -521,14 +537,20 @@ impl LeteoMcpServer {
         let inferred =
             requested_project(params.project.as_deref()).is_none() && !params.all_projects;
         let elsewhere = match (results.is_empty() && inferred, fallback.as_ref()) {
-            (true, Some((project, _))) => store
+            (true, Some(settled)) => store
                 .strict_matches_unnarrowed(
                     &params.query,
                     search_options,
                     store.effective_search_limit(limit),
                 )
                 .ok()
-                .map(|found| (project.clone(), found, store.effective_search_limit(limit))),
+                .map(|found| {
+                    (
+                        settled.project().to_owned(),
+                        found,
+                        store.effective_search_limit(limit),
+                    )
+                }),
             _ => None,
         };
 
@@ -616,10 +638,10 @@ impl LeteoMcpServer {
         &self,
         Parameters(params): Parameters<ContextParams>,
     ) -> Result<Json<ContextOutput>, CallToolResult> {
-        let fallback = (!params.all_projects)
-            .then(|| self.read_project())
-            .flatten();
         let store = self.lock_store()?;
+        let fallback = (!params.all_projects)
+            .then(|| self.read_project(&store))
+            .flatten();
         let envelope = if params.all_projects {
             ProjectEnvelope {
                 project_source: SOURCE_ALL_PROJECTS.to_owned(),
@@ -835,11 +857,12 @@ impl LeteoMcpServer {
             .as_deref()
             .map_or_else(detect_current_project, detect_project);
         let declared = params.project.is_some();
-        let project = self.resolve_session_project(
+        let settled = self.resolve_session_project(
             &store,
             params.project.or_else(|| self.default_project.clone()),
             &detection,
         )?;
+        let project = settled.project.clone();
         let directory = requested_directory.unwrap_or_else(|| detection.path.clone());
         // A session opened here under another project is a conversation about
         // somewhere else, and recording this directory as its own put the
@@ -847,11 +870,21 @@ impl LeteoMcpServer {
         // as a rename nobody made. The manual-session doors have been routed
         // through this since #405; this one still stamped the directory, which
         // is the door `SERVER_INSTRUCTIONS` names first.
-        let recorded = crate::project::session_directory(&project, &detection, &directory);
-        let session = if declared {
-            store.create_declared_session(&params.id, &project, recorded)
+        let recorded = crate::project::session_directory(&project, &settled.detection, &directory);
+        let remote = if settled.is_about(&detection) {
+            crate::project::detected_remote(&detection).map(|remote| remote.key)
         } else {
-            store.create_session(&params.id, &project, recorded)
+            None
+        };
+        let session = match (declared, remote.as_deref()) {
+            (true, Some(remote)) => {
+                store.create_declared_session_with_remote(&params.id, &project, recorded, remote)
+            }
+            (true, None) => store.create_declared_session(&params.id, &project, recorded),
+            (false, Some(remote)) => {
+                store.create_session_with_remote(&params.id, &project, recorded, remote)
+            }
+            (false, None) => store.create_session(&params.id, &project, recorded),
         }
         .map_err(store_error)?;
 
@@ -1173,6 +1206,18 @@ impl LeteoMcpServer {
             detection.project = default_project.clone();
             detection.source = crate::project::SOURCE_PROCESS_OVERRIDE.to_owned();
             detection.error_hint = None;
+        } else if detection.error_hint.is_none()
+            && !detection.project.is_empty()
+            // The tool exists to answer "which project is this?", so it answers
+            // the one a write would file under. A store that cannot be reached
+            // is not an error here — the detection is still an answer — but it
+            // is also not a reason to present the plain name as settled.
+            && let Ok(store) = self.lock_store()
+            && let Ok(settled) = store.settle_detected_project(&detection)
+        {
+            detection.project.clone_from(&settled.project);
+            detection.source.clone_from(&settled.source);
+            detection.warning = settled.warning.or(detection.warning);
         }
         Ok(Json(detection.into()))
     }

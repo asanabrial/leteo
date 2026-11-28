@@ -19,7 +19,7 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
             let groups = if all {
                 similar_project_groups(&stats)
             } else {
-                let named = resolve_project(project)?;
+                let named = resolve_project(store, project)?;
                 groups_naming(&stats, &named)
             };
             let mut merges = Vec::new();
@@ -341,7 +341,7 @@ pub(super) struct ReadScope {
     pub(super) inferred: bool,
 }
 
-pub(super) fn read_scope(explicit: Option<String>, all_projects: bool) -> ReadScope {
+pub(super) fn read_scope(store: &Store, explicit: Option<String>, all_projects: bool) -> ReadScope {
     if all_projects {
         return ReadScope {
             project: None,
@@ -355,17 +355,35 @@ pub(super) fn read_scope(explicit: Option<String>, all_projects: bool) -> ReadSc
         };
     }
     let detection = crate::project::detect_current_project();
-    let project = (detection.error_hint.is_none() && !detection.project.is_empty())
-        .then_some(detection.project);
+    if detection.error_hint.is_some() || detection.project.is_empty() {
+        return ReadScope {
+            project: None,
+            inferred: false,
+        };
+    }
+    // The block this scopes is the one a save from here would join, so a name
+    // another repository already recorded is settled first, and the person is
+    // told why the name is not the folder's.
+    let project = match store.settle_detected_project(&detection) {
+        Ok(settled) => {
+            if let Some(warning) = &settled.warning {
+                eprintln!("leteo: {warning}");
+            }
+            settled.project
+        }
+        // The read this scopes is about to fail on the same connection and say
+        // so; the detected name is the answer that is still true.
+        Err(_) => crate::memory::normalize::project(&detection.project),
+    };
     ReadScope {
-        inferred: project.is_some(),
-        project,
+        inferred: true,
+        project: Some(project),
     }
 }
 
 /// Resolves the project a read-only command applies to, falling back to
 /// detection from the current directory.
-pub(super) fn resolve_project(explicit: Option<String>) -> Result<String> {
+pub(super) fn resolve_project(store: &Store, explicit: Option<String>) -> Result<String> {
     if let Some(project) = explicit {
         let project = crate::memory::normalize::project(&project);
         if project.is_empty() {
@@ -384,7 +402,13 @@ pub(super) fn resolve_project(explicit: Option<String>) -> Result<String> {
                 .unwrap_or("cannot determine the current project")
         );
     }
-    Ok(project)
+    // The same settlement the write doors apply, so a command that reads one
+    // project does not read another repository's memories of the same name.
+    let settled = store.settle_detected_project(&detection)?;
+    if let Some(warning) = &settled.warning {
+        eprintln!("leteo: {warning}");
+    }
+    Ok(settled.project)
 }
 
 pub(super) struct WriteSession {
@@ -464,46 +488,54 @@ fn join_or_open_manual_session(
     filing: Filing,
     detection: crate::project::ProjectDetection,
 ) -> Result<WriteSession> {
-    let project = match explicit_project {
-        Some(project) => {
-            let project = crate::memory::normalize::project(&project);
-            if project.is_empty() {
-                anyhow::bail!("{}", crate::project::EMPTY_NAME);
-            }
-            project
+    let names_another_project = explicit_project.is_some();
+    let mut settled = crate::project::SettledProject::plain(&detection);
+    let project = if let Some(project) = explicit_project {
+        let project = crate::memory::normalize::project(&project);
+        if project.is_empty() {
+            anyhow::bail!("{}", crate::project::EMPTY_NAME);
         }
-        None => {
-            let project = crate::memory::normalize::project(&detection.project);
-            if project.is_empty() {
+        project
+    } else {
+        let project = crate::memory::normalize::project(&detection.project);
+        if project.is_empty() {
+            anyhow::bail!(
+                "{}; pass --project PROJECT or --session SESSION",
+                detection
+                    .error_hint
+                    .as_deref()
+                    .unwrap_or("cannot determine the current project")
+            );
+        }
+        // What the MCP door refuses, so the same directory cannot take a
+        // memory through one door and reject it through the other: the
+        // sessions already recorded here are evidence this directory used to
+        // resolve to another name, and filing under the new one splits the
+        // project in two.
+        if filing == Filing::Detection {
+            let recorded = store.drifted_projects(&detection, crate::mcp::is_manual_session_id)?;
+            if !recorded.is_empty() {
                 anyhow::bail!(
-                    "{}; pass --project PROJECT or --session SESSION",
-                    detection
-                        .error_hint
-                        .as_deref()
-                        .unwrap_or("cannot determine the current project")
+                    "this directory's sessions were recorded under {}, but it now resolves \
+                     to {project:?}; pass --project PROJECT (one of the recorded names) to \
+                     save under that name, or run `leteo projects consolidate` if the two \
+                     names are one project",
+                    recorded.join(", ")
                 );
             }
-            // What the MCP door refuses, so the same directory cannot take a
-            // memory through one door and reject it through the other: the
-            // sessions already recorded here are evidence this directory used
-            // to resolve to another name, and filing under the new one splits
-            // the project in two.
-            if filing == Filing::Detection {
-                let recorded =
-                    store.drifted_projects(&detection, crate::mcp::is_manual_session_id)?;
-                if !recorded.is_empty() {
-                    anyhow::bail!(
-                        "this directory's sessions were recorded under {}, but it now resolves \
-                         to {project:?}; pass --project PROJECT (one of the recorded names) to \
-                         save under that name, or run `leteo projects consolidate` if the two \
-                         names are one project",
-                        recorded.join(", ")
-                    );
-                }
+            settled = store.settle_detected_project(&detection)?;
+            if let Some(warning) = &settled.warning {
+                eprintln!("leteo: {warning}");
             }
-            project
         }
+        settled.project.clone()
     };
+    // The repository this command is standing in is only this project's when
+    // the project came from here; a `--project` naming somewhere else would
+    // claim this checkout for it.
+    let remote = (!names_another_project && filing == Filing::Detection)
+        .then(|| crate::project::detected_remote(&detection).map(|remote| remote.key))
+        .flatten();
     let directory = if detection.path.is_empty() {
         // An explicit project can still be written when the working directory
         // cannot be read; the session then carries no directory, not a guess.
@@ -526,8 +558,14 @@ fn join_or_open_manual_session(
         Some(session) => session.id,
         None => {
             let id = crate::mcp::manual_session_id(&project);
-            let recorded = crate::project::session_directory(&project, &detection, &directory);
-            store.create_session(&id, &project, recorded)?;
+            let recorded =
+                crate::project::session_directory(&project, &settled.detection, &directory);
+            match remote.as_deref() {
+                Some(remote) => {
+                    store.create_session_with_remote(&id, &project, recorded, remote)?
+                }
+                None => store.create_session(&id, &project, recorded)?,
+            };
             id
         }
     };

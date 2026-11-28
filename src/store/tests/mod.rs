@@ -150,6 +150,7 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "ended_at",
             "summary",
             "declared",
+            "remote",
         ],
     ),
     (

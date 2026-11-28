@@ -224,6 +224,7 @@ impl LeteoMcpServer {
                 project: session_project.clone(),
                 project_source: SOURCE_SESSION_PROJECT.to_owned(),
                 project_path: Some(session.directory).filter(|path| !path.is_empty()),
+                project_note: None,
             };
             return Ok(WriteSession {
                 id,
@@ -246,8 +247,9 @@ impl LeteoMcpServer {
         choice: ProjectChoice,
         detection: ProjectDetection,
     ) -> Result<WriteSession, CallToolResult> {
-        let (project, project_source) =
-            self.resolve_write_project(store, project, &detection, choice)?;
+        let settled = self.resolve_write_project(store, project, &detection, choice)?;
+        let project = settled.project.clone();
+        let project_source = settled.source.clone();
         // The person answered a drift refusal with the name the directory
         // resolves to, which says the other names recorded here are not this
         // directory's history. Nothing else could ever clear that refusal: the
@@ -274,6 +276,15 @@ impl LeteoMcpServer {
         // is the one a prompt is attributed within: one definition of "just
         // now" for both. Two agents working one project at once share the most
         // recent session, which is accepted and stated in the tool description.
+        // Only a name detection gave belongs to the directory's repository: a
+        // caller that named another project is writing about somewhere else,
+        // and stamping this checkout's remote on that session would claim a
+        // repository for a project it has nothing to do with.
+        let remote = if settled.is_about(&detection) {
+            crate::project::detected_remote(&detection).map(|remote| remote.key)
+        } else {
+            None
+        };
         let live = store
             .latest_active_session(
                 &project,
@@ -282,13 +293,35 @@ impl LeteoMcpServer {
             )
             .map_err(store_error)?;
         let id = match live {
-            Some(session) => session.id,
+            Some(session) => {
+                // A session a hook opened before this build has no remote, and
+                // this is the open where it can learn one. It keeps its
+                // project: the write joined it because that is the project.
+                if let Some(remote) = remote.as_deref()
+                    && session.remote.is_empty()
+                {
+                    store
+                        .create_session_with_remote(
+                            &session.id,
+                            &project,
+                            &session.directory,
+                            remote,
+                        )
+                        .map_err(store_error)?;
+                }
+                session.id
+            }
             None => {
                 let id = manual_session_id(&project);
-                let recorded = crate::project::session_directory(&project, &detection, &directory);
-                store
-                    .create_session(&id, &project, recorded)
-                    .map_err(store_error)?;
+                let recorded =
+                    crate::project::session_directory(&project, &settled.detection, &directory);
+                match remote.as_deref() {
+                    Some(remote) => {
+                        store.create_session_with_remote(&id, &project, recorded, remote)
+                    }
+                    None => store.create_session(&id, &project, recorded),
+                }
+                .map_err(store_error)?;
                 id
             }
         };
@@ -296,6 +329,7 @@ impl LeteoMcpServer {
             project: project.clone(),
             project_source,
             project_path: Some(directory).filter(|path| !path.is_empty()),
+            project_note: settled.warning.clone(),
         };
         Ok(WriteSession {
             id,
@@ -312,13 +346,14 @@ impl LeteoMcpServer {
         requested: Option<String>,
         detection: &ProjectDetection,
         choice: ProjectChoice,
-    ) -> Result<(String, String), CallToolResult> {
+    ) -> Result<crate::project::SettledProject, CallToolResult> {
         let detected = normalize::project(&detection.project);
         let requested = requested.map(|project| normalize::project(&project));
 
         let Some(requested) = requested else {
             if let Some(default_project) = &self.default_project {
-                return Ok((
+                return Ok(crate::project::SettledProject::chosen(
+                    detection,
                     default_project.clone(),
                     crate::project::SOURCE_PROCESS_OVERRIDE.to_owned(),
                 ));
@@ -327,7 +362,13 @@ impl LeteoMcpServer {
                 if let Some(drifted) = self.recorded_directory_detection(store, detection)? {
                     return Err(self.project_detection_error(&drifted));
                 }
-                return Ok((detected, detection.source.clone()));
+                // The silent pick is where a name another repository already
+                // holds is settled: `acme/api` and `otra/api` both answer
+                // `api`, and the second one files under a name of its own
+                // rather than joining the first one's memories.
+                return store
+                    .settle_detected_project(detection)
+                    .map_err(store_error);
             }
             return Err(self.project_detection_error(detection));
         };
@@ -339,7 +380,8 @@ impl LeteoMcpServer {
         }
         if detected.is_empty() {
             let project = self.accept_ambiguous_choice(&requested, detection, choice)?;
-            return Ok((
+            return Ok(crate::project::SettledProject::chosen(
+                detection,
                 project,
                 SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT.to_owned(),
             ));
@@ -376,26 +418,36 @@ impl LeteoMcpServer {
                         json!({ "available_projects": drifted.available_projects }),
                     ));
                 }
-                return Ok((
+                return Ok(crate::project::SettledProject::chosen(
+                    detection,
                     requested,
                     SOURCE_USER_SELECTED_AFTER_AMBIGUOUS_PROJECT.to_owned(),
                 ));
             }
-            return Ok((requested, detection.source.clone()));
+            return Ok(crate::project::SettledProject::chosen(
+                detection,
+                requested,
+                detection.source.clone(),
+            ));
         }
         if self
             .default_project
             .as_deref()
             .is_some_and(|default_project| default_project == requested)
         {
-            return Ok((
+            return Ok(crate::project::SettledProject::chosen(
+                detection,
                 requested,
                 crate::project::SOURCE_PROCESS_OVERRIDE.to_owned(),
             ));
         }
         let known = store.project_exists(&requested).map_err(store_error)?;
         if known {
-            return Ok((requested, SOURCE_KNOWN_PROJECT.to_owned()));
+            return Ok(crate::project::SettledProject::chosen(
+                detection,
+                requested,
+                SOURCE_KNOWN_PROJECT.to_owned(),
+            ));
         }
         // A name this very directory was recorded under is one the drift gate
         // itself offers as a candidate and `passive_capture_project` files under
@@ -407,7 +459,11 @@ impl LeteoMcpServer {
             .recent_projects_in_directory(&detection.path, &detected)
             .map_err(store_error)?;
         if recorded_here.contains(&requested) {
-            return Ok((requested, SOURCE_KNOWN_PROJECT.to_owned()));
+            return Ok(crate::project::SettledProject::chosen(
+                detection,
+                requested,
+                SOURCE_KNOWN_PROJECT.to_owned(),
+            ));
         }
         Err(unknown_project_error(
             &requested,
@@ -438,11 +494,15 @@ impl LeteoMcpServer {
         store: &Store,
         explicit_project: Option<String>,
         detection: &ProjectDetection,
-    ) -> Result<String, CallToolResult> {
+    ) -> Result<crate::project::SettledProject, CallToolResult> {
         if let Some(project) = explicit_project {
             let project = normalize::project(&project);
             if !project.is_empty() {
-                return Ok(project);
+                return Ok(crate::project::SettledProject::chosen(
+                    detection,
+                    project,
+                    SOURCE_REQUEST.to_owned(),
+                ));
             }
             return Err(structured_error(
                 error_code::INVALID_PROJECT,
@@ -454,7 +514,9 @@ impl LeteoMcpServer {
             if let Some(drifted) = self.recorded_directory_detection(store, detection)? {
                 return Err(project_detection_error(&drifted));
             }
-            return Ok(project);
+            return store
+                .settle_detected_project(detection)
+                .map_err(store_error);
         }
         Err(project_detection_error(detection))
     }
@@ -652,6 +714,15 @@ pub struct ProjectEnvelope {
     /// `data must have required property 'project_path'`.
     #[serde(skip_serializing_if = "Option::is_none")]
     project_path: Option<String>,
+    /// Said when the name in `project` was not the one detection read, because
+    /// another repository already answered to that name.
+    ///
+    /// The name is still there in `project` and the source says it was built
+    /// from the remote, but neither says *which* repository holds the plain
+    /// one. This does, once, so an agent can tell the person why their
+    /// memories are under `otra-api` instead of `api`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_note: Option<String>,
 }
 
 /// The project a read names, if it names one.
@@ -682,7 +753,7 @@ fn requested_project(requested: Option<&str>) -> Option<String> {
 fn read_envelope(
     store: &Store,
     requested: Option<&str>,
-    fallback: Option<&(String, String)>,
+    fallback: Option<&crate::project::SettledProject>,
 ) -> Result<ProjectEnvelope, CallToolResult> {
     let Some(project) = requested_project(requested) else {
         return Ok(ProjectEnvelope::detected_or_all(fallback));
@@ -691,16 +762,17 @@ fn read_envelope(
     // without a store lookup, exactly as the write path accepts it: a fresh
     // store holds no rows for the directory it is standing in, and a caller
     // that names that directory's own project has not invented one.
-    let named_here = fallback.is_some_and(|(detected, _)| detected == &project);
+    let named_here = fallback.is_some_and(|settled| settled.project() == project);
     if named_here || store.project_exists(&project).map_err(store_error)? {
         return Ok(ProjectEnvelope {
             project,
             project_source: SOURCE_REQUEST.to_owned(),
             project_path: None,
+            project_note: None,
         });
     }
     let detected = fallback
-        .map(|(project, _)| project.as_str())
+        .map(crate::project::SettledProject::project)
         .unwrap_or_default();
     Err(unknown_project_error(
         &project,
@@ -711,17 +783,19 @@ fn read_envelope(
 
 impl ProjectEnvelope {
     /// A read that names no project: the detected one, or the whole store.
-    fn detected_or_all(fallback: Option<&(String, String)>) -> Self {
+    fn detected_or_all(fallback: Option<&crate::project::SettledProject>) -> Self {
         match fallback {
-            Some((project, source)) => Self {
-                project: project.clone(),
-                project_source: source.clone(),
+            Some(settled) => Self {
+                project: settled.project().to_owned(),
+                project_source: settled.source().to_owned(),
                 project_path: None,
+                project_note: settled.warning.clone(),
             },
             None => Self {
                 project: String::new(),
                 project_source: SOURCE_ALL_PROJECTS.to_owned(),
                 project_path: None,
+                project_note: None,
             },
         }
     }

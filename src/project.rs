@@ -15,6 +15,14 @@ pub const SOURCE_DIR_BASENAME: &str = "dir_basename";
 pub const SOURCE_AMBIGUOUS: &str = "ambiguous";
 pub const SOURCE_PROCESS_OVERRIDE: &str = "process_override";
 pub const SOURCE_UNAVAILABLE: &str = "unavailable";
+/// The project name detection reached was already recorded for another
+/// repository, and this checkout is filed under a name built from its remote.
+///
+/// A value of `project_source` rather than a new field, because the name is
+/// still detection's answer — only widened — and every reply already carries
+/// the source. An agent that sees `remote_qualified` learns two things at once:
+/// which repository this is, and that the bare name belongs to another one.
+pub const SOURCE_REMOTE_QUALIFIED: &str = "remote_qualified";
 
 /// What every entry point says when a project name is missing.
 ///
@@ -117,11 +125,84 @@ impl ProjectDetection {
     }
 }
 
+/// A detection after the store has been asked whether its name is still free.
+///
+/// The name a checkout files under is not always the name its remote's last
+/// segment gives: `acme/api` and `otra/api` both answer `api`, and the second
+/// one to arrive has to go somewhere else or the two repositories share a
+/// memory store and an opening block. The store decides, because it is the only
+/// thing that knows which remotes already answered to a name; this is its
+/// answer, with the detection it answered about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettledProject {
+    /// The name the write is filed under.
+    pub project: String,
+    /// Where that name came from.
+    pub source: String,
+    /// The detection the name was settled against, unchanged by a caller who
+    /// chose another project.
+    ///
+    /// The rules that ask whether a name is *this directory's* compare against
+    /// what detection read, which is why a qualified name rewrites this too:
+    /// the checkout that was settled under `otra-api` really is `otra-api`, and
+    /// a caller who named an unrelated project must not stamp the directory
+    /// with a repository they are not writing about.
+    pub detection: ProjectDetection,
+    /// Whether the name was built from the remote because the plain one is
+    /// another repository's.
+    pub qualified: bool,
+    /// The sentence a caller repeats when it had to choose a name, so the
+    /// decision is visible rather than made in silence.
+    pub warning: Option<String>,
+}
+
+impl SettledProject {
+    /// A detection the store left alone.
+    pub fn plain(detection: &ProjectDetection) -> Self {
+        Self {
+            project: detection.project.clone(),
+            source: detection.source.clone(),
+            detection: detection.clone(),
+            qualified: false,
+            warning: None,
+        }
+    }
+
+    /// A name the caller chose, with the detection it was chosen against.
+    pub fn chosen(detection: &ProjectDetection, project: String, source: String) -> Self {
+        Self {
+            project,
+            source,
+            detection: detection.clone(),
+            qualified: false,
+            warning: None,
+        }
+    }
+
+    pub fn project(&self) -> &str {
+        &self.project
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Whether the name came from standing where the detection stood, rather
+    /// than from the caller.
+    ///
+    /// Only then does the checkout's repository belong to the name: a caller
+    /// that asked for another project is writing about somewhere else, and
+    /// claiming this remote for it would be a claim about a repository the
+    /// write has nothing to do with.
+    pub fn is_about(&self, detection: &ProjectDetection) -> bool {
+        self.source == detection.source || self.source == SOURCE_REMOTE_QUALIFIED
+    }
+}
+
 /// Why an existing name was offered as a match, in the order they are tried.
 pub const MATCH_CASE_INSENSITIVE: &str = "case-insensitive";
 pub const MATCH_SUBSTRING: &str = "substring";
 pub const MATCH_LEVENSHTEIN: &str = "levenshtein";
-
 /// An existing project name that resembles a queried name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectMatch {
@@ -950,6 +1031,189 @@ fn extract_repository_name(remote: &str) -> Option<String> {
         .rsplit(['/', '\\', ':'])
         .find(|part| !part.trim().is_empty())
         .map(|part| part.trim().to_owned())
+}
+
+/// How long a folded remote may be before it stops being an identity.
+///
+/// The key this application records is `host/owner/name`, and the same remote
+/// can be spelled `git@host:owner/name`, `ssh://host:22/owner/name` or
+/// `https://host/owner/name.git`. A remote longer than this is not a URL
+/// anybody types; refusing it keeps a pathological config from writing a
+/// kilobyte into every session row and every replica of it.
+pub const REMOTE_MAX_BYTES: usize = 512;
+
+/// A remote folded to the parts a project name is built from.
+///
+/// Two checkouts of one repository spell their remote differently — `git@` with
+/// a colon, `ssh://` with a port, `https://` with `.git` — and the three name
+/// the same repository. `key` is that sameness, recorded on the session so the
+/// store can tell two repositories with one name apart. `owner` and `name` are
+/// what a distinct name is made of when the bare one already belongs to
+/// another repository: `acme/api` and `otra/api` both resolve to `api`, and the
+/// second has to be filed somewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteIdentity {
+    /// `host/owner/name`, lowercased, with no scheme, user, port or `.git`.
+    pub key: String,
+    /// The segment before the repository's name, when the remote has one.
+    pub owner: Option<String>,
+    /// The repository's own name.
+    pub name: String,
+}
+
+/// The folded identity of an `origin` URL, or nothing when the value does not
+/// name a repository two checkouts could share.
+///
+/// A relative remote (`../api`) names a different repository from every
+/// checkout, so it has no identity to compare; it keeps the name detection
+/// already reads from its last segment, and nothing collides.
+pub fn remote_identity(remote: &str) -> Option<RemoteIdentity> {
+    let trimmed = remote.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (host, path) = split_remote(trimmed)?;
+    let path = path.trim_matches(['/', '\\']);
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let segments: Vec<String> = path
+        .split(['/', '\\'])
+        .filter(|segment| !segment.trim().is_empty())
+        .map(crate::memory::normalize::project)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let name = segments.last()?.clone();
+    let key = if host.is_empty() {
+        path.to_lowercase()
+    } else {
+        format!("{host}/{}", path.to_lowercase())
+    };
+    if key.len() > REMOTE_MAX_BYTES {
+        return None;
+    }
+    Some(RemoteIdentity {
+        key,
+        owner: segments
+            .len()
+            .checked_sub(2)
+            .map(|index| segments[index].clone()),
+        name,
+    })
+}
+
+/// The host and the path of a remote, however git spells it.
+fn split_remote(remote: &str) -> Option<(String, String)> {
+    let (scheme, rest) = match remote.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, remote),
+    };
+    // `ssh://git@host/path` and `git@host:path`: the user is never part of what
+    // identifies the repository.
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, after)| after);
+    let (host, path) = if scheme.is_some() {
+        let (host, path) = rest.split_once('/')?;
+        (host.split(':').next().unwrap_or(host), path)
+    } else if let Some((host, path)) = rest.split_once(':')
+        && !host.contains(['/', '\\'])
+    {
+        (host, path)
+    } else if rest.starts_with(['/', '\\']) {
+        ("", rest)
+    } else {
+        return None;
+    };
+    Some((host.trim().to_lowercase(), path.to_owned()))
+}
+
+impl RemoteIdentity {
+    /// The names a repository whose plain name is taken may be filed under,
+    /// most readable first.
+    ///
+    /// `owner-name` is what a person recognizes in a list and what this issue
+    /// names. The whole folded remote follows because two forges can carry one
+    /// owner and name — `github.com/acme/api` and `gitlab.com/acme/api` are not
+    /// one repository — and the digest is last because it always exists, it
+    /// does not move, and nothing anybody typed collides with it, so a store
+    /// that already used both names still gets an answer instead of a lost
+    /// write.
+    pub fn qualified_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if let Some(owner) = &self.owner {
+            names.push(format!("{owner}-{}", self.name));
+        }
+        names.push(fold_remote_key(&self.key));
+        if let Some(base) = names.last() {
+            names.push(format!(
+                "{}-{}",
+                clip_project_name(base),
+                short_digest(&self.key)
+            ));
+        }
+        names.retain(|name| !name.is_empty());
+        names.dedup();
+        names
+    }
+}
+
+/// A remote key turned into a project name: the host, owner and repository
+/// joined with hyphens.
+fn fold_remote_key(key: &str) -> String {
+    let mut folded = String::with_capacity(key.len());
+    for character in key.chars() {
+        if character.is_alphanumeric() || character == '.' || character == '_' {
+            folded.push(character);
+        } else if !folded.ends_with('-') {
+            folded.push('-');
+        }
+    }
+    folded.trim_matches('-').to_owned()
+}
+
+/// A qualified name cut to leave room for the `-` and the six-character digest
+/// that follows it.
+fn clip_project_name(name: &str) -> String {
+    let mut clipped = name.to_owned();
+    let budget = crate::memory::normalize::PROJECT_MAX_BYTES - 7;
+    crate::memory::normalize::truncate_bytes(&mut clipped, budget);
+    clipped.trim_end_matches('-').to_owned()
+}
+
+/// Six hexadecimal characters of the key's SHA-256: enough to separate two
+/// repositories and short enough to read.
+fn short_digest(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(key.as_bytes());
+    digest[..3]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The remote a detection named itself after.
+///
+/// Read from the checkout rather than carried on [`ProjectDetection`], whose
+/// shape is the JSON envelope agents read: a field added there is a field
+/// published, and this answer is only needed on the way to a write. It is one
+/// reading of `.git/config`, which detection itself already did — the file is
+/// a few hundred bytes and a remote is not a reason to spawn git.
+///
+/// Only the sources that take their name from the remote can collide with
+/// another repository of the same name: a `.leteo/config.json` names a project
+/// on purpose, and a folder's name is not the remote's.
+pub fn detected_remote(detection: &ProjectDetection) -> Option<RemoteIdentity> {
+    if !matches!(
+        detection.source.as_str(),
+        SOURCE_GIT_REMOTE | SOURCE_GIT_CHILD
+    ) {
+        return None;
+    }
+    if detection.project.is_empty() || detection.path.is_empty() {
+        return None;
+    }
+    let OriginUrl::Named(url) = read_origin_url(Path::new(&detection.path)) else {
+        return None;
+    };
+    remote_identity(&url)
 }
 
 /// The repositories directly inside `directory`, and whether the scan gave up
@@ -1872,6 +2136,7 @@ mod tests {
 #[cfg(test)]
 mod detected_names {
     use super::*;
+    use tempfile::TempDir;
 
     /// A detected project is spelled the way a stored one is.
     ///
@@ -2063,6 +2328,113 @@ mod detected_names {
                 detection.available_projects
             );
         }
+    }
+
+    /// One repository, three spellings of its remote, one identity.
+    ///
+    /// `git@host:owner/name.git`, `ssh://git@host:22/owner/name` and
+    /// `https://host/owner/name` are what git writes for the same origin, and a
+    /// comparison that read them literally would treat one checkout as three
+    /// repositories — or fail to notice that two *different* owners are not the
+    /// same one.
+    #[test]
+    fn a_remote_is_one_repository_however_git_spells_it() {
+        let scp = remote_identity("git@github.com:acme/api.git").unwrap();
+        let https = remote_identity("https://github.com/acme/api").unwrap();
+        let ported = remote_identity("ssh://git@github.com:22/acme/api/").unwrap();
+
+        assert_eq!(scp.key, "github.com/acme/api");
+        assert_eq!(https.key, scp.key);
+        assert_eq!(ported.key, scp.key);
+        assert_eq!(scp.owner.as_deref(), Some("acme"));
+        assert_eq!(scp.name, "api");
+
+        let other = remote_identity("git@github.com:otra/api.git").unwrap();
+        assert_ne!(other.key, scp.key, "the owner is part of the identity");
+        assert_eq!(other.name, scp.name);
+    }
+
+    #[test]
+    fn a_remote_that_names_no_repository_another_checkout_shares_has_no_identity() {
+        // A relative path is a different repository in every checkout, so
+        // there is nothing to compare and the name detection already reads
+        // stands.
+        assert_eq!(remote_identity("../api"), None);
+        assert_eq!(remote_identity(""), None);
+        assert_eq!(remote_identity("   "), None);
+
+        // A local path does name one identity, and it keeps the owner segment
+        // the same way a forge does.
+        let local = remote_identity("file:///srv/git/acme/api.git").unwrap();
+        assert_eq!(local.owner.as_deref(), Some("acme"));
+        assert_eq!(local.name, "api");
+    }
+
+    /// The name a colliding repository is filed under is the owner's and the
+    /// repository's, and every fallback is still a valid project name.
+    #[test]
+    fn a_colliding_repository_is_named_after_its_owner() {
+        let identity = remote_identity("https://github.com/otra/api.git").unwrap();
+        let names = identity.qualified_names();
+
+        assert_eq!(names.first().map(String::as_str), Some("otra-api"));
+        assert!(
+            names.iter().any(|name| name == "github.com-otra-api"),
+            "the whole remote follows, because two forges can carry one owner and name: {names:?}"
+        );
+        let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        for name in &names {
+            assert!(
+                crate::memory::normalize::project_refusal(name).is_none(),
+                "{name:?} is not a project name"
+            );
+            assert!(name.len() <= crate::memory::normalize::PROJECT_MAX_BYTES);
+        }
+    }
+
+    #[test]
+    fn the_remote_behind_a_detected_name_is_read_from_its_origin() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("api");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join(".git").join("config"),
+            "[remote \"origin\"]\n\turl = git@github.com:acme/api.git\n",
+        )
+        .unwrap();
+
+        let detection = detect_project(&root);
+        assert_eq!(detection.source, SOURCE_GIT_REMOTE);
+        assert_eq!(detection.project, "api");
+        let remote = detected_remote(&detection).expect("the origin names the repository");
+        assert_eq!(remote.key, "github.com/acme/api");
+    }
+
+    /// A configured name is a decision, not the remote's answer, so it is not a
+    /// claim on the repository's identity even when the checkout has an origin.
+    #[test]
+    fn a_configured_project_is_not_claimed_for_the_directorys_remote() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join(".git").join("config"),
+            "[remote \"origin\"]\n\turl = https://github.com/acme/api.git\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join(CONFIG_DIRECTORY)).unwrap();
+        fs::write(
+            root.join(CONFIG_DIRECTORY).join(CONFIG_FILE),
+            r#"{"project_name":"chosen"}"#,
+        )
+        .unwrap();
+
+        let detection = detect_project(root);
+
+        assert_eq!(detection.source, SOURCE_CONFIG);
+        assert_eq!(detection.project, "chosen");
+        assert_eq!(detected_remote(&detection), None);
     }
 }
 

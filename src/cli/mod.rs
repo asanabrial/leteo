@@ -62,7 +62,24 @@ impl std::fmt::Display for MatchMode {
 pub async fn run(cli: Cli) -> Result<()> {
     match &cli.command {
         Command::CurrentProject => {
-            return print_json(&crate::project::detect_current_project());
+            let mut detection = crate::project::detect_current_project();
+            // The project this directory belongs to is the one its saves use,
+            // and that answer can depend on what the store already holds: a
+            // name another repository recorded is settled before the answer is
+            // printed. A store that cannot be opened is not an error here —
+            // this command is what somebody runs when something is wrong, and
+            // the detection is still an answer.
+            if detection.error_hint.is_none()
+                && !detection.project.is_empty()
+                && let Ok(config) = store_config(&cli)
+                && let Ok(store) = Store::open(config)
+                && let Ok(settled) = store.settle_detected_project(&detection)
+            {
+                detection.project.clone_from(&settled.project);
+                detection.source.clone_from(&settled.source);
+                detection.warning = settled.warning.or(detection.warning);
+            }
+            return print_json(&detection);
         }
         // Adoption replaces the database file, so it has to run before anything
         // opens it.
@@ -626,7 +643,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             full,
             match_mode,
         } => {
-            let scoped = read_scope(project, all_projects);
+            let scoped = read_scope(&store, project, all_projects);
             let options = SearchOptions {
                 kind: r#type,
                 project: scoped.project.clone(),
@@ -758,7 +775,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             limit,
             summaries,
         } => {
-            let scope = read_scope(project, all_projects);
+            let scope = read_scope(&store, project, all_projects);
             let found =
                 store.recent_observations(scope.project.as_deref(), Some(limit), summaries)?;
             if found.is_empty() {
@@ -817,7 +834,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             scope,
             limit,
         } => {
-            let read = read_scope(project_flag.or(project), all_projects);
+            let read = read_scope(&store, project_flag.or(project), all_projects);
             let context = crate::recall::assemble(
                 &store,
                 read.project.as_deref(),
@@ -1361,7 +1378,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Cloud {
             command: CloudCommand::Enroll { project, remove },
         } => {
-            let project = resolve_project(project)?;
+            let project = resolve_project(&store, project)?;
             let changed = if remove {
                 store.unenroll_project(&project)?
             } else {
@@ -1543,7 +1560,7 @@ async fn run_conflicts(store: &mut Store, command: ConflictsCommand) -> Result<(
             limit,
             offset,
         } => {
-            let project = resolve_project(project)?;
+            let project = resolve_project(store, project)?;
             let options = ListRelationsOptions {
                 project: Some(project.clone()),
                 status,
@@ -1590,7 +1607,7 @@ async fn run_conflicts(store: &mut Store, command: ConflictsCommand) -> Result<(
             }))
         }
         ConflictsCommand::Stats { project } => {
-            print_json(&store.relation_stats(Some(&resolve_project(project)?))?)
+            print_json(&store.relation_stats(Some(&resolve_project(store, project)?))?)
         }
         ConflictsCommand::Scan {
             project,
@@ -1604,7 +1621,7 @@ async fn run_conflicts(store: &mut Store, command: ConflictsCommand) -> Result<(
             timeout_per_call,
             yes,
         } => {
-            let project = resolve_project(project)?;
+            let project = resolve_project(store, project)?;
             let since = since
                 .as_deref()
                 .map(crate::timestamp::parse_argument)

@@ -111,6 +111,136 @@ impl Store {
         Ok(projects)
     }
 
+    /// The project a detection may file under, once the store has been asked
+    /// whether its name already belongs to another repository.
+    ///
+    /// A repository's project name is its remote's last segment, which is not
+    /// unique across owners: `acme/api` and `otra/api` both answer `api`, and
+    /// before this both wrote into one project, whose opening block then handed
+    /// one codebase's memories to the other (#500). The row records the folded
+    /// remote, so the second one to arrive can be given a name of its own —
+    /// `otra-api` — without renaming anybody: a project keeps the name its
+    /// sessions already carry, which is why an existing store is left alone
+    /// until a second remote actually appears.
+    ///
+    /// The comparison skips this directory's own sessions on purpose. A
+    /// repository whose remote changed keeps its name: that is a rename or a
+    /// fork of one checkout, not a collision of two, and the directory is the
+    /// evidence. Nothing else is skipped — two clones of one remote share, and
+    /// a directory with no remote recorded (every row before the column, and
+    /// every project named by hand) makes no claim either way.
+    ///
+    /// A store that cannot answer leaves the name alone and says so upstream;
+    /// answering the plain name here would be quieter but would also be the
+    /// silent sharing this exists to stop.
+    pub fn settle_detected_project(
+        &self,
+        detection: &crate::project::ProjectDetection,
+    ) -> Result<crate::project::SettledProject, StoreError> {
+        let mut settled = crate::project::SettledProject::plain(detection);
+        let detected = normalize::project(&settled.project);
+        settled.project.clone_from(&detected);
+        settled.detection.project.clone_from(&detected);
+        if detected.is_empty() || !detection.available_projects.is_empty() {
+            return Ok(settled);
+        }
+        let Some(remote) = crate::project::detected_remote(detection) else {
+            return Ok(settled);
+        };
+        let Some(taken_by) =
+            self.remote_recorded_elsewhere(&detected, &remote.key, &detection.path)?
+        else {
+            return Ok(settled);
+        };
+        for candidate in remote.qualified_names() {
+            if !self.project_name_is_free_or_ours(&candidate, &remote.key)? {
+                continue;
+            }
+            settled.warning = Some(format!(
+                "the project name \"{detected}\" is already recorded for another repository \
+                 ({taken_by}); this checkout is filed under \"{candidate}\" instead. If that is \
+                 not the project you want, name it in .leteo/config.json"
+            ));
+            settled.detection.project.clone_from(&candidate);
+            settled.detection.source = crate::project::SOURCE_REMOTE_QUALIFIED.to_owned();
+            settled.source.clone_from(&settled.detection.source);
+            settled.project = candidate;
+            settled.qualified = true;
+            return Ok(settled);
+        }
+        // Every name this remote could take is somebody else's. Filing under
+        // the shared name is what happened before this change, so it is done
+        // and said rather than refused: a hook has nobody to ask, and dropping
+        // the person's prompt over a name is worse than filing it visibly.
+        settled.warning = Some(format!(
+            "the project name \"{detected}\" is already recorded for another repository \
+             ({taken_by}), and every name derived from this checkout's remote is used too; \
+             these memories will share that project until it is named in .leteo/config.json"
+        ));
+        Ok(settled)
+    }
+
+    /// The remote a *different* directory recorded under `project`, if any.
+    ///
+    /// The directory comparison is in Rust for the reason
+    /// [`DirectoryTarget`](crate::project::DirectoryTarget) gives, and it is
+    /// what tells a rename from a collision: a checkout whose remote changed
+    /// still owns its name, because the rows that carry the old remote were
+    /// opened in this very directory.
+    fn remote_recorded_elsewhere(
+        &self,
+        project: &str,
+        remote: &str,
+        directory: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT remote, directory FROM sessions
+             WHERE project = ?1 AND trim(remote) <> ''
+               AND trim(directory) <> ''",
+        )?;
+        let rows = statement.query_map([project], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut target = crate::project::DirectoryTarget::new(Path::new(directory));
+        for row in rows {
+            let (recorded_remote, recorded_directory) = row?;
+            if recorded_remote == remote || target.matches(&recorded_directory) {
+                continue;
+            }
+            return Ok(Some(recorded_remote));
+        }
+        Ok(None)
+    }
+
+    /// Whether a name a collision would use is free, or already this remote's.
+    ///
+    /// A name that exists with no remote at all is somebody's project named by
+    /// hand: joining it would be the silent sharing this avoids, one level
+    /// removed, so it does not count as free.
+    fn project_name_is_free_or_ours(
+        &self,
+        project: &str,
+        remote: &str,
+    ) -> Result<bool, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT remote FROM sessions WHERE project = ?1")?;
+        let rows = statement.query_map([project], |row| row.get::<_, String>(0))?;
+        let mut recorded = false;
+        for row in rows {
+            let carried = row?;
+            let carried = carried.trim();
+            if carried.is_empty() || carried != remote {
+                return Ok(false);
+            }
+            recorded = true;
+        }
+        if recorded {
+            return Ok(true);
+        }
+        self.project_exists(project).map(|exists| !exists)
+    }
+
     /// Whether `directory` holds the manual session a silent save joins under
     /// `project` — the directory used under that name, not merely visited.
     ///
@@ -213,7 +343,26 @@ impl Store {
         project: &str,
         directory: &str,
     ) -> Result<Session, StoreError> {
-        self.create_session_marked(id, project, directory, false)
+        self.create_session_marked(id, project, directory, false, "")
+    }
+
+    /// [`Self::create_session`] for a caller that knows which repository it is
+    /// standing in.
+    ///
+    /// The remote is what lets a later checkout of a *different* repository with
+    /// the same name be told apart from this one; a caller with no repository in
+    /// hand records nothing rather than a guess. A row that already exists
+    /// gains the remote when it had none, so a store that predates the column
+    /// converges as its sessions are used instead of needing a backfill from a
+    /// machine that no longer has the checkout.
+    pub fn create_session_with_remote(
+        &mut self,
+        id: &str,
+        project: &str,
+        directory: &str,
+        remote: &str,
+    ) -> Result<Session, StoreError> {
+        self.create_session_marked(id, project, directory, false, remote)
     }
 
     /// Creates a session a caller opened to bring its project into being, which
@@ -228,7 +377,18 @@ impl Store {
         project: &str,
         directory: &str,
     ) -> Result<Session, StoreError> {
-        self.create_session_marked(id, project, directory, true)
+        self.create_session_marked(id, project, directory, true, "")
+    }
+
+    /// [`Self::create_declared_session`] with the repository recorded.
+    pub fn create_declared_session_with_remote(
+        &mut self,
+        id: &str,
+        project: &str,
+        directory: &str,
+        remote: &str,
+    ) -> Result<Session, StoreError> {
+        self.create_session_marked(id, project, directory, true, remote)
     }
 
     /// Raises the declared flag of an existing session, provided it belongs to
@@ -251,6 +411,7 @@ impl Store {
         project: &str,
         directory: &str,
         declared: bool,
+        remote: &str,
     ) -> Result<Session, StoreError> {
         // Every local creator passes here, and the replicated one in
         // `wire.rs` refuses the same way, so an id a filesystem cannot name and
@@ -266,11 +427,33 @@ impl Store {
         // Every local creator passes here, so this is where a relative
         // directory is kept out: see `recordable_directory`.
         let directory = crate::project::recordable_directory(directory);
+        // What is stored is the folded key, which is the only form the
+        // comparison in `remote_recorded_elsewhere` can match; a value that is
+        // not a remote at all is no claim, and empty is that state.
+        let remote = remote.trim();
+        let remote = if remote.len() <= crate::project::REMOTE_MAX_BYTES {
+            remote
+        } else {
+            ""
+        };
         let tx = self.write_transaction()?;
         let created = tx.execute(
-            "INSERT OR IGNORE INTO sessions (id, project, directory) VALUES (?1, ?2, ?3)",
-            params![id, project, directory],
+            "INSERT OR IGNORE INTO sessions (id, project, directory, remote) VALUES (?1, ?2, ?3, ?4)",
+            params![id, project, directory, remote],
         )?;
+        // A row opened before the column existed keeps its project and gains
+        // the repository it is in, which is the claim the collision check
+        // needs. Only from an empty value: two checkouts of one repository may
+        // record the same remote in either order, and overwriting is how a
+        // rename would lose the remote its history was filed under.
+        let learned = if remote.is_empty() {
+            0
+        } else {
+            tx.execute(
+                "UPDATE sessions SET remote = ?2 WHERE id = ?1 AND remote = ''",
+                params![id, remote],
+            )?
+        };
         // After the insert and never in it, so a session that was already there
         // under another opener is raised too. Scoped to the project the caller
         // named: the row a conflicting id keeps is not the project declared.
@@ -292,7 +475,11 @@ impl Store {
         // on a real store, in a journal larger than the memories it exists to
         // carry. A session this skips because it was already there is not lost
         // to a peer either: enrolling a project queues every session it holds.
-        if created > 0 {
+        //
+        // A remote learned by an existing row is the one exception: the row
+        // changed, so the peer that holds the old copy has to learn why the
+        // collision resolves the same way there.
+        if created > 0 || learned > 0 {
             enqueue_mutation(
                 &tx,
                 "session",

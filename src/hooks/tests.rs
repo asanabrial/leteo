@@ -5409,3 +5409,64 @@ fn a_harness_message_is_not_spooled_as_a_prompt() {
     );
     holder.execute_batch("ROLLBACK").unwrap();
 }
+
+/// A checkout detection names after its remote.
+fn repo_with_remote(temp: &TempDir, folder: &str, remote: &str) -> PathBuf {
+    let root = temp.path().join(folder);
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(
+        root.join(".git").join("config"),
+        format!("[remote \"origin\"]\n\turl = {remote}\n"),
+    )
+    .unwrap();
+    root
+}
+
+/// A checkout whose repository name another one already holds opens under a
+/// name of its own, and says which repository has the plain one (#500).
+///
+/// A hook cannot ask, and joining the recorded name is what made the collision
+/// permanent: every later write through this session would have gone into the
+/// other repository's project, and its opening block would have listed that
+/// repository's memories.
+#[test]
+fn a_repository_whose_name_another_one_holds_opens_under_its_own_name() {
+    let (temp, mut store) = store();
+    let acme = repo_with_remote(&temp, "acme-api", "git@github.com:acme/api.git");
+    let otra = repo_with_remote(&temp, "otra-api", "https://github.com/otra/api.git");
+    store
+        .create_session_with_remote(
+            "earlier",
+            "api",
+            &acme.to_string_lossy(),
+            "github.com/acme/api",
+        )
+        .unwrap();
+
+    let outcome = run(
+        &mut store,
+        HookEvent::SessionStart,
+        &HookInput {
+            session_id: "later".to_owned(),
+            cwd: otra.to_string_lossy().into_owned(),
+            ..HookInput::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome.project, "otra-api", "{outcome:?}");
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("otra-api") && warning.contains("github.com/acme/api")),
+        "the person is told which repository holds the name: {:?}",
+        outcome.warnings
+    );
+    let session = store.get_session("later").unwrap();
+    assert_eq!(session.project, "otra-api");
+    assert_eq!(
+        session.remote, "github.com/otra/api",
+        "the session says which repository it was opened in, so the next one is told apart"
+    );
+}

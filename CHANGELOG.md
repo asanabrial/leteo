@@ -28,6 +28,19 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **Two repositories whose names are one no longer share a project.** A
+  checkout's project name is its remote's last segment, so `acme/api` and
+  `otra/api` both answered `api`: the second one's opening block listed the
+  first one's memories and its saves joined them. Every session now records the
+  folded remote it was opened in — `host/owner/name`, so
+  `git@host:owner/name.git` and `https://host/owner/name` are one identity — and
+  a second, different remote found under a name is filed under `owner-name`
+  (`otra-api`), with the repository that holds the plain name named in the
+  reply and in the hook's warning. No existing project is renamed: the name its
+  sessions already carry stays, and a directory whose remote changed keeps its
+  own name, because its rows say where they were opened. A name written by
+  hand, a bare folder and a fork in one directory make no claim either way
+  (#500).
 - **A title, a session id, a project name and a topic key each have one
   published bound.** The title took the body's `max_observation_length`, so
   `mem_save` with a 60,000-character title answered with 50,319 bytes and every

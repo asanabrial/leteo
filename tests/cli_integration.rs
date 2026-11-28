@@ -4936,3 +4936,66 @@ fn an_import_killed_between_batches_is_finished_by_the_next_run() {
     assert_eq!(total, MEMORIES as i64, "every memory is there");
     assert_eq!(distinct, MEMORIES as i64, "and none of them twice");
 }
+
+/// Two repositories whose last segment is one name do not share a project.
+///
+/// The issue's own case: `x/api` with `acme/api.git` and `y/api` with
+/// `otra/api.git` both resolved to `api` from the command line, so the second
+/// folder's session opened with the first folder's memories. The first one
+/// keeps `api`, which is what an existing store must keep; the second is filed
+/// under its owner.
+#[test]
+fn two_repositories_with_one_name_keep_their_memories_apart() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("two-repositories-one-name.db");
+    let acme = temp.path().join("x-api");
+    let otra = temp.path().join("y-api");
+    for (repo, remote) in [
+        (&acme, "https://example.com/acme/api.git"),
+        (&otra, "https://example.com/otra/api.git"),
+    ] {
+        std::fs::create_dir_all(repo.join(".git")).expect("create .git");
+        std::fs::write(
+            repo.join(".git").join("config"),
+            format!("[remote \"origin\"]\n\turl = {remote}\n"),
+        )
+        .expect("record the remote");
+    }
+
+    for (repo, note) in [(&acme, "Written in acme"), (&otra, "Written in otra")] {
+        run_json(
+            leteo(&database)
+                .current_dir(repo)
+                .arg("save")
+                .arg(note)
+                .arg(format!("{note}, and nowhere else")),
+        );
+    }
+
+    let names = run_json(leteo(&database).arg("projects").arg("list"));
+    let names = names
+        .as_array()
+        .expect("project list")
+        .iter()
+        .map(|project| project["name"].as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"api".to_owned()),
+        "the first repository keeps the name every existing store has: {names:?}"
+    );
+    assert!(
+        names.contains(&"otra-api".to_owned()),
+        "the second is filed under its owner: {names:?}"
+    );
+
+    // The read follows the write: each folder's opening block names its own
+    // work and only its own.
+    let acme_context = run_json(leteo(&database).current_dir(&acme).arg("context"));
+    let acme_context = acme_context["context"].as_str().unwrap_or_default();
+    let otra_context = run_json(leteo(&database).current_dir(&otra).arg("context"));
+    let otra_context = otra_context["context"].as_str().unwrap_or_default();
+    assert!(acme_context.contains("Written in acme"), "{acme_context}");
+    assert!(!acme_context.contains("Written in otra"), "{acme_context}");
+    assert!(otra_context.contains("Written in otra"), "{otra_context}");
+    assert!(!otra_context.contains("Written in acme"), "{otra_context}");
+}

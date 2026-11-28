@@ -27,6 +27,7 @@ struct SyncSessionPayload {
     pub(super) id: String,
     pub(super) project: String,
     pub(super) directory: String,
+    pub(super) remote: String,
     pub(super) started_at: String,
     pub(super) ended_at: Option<String>,
     pub(super) summary: Option<String>,
@@ -236,22 +237,35 @@ fn apply_session_upsert_tx(
     // And the summary, which nothing normalised on either path: see
     // `normalize::session_summary`.
     let summary = normalize::session_summary(payload.summary.as_deref(), max_content_bytes);
+    // A peer that predates the column sends nothing, and an empty value is not
+    // a claim: it must not erase the remote this store already recorded for
+    // the same session id, or the collision would resolve differently on the
+    // two machines. A value that is too long to be a remote is treated the same
+    // way as no value, by the same bound the local door applies.
+    let remote = payload.remote.trim();
+    let remote = if remote.len() <= crate::project::REMOTE_MAX_BYTES {
+        remote
+    } else {
+        ""
+    };
     tx.execute(
-        "INSERT INTO sessions (id, project, directory, started_at, ended_at, summary)
-         VALUES (?1, ?2, ?3, COALESCE(NULLIF(?4, ''), datetime('now')), ?5, ?6)
+        "INSERT INTO sessions (id, project, directory, started_at, ended_at, summary, remote)
+         VALUES (?1, ?2, ?3, COALESCE(NULLIF(?4, ''), datetime('now')), ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
              project = excluded.project,
              directory = excluded.directory,
              started_at = COALESCE(NULLIF(excluded.started_at, ''), sessions.started_at),
              ended_at = COALESCE(excluded.ended_at, sessions.ended_at),
-             summary = COALESCE(excluded.summary, sessions.summary)",
+             summary = COALESCE(excluded.summary, sessions.summary),
+             remote = COALESCE(NULLIF(excluded.remote, ''), sessions.remote)",
         params![
             payload.id,
             project,
             crate::project::recordable_directory(&payload.directory),
             payload.started_at,
             payload.ended_at,
-            summary
+            summary,
+            remote
         ],
     )?;
     Ok(())

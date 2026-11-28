@@ -1,0 +1,27 @@
+-- The repository a session was opened in, folded to `host/owner/name`.
+--
+-- What was wrong. Two repositories whose remotes differ only in owner resolved
+-- to one project: `x/api` with `acme/api.git` and `y/api` with `other/api.git`
+-- both read as `api`, so the second one's opening block listed the first one's
+-- memories and its saves joined them (#500). Nothing in the row recorded which
+-- remote answered to the name, so nothing could tell the two apart afterwards.
+--
+-- What this adds. `sessions.remote`, the folded remote of the checkout the
+-- session was opened in: scheme, user and port gone, `.git` gone, lowercased,
+-- so `git@github.com:acme/api.git` and `https://github.com/acme/api` are one
+-- identity. The project name of a repository that collides with one already
+-- recorded under another remote is qualified with its owner (`acme-api`), and
+-- that decision is only possible if the row says which remote it belongs to.
+--
+-- Backfill. Empty, on every existing row. A session recorded before this column
+-- existed does not say which remote answered to its project, and inventing one
+-- would turn an unknown into a claim. The first checkout to open after the
+-- upgrade claims its own name; a second, different remote found under that name
+-- is the collision this exists to settle. `sessions.remote` stays empty for a
+-- project named by `.leteo/config.json` or by a folder, which is not a claim.
+--
+-- Replicated. The column travels with a session, because a peer that joined
+-- before the collision would otherwise meet it again: the mutation payload
+-- carries `remote`, and a peer that does not know the field ignores it.
+--
+-- No full-text index carries the column, so nothing is rebuilt.

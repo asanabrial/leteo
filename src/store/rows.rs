@@ -10,7 +10,7 @@ use super::*;
 pub(super) fn get_session_row(connection: &Connection, id: &str) -> Result<Session, StoreError> {
     connection
         .query_row(
-            "SELECT id, project, directory, started_at, ended_at, summary FROM sessions WHERE id = ?1",
+            "SELECT id, project, directory, started_at, ended_at, summary, remote FROM sessions WHERE id = ?1",
             [id],
             map_session,
         )
@@ -70,6 +70,7 @@ pub(super) fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> 
         started_at: row.get("started_at")?,
         ended_at: row.get("ended_at")?,
         summary: row.get("summary")?,
+        remote: row.get("remote")?,
     })
 }
 

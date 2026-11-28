@@ -2101,3 +2101,33 @@ fn there_is_no_copy_when_there_is_nothing_to_lose() {
         );
     }
 }
+
+/// A store written before the remote column keeps its project names and claims
+/// no repository.
+///
+/// The column is what tells two repositories with one name apart, and a row
+/// written before it existed does not say which one it belonged to. Inventing
+/// an answer would turn an unknown into a claim, so the upgrade leaves the row
+/// empty and the first checkout to open claims its own name — the second remote
+/// found under it is the collision the column exists to settle.
+#[test]
+fn a_store_written_before_the_remote_column_keeps_its_projects_and_claims_nothing() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("leteo.db");
+    {
+        let store = Store::open(StoreConfig::new(path.clone())).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "INSERT INTO sessions (id, project, directory) VALUES ('s1', 'api', 'C:/one');
+                 ALTER TABLE sessions DROP COLUMN remote;
+                 PRAGMA user_version = 27;",
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(StoreConfig::new(path)).unwrap();
+    let session = store.get_session("s1").unwrap();
+    assert_eq!(session.project, "api", "an existing project keeps its name");
+    assert_eq!(session.remote, "", "and nobody's remote is invented for it");
+}

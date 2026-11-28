@@ -1698,17 +1698,27 @@ fn import_sessions(
         // not, and the drift check then resolved it against wherever the agent
         // happened to run.
         let directory = crate::project::recordable_directory(&session.directory);
+        // The repository the session was opened in, when the file says. An
+        // export from before the column, or from a checkout with no origin,
+        // says nothing, and nothing is not a claim.
+        let remote = session.remote.trim();
+        let remote = if remote.len() <= crate::project::REMOTE_MAX_BYTES {
+            remote
+        } else {
+            ""
+        };
         result.sessions_imported += tx.execute(
             "INSERT OR IGNORE INTO sessions
-             (id, project, directory, started_at, ended_at, summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (id, project, directory, started_at, ended_at, summary, remote)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 session.id,
                 project,
                 directory,
                 started_at,
                 session.ended_at,
-                summary
+                summary,
+                remote
             ],
         )? as i64;
     }

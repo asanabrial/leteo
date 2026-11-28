@@ -19,6 +19,14 @@ pub struct Session {
     pub ended_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The repository this session was opened in, folded to `host/owner/name`.
+    ///
+    /// Empty on a session opened where nothing could say which remote it
+    /// belongs to — a folder named project, a `.leteo/config.json`, a peer that
+    /// predates the column — and empty is not a claim: it neither collides with
+    /// nor owns a bare project name. See `migrations/0028_session_remote.sql`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remote: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

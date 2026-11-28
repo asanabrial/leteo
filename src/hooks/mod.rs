@@ -661,6 +661,48 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     // An agent that changes directory mid-session would otherwise split one
     // conversation's memories across two projects, and neither would be whole.
     project = session_project(store, &session_id, project);
+
+    // A repository whose name another repository already holds files under a
+    // name of its own, and that has to be settled before the session is derived
+    // so the session and the memories it will hold agree. An agent that named a
+    // project, and a session that already owns one, have decided; so has a
+    // directory whose detection is a guess, which is a folder's name and not a
+    // remote at all.
+    let mut session_reason = session_reason;
+    let mut settlement_warning = None;
+    let mut settled_away = false;
+    if !named_by_agent && !guessed && project == normalize::project(&detection.project) {
+        match store.settle_detected_project(&detection) {
+            Ok(settled) => {
+                if settled.project() != project {
+                    project = settled.project().to_owned();
+                    settled_away = true;
+                    if derived_session {
+                        let (derived, reason) = resolve_session_id(input, &project);
+                        session_id = derived;
+                        session_reason = reason.or(session_reason);
+                    }
+                }
+                settlement_warning = settled.warning;
+            }
+            Err(error) => {
+                settlement_warning = Some(said(
+                    "check which repository owns this project name",
+                    &error,
+                ));
+            }
+        }
+    }
+    // The repository this directory is, recorded with the session so a later
+    // checkout of a *different* repository named the same can be told apart
+    // from this one. Only when the project came from here: an agent that named
+    // another project is writing about somewhere else.
+    let session_remote = if named_by_agent {
+        None
+    } else {
+        crate::project::detected_remote(&detection).map(|remote| remote.key)
+    };
+
     let mut outcome = HookOutcome {
         event: event.hook_event_name(),
         project: project.clone(),
@@ -669,6 +711,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
     };
     outcome.warnings.extend(project_reason);
     outcome.warnings.extend(session_reason);
+    outcome.warnings.extend(settlement_warning);
     if project.is_empty() {
         outcome
             .warnings
@@ -699,7 +742,17 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             .file_name()
             .map(|name| normalize::project(&name.to_string_lossy()))
             .unwrap_or_default();
-        match drifted_directory_projects(store, &directory, &project) {
+        // Asked about the name this directory's history is compared against:
+        // the project it already owns when detection guessed, and the plain
+        // name detection read when the checkout was settled under a qualified
+        // one — the qualified name is new here, so nothing was recorded under
+        // it, and its own plain-name rows are not drift.
+        let drift_exclude = if settled_away {
+            detected_project.clone()
+        } else {
+            project.clone()
+        };
+        match drifted_directory_projects(store, &directory, &drift_exclude) {
             Ok(found) => drifted = found,
             // A lookup that could not run is not a lookup that found no drift,
             // so it says which it was rather than passing as agreement.
@@ -713,7 +766,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // The fold can leave sessions behind when the same name was also
             // recorded from another checkout. Those are still drift, and the
             // warning is the only thing that says so.
-            match drifted_directory_projects(store, &directory, &project) {
+            match drifted_directory_projects(store, &directory, &drift_exclude) {
                 Ok(found) => drifted = found,
                 Err(error) => outcome
                     .warnings
@@ -784,7 +837,14 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
 
     match event {
         HookEvent::SessionStart => {
-            ensure_session(store, &session_id, &project, &directory, &mut outcome);
+            ensure_session(
+                store,
+                &session_id,
+                &project,
+                &directory,
+                session_remote.as_deref(),
+                &mut outcome,
+            );
             sweep_stale_nudges(store);
             let mut context = if input.without_directive {
                 String::new()
@@ -901,7 +961,14 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             outcome.system_message = (!said.is_empty()).then(|| said.join("\n"));
         }
         HookEvent::PostCompaction => {
-            ensure_session(store, &session_id, &project, &directory, &mut outcome);
+            ensure_session(
+                store,
+                &session_id,
+                &project,
+                &directory,
+                session_remote.as_deref(),
+                &mut outcome,
+            );
             // Everything the hint named before this is gone from the agent's
             // context, so it is worth naming again — and so is the sentence
             // that explained it. The state is cleared and then refilled with
@@ -961,7 +1028,14 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             outcome.additional_context = Some(context);
         }
         HookEvent::UserPromptSubmit => {
-            ensure_session(store, &session_id, &project, &directory, &mut outcome);
+            ensure_session(
+                store,
+                &session_id,
+                &project,
+                &directory,
+                session_remote.as_deref(),
+                &mut outcome,
+            );
             // A message the harness wrote is not something somebody asked, so
             // it is neither stored nor searched for a hint.
             let harness = normalize::is_harness_message(&input.prompt);
@@ -1060,7 +1134,14 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             let mut lost_capture = None;
             let output = input.output();
             if !output.trim().is_empty() {
-                ensure_session(store, &session_id, &project, &directory, &mut outcome);
+                ensure_session(
+                    store,
+                    &session_id,
+                    &project,
+                    &directory,
+                    session_remote.as_deref(),
+                    &mut outcome,
+                );
                 let capture = capture_of(input, &session_id, &project);
                 match store.passive_capture_from(capture.clone(), directory.to_str()) {
                     Ok(result) => {

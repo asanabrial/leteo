@@ -47,6 +47,13 @@ All notable changes to Leteo are documented in this file.
   agent gets the protocol instead of a file nobody opens. Antigravity's and
   Command Code's paths were checked against their own documentation and are
   unchanged (#470).
+- **OpenCode no longer records its opening block as read.** The plugin asks for
+  the session opening once and appends it to the system prompt of one model
+  request; the host rebuilds that prompt for the next request without it. The
+  hook was not told, so it recorded all thirty memories as shown and no later
+  hint in that session could name them again. `session-start` and
+  `post-compaction` now pass `transient_hints`, as the Pi plugin already did
+  (#502).
 - **A `find` whose occurrences overlap is refused as ambiguous.** `mem_update`
   counts the spans a `find` names so that one naming more than one changes
   nothing, and it counted with `str::matches`, which does not overlap: `111` in

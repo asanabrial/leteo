@@ -38,6 +38,15 @@ All notable changes to Leteo are documented in this file.
   winning; `SaveOutput.hint` says that `mem_session_summary` sets it; and a
   project listing that failed answers as a store failure instead of
   `unknown_project` with no alternatives (#465).
+- **Cursor reads the memory protocol from a rule it always applies.** The
+  protocol was written to `~/.cursor/leteo-memory-protocol.md`, beside
+  `mcp.json`, where Cursor's rules system never looked: user rule files live in
+  `~/.cursor/rules`, and a plain `.md` is skipped for carrying no frontmatter.
+  `leteo setup cursor` now writes
+  `~/.cursor/rules/leteo-memory-protocol.mdc` with `alwaysApply: true`, so the
+  agent gets the protocol instead of a file nobody opens. Antigravity's and
+  Command Code's paths were checked against their own documentation and are
+  unchanged (#470).
 - **A `find` whose occurrences overlap is refused as ambiguous.** `mem_update`
   counts the spans a `find` names so that one naming more than one changes
   nothing, and it counted with `str::matches`, which does not overlap: `111` in

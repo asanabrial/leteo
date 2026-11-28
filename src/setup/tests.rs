@@ -3069,6 +3069,44 @@ fn a_hook_stops_waiting_before_the_agent_stops_waiting_for_it() {
     }
 }
 
+/// Cursor's user rule is a `.mdc` under `~/.cursor/rules` and applies only when
+/// its frontmatter says so.
+///
+/// The protocol used to be written to `~/.cursor/leteo-memory-protocol.md`,
+/// beside `mcp.json`, where Cursor's rules system never looked: project rules
+/// are `.cursor/rules/*.mdc`, and a plain `.md` there is ignored for carrying no
+/// frontmatter (`cursor.com/docs/rules`, read 2026-11-28). A setup that
+/// reported success changed nothing the agent reads.
+#[test]
+fn cursor_installs_the_protocol_as_a_rule_it_always_applies() {
+    let temp = TempDir::new().unwrap();
+    let setup_options = options(&temp);
+    setup(
+        "cursor",
+        &SetupOptions {
+            install_instructions: true,
+            ..setup_options.clone()
+        },
+    )
+    .unwrap();
+
+    let rule = temp
+        .path()
+        .join(".cursor")
+        .join("rules")
+        .join("leteo-memory-protocol.mdc");
+    let text = std::fs::read_to_string(&rule)
+        .unwrap_or_else(|error| panic!("cursor reads {}: {error}", rule.display()));
+    assert!(
+        text.starts_with("---\nalwaysApply: true\n---\n"),
+        "a rule without its frontmatter is only used when somebody mentions it: {text}"
+    );
+    assert!(
+        text.contains(super::MEMORY_PROTOCOL_BEGIN),
+        "and the protocol is in the file that was written: {text}"
+    );
+}
+
 #[test]
 fn uninstalling_leaves_no_file_of_leteos_behind() {
     for adapter in super::supported_agents() {

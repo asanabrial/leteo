@@ -49,6 +49,10 @@ pub enum CloudStoreError {
     ChunkNotFound,
     #[error("cloud chunk id already exists with different data")]
     ChunkConflict,
+    /// A name bootstrap will not take twice, so a rerun fails before it writes
+    /// rather than after it has inserted a second principal.
+    #[error("a principal named {0:?} already exists")]
+    PrincipalExists(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +64,14 @@ pub struct ManagedTokenIdentity {
     pub role: String,
     pub enabled: bool,
     pub revoked: bool,
+}
+
+/// The two ids a bootstrap created, so the command reports what it wrote
+/// without reading the rows back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootstrapAdmin {
+    pub principal_id: i64,
+    pub token_id: i64,
 }
 
 /// What a revocation found, told apart because each answer calls for a
@@ -482,26 +494,10 @@ impl CloudStore {
         display_name: &str,
         role: &str,
     ) -> Result<i64, CloudStoreError> {
-        let kind = kind.trim();
-        let role = role.trim();
-        if !matches!(kind, "human" | "service_account") {
-            return Err(CloudStoreError::Invalid(
-                "invalid principal kind".to_owned(),
-            ));
-        }
-        if !matches!(role, "admin" | "member") || display_name.trim().is_empty() {
-            return Err(CloudStoreError::Invalid("invalid principal".to_owned()));
-        }
-        let row = sqlx::query(
-            "INSERT INTO cloud_principals (kind, display_name, role)
-             VALUES ($1, $2, $3) RETURNING id",
-        )
-        .bind(kind)
-        .bind(display_name.trim())
-        .bind(role)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.try_get("id")?)
+        let mut transaction = self.pool.begin().await?;
+        let id = create_principal_tx(&mut transaction, kind, display_name, role).await?;
+        transaction.commit().await?;
+        Ok(id)
     }
 
     pub async fn create_user(
@@ -510,18 +506,9 @@ impl CloudStore {
         username: &str,
         email: Option<&str>,
     ) -> Result<(), CloudStoreError> {
-        if username.trim().is_empty() {
-            return Err(CloudStoreError::Invalid("username is required".to_owned()));
-        }
-        sqlx::query(
-            "INSERT INTO cloud_human_users (principal_id, username, email)
-             VALUES ($1, $2, $3)",
-        )
-        .bind(principal_id)
-        .bind(username.trim())
-        .bind(email.map(str::trim).filter(|email| !email.is_empty()))
-        .execute(&self.pool)
-        .await?;
+        let mut transaction = self.pool.begin().await?;
+        create_user_tx(&mut transaction, principal_id, username, email).await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -564,18 +551,11 @@ impl CloudStore {
         verifier: &str,
         name: &str,
     ) -> Result<i64, CloudStoreError> {
-        let row = sqlx::query(
-            "INSERT INTO cloud_principal_tokens
-             (principal_id, token_prefix, token_hash, name)
-             VALUES ($1, $2, $3, $4) RETURNING id",
-        )
-        .bind(principal_id)
-        .bind(&token.prefix)
-        .bind(verifier.trim())
-        .bind(name.trim())
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.try_get("id")?)
+        let mut transaction = self.pool.begin().await?;
+        let id =
+            store_managed_token_tx(&mut transaction, principal_id, token, verifier, name).await?;
+        transaction.commit().await?;
+        Ok(id)
     }
 
     /// The token ids carrying a prefix, for the operator who kept the prefix
@@ -648,19 +628,9 @@ impl CloudStore {
         principal_id: i64,
         project: &str,
     ) -> Result<(), CloudStoreError> {
-        let project = if project.trim() == "*" {
-            "*".to_owned()
-        } else {
-            require_project(project)?
-        };
-        sqlx::query(
-            "INSERT INTO cloud_project_grants (principal_id, project)
-             VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        )
-        .bind(principal_id)
-        .bind(project)
-        .execute(&self.pool)
-        .await?;
+        let mut transaction = self.pool.begin().await?;
+        grant_project_tx(&mut transaction, principal_id, project).await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -682,6 +652,54 @@ impl CloudStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Creates the first administrator and its managed token as one act.
+    ///
+    /// Everything a bootstrap writes — the principal, its user row, the token
+    /// and the grants — commits together or not at all. Before, a rerun with
+    /// the same name inserted a second principal and then failed on the
+    /// duplicate username, and a blank project stored the token before the
+    /// grant refused it: either left half of an administrator nobody could use.
+    ///
+    /// A name that already exists is refused before the first insert. That is
+    /// not uniqueness: `display_name` carries no unique index, because adding
+    /// one fails outright on a database that already holds the duplicates this
+    /// defect created, and no migration here may take a store down. Two
+    /// bootstraps racing under one name can still both pass this check; what
+    /// the transaction rules out is the partial rows, not the duplicate name.
+    pub async fn bootstrap_admin(
+        &self,
+        display_name: &str,
+        email: Option<&str>,
+        token: &ManagedToken,
+        verifier: &str,
+        projects: &[String],
+    ) -> Result<BootstrapAdmin, CloudStoreError> {
+        let mut transaction = self.pool.begin().await?;
+        let taken = sqlx::query("SELECT 1 FROM cloud_principals WHERE display_name = $1")
+            .bind(display_name.trim())
+            .fetch_optional(&mut *transaction)
+            .await?;
+        if taken.is_some() {
+            return Err(CloudStoreError::PrincipalExists(
+                display_name.trim().to_owned(),
+            ));
+        }
+        let principal_id =
+            create_principal_tx(&mut transaction, "human", display_name, "admin").await?;
+        create_user_tx(&mut transaction, principal_id, display_name, email).await?;
+        let token_id =
+            store_managed_token_tx(&mut transaction, principal_id, token, verifier, "bootstrap")
+                .await?;
+        for project in projects {
+            grant_project_tx(&mut transaction, principal_id, project).await?;
+        }
+        transaction.commit().await?;
+        Ok(BootstrapAdmin {
+            principal_id,
+            token_id,
+        })
     }
 
     pub async fn find_principal_by_name(
@@ -1308,6 +1326,99 @@ fn i64_from_usize(value: usize) -> Result<i64, CloudStoreError> {
 
 fn usize_from_i32(value: i32) -> usize {
     usize::try_from(value).unwrap_or_default()
+}
+
+/// One principal, validated the way `create_principal` validates it, inside a
+/// caller's transaction.
+async fn create_principal_tx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kind: &str,
+    display_name: &str,
+    role: &str,
+) -> Result<i64, CloudStoreError> {
+    let kind = kind.trim();
+    let role = role.trim();
+    if !matches!(kind, "human" | "service_account") {
+        return Err(CloudStoreError::Invalid(
+            "invalid principal kind".to_owned(),
+        ));
+    }
+    if !matches!(role, "admin" | "member") || display_name.trim().is_empty() {
+        return Err(CloudStoreError::Invalid("invalid principal".to_owned()));
+    }
+    let row = sqlx::query(
+        "INSERT INTO cloud_principals (kind, display_name, role)
+         VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(kind)
+    .bind(display_name.trim())
+    .bind(role)
+    .fetch_one(&mut **transaction)
+    .await?;
+    Ok(row.try_get("id")?)
+}
+
+async fn create_user_tx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    principal_id: i64,
+    username: &str,
+    email: Option<&str>,
+) -> Result<(), CloudStoreError> {
+    if username.trim().is_empty() {
+        return Err(CloudStoreError::Invalid("username is required".to_owned()));
+    }
+    sqlx::query(
+        "INSERT INTO cloud_human_users (principal_id, username, email)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(principal_id)
+    .bind(username.trim())
+    .bind(email.map(str::trim).filter(|email| !email.is_empty()))
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn store_managed_token_tx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    principal_id: i64,
+    token: &ManagedToken,
+    verifier: &str,
+    name: &str,
+) -> Result<i64, CloudStoreError> {
+    let row = sqlx::query(
+        "INSERT INTO cloud_principal_tokens
+         (principal_id, token_prefix, token_hash, name)
+         VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(principal_id)
+    .bind(&token.prefix)
+    .bind(verifier.trim())
+    .bind(name.trim())
+    .fetch_one(&mut **transaction)
+    .await?;
+    Ok(row.try_get("id")?)
+}
+
+async fn grant_project_tx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    principal_id: i64,
+    project: &str,
+) -> Result<(), CloudStoreError> {
+    let project = if project.trim() == "*" {
+        "*".to_owned()
+    } else {
+        require_project(project)?
+    };
+    sqlx::query(
+        "INSERT INTO cloud_project_grants (principal_id, project)
+         VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(principal_id)
+    .bind(project)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 const MIGRATION_LOCK_KEY: i64 = 0x4C_45_54_45_4F_01;

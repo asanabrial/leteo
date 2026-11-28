@@ -126,8 +126,9 @@ pub(super) struct RefusedSource {
 ///
 /// A name the refusal leaves in place answers with the group and no sources:
 /// the person is told which fold was considered and why their project is not in
-/// it, and `--apply` changes nothing, because a run scoped to one project has
-/// no business moving the ones beside it.
+/// it, and `--apply` changes nothing. Naming the canonical or a source that
+/// does move applies the fold whole, which is what naming a member of it asks
+/// for.
 fn groups_naming(stats: &[ProjectStats], named: &str) -> Vec<ProjectGroup> {
     let named = crate::memory::normalize::project(named);
     let names = |project: &str| crate::memory::normalize::project(project) == named;
@@ -216,6 +217,14 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
                 .or_default()
                 .push(index);
         }
+    }
+    for indexes in by_directory.values_mut() {
+        // One project that recorded the same folder under two spellings is one
+        // project. Without this a bucket of one project and one other counts
+        // three and the rule below drops the evidence, which is the rename it
+        // was meant to find.
+        indexes.sort_unstable();
+        indexes.dedup();
     }
     for indexes in by_directory.values() {
         if indexes.len() != 2 {
@@ -801,6 +810,21 @@ mod tests {
             vec!["leteo-old".to_owned()],
             "one folder under two spellings is not a second home"
         );
+
+        // One project that recorded the folder under both spellings is still
+        // one project, so the shared-directory rule counts two, not three.
+        let stats = vec![
+            project("alpha-service", 10, &["/work/shared", "/work/shared/"]),
+            project("omega-worker", 5, &["/work/shared"]),
+        ];
+        assert_eq!(
+            similar_project_groups(&stats),
+            vec![ProjectGroup {
+                canonical: "alpha-service".to_owned(),
+                sources: vec!["omega-worker".to_owned()],
+                skipped: Vec::new(),
+            }]
+        );
     }
 
     /// `.` is not a place. Two projects that both recorded it share no
@@ -843,6 +867,14 @@ mod tests {
             similar_project_groups(&stats).is_empty(),
             "three projects in one folder are three projects"
         );
+
+        // Equal memories: the name decides, so the same store groups the same
+        // way twice.
+        let tied = vec![
+            project("nombre-b", 2, &[r"H:\REPO\cosa"]),
+            project("nombre-a", 2, &[r"H:\REPO\cosa"]),
+        ];
+        assert_eq!(similar_project_groups(&tied)[0].canonical, "nombre-a");
 
         // Two is the ordinary shape of one project renamed, and still counts.
         let renamed = vec![

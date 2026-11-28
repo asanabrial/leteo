@@ -945,6 +945,118 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
     assert_eq!(counts["leteo-old"], json!(1));
 }
 
+/// A run scoped to a project the fold leaves alone changes nothing, and a run
+/// scoped to one it moves applies the fold whole.
+///
+/// The group here has both kinds of source: `alpha`, the empty name a merge left
+/// behind, and `beta-old`, which holds a memory in a folder of its own. Naming
+/// `beta-old` must not fold the other one, and naming `beta` must.
+#[test]
+fn a_scoped_consolidation_moves_nothing_when_the_name_it_asked_for_is_left_alone() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("consolidate-scope.db");
+    let alpha_repo = temp.path().join("alpha");
+    let beta_repo = temp.path().join("beta");
+    let old_repo = temp.path().join("beta-old");
+    for (repo, remote) in [(&alpha_repo, "alpha"), (&beta_repo, "beta")] {
+        std::fs::create_dir_all(repo.join(".git")).expect("create .git");
+        std::fs::write(
+            repo.join(".git").join("config"),
+            format!("[remote \"origin\"]\n\turl = https://example.com/{remote}.git\n"),
+        )
+        .expect("record the remote");
+    }
+    std::fs::create_dir_all(&old_repo).expect("create the older project's folder");
+
+    let open = |session: &str, project: &str, repo: &Path| {
+        run_json(
+            leteo(&database)
+                .arg("session-start")
+                .arg(session)
+                .arg("--project")
+                .arg(project)
+                .arg("--directory")
+                .arg(repo),
+        );
+    };
+    open("beta-in-alpha", "beta", &alpha_repo);
+    for note in ["Beta one", "Beta two"] {
+        run_json(
+            leteo(&database)
+                .arg("save")
+                .arg(note)
+                .arg("work that was merged into beta")
+                .arg("--session")
+                .arg("beta-in-alpha"),
+        );
+    }
+    open("beta-own", "beta", &beta_repo);
+    open("old-session", "beta-old", &old_repo);
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory of beta-old")
+            .arg("work that belongs to the older folder")
+            .arg("--session")
+            .arg("old-session"),
+    );
+    open("alpha-reopened", "alpha", &alpha_repo);
+
+    let scoped = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--project")
+            .arg("beta-old")
+            .arg("--apply"),
+    );
+    assert_eq!(scoped["groups"][0]["canonical"], json!("beta"));
+    assert_eq!(
+        scoped["groups"][0]["sources"],
+        json!([]),
+        "a run scoped to the name it leaves alone moves nothing: {scoped}"
+    );
+    assert_eq!(
+        scoped["groups"][0]["skipped"][0]["project"],
+        json!("beta-old")
+    );
+
+    let projects = run_json(leteo(&database).arg("projects").arg("list"));
+    let projects = projects.as_array().expect("project list");
+    assert_eq!(projects.len(), 3, "nothing moved: {projects:?}");
+
+    let applied = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--project")
+            .arg("beta")
+            .arg("--apply"),
+    );
+    assert_eq!(applied["groups"][0]["canonical"], json!("beta"));
+    assert_eq!(applied["groups"][0]["sources"], json!(["alpha"]));
+    assert_eq!(
+        applied["groups"][0]["result"]["sessions_updated"],
+        json!(1),
+        "only the empty name's session moved"
+    );
+
+    let projects = run_json(leteo(&database).arg("projects").arg("list"));
+    let projects = projects.as_array().expect("project list");
+    assert_eq!(projects.len(), 2, "alpha is gone: {projects:?}");
+    let counts = projects
+        .iter()
+        .map(|project| {
+            (
+                project["name"].as_str().expect("a name").to_owned(),
+                project["observation_count"].clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(counts["beta"], json!(2));
+    assert_eq!(counts["beta-old"], json!(1));
+}
+
 #[test]
 fn cli_hooks_drive_the_session_lifecycle_from_agent_payloads() {
     let temp = tempfile::tempdir().expect("create CLI test directory");

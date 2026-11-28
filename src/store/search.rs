@@ -1295,7 +1295,13 @@ impl Store {
         }
         let mut conditions = String::new();
         for index in 0..terms.len() {
-            conditions.push_str(&format!(" AND instr(lower(o.title), ?{}) > 0", index + 4));
+            // Both sides through the same fold: `lower()` alone folds ASCII,
+            // so an accented capital in the title stayed a capital and a term
+            // typed in lower case could never sit inside it.
+            conditions.push_str(&format!(
+                " AND instr(leteo_fold(o.title), leteo_fold(?{})) > 0",
+                index + 4
+            ));
         }
         let visible = visible_observations(1, 2, 3);
         let sql = format!(

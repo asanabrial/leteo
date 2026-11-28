@@ -28,6 +28,17 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A fragment of a shouted Spanish word finds its title.** The substring stage
+  — the last resort for the middle of a word somebody half-remembers — lowered
+  the title with SQLite's `lower()`, which folds ASCII only, and compared it
+  against a term Rust had lowercased in full: `guració` could not find
+  `CONFIGURACIÓN`, and no earlier stage could either, so the memory was
+  unreachable. Both sides now go through one `leteo_fold` function registered on
+  the connection. Nothing else moved: `tools/memory-bench/precision.py` puts the
+  merge base and this binary side by side and every question keeps its rank —
+  hit@1 0.928 on the ratchet corpus and 0.964 on the comparison corpus at both
+  limits, MRR unchanged — while the ratchet's two breaches (Spanish MRR, empty
+  answers) reproduce identically on the merge base (#449).
 - **Two repositories whose names are one no longer share a project.** A
   checkout's project name is its remote's last segment, so `acme/api` and
   `otra/api` both answered `api`: the second one's opening block listed the

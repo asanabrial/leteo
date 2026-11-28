@@ -2730,6 +2730,7 @@ fn export_with_observations(count: usize) -> ExportData {
             started_at: "2026-07-28 17:00:39".to_owned(),
             ended_at: None,
             summary: None,
+            remote: String::new(),
         }],
         observations,
         prompts: Vec::new(),

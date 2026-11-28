@@ -287,6 +287,7 @@ async fn a_replayed_chunk_is_accepted_but_a_forged_one_is_not() {
             started_at: Utc::now().to_rfc3339(),
             ended_at: None,
             summary: None,
+            remote: String::new(),
         }],
         ..ChunkData::default()
     };
@@ -448,6 +449,7 @@ async fn postgres_chunk_and_mutation_round_trip() {
             started_at: Utc::now().to_rfc3339(),
             ended_at: None,
             summary: None,
+            remote: String::new(),
         }],
         ..ChunkData::default()
     };
@@ -1217,6 +1219,7 @@ async fn a_manifest_is_paged_and_names_the_page_that_follows() {
                 started_at: base.to_rfc3339(),
                 ended_at: None,
                 summary: None,
+                remote: String::new(),
             }],
             ..ChunkData::default()
         };

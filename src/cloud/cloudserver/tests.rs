@@ -1749,6 +1749,7 @@ async fn the_manifest_route_pages_and_refuses_a_cursor_it_cannot_place() {
                 started_at: base.to_rfc3339(),
                 ended_at: None,
                 summary: None,
+                remote: String::new(),
             }],
             ..ChunkData::default()
         };

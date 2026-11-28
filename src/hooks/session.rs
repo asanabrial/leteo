@@ -110,12 +110,36 @@ pub(super) fn ensure_session(
     session_id: &str,
     project: &str,
     directory: &Path,
+    remote: Option<&str>,
     outcome: &mut HookOutcome,
 ) {
-    if store.get_session(session_id).is_ok() {
-        return;
+    // A row that exists and already says which repository it is in has nothing
+    // to learn, and a hook runs on every prompt: paying a write transaction to
+    // repeat that answer would be paid on the commonest path this crate has.
+    // A row that is missing a remote it can now be told is written once, and
+    // only when the row is still this directory's and this project's: a
+    // session an agent carried into another checkout must not be stamped with
+    // that checkout's repository.
+    let asked = directory.to_string_lossy();
+    if let Ok(session) = store.get_session(session_id) {
+        let same_project = normalize::project(&session.project) == normalize::project(project);
+        let same_directory = session.directory.is_empty()
+            || crate::project::comparable(&session.directory) == crate::project::comparable(&asked);
+        let can_learn = session.remote.is_empty()
+            && remote.is_some_and(|remote| !remote.is_empty())
+            && same_project
+            && same_directory;
+        if !can_learn {
+            return;
+        }
     }
-    match store.create_session(session_id, project, &directory.to_string_lossy()) {
+    let created = match remote {
+        Some(remote) if !remote.is_empty() => {
+            store.create_session_with_remote(session_id, project, &asked, remote)
+        }
+        _ => store.create_session(session_id, project, &asked),
+    };
+    match created {
         Ok(_) => outcome.session_created = true,
         Err(error) => outcome.warnings.push(super::said("create session", &error)),
     }

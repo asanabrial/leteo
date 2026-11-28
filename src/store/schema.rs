@@ -61,10 +61,10 @@ pub(super) const BASELINE_NORMALIZE_SQL: &str =
 ///   0025_observation_deletions.sql      <- the tombstone a hard delete leaves
 ///   0026_observation_directory.sql      <- where a memory was written from
 ///   0027_session_declared.sql           <- whether a caller opened a session on purpose
-///   0028_something.sql                  <- add here, and bump SCHEMA_VERSION
+///   0028_session_remote.sql             <- the repository a session was opened in
 /// ```
 ///
-/// The next number is 28 rather than 2 because 2 through 17 are spent history
+/// The next number is 29 rather than 2 because 2 through 17 are spent history
 /// and are refused rather than migrated; `LAST_PRE_RELEASE_VERSION` owns that
 /// band and says why.
 ///
@@ -99,7 +99,19 @@ pub(super) const MIGRATIONS: &[(i32, Migration)] = &[
         Migration::Rust(OBSERVATION_DIRECTORY, observation_directory),
     ),
     (27, Migration::Rust(SESSION_DECLARED, session_declared)),
+    (28, Migration::Rust(SESSION_REMOTE, session_remote)),
 ];
+
+/// Migration 28: the repository a session was opened in, folded to
+/// `host/owner/name`.
+///
+/// A step in Rust because the column cannot be added idempotently in SQL; the
+/// file carries the reasoning, and the default is empty rather than invented.
+pub(super) const SESSION_REMOTE: &str = include_str!("../../migrations/0028_session_remote.sql");
+
+fn session_remote(connection: &Connection) -> Result<(), rusqlite::Error> {
+    add_column_if_missing(connection, "sessions", "remote", "TEXT NOT NULL DEFAULT ''")
+}
 
 /// Migration 27: whether a caller opened a session to bring its project into
 /// being.
@@ -241,7 +253,7 @@ pub(super) enum Migration {
 /// What raising it past them does *not* do is make them migratable: see
 /// `LAST_PRE_RELEASE_VERSION` and the refusal in `migrate`. They stop being
 /// ambiguous and stay refused.
-pub(crate) const SCHEMA_VERSION: i32 = 27;
+pub(crate) const SCHEMA_VERSION: i32 = 28;
 
 /// The highest number stamped by the numbering that predates any release.
 ///

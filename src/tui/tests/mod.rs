@@ -371,6 +371,7 @@ fn timeline(focus: Observation) -> TimelineResult {
             started_at: "2026-07-27 10:00:00".to_owned(),
             ended_at: None,
             summary: None,
+            remote: String::new(),
         }),
         before_total: 1,
         after_total: 0,

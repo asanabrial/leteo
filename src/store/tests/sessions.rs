@@ -862,3 +862,181 @@ fn an_id_or_a_project_that_cannot_name_a_row_is_refused() {
         "the memory stayed where it was"
     );
 }
+
+/// A checkout the way detection reads one: a directory, a `.git/config` naming
+/// an origin, and the detection that answers for it.
+fn checkout(
+    temp: &TempDir,
+    folder: &str,
+    remote: &str,
+    project: &str,
+) -> crate::project::ProjectDetection {
+    let root = temp.path().join(folder);
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(
+        root.join(".git").join("config"),
+        format!("[remote \"origin\"]\n\turl = {remote}\n"),
+    )
+    .unwrap();
+    crate::project::ProjectDetection {
+        project: project.to_owned(),
+        source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+        path: root.to_string_lossy().into_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    }
+}
+
+/// Two repositories whose last segment is `api` are two projects, and the
+/// second one keeps the name its owner gave it (#500).
+///
+/// `acme/api` and `otra/api` both resolved to `api`, so the second checkout's
+/// opening block listed the first one's memories and its saves joined them. No
+/// renaming is involved: the name the first one already recorded stays
+/// `api` — an existing store keeps its project names — and the newcomer is the
+/// one that moves.
+#[test]
+fn a_repository_whose_name_another_one_holds_is_filed_under_its_owner() {
+    let (temp, mut store) = store();
+    let acme = checkout(&temp, "x-api", "git@github.com:acme/api.git", "api");
+    store
+        .create_session_with_remote("a", "api", &acme.path, "github.com/acme/api")
+        .unwrap();
+
+    let otra = checkout(&temp, "y-api", "https://github.com/otra/api.git", "api");
+    let settled = store.settle_detected_project(&otra).unwrap();
+
+    assert_eq!(settled.project, "otra-api");
+    assert_eq!(settled.source, crate::project::SOURCE_REMOTE_QUALIFIED);
+    assert!(settled.qualified);
+    assert!(
+        settled
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("github.com/acme/api")),
+        "the sentence names the repository that holds the plain name: {:?}",
+        settled.warning
+    );
+    assert_eq!(
+        settled.detection.project, "otra-api",
+        "the directory a session stamps is this checkout's own project"
+    );
+}
+
+/// Another clone of the same remote is the same project, wherever it sits.
+#[test]
+fn another_clone_of_the_same_remote_keeps_the_project_name() {
+    let (temp, mut store) = store();
+    let first = checkout(&temp, "one-api", "git@github.com:acme/api.git", "api");
+    store
+        .create_session_with_remote("a", "api", &first.path, "github.com/acme/api")
+        .unwrap();
+
+    let clone = checkout(&temp, "two-api", "https://github.com/acme/api", "api");
+    let settled = store.settle_detected_project(&clone).unwrap();
+
+    assert_eq!(settled.project, "api");
+    assert!(settled.warning.is_none());
+}
+
+/// A repository whose remote changed keeps its name: that is a rename or a fork
+/// of one checkout, not two repositories colliding.
+#[test]
+fn a_remote_that_changed_in_this_directory_keeps_the_project_name() {
+    let (temp, mut store) = store();
+    let old = checkout(&temp, "api", "https://github.com/acme/api.git", "api");
+    store
+        .create_session_with_remote("a", "api", &old.path, "github.com/acme/api")
+        .unwrap();
+
+    let renamed = checkout(&temp, "api", "https://github.com/otra/api.git", "api");
+    let settled = store.settle_detected_project(&renamed).unwrap();
+
+    assert_eq!(
+        settled.project, "api",
+        "the rows carrying the old remote were opened in this very directory"
+    );
+    assert!(settled.warning.is_none());
+}
+
+/// A project name no row claims is nobody's, and the first remote to arrive
+/// keeps it.
+#[test]
+fn a_name_recorded_without_a_remote_is_left_alone() {
+    let (temp, mut store) = store();
+    let checkout = checkout(&temp, "api", "https://github.com/otra/api.git", "api");
+    store.create_session("a", "api", "C:/somewhere").unwrap();
+
+    let settled = store.settle_detected_project(&checkout).unwrap();
+
+    assert_eq!(settled.project, "api");
+    assert!(settled.warning.is_none());
+}
+
+/// In a store that already collided, the claim that names a remote wins over a
+/// history that does not: every row written before the column existed has no
+/// remote, so it cannot say which repository it belonged to, and the checkout
+/// that *can* say owns the name from then on.
+#[test]
+fn a_history_with_no_remote_gives_way_to_a_claim_that_names_one() {
+    let (temp, mut store) = store();
+    let acme = checkout(&temp, "x-api", "https://github.com/acme/api.git", "api");
+    let otra = checkout(&temp, "y-api", "https://github.com/otra/api.git", "api");
+    store
+        .create_session_with_remote("b", "api", &otra.path, "github.com/otra/api")
+        .unwrap();
+
+    let settled = store.settle_detected_project(&acme).unwrap();
+
+    assert_eq!(settled.project, "acme-api");
+    assert!(settled.qualified);
+}
+
+/// If the name built from the owner is taken too, the whole remote is used, and
+/// the fallback is stable: the same checkout is filed the same way every time.
+#[test]
+fn a_qualified_name_another_repository_already_holds_falls_through() {
+    let (temp, mut store) = store();
+    let acme = checkout(&temp, "x-api", "https://github.com/acme/api.git", "api");
+    store
+        .create_session_with_remote("a", "api", &acme.path, "github.com/acme/api")
+        .unwrap();
+    store
+        .create_session_with_remote("t", "otra-api", "C:/third", "github.com/third/api")
+        .unwrap();
+
+    let otra = checkout(&temp, "y-api", "https://github.com/otra/api.git", "api");
+    let settled = store.settle_detected_project(&otra).unwrap();
+    assert_eq!(settled.project, "github.com-otra-api");
+
+    let again = store.settle_detected_project(&otra).unwrap();
+    assert_eq!(again.project, settled.project);
+}
+
+/// The remote belongs to the session row, and a row that predates the column
+/// learns it once rather than on every open.
+#[test]
+fn a_session_records_the_repository_it_was_opened_in() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "api", "C:/one").unwrap();
+    assert_eq!(store.get_session("s1").unwrap().remote, "");
+
+    store
+        .create_session_with_remote("s1", "api", "C:/one", "github.com/acme/api")
+        .unwrap();
+    assert_eq!(
+        store.get_session("s1").unwrap().remote,
+        "github.com/acme/api"
+    );
+
+    // The first remote is the row's claim; a second one does not overwrite it,
+    // or the collision would resolve differently depending on who opened last.
+    store
+        .create_session_with_remote("s1", "api", "C:/one", "github.com/otra/api")
+        .unwrap();
+    assert_eq!(
+        store.get_session("s1").unwrap().remote,
+        "github.com/acme/api"
+    );
+}

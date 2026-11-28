@@ -172,7 +172,7 @@ impl Store {
 
         let session_sql = match project {
             Some(_) => {
-                "SELECT id, project, directory, started_at, ended_at, summary FROM sessions
+                "SELECT id, project, directory, started_at, ended_at, summary, remote FROM sessions
                  WHERE project = ?1 OR id IN (
                     SELECT session_id FROM observations
                     WHERE ifnull(project, '') = ?1 OR
@@ -186,7 +186,7 @@ impl Store {
                  ) ORDER BY datetime(started_at), id"
             }
             None => {
-                "SELECT id, project, directory, started_at, ended_at, summary FROM sessions
+                "SELECT id, project, directory, started_at, ended_at, summary, remote FROM sessions
                  ORDER BY datetime(started_at), id"
             }
         };

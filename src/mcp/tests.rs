@@ -909,6 +909,14 @@ fn every_tool_declares_behavior_annotations() {
     }
 }
 
+/// The name and source a settled write answers with.
+///
+/// The tests here are about which project a door picks, not about the sentence
+/// that explains a qualified one; this keeps them reading as before.
+fn pair(settled: crate::project::SettledProject) -> (String, String) {
+    (settled.project, settled.source)
+}
+
 fn explicit_project_resolution(
     server: &LeteoMcpServer,
     store: &Store,
@@ -922,12 +930,14 @@ fn explicit_project_resolution(
         warning: None,
         error_hint: None,
     };
-    server.resolve_write_project(
-        store,
-        Some(requested.to_owned()),
-        &detection,
-        ProjectChoice::default(),
-    )
+    server
+        .resolve_write_project(
+            store,
+            Some(requested.to_owned()),
+            &detection,
+            ProjectChoice::default(),
+        )
+        .map(pair)
 }
 
 #[test]
@@ -1044,6 +1054,7 @@ fn explicit_projects_must_be_backed_by_known_context() {
     assert_eq!(
         server
             .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+            .map(pair)
             .unwrap(),
         (
             "leteo".to_owned(),
@@ -1058,6 +1069,7 @@ fn explicit_projects_must_be_backed_by_known_context() {
                 &detection,
                 ProjectChoice::default()
             )
+            .map(pair)
             .unwrap(),
         (
             "leteo".to_owned(),
@@ -1072,6 +1084,7 @@ fn explicit_projects_must_be_backed_by_known_context() {
                 &detection,
                 ProjectChoice::default()
             )
+            .map(pair)
             .unwrap(),
         ("known-project".to_owned(), SOURCE_KNOWN_PROJECT.to_owned())
     );
@@ -1083,6 +1096,7 @@ fn explicit_projects_must_be_backed_by_known_context() {
             &detection,
             ProjectChoice::default(),
         )
+        .map(pair)
         .expect_err("invented projects are refused");
     let payload = error_payload(&error);
     assert_eq!(payload["error"]["code"], "unknown_project");
@@ -1095,6 +1109,7 @@ fn explicit_projects_must_be_backed_by_known_context() {
             &detection,
             ProjectChoice::default(),
         )
+        .map(pair)
         .expect_err("blank projects are refused");
     assert_eq!(error_payload(&error)["error"]["code"], "invalid_project");
 }
@@ -1132,6 +1147,7 @@ fn a_remote_that_changed_makes_the_write_ask_which_project() {
 
     let error = server
         .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .map(pair)
         .expect_err("a silent pick would split the project in two");
     let payload = error_payload(&error);
     assert_eq!(payload["error"]["code"], "ambiguous_project");
@@ -1167,6 +1183,7 @@ fn a_remote_that_changed_makes_the_write_ask_which_project() {
                 &detection,
                 ProjectChoice::default()
             )
+            .map(pair)
             .unwrap(),
         ("old-remote".to_owned(), SOURCE_KNOWN_PROJECT.to_owned())
     );
@@ -1178,6 +1195,7 @@ fn a_remote_that_changed_makes_the_write_ask_which_project() {
                 &detection,
                 ProjectChoice::default()
             )
+            .map(pair)
             .unwrap(),
         (
             "new-remote".to_owned(),
@@ -1378,6 +1396,7 @@ fn a_directory_that_holds_the_detected_project_is_not_drifted() {
 
     let (project, _) = server
         .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .map(pair)
         .expect("the directory's own project is already recorded here");
     assert_eq!(project, "here");
 
@@ -1408,6 +1427,7 @@ fn a_directory_that_holds_the_detected_project_is_not_drifted() {
     };
     let error = server
         .resolve_write_project(&store, None, &renamed, ProjectChoice::default())
+        .map(pair)
         .expect_err("a visit is not an answer to the rename");
     assert_eq!(error_payload(&error)["error"]["code"], "ambiguous_project");
 }
@@ -1445,6 +1465,7 @@ fn a_relative_recorded_directory_is_not_offered_as_a_candidate() {
 
     let (project, _) = server
         .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .map(pair)
         .expect("a relative spelling is not a drifted directory");
     assert_eq!(project, "real-repo");
 }
@@ -1460,6 +1481,7 @@ fn a_write_from_an_unreadable_working_directory_is_refused() {
 
     let error = server
         .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .map(pair)
         .expect_err("there is no project to file the memory under");
     let payload = error_payload(&error);
     assert_eq!(payload["error"]["code"], "project_detection_failed");
@@ -1502,6 +1524,7 @@ fn the_process_override_wins_over_the_drift_gate() {
         assert_eq!(
             server
                 .resolve_write_project(&store, requested, &detection, ProjectChoice::default())
+                .map(pair)
                 .unwrap(),
             (
                 "old-remote".to_owned(),
@@ -1561,6 +1584,7 @@ fn a_directory_whose_sessions_agree_is_not_asked_which_project() {
     assert_eq!(
         server
             .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+            .map(pair)
             .unwrap(),
         (
             "leteo".to_owned(),
@@ -1755,6 +1779,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
 
     let error = server
         .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+        .map(pair)
         .expect_err("ambiguous directories block writes");
     let payload = error_payload(&error);
     assert_eq!(payload["error"]["code"], "ambiguous_project");
@@ -1772,6 +1797,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
             &detection,
             ProjectChoice::default(),
         )
+        .map(pair)
         .expect_err("a bare choice is not enough");
     assert_eq!(error_payload(&error)["error"]["code"], "ambiguous_project");
 
@@ -1785,6 +1811,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
                 recovery_token: None,
             },
         )
+        .map(pair)
         .expect_err("the token is required");
     assert_eq!(
         error_payload(&error)["error"]["code"],
@@ -1801,6 +1828,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
                 recovery_token: Some("rec-0000000000000000".to_owned()),
             },
         )
+        .map(pair)
         .expect_err("unknown tokens are refused");
     assert_eq!(
         error_payload(&error)["error"]["code"],
@@ -1817,6 +1845,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
                 recovery_token: Some(token.clone()),
             },
         )
+        .map(pair)
         .expect_err("projects outside the candidate list are refused");
     assert_eq!(
         error_payload(&error)["error"]["code"],
@@ -1834,6 +1863,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
                     recovery_token: Some(token.clone()),
                 }
             )
+            .map(pair)
             .unwrap(),
         (
             "alpha".to_owned(),
@@ -1850,6 +1880,7 @@ fn ambiguous_projects_require_a_replayed_recovery_token() {
                 recovery_token: Some(token),
             },
         )
+        .map(pair)
         .expect_err("a redeemed token cannot switch projects");
     assert_eq!(
         error_payload(&error)["error"]["code"],
@@ -1896,6 +1927,7 @@ fn the_process_override_resolves_writes_and_current_project() {
         assert_eq!(
             server
                 .resolve_write_project(&store, None, &detection, ProjectChoice::default())
+                .map(pair)
                 .unwrap(),
             (
                 "override-project".to_owned(),
@@ -1913,6 +1945,78 @@ fn the_process_override_resolves_writes_and_current_project() {
         current.project_source,
         crate::project::SOURCE_PROCESS_OVERRIDE.to_owned()
     );
+}
+
+/// The MCP answer to "which project is this?" is the name a write would file
+/// under, not the plain one another repository already recorded.
+#[test]
+fn current_project_settles_a_name_another_repository_holds() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let detection = crate::project::detect_current_project();
+    assert_eq!(
+        detection.source,
+        crate::project::SOURCE_GIT_REMOTE,
+        "the fixture needs a checkout whose name comes from its remote"
+    );
+    let remote = crate::project::detected_remote(&detection).expect("read this origin");
+    let owner = remote.owner.clone().expect("this origin names an owner");
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session_with_remote(
+                "foreign",
+                &detection.project,
+                "/elsewhere/the-same-name",
+                &format!("example.com/other-owner/{}", remote.name),
+            )
+            .unwrap();
+    }
+
+    let current = server
+        .mem_current_project(Parameters(NoParams {}))
+        .unwrap()
+        .0;
+    assert_eq!(current.project, format!("{owner}-{}", remote.name));
+    assert_eq!(
+        current.project_source,
+        crate::project::SOURCE_REMOTE_QUALIFIED
+    );
+    assert!(
+        current
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("already recorded for another repository")),
+        "the answer has to say why the name changed: {:?}",
+        current.warning
+    );
+}
+
+/// A store that cannot be reached does not fail this tool and does not present
+/// the plain name as settled either: the detection is what is left.
+#[test]
+fn current_project_answers_the_plain_name_when_the_store_cannot_be_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(crate::store::StoreConfig::new(temp.path().join("mcp.db"))).unwrap();
+    let shared = Arc::new(Mutex::new(store));
+    let envenenar = Arc::clone(&shared);
+    let _ = std::thread::spawn(move || {
+        let _guard = envenenar.lock().unwrap();
+        panic!("the store failed while the lock was held");
+    })
+    .join();
+    assert!(
+        shared.is_poisoned(),
+        "the store's lock has to stay poisoned"
+    );
+    let server = LeteoMcpServer::with_options(shared, McpOptions::default());
+    let detection = crate::project::detect_current_project();
+
+    let current = server
+        .mem_current_project(Parameters(NoParams {}))
+        .unwrap()
+        .0;
+    assert_eq!(current.project, detection.project);
+    assert_eq!(current.project_source, detection.source);
 }
 
 #[test]
@@ -10361,5 +10465,66 @@ fn mem_compare_refuses_a_memory_compared_against_itself() {
             .len(),
         1,
         "the memory is still reachable"
+    );
+}
+
+/// A silent save in a repository whose name another one holds is filed under a
+/// name of its own, and the reply says why rather than moving the memories in
+/// silence (#500).
+#[test]
+fn a_save_in_a_repository_whose_name_is_taken_is_filed_under_its_owner() {
+    let (temp, server) = test_server(McpOptions::default());
+    let acme = temp.path().join("x-api");
+    let otra = temp.path().join("y-api");
+    for (root, remote) in [
+        (&acme, "https://github.com/acme/api.git"),
+        (&otra, "https://github.com/otra/api.git"),
+    ] {
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join(".git").join("config"),
+            format!("[remote \"origin\"]\n\turl = {remote}\n"),
+        )
+        .unwrap();
+    }
+    let detection = ProjectDetection {
+        project: "api".to_owned(),
+        source: crate::project::SOURCE_GIT_REMOTE.to_owned(),
+        path: otra.to_string_lossy().into_owned(),
+        available_projects: Vec::new(),
+        warning: None,
+        error_hint: None,
+    };
+    let mut store = server.lock_store().unwrap();
+    store
+        .create_session_with_remote(
+            "earlier",
+            "api",
+            &acme.to_string_lossy(),
+            "github.com/acme/api",
+        )
+        .unwrap();
+
+    let context = server
+        .write_session_in(&mut store, None, ProjectChoice::default(), detection)
+        .expect("a collision is settled, not refused");
+
+    assert_eq!(context.project, "otra-api");
+    assert_eq!(
+        context.envelope.project_source,
+        crate::project::SOURCE_REMOTE_QUALIFIED
+    );
+    assert!(
+        context
+            .envelope
+            .project_note
+            .as_deref()
+            .is_some_and(|note| note.contains("github.com/acme/api")),
+        "the reply names the repository that holds the plain name: {:?}",
+        context.envelope.project_note
+    );
+    assert_eq!(
+        store.get_session(&context.id).unwrap().remote,
+        "github.com/otra/api"
     );
 }

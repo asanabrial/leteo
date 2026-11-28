@@ -1707,7 +1707,7 @@ pub fn directory(value: Option<&str>) -> Option<String> {
     (!recordable.is_empty()).then(|| recordable.to_owned())
 }
 
-fn truncate_bytes(value: &mut String, max_bytes: usize) {
+pub(crate) fn truncate_bytes(value: &mut String, max_bytes: usize) {
     if value.len() <= max_bytes {
         return;
     }

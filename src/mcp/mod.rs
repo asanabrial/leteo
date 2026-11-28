@@ -654,9 +654,23 @@ pub struct ProjectEnvelope {
     project_path: Option<String>,
 }
 
+/// The project a read names, if it names one.
+///
+/// A blank name is not a project. Agents send `""` for optional fields, and the
+/// store compared that with an empty project name, narrowed to nothing, and
+/// answered "nothing matched" while the reply named the detected project. `""`
+/// and the whitespace that normalises to it mean what an absent field means.
+/// One function, so the name the store searches by and the name the reply
+/// reports resolve the same way.
+fn requested_project(requested: Option<&str>) -> Option<String> {
+    requested
+        .map(normalize::project)
+        .filter(|project| !project.is_empty())
+}
+
 impl ProjectEnvelope {
     fn for_read(requested: Option<&str>, fallback: Option<&(String, String)>) -> Self {
-        match requested.map(normalize::project).filter(|p| !p.is_empty()) {
+        match requested_project(requested) {
             Some(project) => Self {
                 project,
                 project_source: SOURCE_REQUEST.to_owned(),

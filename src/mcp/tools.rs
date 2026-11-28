@@ -163,7 +163,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_update",
-        description = "Revise a stored memory. Fields left out keep their current value. The memory comes back as a 400-byte preview marked `content_truncated`; read one in full with mem_get_observation.",
+        description = "Revise a stored memory. Fields left out keep their current value. Answers with the memory's id, type, title and state, its caveats, a body or title the storage bound cut, and the bytes it replaced; read the body with mem_get_observation.",
         annotations(
             title = "Update Memory",
             read_only_hint = false,
@@ -175,7 +175,7 @@ impl LeteoMcpServer {
     pub(super) fn mem_update(
         &self,
         Parameters(params): Parameters<UpdateParams>,
-    ) -> Result<Json<ObservationResultOutput>, CallToolResult> {
+    ) -> Result<Json<UpdateOutput>, CallToolResult> {
         if params.is_empty() {
             return Err(structured_error(
                 error_code::INVALID_PARAMS,
@@ -234,16 +234,13 @@ impl LeteoMcpServer {
         } = outcome;
         let content_cut = content_cut.or(edited_cut);
         let stored_bytes = updated.content.len();
-        let mut observation = ObservationOutput::from(updated).preview();
-        observation.caveats = caveats.into_iter().map(Into::into).collect();
+        let stored_title = updated.title.len();
         let mut hint = replaced
             .filter(|replaced| replaced.shrunk)
             .map(|replaced| crate::memory::model::shrink_hint(replaced.bytes));
         crate::mcp::output::append_hint(&mut hint, caveats_note);
-        let stored_title = observation.title.len();
-        Ok(Json(ObservationResultOutput {
-            observation,
-            directory: None,
+        Ok(Json(UpdateOutput {
+            observation: WrittenMemory::new(updated, caveats),
             storage_truncation: crate::mcp::output::storage_truncation(content_cut, stored_bytes),
             title_storage_truncation: crate::mcp::output::storage_truncation(
                 title_cut,
@@ -251,16 +248,16 @@ impl LeteoMcpServer {
             ),
             replaced_bytes: replaced.map(|replaced| replaced.bytes),
             hint,
-            versions: Vec::new(),
         }))
     }
 
     #[tool(
         name = "mem_review",
         description = "List observations due for review or mark one reviewed. Actions: \
-                       list, mark_reviewed. Bodies come back as a 400-byte preview \
-                       marked `content_truncated`; read one in full with \
-                       mem_get_observation.",
+                       list, mark_reviewed. The list carries each body as a 400-byte \
+                       preview marked `content_truncated`, read one in full with \
+                       mem_get_observation; marking one answers with its id, type, \
+                       title, state and caveats, not its body.",
         annotations(
             title = "Review Memories",
             read_only_hint = false,
@@ -400,8 +397,9 @@ impl LeteoMcpServer {
                        `supersedes` relation from the new memory to each source so the \
                        merge is traceable and reversible. Superseded sources stop \
                        appearing in search and context; a source is still readable by id \
-                       with mem_get_observation. The replacement comes back as a 400-byte \
-                       preview marked `content_truncated`.",
+                       with mem_get_observation. Answers with the replacement's id, type, \
+                       title and state, and a body or title the storage bound cut; the \
+                       request is not echoed.",
         annotations(
             title = "Consolidate Memories",
             read_only_hint = false,
@@ -420,6 +418,12 @@ impl LeteoMcpServer {
         // would split the family it just joined. `write_session` resolves it
         // through the same door every other write takes.
         let expected_project = params.expected_project.clone();
+        // Measured from the text the caller sent, before it is handed to the
+        // store and normalized there: a cut read after the write cannot tell
+        // what was dropped.
+        let content_cut =
+            crate::memory::normalize::cut_length(&params.content, store.max_observation_length());
+        let title_cut = crate::memory::normalize::title_cut(&params.title);
         let context = self.write_session(
             &mut store,
             None,
@@ -443,10 +447,15 @@ impl LeteoMcpServer {
                 context.directory.as_deref(),
             )
             .map_err(store_error)?;
+        let stored_bytes = outcome.observation.content.len();
+        let stored_title = outcome.observation.title.len();
         Ok(Json(ConsolidateOutput {
-            observation: ObservationOutput::from(outcome.observation).preview(),
-            relations: outcome.relations.into_iter().map(Into::into).collect(),
-            source_ids: outcome.sources,
+            observation: WrittenMemory::new(outcome.observation, Vec::new()),
+            storage_truncation: crate::mcp::output::storage_truncation(content_cut, stored_bytes),
+            title_storage_truncation: crate::mcp::output::storage_truncation(
+                title_cut,
+                stored_title,
+            ),
         }))
     }
 
@@ -716,7 +725,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_save_prompt",
-        description = "Save a user prompt in an existing session. The prompt comes back as a 400-byte preview marked `content_truncated`; keep the sync_id to link a later save to it.",
+        description = "Save a user prompt in an existing session. Answers with the prompt's id, session and project, and a storage cut when the text was shortened; the text is not echoed, and a later mem_save in the same session links to it without being given an id.",
         annotations(
             title = "Save User Prompt",
             read_only_hint = false,
@@ -834,7 +843,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_session_end",
-        description = "End an existing memory session and optionally attach a summary. The session comes back with its summary as a 400-byte preview marked `summary_truncated`.",
+        description = "End an existing memory session and optionally attach a summary. Answers with the session's id and end time, and a storage cut when the summary was shortened; the summary is not echoed.",
         annotations(
             title = "End Session",
             read_only_hint = false,
@@ -846,7 +855,7 @@ impl LeteoMcpServer {
     pub(super) fn mem_session_end(
         &self,
         Parameters(params): Parameters<SessionEndParams>,
-    ) -> Result<Json<SessionResultOutput>, CallToolResult> {
+    ) -> Result<Json<SessionEndOutput>, CallToolResult> {
         let mut store = self.lock_store()?;
         let summary_cut = params.summary.as_deref().and_then(|summary| {
             crate::memory::normalize::cut_length(summary, store.max_observation_length())
@@ -856,8 +865,9 @@ impl LeteoMcpServer {
             .map_err(store_error)?;
 
         let stored_bytes = session.summary.as_deref().map_or(0, str::len);
-        Ok(Json(SessionResultOutput {
-            session: session.into(),
+        Ok(Json(SessionEndOutput {
+            id: session.id,
+            ended_at: session.ended_at,
             storage_truncation: crate::mcp::output::storage_truncation(summary_cut, stored_bytes),
         }))
     }

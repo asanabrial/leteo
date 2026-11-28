@@ -207,6 +207,47 @@ impl From<Observation> for SavedMemory {
     }
 }
 
+/// What a write answers: the memory it wrote, named.
+///
+/// `mem_save` has answered this way since its reply was bounded, and this is
+/// the same shape. The other five write tools each handed the caller's own text
+/// back — a preview of the body or summary it had just sent — which is bytes
+/// spent on something already in its context. What it cannot know is which row
+/// now holds the text and what the graph says against that row, so that is the
+/// whole reply.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct WrittenMemory {
+    #[serde(flatten)]
+    pub(super) memory: SavedMemory,
+    /// Where the memory is filed, which an update can move.
+    ///
+    /// Omitted when it has no project, which is only a store that never knew
+    /// one. A caller that left `project` out of an update does not know which
+    /// project the store resolved, and this is the sentence that tells it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) project: Option<String>,
+    /// When it comes round for a reread, when that is set.
+    ///
+    /// Marking a memory reviewed is the write that winds this clock, so the
+    /// new date is the one thing that write produces and the caller did not
+    /// already have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) review_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) caveats: Vec<CaveatOutput>,
+}
+
+impl WrittenMemory {
+    pub(super) fn new(value: Observation, caveats: Vec<crate::memory::model::Caveat>) -> Self {
+        Self {
+            project: value.project.clone(),
+            review_after: value.review_after.clone(),
+            memory: value.into(),
+            caveats: caveats.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct CandidateOutput {
     pub(super) id: i64,
@@ -266,83 +307,6 @@ pub(super) struct CompareOutput {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(super) struct RelationOutput {
-    pub(super) id: i64,
-    pub(super) sync_id: String,
-    pub(super) source_id: String,
-    pub(super) target_id: String,
-    pub(super) relation: String,
-    /// Why the verdict was given, cut like every other body this surface
-    /// sends. Read back rather than echoed: this is the stored form, with any
-    /// private markers already removed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) reason: Option<String>,
-    /// Whether `reason` was cut. Absent when it was not.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(super) reason_truncated: bool,
-    /// What the verdict rests on, cut the same way.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) evidence: Option<String>,
-    /// Whether `evidence` was cut. Absent when it was not.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(super) evidence_truncated: bool,
-    /// Set when the storage bound cut the reason: what was stored is shorter
-    /// than what was written.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) reason_storage_truncation: Option<Truncation>,
-    /// The same, for the evidence.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) evidence_storage_truncation: Option<Truncation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) confidence: Option<f64>,
-    pub(super) judgment_status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) marked_by_actor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) marked_by_kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) marked_by_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) session_id: Option<String>,
-    pub(super) created_at: String,
-    pub(super) updated_at: String,
-}
-
-impl From<Relation> for RelationOutput {
-    fn from(value: Relation) -> Self {
-        let reason = value.reason.map(preview_of);
-        let evidence = value.evidence.map(preview_of);
-        Self {
-            id: value.id,
-            sync_id: value.sync_id,
-            source_id: value.source_id,
-            target_id: value.target_id,
-            relation: value.relation,
-            // The caller wrote both of these in the same call, and they are
-            // bounded by the memory budget rather than by a preview — so a
-            // judgment with 12,000 bytes of reason and 12,000 of evidence came
-            // back as 24,359 bytes of the caller's own words. `mem_compare`,
-            // beside it, answers with the id alone and nothing else; this one
-            // has a verdict to confirm, so it previews rather than drops.
-            reason: reason.clone().map(|(text, _)| text),
-            reason_truncated: reason.is_some_and(|(_, cut)| cut),
-            evidence: evidence.clone().map(|(text, _)| text),
-            evidence_truncated: evidence.is_some_and(|(_, cut)| cut),
-            reason_storage_truncation: None,
-            evidence_storage_truncation: None,
-            confidence: value.confidence,
-            judgment_status: value.judgment_status,
-            marked_by_actor: value.marked_by_actor,
-            marked_by_kind: value.marked_by_kind,
-            marked_by_model: value.marked_by_model,
-            session_id: value.session_id,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ReviewOutput {
     pub(super) action: String,
     /// How many memories this answer carries — the length of `observations`.
@@ -374,8 +338,13 @@ pub(super) struct ReviewOutput {
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub(super) due_omitted: usize,
     pub(super) observations: Vec<ObservationOutput>,
+    /// The memory that was marked, when this is the answer to marking one.
+    ///
+    /// It used to be a preview of the body, which the list action had already
+    /// sent for the caller to read before marking — a body it already had. One
+    /// marked memory came back at 5,499 bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) observation: Option<ObservationOutput>,
+    pub(super) observation: Option<WrittenMemory>,
     /// Said when the relation graph could not be read, so the memories here
     /// carry no caveats because none were looked up and not because none
     /// exist. Absent otherwise.
@@ -412,12 +381,6 @@ impl ReviewOutput {
     }
 
     pub(super) fn marked(value: Observation, caveats: Vec<crate::memory::model::Caveat>) -> Self {
-        // Previewed and carrying its caveats exactly as the listing above does:
-        // the description publishes a 400-byte preview for this tool, and
-        // marking a memory reviewed handed back the whole body, 5,499 bytes for
-        // one that had been overturned, with nothing saying so.
-        let mut observation = ObservationOutput::from(value).preview();
-        observation.caveats = caveats.into_iter().map(Into::into).collect();
         Self {
             action: "mark_reviewed".to_owned(),
             count: 0,
@@ -426,7 +389,7 @@ impl ReviewOutput {
             // is for, and a number here would be the same mistake `count` made.
             due_omitted: 0,
             observations: Vec::new(),
-            observation: Some(observation),
+            observation: Some(WrittenMemory::new(value, caveats)),
             hint: None,
         }
     }
@@ -446,12 +409,13 @@ pub(super) struct DeleteOutput {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ConsolidateOutput {
-    pub(super) observation: ObservationOutput,
-    /// One judged `supersedes` relation per source, from the replacement to the
-    /// memory it replaced. Reversing one restores that source.
-    pub(super) relations: Vec<RelationOutput>,
-    /// The source ids that were replaced, in the order they were asked for.
-    pub(super) source_ids: Vec<i64>,
+    pub(super) observation: WrittenMemory,
+    /// Set when the storage bound cut the new body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) storage_truncation: Option<Truncation>,
+    /// Set when the title bound cut the new title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) title_storage_truncation: Option<Truncation>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -1404,6 +1368,26 @@ pub(super) struct ObservationResultOutput {
     pub(super) versions: Vec<ObservationVersionOutput>,
 }
 
+/// What revising a memory answers.
+///
+/// The body and the ids came back before — a preview of text the caller had
+/// just sent, and the fields it had just set — for 550 bytes on a one-line
+/// edit. It answers with the memory's name now, and with what the write could
+/// not keep: a body or title the storage bound cut, how much it replaced, and
+/// the hint a shrink or an unreadable graph produces.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct UpdateOutput {
+    pub(super) observation: WrittenMemory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) storage_truncation: Option<Truncation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) title_storage_truncation: Option<Truncation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) replaced_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) hint: Option<String>,
+}
+
 /// One title and body a later write replaced.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ObservationVersionOutput {
@@ -1953,15 +1937,7 @@ pub(super) struct PromptResultOutput {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct PromptOutput {
     pub(super) id: i64,
-    pub(super) sync_id: String,
     pub(super) session_id: String,
-    // Not described, for the reason the other two are not: the name says it,
-    // and the tool that previews says so in its own description.
-    //
-    // Whether `content` was cut. Absent when it was not.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(super) content_truncated: bool,
-    pub(super) content: String,
     /// The project the prompt was asked in, when it carries one.
     ///
     /// `Option` for the same reason as [`ProjectEnvelope::project_path`]: serde
@@ -1974,29 +1950,33 @@ pub(super) struct PromptOutput {
 
 impl From<Prompt> for PromptOutput {
     fn from(value: Prompt) -> Self {
-        let preview = preview_of(value.content);
+        // The words are the caller's own — it typed them in this call, and a
+        // long paste comes back at 13,974 bytes on a real store. The `sync_id`
+        // is not returned either: no tool takes one from the caller, and the
+        // link it was meant for is made by `mem_save` from the session's last
+        // prompt. What it cannot know is the row the text landed in.
         Self {
             id: value.id,
-            sync_id: value.sync_id,
             session_id: value.session_id,
-            // Cut, like the prompts a context hands over.
-            //
-            // This is the reply to `mem_save_prompt`, so the caller typed these
-            // words a moment ago and echoing them whole bills for them twice.
-            // People paste: on a real store the longest prompt is 13,974 bytes,
-            // and carrying prompts in full is what made one `mem_context` reply
-            // 52,765 bytes with 87% of it pasted text. That was fixed for the
-            // listing and left here.
-            //
-            // What the caller needs back is the `sync_id`, so a save made while
-            // answering this prompt can say what it was answering. The words
-            // are its own.
-            content_truncated: preview.1,
-            content: preview.0,
             project: Some(value.project).filter(|project| !project.is_empty()),
             created_at: value.created_at,
         }
     }
+}
+
+/// What ending a session answers: the one thing it changed.
+///
+/// The caller knows the session's id, project and start; it cannot know when
+/// the end was recorded, nor whether the summary it attached was stored whole.
+/// The summary itself is its own text and is not echoed.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct SessionEndOutput {
+    pub(super) id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ended_at: Option<String>,
+    /// Set when the storage bound cut the summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) storage_truncation: Option<Truncation>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

@@ -203,7 +203,7 @@ pub fn assemble_counted(
     memories: usize,
     budget_bytes: usize,
 ) -> Result<(String, usize), crate::StoreError> {
-    assemble_listed(store, project, scope, memories, budget_bytes)
+    assemble_listed(store, project, scope, memories, budget_bytes, None)
         .map(|(context, listed)| (context, listed.memories.len()))
 }
 
@@ -224,12 +224,15 @@ pub struct Listed {
 
 /// [`assemble_counted`], with the memories and caveats the block lists in place
 /// of how many there are.
+/// `exclude_prompts_of` leaves that session's prompts out of the block, for the
+/// rebuild after a compaction; every other caller passes `None`.
 pub fn assemble_listed(
     store: &crate::store::Store,
     project: Option<&str>,
     scope: Option<&str>,
     memories: usize,
     budget_bytes: usize,
+    exclude_prompts_of: Option<&str>,
 ) -> Result<(String, Listed), crate::StoreError> {
     let mut sessions = store.recent_sessions(project, Some(RECENT_SESSIONS))?;
     // With a ceiling of its own, the same one the recent budget takes. See
@@ -274,7 +277,8 @@ pub fn assemble_listed(
     // date with nothing about what they were for.
     let summaries = store.session_summaries(&session_ids(&sessions))?;
     fold_session_summaries(&mut sessions, summaries);
-    let prompts = store.recent_distinct_prompts(project, Some(RECENT_PROMPTS))?;
+    let prompts =
+        store.recent_distinct_prompts(project, Some(RECENT_PROMPTS), exclude_prompts_of)?;
     // What the graph says about every memory about to be listed. This is the
     // larger of the two surfaces that hand memories over — fifty of them at a
     // session opening against three on a prompt — so a memory a later one
@@ -1075,7 +1079,7 @@ mod tests {
             }
 
             let prompts = store
-                .recent_distinct_prompts(scope, Some(RECENT_PROMPTS))
+                .recent_distinct_prompts(scope, Some(RECENT_PROMPTS), None)
                 .unwrap();
             let listed = lines("### Recent User Prompts");
             assert_eq!(listed.len(), prompts.len(), "{block}");

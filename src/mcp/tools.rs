@@ -668,7 +668,7 @@ impl LeteoMcpServer {
         observations.append(&mut recent);
         observations.truncate(pinned.saturating_add(limit));
         let prompts = store
-            .recent_distinct_prompts(project.as_deref(), Some(prompt_limit))
+            .recent_distinct_prompts(project.as_deref(), Some(prompt_limit), None)
             .map_err(store_error)?;
 
         let language = settings.language_directive();

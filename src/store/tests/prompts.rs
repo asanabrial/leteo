@@ -219,7 +219,7 @@ fn the_recent_prompts_are_the_recent_distinct_ones() {
     ask(&mut store, "why is the queue full?");
 
     let recent = store
-        .recent_distinct_prompts(Some("leteo"), Some(10))
+        .recent_distinct_prompts(Some("leteo"), Some(10), None)
         .unwrap();
     let asked: Vec<&str> = recent.iter().map(|p| p.content.as_str()).collect();
     assert_eq!(
@@ -293,7 +293,7 @@ fn a_stored_harness_message_is_not_listed_and_does_not_take_a_place() {
         .unwrap();
 
     let listed = store
-        .recent_distinct_prompts(Some("leteo"), Some(4))
+        .recent_distinct_prompts(Some("leteo"), Some(4), None)
         .unwrap();
 
     let contents: Vec<&str> = listed.iter().map(|p| p.content.as_str()).collect();
@@ -333,7 +333,7 @@ fn the_listing_and_the_hook_agree_on_whitespace_before_a_harness_prefix() {
             .unwrap();
     }
     let listed: Vec<String> = store
-        .recent_distinct_prompts(Some("leteo"), Some(50))
+        .recent_distinct_prompts(Some("leteo"), Some(50), None)
         .unwrap()
         .into_iter()
         .map(|prompt| prompt.content)
@@ -455,7 +455,7 @@ fn a_replicated_prompt_is_redacted_capped_and_filed_like_a_typed_one() {
     // And invisible is what it was: the opening context narrows by the
     // normalised name.
     let listed = store
-        .recent_distinct_prompts(Some("leteo"), Some(10))
+        .recent_distinct_prompts(Some("leteo"), Some(10), None)
         .unwrap();
     assert!(
         listed
@@ -492,7 +492,7 @@ fn a_question_asked_with_and_without_its_slash_command_is_listed_once() {
     ask(&mut store, "otra pregunta distinta");
 
     let listed = store
-        .recent_distinct_prompts(Some("leteo"), Some(10))
+        .recent_distinct_prompts(Some("leteo"), Some(10), None)
         .unwrap();
     assert_eq!(
         listed.len(),
@@ -508,7 +508,7 @@ fn a_question_asked_with_and_without_its_slash_command_is_listed_once() {
     ask(&mut store, "/doctor");
     ask(&mut store, "/humo");
     let listed = store
-        .recent_distinct_prompts(Some("leteo"), Some(10))
+        .recent_distinct_prompts(Some("leteo"), Some(10), None)
         .unwrap();
     assert_eq!(listed.len(), 4, "{listed:?}");
 }

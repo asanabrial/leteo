@@ -328,10 +328,15 @@ impl Store {
     /// because two hooks firing on one event is not two questions. This is the
     /// same question genuinely asked again an hour later: a real event, worth
     /// storing, and not worth *listing* twice.
+    /// `exclude_session` leaves one conversation's prompts out, for the
+    /// post-compaction block: the block is rebuilt inside a session whose own
+    /// prompts the host's summary already holds, so listing them back is text
+    /// the agent has just read.
     pub fn recent_distinct_prompts(
         &self,
         project: Option<&str>,
         limit: Option<usize>,
+        exclude_session: Option<&str>,
     ) -> Result<Vec<Prompt>, StoreError> {
         let project = project.map(normalize::project);
         // No floor, for the reason `recent_sessions` has none: a section of a
@@ -342,6 +347,7 @@ impl Store {
         }
         let mut narrowing = Narrowing::new();
         narrowing.equals("project", project.as_ref());
+        narrowing.not_equals("session_id", exclude_session.as_ref());
         // Nothing blank. The door refuses those now, but a store that has been
         // running a while already holds them — eleven on a real one — and a
         // line reading "somebody asked:" with nothing after it spends one of

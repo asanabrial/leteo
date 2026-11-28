@@ -219,6 +219,7 @@ pub(super) fn memory_context(
     project: &str,
     settings: &crate::settings::Settings,
     outcome: &mut HookOutcome,
+    current_session: Option<&str>,
 ) -> Recalled {
     // How many, from the setting rather than from a constant: the block is
     // what a session costs before anybody has asked anything, and the curve
@@ -236,6 +237,7 @@ pub(super) fn memory_context(
         None,
         budget,
         settings.context_size().bytes(),
+        current_session,
     );
     match context {
         // Nothing to open with — but say so when the store is not what is
@@ -283,11 +285,13 @@ pub(super) fn memory_context(
 
 /// Pairs this project has proposed and nobody has ruled on.
 ///
-/// Read by [`pending_handover`] alone, to say how many are waiting behind the
-/// ones it names. It used to feed a line in the greeting as well — "Sardi has
-/// N pairs waiting on a verdict" — and that line is gone: the agent settles
-/// them in the opening turn without asking, so the count was telling somebody
-/// about work already being done for them, in a sentence they could not act on.
+/// Read by [`pending_handover`] alone, to separate the pairs that cannot be
+/// settled from the ones that can: `judgeable` subtracted from this is the
+/// sentence the person gets, and no other surface carries it. It used to feed
+/// a line in the greeting as well — "Sardi has N pairs waiting on a verdict" —
+/// and that line is gone: the agent settles them in the opening turn without
+/// asking, so the count was telling somebody about work already being done for
+/// them, in a sentence they could not act on.
 ///
 /// A failure counts as none rather than as a warning. A store that cannot
 /// answer should say nothing about how many are behind rather than open the
@@ -316,9 +320,10 @@ pub(super) fn pending_verdicts(store: &Store, project: &str) -> i64 {
 /// context and becomes a worklist, and an agent that skims a worklist judges
 /// nothing, which spends the header and buys none of the drain.
 ///
-/// Nothing is lost below the line. The rest are counted, and
-/// [`Store::pending_pairs`] hands over the oldest first, so a later session
-/// opens on them.
+/// Nothing is lost below the line. [`Store::pending_pairs`] hands over the
+/// oldest first, so a later session opens on the rest; counting them here named
+/// a backlog no tool could list, which is a line an agent could read and do
+/// nothing about.
 pub(super) const VERDICT_HANDOVER: usize = 5;
 
 /// The pairs waiting on a verdict, written out so they can be ruled on now.
@@ -347,28 +352,38 @@ pub(super) const VERDICT_HANDOVER: usize = 5;
 /// So a deleted memory is handed over and marked, because closing that pair is
 /// a call that works. What cannot be judged at all is counted, named in one
 /// sentence, and never offered.
-pub(super) fn pending_handover(store: &Store, project: &str) -> Option<String> {
-    let pairs = store.pending_pairs(project, VERDICT_HANDOVER).ok()?;
+pub(super) fn pending_handover(store: &Store, project: &str) -> VerdictHandover {
+    let pairs = store.pending_pairs(project, VERDICT_HANDOVER).ok();
     // Both counts or neither. `stuck` is a subtraction, so a zero standing in
     // for a count that failed does not read as "unknown" — it reads as "every
     // pending pair is unsettleable", which is a sentence about a healthy store
     // being broken. A count that could not run means the two summary lines are
     // left off; the pairs above them are still the work, and they are still
     // right.
-    let counts = store
+    let stuck = store
         .count_pending_judgeable(project)
         .ok()
-        .map(|judgeable| (judgeable, pending_verdicts(store, project) - judgeable));
+        .map(|judgeable| pending_verdicts(store, project) - judgeable)
+        .filter(|stuck| *stuck > 0)
+        .map(stuck_message);
+    let Some(pairs) = pairs else {
+        return VerdictHandover {
+            agent: None,
+            person: stuck,
+        };
+    };
     if pairs.is_empty() {
         // Nothing anybody can do, but there is a difference between nothing to
         // say and nothing to do. A store whose only pending pairs are ones
         // `mem_judge` refuses would otherwise go silent about them entirely,
         // which is the disease this whole block was written for: seventy pairs
-        // and no surface that named them. The heading does not promise work,
-        // because there is none here.
-        return counts
-            .filter(|(_, stuck)| *stuck > 0)
-            .map(|(_, stuck)| stuck_only(stuck));
+        // and no surface that named them. No heading for the agent, because
+        // there is no work here; the sentence for the person says what the
+        // queue is.
+        return VerdictHandover {
+            agent: None,
+            person: stuck,
+        };
     }
     // The rule below is the skill's, restated where the pairs are, because an
     // agent reaching a pair through this block may never have read the section
@@ -395,13 +410,9 @@ pub(super) fn pending_handover(store: &Store, project: &str) -> Option<String> {
          not_conflict closes that pair.\n\n",
     );
     for pair in &pairs {
-        block.push_str(&format!(
-            "- `{}` — waiting since {}\n",
-            pair.judgment_id,
-            // The date without the time. A pair's age is what matters here and
-            // is read in days; the seconds are nine bytes an agent cannot use.
-            pair.created_at.get(..10).unwrap_or(&pair.created_at)
-        ));
+        // The id and the two sides are the work; a waiting-since date was 29
+        // bytes a pair that no verdict depends on and no rule here reads.
+        block.push_str(&format!("- `{}`\n", pair.judgment_id));
         // A side that is `None` is a memory soft-deleted since the pair was
         // proposed: the listing hides it, `mem_judge` does not refuse it. Named
         // as gone rather than described, because there is nothing left to
@@ -424,46 +435,39 @@ pub(super) fn pending_handover(store: &Store, project: &str) -> Option<String> {
             ));
         }
     }
-    // What is not in front of the agent, said rather than left to be inferred
-    // from a block that happens to hold five — and split in two, because the
-    // remainders mean opposite things. More waiting is work that arrives next
-    // session. A pair nothing can settle is not work at all, and folded into
-    // the same number it leaves a count that never reaches zero however
-    // diligent anybody is, which is how a queue teaches people to ignore it.
-    let shown = i64::try_from(pairs.len()).unwrap_or(i64::MAX);
-    if let Some((judgeable, stuck)) = counts {
-        if judgeable > shown {
-            block.push_str(&format!(
-                "- ({} more waiting; these are the oldest, and the rest come up as later \
-                 sessions open)\n",
-                judgeable - shown
-            ));
-        }
-        if stuck > 0 {
-            block.push_str(&stuck_line(stuck));
-        }
+    // What is not handed over is not counted here. The backlog is work that
+    // arrives at a later opening anyway — `Store::pending_pairs` returns the
+    // oldest first — and the count named a number no tool could list: a line
+    // an agent could read and do nothing about. The pairs that no verdict can
+    // settle go to the person, below.
+    VerdictHandover {
+        agent: Some(block),
+        person: stuck,
     }
-    Some(block)
 }
 
-/// The pairs `mem_judge` refuses, in one sentence.
+/// What the verdict section gives each audience.
+pub(super) struct VerdictHandover {
+    /// The pairs the agent can rule on now, ready to append to the opening.
+    pub(super) agent: Option<String>,
+    /// The pairs `mem_judge` refuses, for the person's message.
+    ///
+    /// No agent can settle these, so the sentence is not protocol and does not
+    /// belong in `additional_context`, which only the agent reads. It says what
+    /// they are and where to inspect them.
+    pub(super) person: Option<String>,
+}
+
+/// The pairs `mem_judge` refuses, said to the person rather than the agent.
 ///
-/// Two of them, in one place, because the sentence is the same whether it is a
-/// footnote under work that can be done or the whole of what there is to say —
-/// and a second copy is how the two would come to disagree about which pairs
-/// they mean.
-fn stuck_line(stuck: i64) -> String {
+/// One sentence, here rather than beside each use: the same count is the whole
+/// of what there is to say whether or not there is other work above it.
+fn stuck_message(stuck: i64) -> String {
+    let pairs = if stuck == 1 { "pair" } else { "pairs" };
     format!(
-        "- ({stuck} that mem_judge cannot settle at all — a memory deleted outright, or \
-         the two ends in different projects. Not yours to fix, and not counted above; \
-         `leteo conflicts list --status pending` is what inspects them.)\n"
-    )
-}
-
-fn stuck_only(stuck: i64) -> String {
-    format!(
-        "## Waiting on a verdict — nothing here for you to settle\n\n{}",
-        stuck_line(stuck)
+        "{stuck} pending {pairs} mem_judge cannot settle — a memory deleted outright, \
+         or the two ends in different projects. `leteo conflicts list --status pending` \
+         inspects them."
     )
 }
 

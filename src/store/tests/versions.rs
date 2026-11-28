@@ -1225,3 +1225,195 @@ fn a_full_upsert_after_the_hard_delete_does_not_bring_the_text_back() {
         "delete wins: the text a person removed does not come back"
     );
 }
+
+/// The soft-delete form of the same question: the delete wins over an edit that
+/// was queued before it, and only a genuinely newer edit revives the memory.
+///
+/// The upsert cleared `deleted_at` unconditionally, so a peer's older edit
+/// brought the memory back into search and into the opening block on the
+/// machine that had deleted it, while the peer — which had already applied the
+/// delete — went on holding it as gone.
+#[test]
+fn a_pulled_upsert_older_than_the_soft_delete_stays_deleted() {
+    let (_temp, mut peer) = store();
+    peer.create_session("s1", "leteo", "/tmp/leteo").unwrap();
+    let sync_id = "obs-soft-deleted-while-edited";
+    let mutation = |seq: i64, op: &str, payload: serde_json::Value| SyncMutation {
+        seq,
+        target_key: "cloud".to_owned(),
+        entity: crate::sync::ENTITY_OBSERVATION.to_owned(),
+        entity_key: sync_id.to_owned(),
+        op: op.to_owned(),
+        payload: payload.to_string(),
+        source: "remote".to_owned(),
+        project: "leteo".to_owned(),
+        occurred_at: "2026-08-05 04:00:00".to_owned(),
+        acked_at: None,
+    };
+    let edit = |body: &str, updated_at: &str| {
+        serde_json::json!({
+            "sync_id": sync_id,
+            "session_id": "s1",
+            "type": "decision",
+            "title": "Donde deje la clave",
+            "content": body,
+            "project": "leteo",
+            "scope": "project",
+            "created_at": "2026-08-05 04:00:00",
+            "updated_at": updated_at,
+        })
+    };
+    let state = |store: &Store| {
+        store
+            .connection
+            .query_row(
+                "SELECT content, deleted_at FROM observations WHERE sync_id = ?1",
+                [sync_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+    };
+
+    assert!(
+        peer.apply_pulled(&mutation(
+            1,
+            crate::sync::OP_UPSERT,
+            edit("la clave esta en la caja", "2026-08-05 04:00:00")
+        ))
+        .unwrap()
+    );
+    assert_eq!(state(&peer).1, None);
+
+    assert!(
+        peer.apply_pulled(&mutation(
+            2,
+            crate::sync::OP_DELETE,
+            serde_json::json!({
+                "sync_id": sync_id,
+                "session_id": "s1",
+                "project": "leteo",
+                "deleted": true,
+                "deleted_at": "2026-08-05 05:00:00",
+                "hard_delete": false,
+            }),
+        ))
+        .unwrap()
+    );
+    assert_eq!(
+        state(&peer).1.as_deref(),
+        Some("2026-08-05 05:00:00"),
+        "the delete is the local decision this test is about"
+    );
+
+    assert!(
+        peer.apply_pulled(&mutation(
+            3,
+            crate::sync::OP_UPSERT,
+            edit("la clave esta en la caja, revisada", "2026-08-05 04:30:00")
+        ))
+        .unwrap()
+    );
+    assert_eq!(
+        state(&peer),
+        (
+            "la clave esta en la caja".to_owned(),
+            Some("2026-08-05 05:00:00".to_owned())
+        ),
+        "an edit older than the delete leaves both the delete and the text alone"
+    );
+
+    assert!(
+        peer.apply_pulled(&mutation(
+            4,
+            crate::sync::OP_UPSERT,
+            edit("la clave se movio a la caja fuerte", "2026-08-05 06:00:00")
+        ))
+        .unwrap()
+    );
+    assert_eq!(
+        state(&peer),
+        ("la clave se movio a la caja fuerte".to_owned(), None),
+        "a strictly newer edit is the only thing that may revive it"
+    );
+}
+
+/// Both machines hold the same state after each has pulled the other: the one
+/// that deleted keeps it deleted, and the one that edited learns the delete.
+#[test]
+fn a_soft_delete_and_an_earlier_edit_land_on_the_same_state_on_both_machines() {
+    let (_a_temp, mut a) = store();
+    let (_b_temp, mut b) = store();
+    let enrolled = ["leteo".to_owned()];
+    a.create_session("s1", "leteo", "C:/a").unwrap();
+    let saved = a
+        .add_observation(observation(
+            "s1",
+            "Donde deje la clave",
+            "la clave esta en la caja",
+        ))
+        .unwrap()
+        .observation;
+
+    for mutation in a
+        .list_pending_sync_mutations("cloud", &enrolled, 100)
+        .unwrap()
+    {
+        b.apply_pulled(&mutation).unwrap();
+    }
+    let on_b = b
+        .recent_observations(Some("leteo"), Some(10), false)
+        .unwrap()[0]
+        .id;
+    b.update_observation(
+        on_b,
+        None,
+        UpdateObservation {
+            content: Some("la clave esta en la caja, revisada".to_owned()),
+            ..UpdateObservation::default()
+        },
+    )
+    .unwrap();
+
+    a.delete_observation(saved.id, None, false).unwrap();
+
+    for mutation in b
+        .list_pending_sync_mutations("cloud", &enrolled, 100)
+        .unwrap()
+    {
+        a.apply_pulled(&mutation).unwrap();
+    }
+    for mutation in a
+        .list_pending_sync_mutations("cloud", &enrolled, 100)
+        .unwrap()
+    {
+        b.apply_pulled(&mutation).unwrap();
+    }
+
+    let deleted_at = |store: &Store| {
+        store
+            .connection
+            .query_row(
+                "SELECT deleted_at FROM observations WHERE sync_id = ?1",
+                [&saved.sync_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+    };
+    assert!(
+        deleted_at(&a).is_some(),
+        "an older edit revived the memory on the machine that deleted it"
+    );
+    assert!(
+        deleted_at(&b).is_some(),
+        "and the machine that edited learned the delete"
+    );
+    assert_eq!(
+        a.recent_observations(Some("leteo"), Some(10), false)
+            .unwrap()
+            .len(),
+        b.recent_observations(Some("leteo"), Some(10), false)
+            .unwrap()
+            .len(),
+        "both stores name the same live set"
+    );
+}

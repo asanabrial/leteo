@@ -1771,6 +1771,145 @@ fn a_repeated_session_start_in_a_drifted_directory_returns_the_session_unchanged
     );
 }
 
+/// A second start naming another project is the case the write door refuses,
+/// and this door answers it the same way.
+///
+/// The session owns its project for the rest of the conversation. Returning the
+/// row while dropping the name the caller gave told an agent it had opened a
+/// session where none was opened, and its saves then went to the session's
+/// project — the silent mismatch `session_project_mismatch` exists to stop.
+#[test]
+fn a_session_start_naming_another_project_is_refused_like_a_write() {
+    let (_temp, server) = test_server(McpOptions::default());
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("shared-id", "alpha", "C:/alpha")
+            .unwrap();
+    }
+
+    let Err(refused) = server.mem_session_start(Parameters(
+        serde_json::from_value(json!({"id": "shared-id", "project": "beta"})).unwrap(),
+    )) else {
+        panic!("a session that belongs to alpha is not beta's");
+    };
+    assert_eq!(
+        error_payload(&refused)["error"]["code"],
+        "session_project_mismatch"
+    );
+
+    let started = server
+        .mem_session_start(Parameters(
+            serde_json::from_value(json!({"id": "shared-id", "project": "alpha"})).unwrap(),
+        ))
+        .expect("the same project is the repeat the description publishes")
+        .0;
+    assert_eq!(started.session.id, "shared-id");
+    assert_eq!(started.session.project, "alpha");
+}
+
+/// Ending a session is the same case `mem_pin`, `mem_update` and `mem_delete`
+/// answer: an id from another project is a misattribution, not a close.
+#[test]
+fn a_session_end_names_the_project_it_expects() {
+    let (_temp, server) = test_server(McpOptions::default());
+    server
+        .lock_store()
+        .unwrap()
+        .create_session("s-end", "alpha", "C:/alpha")
+        .unwrap();
+
+    let Err(refused) = server.mem_session_end(Parameters(
+        serde_json::from_value(json!({"id": "s-end", "expected_project": "beta"})).unwrap(),
+    )) else {
+        panic!("beta cannot close alpha's session");
+    };
+    assert_eq!(error_payload(&refused)["error"]["code"], "project_mismatch");
+    assert!(
+        server
+            .lock_store()
+            .unwrap()
+            .get_session("s-end")
+            .unwrap()
+            .ended_at
+            .is_none(),
+        "a refused end leaves the session open"
+    );
+
+    let ended = server
+        .mem_session_end(Parameters(
+            serde_json::from_value(json!({"id": "s-end", "expected_project": "alpha"})).unwrap(),
+        ))
+        .expect("the project the session belongs to may close it")
+        .0;
+    assert!(ended.ended_at.is_some());
+}
+
+/// The compatibility names are aliases, and an alias that is also sent as
+/// itself is refused rather than resolved by whichever the code read first.
+#[test]
+fn an_input_named_twice_under_two_names_is_refused() {
+    let both = serde_json::from_value::<SaveParams>(json!({
+        "title": "Two bodies",
+        "content": "the first body",
+        "observation": "the second body",
+    }));
+    assert!(
+        both.is_err(),
+        "content and observation are one input, and sending both asks which to keep"
+    );
+
+    let aliased = serde_json::from_value::<SaveParams>(json!({
+        "title": "One body",
+        "observation": "the body under its Engram name",
+    }))
+    .expect("the old name still works");
+    assert_eq!(
+        aliased.content.as_deref(),
+        Some("the body under its Engram name")
+    );
+
+    let both = serde_json::from_value::<ReviewParams>(json!({
+        "action": "mark_reviewed",
+        "observation_id": 1,
+        "id": 2,
+    }));
+    assert!(
+        both.is_err(),
+        "observation_id and id are one input, and sending both asks which to review"
+    );
+
+    let aliased = serde_json::from_value::<ReviewParams>(json!({
+        "action": "mark_reviewed",
+        "id": 7,
+    }))
+    .expect("the old name still works");
+    assert_eq!(aliased.observation_id, Some(7));
+}
+
+/// A project listing that failed is not a store that holds no projects.
+#[test]
+fn a_failed_project_listing_is_reported_as_failed() {
+    let failed = super::unknown_project_error(
+        "missing",
+        "here",
+        Err(crate::store::StoreError::Database(
+            rusqlite::Error::InvalidQuery,
+        )),
+    );
+    let payload = error_payload(&failed);
+    assert_eq!(payload["error"]["code"], "store_error");
+    assert!(
+        payload.get("available_projects").is_none(),
+        "an unread listing must not be published as an empty one: {payload}"
+    );
+
+    let listed = super::unknown_project_error("missing", "here", Ok(vec!["alpha".to_owned()]));
+    let payload = error_payload(&listed);
+    assert_eq!(payload["error"]["code"], "unknown_project");
+    assert_eq!(payload["available_projects"][0], "alpha");
+}
+
 #[test]
 fn ambiguous_projects_require_a_replayed_recovery_token() {
     let (_temp, server) = test_server(McpOptions::default());
@@ -6064,6 +6203,7 @@ fn the_seven_tools_that_had_no_test_of_their_own_answer_what_they_promise() {
         .mem_session_end(Parameters(SessionEndParams {
             id: "s1".to_owned(),
             summary: Some("Cerrada. <private>secreto</private> Fin.".to_owned()),
+            expected_project: None,
         }))
         .unwrap();
     let summary = server
@@ -8387,7 +8527,6 @@ fn a_scope_leteo_does_not_know_is_refiled_and_the_reply_says_so() {
                 scope: scope.to_owned(),
                 capture_prompt: false,
                 session_id: None,
-                observation: None,
                 tool_name: None,
                 project: None,
                 project_choice_reason: None,
@@ -8514,7 +8653,6 @@ fn the_review_queue_says_how_much_of_itself_this_page_is_not() {
                 limit: asked.unwrap_or(10),
                 expected_project: None,
                 observation_id: None,
-                id: None,
             }))
             .expect("the queue answers");
         assert_eq!(
@@ -8532,7 +8670,6 @@ fn the_review_queue_says_how_much_of_itself_this_page_is_not() {
             limit: 10,
             expected_project: None,
             observation_id: None,
-            id: None,
         }))
         .expect("the queue answers");
     assert!(

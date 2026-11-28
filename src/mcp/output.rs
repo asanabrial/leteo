@@ -39,7 +39,8 @@ pub(super) fn storage_truncation(
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SaveOutput {
     pub(super) status: String,
-    /// Said when a summary was saved without a name anybody could find it by.
+    /// Set by `mem_session_summary` when a summary was saved without a name
+    /// anybody could find it by; `mem_save` never sets it.
     ///
     /// A summary takes its title from the first line of its body that is not a
     /// heading. When there is no such line — a heading and a date, which is

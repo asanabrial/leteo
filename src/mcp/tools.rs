@@ -66,7 +66,6 @@ impl LeteoMcpServer {
     ) -> Result<Json<SaveOutput>, CallToolResult> {
         let content = params
             .content
-            .or(params.observation)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| {
                 structured_error(
@@ -316,7 +315,7 @@ impl LeteoMcpServer {
                 Ok(Json(listed))
             }
             "mark_reviewed" => {
-                let id = params.observation_id.or(params.id).ok_or_else(|| {
+                let id = params.observation_id.ok_or_else(|| {
                     structured_error(
                         error_code::INVALID_PARAMS,
                         "observation_id is required for mark_reviewed",
@@ -818,7 +817,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_session_start",
-        description = "Create a memory session, or return it unchanged if its identifier exists.",
+        description = "Create a memory session, or return it unchanged if its identifier already exists under that project; an id that exists under another project is refused with session_project_mismatch.",
         annotations(
             title = "Start Session",
             read_only_hint = false,
@@ -840,12 +839,37 @@ impl LeteoMcpServer {
         // already made. `create_session` is `INSERT OR IGNORE`, so this is the
         // same row the gate would otherwise have kept the caller from reaching.
         if let Ok(existing) = store.get_session(&params.id) {
-            // A hook may have opened this id already. Naming its project here is
-            // the caller declaring it, and the flag is raised without touching
-            // the row the caller is told comes back unchanged.
-            if let Some(project) = params.project.as_deref() {
+            let owns = crate::memory::normalize::project(&existing.project);
+            // A session owns its project for the rest of the conversation: a
+            // write that names another one is refused with
+            // `session_project_mismatch`, and this door answers the same case
+            // the same way. Returning the row while dropping the name the
+            // caller gave is the silent mismatch that refusal exists to stop;
+            // idempotency is about repeating the same call, not a
+            // contradictory one.
+            if let Some(requested) = params.project.as_deref() {
+                let requested = crate::memory::normalize::project(requested);
+                if requested.is_empty() {
+                    return Err(structured_error(
+                        error_code::INVALID_PROJECT,
+                        crate::project::EMPTY_NAME,
+                    ));
+                }
+                if requested != owns {
+                    return Err(structured_error(
+                        error_code::SESSION_PROJECT_MISMATCH,
+                        format!(
+                            "session {:?} belongs to project {owns:?}, not {requested:?}",
+                            params.id
+                        ),
+                    ));
+                }
+                // A hook may have opened this id already. Naming its project
+                // here is the caller declaring it, and the flag is raised
+                // without touching the row the caller is told comes back
+                // unchanged.
                 store
-                    .declare_session(&params.id, project)
+                    .declare_session(&params.id, &owns)
                     .map_err(store_error)?;
             }
             return Ok(Json(SessionResultOutput {
@@ -896,7 +920,7 @@ impl LeteoMcpServer {
 
     #[tool(
         name = "mem_session_end",
-        description = "End an existing memory session and optionally attach a summary. Answers with the session's id and end time, and a storage cut when the summary was shortened; the summary is not echoed.",
+        description = "End an existing memory session and optionally attach a summary. Answers with the session's id and end time, and a storage cut when the summary was shortened; the summary is not echoed. A session filed under another project is refused with project_mismatch when expected_project is given.",
         annotations(
             title = "End Session",
             read_only_hint = false,
@@ -910,6 +934,24 @@ impl LeteoMcpServer {
         Parameters(params): Parameters<SessionEndParams>,
     ) -> Result<Json<SessionEndOutput>, CallToolResult> {
         let mut store = self.lock_store()?;
+        // The same case `mem_pin`, `mem_update` and `mem_delete` answer, at the
+        // door that closes a conversation: an id from another project is a
+        // misattribution, and ending the session would take the other project's
+        // conversation down with it.
+        if let Some(expected) = params.expected_project.as_deref() {
+            let session = store.get_session(&params.id).map_err(store_error)?;
+            let expected = crate::memory::normalize::project(expected);
+            let owns = crate::memory::normalize::project(&session.project);
+            if expected != owns {
+                return Err(structured_error(
+                    error_code::PROJECT_MISMATCH,
+                    format!(
+                        "session {:?} belongs to project {owns:?}, not {expected:?}",
+                        params.id
+                    ),
+                ));
+            }
+        }
         let summary_cut = params.summary.as_deref().and_then(|summary| {
             crate::memory::normalize::cut_length(summary, store.max_observation_length())
         });

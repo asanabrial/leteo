@@ -30,10 +30,10 @@ pub(super) struct SaveParams {
     /// Short searchable title, stored at up to 1024 bytes: a longer one is cut,
     /// and `title_storage_truncation` says by how much.
     pub(super) title: String,
-    /// Full observation content.
+    /// Full observation content. Also accepted as `observation`, which is what
+    /// clients written against Engram send.
+    #[serde(alias = "observation")]
     pub(super) content: Option<String>,
-    /// Backward-compatible alias for content.
-    pub(super) observation: Option<String>,
     /// One of: bugfix, decision, policy, architecture, discovery, pattern,
     /// config, preference. The category is a search filter, and a word outside
     /// this list folds onto `discovery` on the way in, so the memory is still
@@ -150,10 +150,9 @@ pub(super) struct ReviewParams {
     #[schemars(range(min = 1, max = 20))]
     #[serde(default = "default_review_limit")]
     pub(super) limit: usize,
-    /// Observation identifier for mark_reviewed.
+    /// Observation identifier for mark_reviewed. Also accepted as `id`.
+    #[serde(alias = "id")]
     pub(super) observation_id: Option<i64>,
-    /// Backward-compatible alias for observation_id.
-    pub(super) id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -335,6 +334,9 @@ pub(super) struct SessionEndParams {
     pub(super) id: String,
     /// Optional concise session summary.
     pub(super) summary: Option<String>,
+    /// The project the session is expected to belong to. A session filed under
+    /// a different one is refused with `project_mismatch` and left open.
+    pub(super) expected_project: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

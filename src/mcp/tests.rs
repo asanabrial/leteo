@@ -3089,8 +3089,7 @@ fn a_judgment_reports_the_storage_cut_on_both_texts() {
             .unwrap(),
         ))
         .unwrap()
-        .0
-        .relation;
+        .0;
     assert_storage_cut(verdict.reason_storage_truncation, bound, "judgment reason");
     assert_storage_cut(
         verdict.evidence_storage_truncation,
@@ -4404,20 +4403,22 @@ fn judging_a_pair_replaces_the_verdict_and_refuses_what_the_graph_cannot_read() 
         "reason": "the later one replaces it", "confidence": 0.8,
     }))
     .expect("a verdict on a pair that exists")
-    .0
-    .relation;
+    .0;
     assert_eq!(verdict.relation, "supersedes");
-    assert_eq!(verdict.judgment_status, "judged");
-    assert_eq!(verdict.reason.as_deref(), Some("the later one replaces it"));
+    assert_eq!(verdict.status, "judged");
+    // The direction the agent asked for, in the ids it holds: the saved memory
+    // replaces the one it was a candidate against.
+    assert_eq!(verdict.superseding_id, Some(second.id));
+    assert_eq!(verdict.superseded_id, Some(first.id));
 
     let revised = judge(json!({ "judgment_id": judgment, "relation": "related" }))
         .expect("a pair can be judged again")
-        .0
-        .relation;
+        .0;
     assert_eq!(revised.relation, "related");
     assert_eq!(
-        revised.reason, None,
-        "the old reason explained a verdict that no longer stands"
+        (revised.superseding_id, revised.superseded_id),
+        (None, None),
+        "a verdict with no direction names no direction"
     );
 
     let refused = |value: serde_json::Value| -> String {
@@ -4459,6 +4460,74 @@ fn judging_a_pair_replaces_the_verdict_and_refuses_what_the_graph_cannot_read() 
     assert_eq!(
         refused(json!({ "judgment_id": judgment, "relation": "related" })),
         "cross_project_relation"
+    );
+}
+
+/// A `supersedes` verdict answers in the direction it recorded, in the integer
+/// ids the agent sent, in a reply worth the call.
+///
+/// It used to answer with the whole relation record — 430 to 600 bytes that
+/// repeated the request, named both memories by sync ids the agent never holds,
+/// and could not show which memory a reversed direction had hidden.
+#[test]
+fn a_supersedes_verdict_answers_the_direction_it_recorded_and_fits_in_a_line() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let (first, second) = {
+        let mut store = server.lock_store().unwrap();
+        store.enroll_project("leteo").unwrap();
+        store.create_session("s1", "leteo", "C:/repo").unwrap();
+        let mut save = |title: &str| {
+            store
+                .add_observation(AddObservation {
+                    session_id: "s1".to_owned(),
+                    kind: "bugfix".to_owned(),
+                    title: title.to_owned(),
+                    content: format!("the body of {title}"),
+                    tool_name: None,
+                    project: Some("leteo".to_owned()),
+                    scope: "project".to_owned(),
+                    topic_key: None,
+                    prompt_sync_id: None,
+                })
+                .unwrap()
+                .observation
+        };
+        (save("The pool leaked"), save("The pool no longer leaks"))
+    };
+    let judgment = server
+        .mem_compare(Parameters(
+            serde_json::from_value(json!({
+                "memory_id_a": second.id, "memory_id_b": first.id, "relation": "related",
+            }))
+            .unwrap(),
+        ))
+        .unwrap()
+        .0
+        .sync_id;
+
+    // The candidate replaces the memory that was just saved: the opposite side
+    // from the other test, so a reply that echoed the row's order unchanged
+    // would name the wrong one.
+    let verdict = server
+        .mem_judge(Parameters(
+            serde_json::from_value(json!({
+                "judgment_id": judgment, "relation": "supersedes", "superseding_id": first.id,
+            }))
+            .unwrap(),
+        ))
+        .expect("a verdict on a pair that exists")
+        .0;
+    assert_eq!(verdict.relation, "supersedes");
+    assert_eq!(verdict.status, "judged");
+    assert_eq!(verdict.superseding_id, Some(first.id));
+    assert_eq!(verdict.superseded_id, Some(second.id));
+
+    let bytes = serde_json::to_vec(&verdict).unwrap();
+    assert!(
+        bytes.len() <= 130,
+        "the verdict answered {} bytes: {}",
+        bytes.len(),
+        String::from_utf8_lossy(&bytes)
     );
 }
 
@@ -4924,7 +4993,6 @@ fn the_descriptions_publish_the_preview_length_the_code_cuts_at() {
         "mem_review",
         "mem_update",
         "mem_save_prompt",
-        "mem_judge",
         "mem_session_end",
         "mem_consolidate",
     ] {
@@ -4940,7 +5008,7 @@ fn the_descriptions_publish_the_preview_length_the_code_cuts_at() {
         );
     }
     assert_eq!(
-        saying, 9,
+        saying, 8,
         "a tool started or stopped previewing and the list above did not move"
     );
 }
@@ -8608,7 +8676,8 @@ fn a_candidate_from_a_trimmed_save_reply_can_still_be_judged() {
             .unwrap(),
         ))
         .expect("the id from the reply is the one the store knows");
-    assert_eq!(judged.relation.judgment_status, "judged");
+    assert_eq!(judged.status, "judged");
+    assert_eq!(judged.relation, "related");
 }
 
 #[test]

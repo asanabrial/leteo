@@ -827,6 +827,19 @@ impl Store {
         })
     }
 
+    /// The integer id behind a memory's sync id, for the replies that answer
+    /// in the ids `mem_save` and `mem_search` hand out.
+    pub fn observation_id_for_sync_id(&self, sync_id: &str) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT id FROM observations WHERE sync_id = ?1",
+                [sync_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?)
+    }
+
     pub fn get_observation(&self, id: i64) -> Result<Observation, StoreError> {
         get_observation_row(&self.connection, id)
     }

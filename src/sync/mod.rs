@@ -42,6 +42,16 @@ pub struct Manifest {
     pub version: u32,
     #[serde(default)]
     pub chunks: Vec<ManifestChunk>,
+    /// The page stopped at its limit and there is more to ask for.
+    ///
+    /// Always present, so a complete manifest says it is whole rather than
+    /// leaving a reader to read an absent field as a missing answer.
+    #[serde(default)]
+    pub has_more: bool,
+    /// The `after` value that fetches the next page. Present exactly when
+    /// `has_more` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 impl Default for Manifest {
@@ -49,6 +59,8 @@ impl Default for Manifest {
         Self {
             version: MANIFEST_VERSION,
             chunks: Vec::new(),
+            has_more: false,
+            next: None,
         }
     }
 }

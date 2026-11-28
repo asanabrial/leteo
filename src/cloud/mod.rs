@@ -31,4 +31,15 @@ pub use remote::RemoteClient;
 
 pub const MAX_MUTATION_BATCH_SIZE: usize = 100;
 
+/// How many chunk entries one manifest page carries.
+///
+/// A chunk entry is a few short strings and three counts, so a page is tens of
+/// kilobytes; the page exists so a project with thousands of pushes does not
+/// hand its whole history back in one response.
+pub const MANIFEST_PAGE_LIMIT: usize = 200;
+
+/// The most pages a client follows before it calls the answer a loop rather
+/// than a manifest.
+pub const MAX_MANIFEST_PAGES: usize = 1_000;
+
 pub const CLOUD_SYNC_TARGET: &str = "cloud";

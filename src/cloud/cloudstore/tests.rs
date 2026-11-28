@@ -324,7 +324,10 @@ async fn a_replayed_chunk_is_accepted_but_a_forged_one_is_not() {
             .unwrap()
             .contains(&format!("session-{stamp}"))
     );
-    let manifest = store.read_manifest(&project).await.unwrap();
+    let manifest = store
+        .read_manifest(&project, MANIFEST_PAGE_LIMIT, None)
+        .await
+        .unwrap();
     assert!(manifest.chunks.iter().any(|entry| entry.id == id));
 }
 
@@ -365,7 +368,12 @@ async fn pausing_a_project_is_recorded_and_reversible() {
 #[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
 async fn an_empty_project_name_is_refused_everywhere_it_is_accepted() {
     let (store, stamp) = test_store().await;
-    assert!(store.read_manifest("   ").await.is_err());
+    assert!(
+        store
+            .read_manifest("   ", MANIFEST_PAGE_LIMIT, None)
+            .await
+            .is_err()
+    );
     assert!(store.known_session_ids("").await.is_err());
     assert!(store.is_project_sync_enabled("  ").await.is_err());
     let principal = store
@@ -452,7 +460,15 @@ async fn postgres_chunk_and_mutation_round_trip() {
             .unwrap(),
         id
     );
-    assert_eq!(store.read_manifest(&project).await.unwrap().chunks.len(), 1);
+    assert_eq!(
+        store
+            .read_manifest(&project, MANIFEST_PAGE_LIMIT, None)
+            .await
+            .unwrap()
+            .chunks
+            .len(),
+        1
+    );
     assert_eq!(
         decode_chunk(&store.read_chunk(&project, &id).await.unwrap()).unwrap(),
         chunk
@@ -1178,4 +1194,100 @@ async fn a_bootstrap_is_one_transaction_and_a_taken_name_writes_nothing() {
             .await
             .unwrap();
     }
+}
+
+/// A manifest is one page, says so, and names where the next one starts.
+///
+/// The whole project at once was the response for a project with ten thousand
+/// pushes; a page boundary at `(manifest_at, chunk_id)` is the pair the order
+/// is built on, so a chunk is neither repeated nor skipped where a page stops.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_manifest_is_paged_and_names_the_page_that_follows() {
+    let (store, stamp) = test_store().await;
+    let project = format!("manifest-{stamp}");
+    let base = Utc::now() - chrono::Duration::seconds(10);
+    let mut ids = Vec::new();
+    for n in 0..3 {
+        let chunk = ChunkData {
+            sessions: vec![crate::memory::model::Session {
+                id: format!("session-{n}-{stamp}"),
+                project: project.clone(),
+                directory: "/tmp/manifest".to_owned(),
+                started_at: base.to_rfc3339(),
+                ended_at: None,
+                summary: None,
+            }],
+            ..ChunkData::default()
+        };
+        let payload = encode_chunk(&chunk).unwrap();
+        let id = chunk_id(&payload);
+        store
+            .write_chunk(
+                &project,
+                &id,
+                "test",
+                Some(base + chrono::Duration::seconds(n)),
+                &payload,
+            )
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+
+    let first = store.read_manifest(&project, 2, None).await.unwrap();
+    assert_eq!(first.version, MANIFEST_VERSION);
+    assert_eq!(
+        first
+            .chunks
+            .iter()
+            .map(|chunk| chunk.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![ids[0].as_str(), ids[1].as_str()],
+        "the page is the oldest chunks, in order"
+    );
+    assert!(first.has_more);
+    assert_eq!(first.next.as_deref(), Some(ids[1].as_str()));
+
+    let second = store
+        .read_manifest(&project, 2, first.next.as_deref())
+        .await
+        .unwrap();
+    assert_eq!(
+        second
+            .chunks
+            .iter()
+            .map(|chunk| chunk.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![ids[2].as_str()],
+        "the second page starts after the last chunk of the first"
+    );
+    assert!(!second.has_more);
+    assert_eq!(second.next, None);
+
+    let whole = store
+        .read_manifest(&project, MANIFEST_PAGE_LIMIT, None)
+        .await
+        .unwrap();
+    assert_eq!(whole.chunks.len(), 3);
+    assert!(!whole.has_more, "a manifest that fits says it is whole");
+
+    let one = store.read_manifest(&project, 0, None).await.unwrap();
+    assert_eq!(one.chunks.len(), 1, "a limit below one is applied as one");
+    assert!(one.has_more);
+
+    let refused = store
+        .read_manifest(&project, 2, Some("deadbeef"))
+        .await
+        .expect_err("a cursor naming no chunk of this project is not a page start");
+    assert!(
+        matches!(refused, CloudStoreError::Invalid(ref message) if message.contains("after names no chunk")),
+        "{refused:?}"
+    );
+
+    sqlx::query("DELETE FROM cloud_chunks WHERE project_name = $1")
+        .bind(&project)
+        .execute(store.pool())
+        .await
+        .unwrap();
 }

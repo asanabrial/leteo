@@ -22,7 +22,7 @@ use tower::ServiceBuilder;
 use crate::sync::{ChunkData, MutationEntry, canonicalize_for_project, decode_chunk};
 
 use super::{
-    MAX_MUTATION_BATCH_SIZE,
+    MANIFEST_PAGE_LIMIT, MAX_MUTATION_BATCH_SIZE,
     auth::{AuthError, AuthService, Principal, PrincipalRole, PrincipalSource},
     cloudstore::{AuditEntry, CloudStore, CloudStoreError, MEMORY_LIST_LIMIT, MEMORY_SEARCH_LIMIT},
     config::CloudConfig,
@@ -259,14 +259,25 @@ struct ProjectQuery {
     project: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ManifestQuery {
+    project: Option<String>,
+    limit: Option<usize>,
+    after: Option<String>,
+}
+
 async fn pull_manifest(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<ProjectQuery>,
+    Query(query): Query<ManifestQuery>,
 ) -> Result<Response, ApiError> {
     let principal = authenticate(&state, &headers).await?;
     let project = authorize_project(&state, &principal, query.project.as_deref()).await?;
-    let manifest = state.store.read_manifest(&project).await?;
+    let limit = query.limit.unwrap_or(MANIFEST_PAGE_LIMIT);
+    let manifest = state
+        .store
+        .read_manifest(&project, limit, query.after.as_deref())
+        .await?;
     Ok(Json(manifest).into_response())
 }
 

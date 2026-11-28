@@ -1778,6 +1778,10 @@ fn a_session_opening_hands_over_the_pairs_it_used_to_only_count() {
         handed.contains("(style/indentation)"),
         "the topic key is the cheapest thing a verdict turns on, so it is carried: {handed}"
     );
+    assert!(
+        !handed.contains("waiting since"),
+        "a verdict does not depend on how old the pair is: {handed}"
+    );
     // And the bodies are not, which is the whole of why this block is affordable
     // enough to send unasked. Two previews of 300 characters cost about four
     // times the rest of a pair's entry, on a surface whose point is to cost less
@@ -1855,11 +1859,55 @@ fn the_pairs_handed_over_are_the_ones_that_have_waited_longest() {
             if handed_over { "was" } else { "was not" }
         );
     }
-    // And what is not in front of the agent is said rather than left to be
-    // inferred from a block that happens to hold three.
+    // The sixth is not handed over and is not counted at the agent either: a
+    // backlog number names work no tool can list, and the rest arrive at later
+    // openings because the oldest come first.
     assert!(
-        handed.contains("1 more waiting"),
-        "the rest are counted where the pairs are: {handed}"
+        !handed.contains("more waiting"),
+        "the backlog is not a number the agent can act on: {handed}"
+    );
+}
+
+/// The block rebuilt after a compaction leaves out the prompts of the session
+/// it is rebuilding.
+///
+/// They are the conversation the host just summarised, so listing them back is
+/// text the agent has already read. Prompts from other sessions are what the
+/// section is for.
+#[test]
+fn a_compaction_leaves_out_the_prompts_of_the_session_it_rebuilds() {
+    let (temp, mut store) = store();
+    let payload = input(temp.path());
+    run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    store
+        .add_prompt(crate::memory::model::AddPrompt {
+            session_id: "agent-session".to_owned(),
+            content: "the question this session already holds".to_owned(),
+            project: Some("hook-project".to_owned()),
+        })
+        .unwrap();
+    store
+        .create_session("older", "hook-project", "C:/elsewhere")
+        .unwrap();
+    store
+        .add_prompt(crate::memory::model::AddPrompt {
+            session_id: "older".to_owned(),
+            content: "a question from an older session".to_owned(),
+            project: Some("hook-project".to_owned()),
+        })
+        .unwrap();
+
+    let rebuilt = run(&mut store, HookEvent::PostCompaction, &payload)
+        .unwrap()
+        .additional_context
+        .expect("a compaction carries the block");
+    assert!(
+        !rebuilt.contains("the question this session already holds"),
+        "this conversation's own prompt comes back: {rebuilt}"
+    );
+    assert!(
+        rebuilt.contains("a question from an older session"),
+        "another session's prompt is what the section is for: {rebuilt}"
     );
 }
 
@@ -1958,18 +2006,21 @@ fn a_pair_mem_judge_can_never_settle_is_counted_and_never_offered() {
         "a cross-project pair is what mem_judge will not take"
     );
 
-    let context = run(&mut store, HookEvent::SessionStart, &payload)
-        .unwrap()
+    let opened = run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let context = opened
         .additional_context
+        .as_deref()
         .expect("a session opening carries context");
-    let handed = verdict_block(&context);
     assert!(
-        !handed.contains(&stuck),
-        "it is never offered as work: {handed}"
+        !context.contains(&stuck) && !context.contains("Waiting on a verdict"),
+        "it is never offered as work: {context}"
     );
+    // Not hidden either: the one sentence that names it goes to the person,
+    // who is the only one who can do anything with it.
+    let person = opened.system_message.unwrap_or_default();
     assert!(
-        handed.contains("1 that mem_judge cannot settle at all"),
-        "and it is not hidden either, because silence is what this block exists to end: {handed}"
+        person.contains("1 pending pair") && person.contains("mem_judge cannot settle"),
+        "the person is told what the queue holds: {person}"
     );
 
     // And a judgeable pair filed later still gets its turn, which is the whole
@@ -1983,13 +2034,25 @@ fn a_pair_mem_judge_can_never_settle_is_counted_and_never_offered() {
         .unwrap()
         .observation;
     let fresh = propose(&mut store, &a.sync_id, &b.sync_id);
-    let context = run(&mut store, HookEvent::SessionStart, &payload)
-        .unwrap()
+    let opened = run(&mut store, HookEvent::SessionStart, &payload).unwrap();
+    let context = opened
         .additional_context
+        .as_deref()
         .expect("a session opening carries context");
     assert!(
-        verdict_block(&context).contains(&fresh),
+        verdict_block(context).contains(&fresh),
         "the older stuck pair does not hold the queue: {context}"
+    );
+    assert!(
+        !verdict_block(context).contains(&stuck),
+        "and it is still not offered beside the work: {context}"
+    );
+    assert!(
+        opened
+            .system_message
+            .unwrap_or_default()
+            .contains("1 pending pair"),
+        "the person is told about it once"
     );
 }
 #[test]

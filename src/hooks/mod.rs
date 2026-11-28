@@ -759,7 +759,7 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                 ));
             }
             let recall = std::time::Instant::now();
-            let recalled = memory_context(store, &project, &settings, &mut outcome);
+            let recalled = memory_context(store, &project, &settings, &mut outcome, None);
             outcome.timings.push(PhaseTime::since("recall", recall));
             match recalled {
                 Recalled::Found(memory, listed) => {
@@ -788,20 +788,21 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
                 }
                 Recalled::Empty => {}
             }
-            // The pairs themselves, not only how many there are. The line below
-            // says the number to whoever is watching; this hands the agent
-            // enough to rule on them without leaving the session, which is what
-            // the number never did — `mem_judge` takes a `judgment_id` that
-            // only `mem_save` ever returned, so a pair missed at the moment it
-            // was proposed had no route back.
+            // The pairs themselves, not only how many there are: `mem_judge`
+            // takes a `judgment_id` that only `mem_save` ever returned, so a
+            // pair missed at the moment it was proposed had no route back
+            // without leaving the session.
             //
             // Outside `voice.reports()` on purpose, and it is the same split
             // `Voice` already draws for the save reminder: silencing Sardi
             // silences what Sardi *says about itself*, not the protocol handed
-            // to a model. A quiet Leteo still has to be a correct one.
-            if let Some(handover) = pending_handover(store, &project) {
+            // to a model. A quiet Leteo still has to be a correct one. The
+            // pairs nothing can settle are the other way round — no agent can
+            // act on them — and go out in the person's message below.
+            let handover = pending_handover(store, &project);
+            if let Some(block) = &handover.agent {
                 context.push_str("\n\n");
-                context.push_str(&handover);
+                context.push_str(block);
             }
             outcome.additional_context = Some(context);
             // What the project holds, said once as it opens. A store with
@@ -809,29 +810,39 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             // their first session is an error report for a store that is only
             // new.
             //
-            // The waiting verdicts go here and nowhere else. Leteo proposes a
-            // pair on the way in and asks the agent to rule on it; if that turn
-            // ends without one, nothing mentions it again. Saying it at every
-            // prompt would nag, and saying it never is how seventy of them
-            // reached two months old unnoticed — a session opening is once.
+            // The pairs nothing can settle reach the person here and nowhere
+            // else: the agent's block says nothing about them because no agent
+            // call acts on one, and saying it at every prompt would nag. A
+            // session opening is once.
+            let mut said: Vec<String> = Vec::new();
             if voice.reports() {
-                let lines = [
-                    crate::sardi::remembers(
-                        language,
-                        project_memories(store, &project, &mut outcome),
-                    ),
-                    // And the memories whose own clock says to read them again.
-                    // The dates are set on every decision, policy and
-                    // preference and migration 15 rewrote all of them; nothing
-                    // ever said the queue existed. `mem_review` reads it, the
-                    // skill lists that tool without saying when to reach for
-                    // it, and the command line has no equivalent. Here for the
-                    // reason the verdicts are: once, as a session opens.
-                    crate::sardi::due(language, memories_due(store, &project)),
-                ];
-                let said = lines.into_iter().flatten().collect::<Vec<_>>().join("\n");
-                outcome.system_message = (!said.is_empty()).then_some(said);
+                said.extend(
+                    [
+                        crate::sardi::remembers(
+                            language,
+                            project_memories(store, &project, &mut outcome),
+                        ),
+                        // And the memories whose own clock says to read them
+                        // again. The dates are set on every decision, policy
+                        // and preference and migration 15 rewrote all of them;
+                        // nothing ever said the queue existed. `mem_review`
+                        // reads it, the skill lists that tool without saying
+                        // when to reach for it, and the command line has no
+                        // equivalent. Here for the reason the verdicts are:
+                        // once, as a session opens.
+                        crate::sardi::due(language, memories_due(store, &project)),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                );
             }
+            // Not gated on the voice: this is not Sardi talking about itself,
+            // it is a queue only the person can clear, and it was sent to an
+            // agent that could do nothing with it.
+            if let Some(line) = handover.person {
+                said.push(line);
+            }
+            outcome.system_message = (!said.is_empty()).then(|| said.join("\n"));
         }
         HookEvent::PostCompaction => {
             ensure_session(store, &session_id, &project, &directory, &mut outcome);
@@ -859,7 +870,11 @@ fn run_event(store: &mut Store, event: HookEvent, input: &HookInput) -> Result<H
             context.push_str(&settings.language_directive());
             context.push_str("\n\n");
             let recall = std::time::Instant::now();
-            let recalled = memory_context(store, &project, &settings, &mut outcome);
+            // This session's own prompts are in the host's compaction summary
+            // and in the conversation that was just replaced; listing them back
+            // is text the agent has already read.
+            let recalled =
+                memory_context(store, &project, &settings, &mut outcome, Some(&session_id));
             outcome.timings.push(PhaseTime::since("recall", recall));
             match recalled {
                 Recalled::Found(memory, listed) => {

@@ -230,6 +230,17 @@ impl<'a> Narrowing<'a> {
         }
     }
 
+    /// `AND <column> <> ?n` when there is a value, and nothing when there is
+    /// not. The mirror of [`Self::equals`], for the one query that has to leave
+    /// a row out rather than pick rows in.
+    fn not_equals(&mut self, column: &str, value: Option<&'a impl rusqlite::ToSql>) {
+        if let Some(value) = value {
+            self.values.push(value);
+            let index = self.values.len();
+            self.clauses.push_str(&format!(" AND {column} <> ?{index}"));
+        }
+    }
+
     /// A value every call binds, such as `LIMIT`. Returns its placeholder
     /// number, because that depends on how many narrowings came first.
     fn bind(&mut self, value: &'a dyn rusqlite::ToSql) -> usize {

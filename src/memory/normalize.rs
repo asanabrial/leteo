@@ -1240,16 +1240,21 @@ pub fn truncate_words(value: &str, max_chars: usize) -> String {
     )
 }
 
-/// Removes NUL bytes from text destined for SQLite.
+/// Replaces NUL bytes in text destined for SQLite with a space.
 ///
 /// SQLite's C interface terminates strings at the first NUL, so an interior one
 /// cuts a quoted full-text phrase in half and the FTS5 parser rejects the whole
 /// query as an unterminated string. Agents can send one inside perfectly legal
 /// JSON (`"\u0000"`), so this is reachable input, not a theoretical case. A NUL
 /// never carries meaning in a title, a body, or a search term.
+///
+/// A space rather than nothing, because removing it joined the words on either
+/// side: `before\0after` was stored as `beforeafter`, one token no search for
+/// `after` could reach. The NUL marks a boundary SQLite cannot carry, and a
+/// space is a boundary SQLite can.
 pub fn strip_nul(value: &str) -> Cow<'_, str> {
     if value.contains('\0') {
-        Cow::Owned(value.replace('\0', ""))
+        Cow::Owned(value.replace('\0', " "))
     } else {
         Cow::Borrowed(value)
     }
@@ -1278,9 +1283,18 @@ pub fn fts_terms(query: &str) -> Vec<String> {
     // `fts_prefix_query` deliberately does not do this: there the last word is
     // the one somebody is still typing, and folding it into an earlier
     // occurrence would open the wrong term to prefix matching.
+    //
+    // A word with no letter and no digit in it is not a word to FTS5, whose
+    // tokenizer is what decides that, and quoting one made it look like one
+    // here: `*` reached the correction stage as an unknown term and was read
+    // as whatever one-character word the vocabulary happened to hold, so a
+    // query of pure punctuation answered with an unrelated memory and a hint
+    // saying `*` had been searched as `0`. Nothing tokenizes, so nothing is
+    // asked, and the answer is the empty one it always should have been.
     let mut seen = std::collections::HashSet::new();
     strip_nul(query)
         .split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphanumeric))
         .map(quote_fts_term)
         .filter(|term| seen.insert(term.to_lowercase()))
         .collect()
@@ -1387,6 +1401,7 @@ pub fn fts_query_of(terms: &[String]) -> String {
 pub fn fts_prefix_query(query: &str) -> String {
     let mut terms = strip_nul(query)
         .split_whitespace()
+        .filter(|word| word.chars().any(char::is_alphanumeric))
         .map(quote_fts_term)
         // A token that was only quotes escapes to nothing, and quoting that
         // yields `""`, which would open to `"*` rather than a prefix.
@@ -2564,6 +2579,11 @@ mod plumbing {
         assert_eq!(fts_prefix_query("postgres pool"), "\"postgres\" \"pool\"*");
         assert_eq!(fts_prefix_query("pool"), "\"pool\"*");
         assert_eq!(fts_prefix_query("   "), "");
+        // A word with no letter and no digit in it is not a word here either.
+        // Left in, the last one opened to `"**"`, which is not a prefix but
+        // syntax, and a mixed query would spend a term asking for nothing.
+        assert_eq!(fts_prefix_query("*"), "");
+        assert_eq!(fts_prefix_query("pool *"), "\"pool\"*");
         // Not deduplicated, unlike `fts_terms`: folding the last word into an
         // earlier one would open the wrong term.
         assert_eq!(
@@ -2664,11 +2684,16 @@ mod plumbing {
     }
 
     #[test]
-    fn a_nul_byte_is_not_allowed_to_end_the_string() {
+    fn a_nul_byte_does_not_join_or_end_the_string() {
         // SQLite takes a NUL as the end of a text value, so anything after one
-        // would be stored and searched as though it had never been written.
-        assert_eq!(strip_nul("antes\0después"), "antesdespués");
-        assert_eq!(fts_terms("antes\0después"), vec!["\"antesdespués\""]);
+        // would be stored and searched as though it had never been written. A
+        // space keeps both halves; removing it stored `antesdespués` as one
+        // token, which no search for `después` could reach.
+        assert_eq!(strip_nul("antes\0después"), "antes después");
+        assert_eq!(
+            fts_terms("antes\0después"),
+            vec!["\"antes\"", "\"después\""]
+        );
     }
 
     #[test]

@@ -427,6 +427,8 @@ impl Store {
         mut options: SearchOptions,
         cap: usize,
     ) -> Result<usize, StoreError> {
+        let query = normalize::strip_nul(query);
+        let query = query.as_ref();
         if query.trim().is_empty() {
             return Err(StoreError::EmptySearch);
         }
@@ -467,6 +469,12 @@ impl Store {
         mut options: SearchOptions,
         limit: usize,
     ) -> Result<SearchOutcome, StoreError> {
+        // Stripped before the emptiness check, which otherwise reads a query of
+        // NUL bytes as a query of something: the store cannot carry one, and a
+        // query that is only NUL is the empty query it always was, refused as
+        // such rather than answered as nothing matched.
+        let query = normalize::strip_nul(query);
+        let query = query.as_ref();
         if query.trim().is_empty() {
             return Err(StoreError::EmptySearch);
         }

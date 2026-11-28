@@ -277,9 +277,9 @@ impl LeteoMcpServer {
                 // answered about the whole store disagreed with the sentence
                 // that sent the agent here.
                 let fallback = self.read_project();
-                let project = requested_project(params.project.as_deref())
-                    .or_else(|| fallback.map(|(detected, _source)| detected));
                 let store = self.lock_store()?;
+                let envelope = read_envelope(&store, params.project.as_deref(), fallback.as_ref())?;
+                let project = (!envelope.project.is_empty()).then_some(envelope.project);
                 let observations = store
                     .observations_needing_review(
                         project.as_deref(),
@@ -483,20 +483,20 @@ impl LeteoMcpServer {
         let fallback = (!params.all_projects)
             .then(|| self.read_project())
             .flatten();
+        let store = self.lock_store()?;
         let envelope = if params.all_projects {
             ProjectEnvelope {
                 project_source: SOURCE_ALL_PROJECTS.to_owned(),
                 ..ProjectEnvelope::default()
             }
         } else {
-            ProjectEnvelope::for_read(params.project.as_deref(), fallback.as_ref())
+            read_envelope(&store, params.project.as_deref(), fallback.as_ref())?
         };
         // The name the store narrows by is the name the reply reports, read
         // from the envelope rather than resolved a second time. The two used to
         // disagree on a blank project: the envelope named the detected one and
         // the store searched the empty one.
         let project = (!envelope.project.is_empty()).then(|| envelope.project.clone());
-        let store = self.lock_store()?;
         let cap = store.max_search_results();
         let limit = params.limit;
         let mode = params.match_mode.into();
@@ -613,20 +613,20 @@ impl LeteoMcpServer {
         let fallback = (!params.all_projects)
             .then(|| self.read_project())
             .flatten();
+        let store = self.lock_store()?;
         let envelope = if params.all_projects {
             ProjectEnvelope {
                 project_source: SOURCE_ALL_PROJECTS.to_owned(),
                 ..ProjectEnvelope::default()
             }
         } else {
-            ProjectEnvelope::for_read(params.project.as_deref(), fallback.as_ref())
+            read_envelope(&store, params.project.as_deref(), fallback.as_ref())?
         };
         let inferred =
             requested_project(params.project.as_deref()).is_none() && !params.all_projects;
         // The same name the envelope reports, for the reason search reads it
         // there: a blank project must not narrow the store to an empty one.
         let project = (!envelope.project.is_empty()).then(|| envelope.project.clone());
-        let store = self.lock_store()?;
         // One read of the settings file for the two answers that come out of
         // it, rather than one each. Read on each call rather than captured at
         // start-up — somebody who changes the size or the language is answered
@@ -684,8 +684,18 @@ impl LeteoMcpServer {
             .map(|observation| observation.sync_id.clone())
             .collect();
         let (caveats, caveats_note) = crate::mcp::output::read_caveats(&store, &named);
+        // A zero limit is a request for none of a section, not a finding that
+        // the project holds none. With all three at zero the store was never
+        // asked, and "Nothing in proj-alpha … but 1 elsewhere" sent a caller
+        // who had just switched the listing off to widen the project instead,
+        // which answers a question it never asked.
+        let asked_for_something = limit > 0 && session_limit > 0 && prompt_limit > 0;
         let elsewhere = match (
-            observations.is_empty() && sessions.is_empty() && prompts.is_empty() && inferred,
+            asked_for_something
+                && observations.is_empty()
+                && sessions.is_empty()
+                && prompts.is_empty()
+                && inferred,
             project.as_deref(),
         ) {
             (true, Some(project)) => store

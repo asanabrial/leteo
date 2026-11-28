@@ -1947,6 +1947,78 @@ fn the_process_override_resolves_writes_and_current_project() {
     );
 }
 
+/// The MCP answer to "which project is this?" is the name a write would file
+/// under, not the plain one another repository already recorded.
+#[test]
+fn current_project_settles_a_name_another_repository_holds() {
+    let (_temp, server) = test_server(McpOptions::default());
+    let detection = crate::project::detect_current_project();
+    assert_eq!(
+        detection.source,
+        crate::project::SOURCE_GIT_REMOTE,
+        "the fixture needs a checkout whose name comes from its remote"
+    );
+    let remote = crate::project::detected_remote(&detection).expect("read this origin");
+    let owner = remote.owner.clone().expect("this origin names an owner");
+    {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session_with_remote(
+                "foreign",
+                &detection.project,
+                "/elsewhere/the-same-name",
+                &format!("example.com/other-owner/{}", remote.name),
+            )
+            .unwrap();
+    }
+
+    let current = server
+        .mem_current_project(Parameters(NoParams {}))
+        .unwrap()
+        .0;
+    assert_eq!(current.project, format!("{owner}-{}", remote.name));
+    assert_eq!(
+        current.project_source,
+        crate::project::SOURCE_REMOTE_QUALIFIED
+    );
+    assert!(
+        current
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("already recorded for another repository")),
+        "the answer has to say why the name changed: {:?}",
+        current.warning
+    );
+}
+
+/// A store that cannot be reached does not fail this tool and does not present
+/// the plain name as settled either: the detection is what is left.
+#[test]
+fn current_project_answers_the_plain_name_when_the_store_cannot_be_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(crate::store::StoreConfig::new(temp.path().join("mcp.db"))).unwrap();
+    let shared = Arc::new(Mutex::new(store));
+    let envenenar = Arc::clone(&shared);
+    let _ = std::thread::spawn(move || {
+        let _guard = envenenar.lock().unwrap();
+        panic!("the store failed while the lock was held");
+    })
+    .join();
+    assert!(
+        shared.is_poisoned(),
+        "the store's lock has to stay poisoned"
+    );
+    let server = LeteoMcpServer::with_options(shared, McpOptions::default());
+    let detection = crate::project::detect_current_project();
+
+    let current = server
+        .mem_current_project(Parameters(NoParams {}))
+        .unwrap()
+        .0;
+    assert_eq!(current.project, detection.project);
+    assert_eq!(current.project_source, detection.source);
+}
+
 #[test]
 fn a_save_records_the_prompt_this_process_is_answering() {
     let (_temp, server) = test_server(McpOptions::default());

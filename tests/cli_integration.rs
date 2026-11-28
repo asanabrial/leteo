@@ -4998,4 +4998,24 @@ fn two_repositories_with_one_name_keep_their_memories_apart() {
     assert!(!acme_context.contains("Written in otra"), "{acme_context}");
     assert!(otra_context.contains("Written in otra"), "{otra_context}");
     assert!(!otra_context.contains("Written in acme"), "{otra_context}");
+
+    // `current-project` is what somebody runs to understand where they are, so
+    // it prints the name the saves file under and not the plain one they no
+    // longer use.
+    let acme_current = run_json(leteo(&database).current_dir(&acme).arg("current-project"));
+    assert_eq!(acme_current["project"], "api");
+    assert_eq!(acme_current["project_source"], "git_remote");
+    let otra_current = run_json(leteo(&database).current_dir(&otra).arg("current-project"));
+    assert_eq!(otra_current["project"], "otra-api");
+    assert_eq!(otra_current["project_source"], "remote_qualified");
+
+    // A store that cannot be opened is not an error for this command: it is
+    // what somebody runs when something is already wrong, and the detection is
+    // still an answer. A directory named as the database is a store the open
+    // refuses, without touching a real one.
+    let unopenable = temp.path().join("not-a-database");
+    std::fs::create_dir_all(&unopenable).expect("create a path SQLite cannot open as a file");
+    let degraded = run_json(leteo(&unopenable).current_dir(&otra).arg("current-project"));
+    assert_eq!(degraded["project"], "api");
+    assert_eq!(degraded["project_source"], "git_remote");
 }

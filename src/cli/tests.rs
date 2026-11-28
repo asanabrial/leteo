@@ -73,3 +73,83 @@ fn a_check_repairs_only_what_it_names() {
         );
     }
 }
+
+/// A prefix two tokens share is refused by count, not guessed at.
+///
+/// The prefix is four random bytes with no uniqueness in the table, so two
+/// tokens can carry one. Revoking the wrong one of two is how a leaked
+/// credential survives the incident it was meant to end; the token itself and
+/// the id are the two ways to say which one.
+#[cfg(feature = "cloud-server")]
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn an_ambiguous_token_prefix_is_refused_and_the_token_or_id_is_not() {
+    const PEPPER: &str = "a-token-pepper-of-at-least-32-bytes-long";
+    let store = crate::cloud::CloudStore::connect(&std::env::var("TEST_DATABASE_URL").unwrap(), 2)
+        .await
+        .unwrap();
+    let stamp = format!(
+        "{}{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let principal = store
+        .create_principal("human", &format!("ambiguous-{stamp}"), "admin")
+        .await
+        .unwrap();
+    let hasher = crate::cloud::ManagedTokenHasher::new(PEPPER).unwrap();
+    let first = crate::cloud::ManagedToken::generate("test");
+    let twin = crate::cloud::ManagedToken {
+        raw: format!("{}-twin", first.raw),
+        prefix: first.prefix.clone(),
+    };
+    for token in [&first, &twin] {
+        let verifier = hasher.hash(&token.raw).unwrap();
+        store
+            .store_managed_token(principal, token, &verifier, "twin")
+            .await
+            .unwrap();
+    }
+    let ids = store
+        .find_managed_token_ids_by_prefix(&first.prefix)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 2, "the fixture has two tokens under one prefix");
+
+    let refused = super::resolve_token_id(&store, PEPPER, &first.prefix)
+        .await
+        .expect_err("two tokens are two answers");
+    assert!(
+        refused.to_string().contains("2 managed tokens"),
+        "{refused}"
+    );
+
+    assert_eq!(
+        super::resolve_token_id(&store, PEPPER, &first.raw)
+            .await
+            .unwrap(),
+        ids[0],
+        "the token itself says which of the two, without being echoed"
+    );
+    assert_eq!(
+        super::resolve_token_id(&store, PEPPER, &ids[0].to_string())
+            .await
+            .unwrap(),
+        ids[0],
+        "a numeric id is taken as given, not looked up as a prefix"
+    );
+    let absent = super::resolve_token_id(&store, PEPPER, &format!("ltc_test_absent{stamp}"))
+        .await
+        .expect_err("a prefix nobody holds names no token");
+    assert!(absent.to_string().contains("no managed token"), "{absent}");
+    assert!(
+        !absent.to_string().contains("absent"),
+        "the value an operator typed is not echoed back: {absent}"
+    );
+
+    sqlx::query("DELETE FROM cloud_principals WHERE id = $1")
+        .bind(principal)
+        .execute(store.pool())
+        .await
+        .unwrap();
+}

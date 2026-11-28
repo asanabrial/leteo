@@ -25,7 +25,7 @@ pub use client::ClientConfig;
 #[cfg(feature = "cloud-server")]
 pub use cloudserver::CloudServer;
 #[cfg(feature = "cloud-server")]
-pub use cloudstore::CloudStore;
+pub use cloudstore::{CloudStore, TokenRevocation};
 pub use config::CloudConfig;
 pub use remote::RemoteClient;
 

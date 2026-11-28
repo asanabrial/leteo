@@ -254,15 +254,30 @@ mod tests {
         }
     }
 
+    /// A preamble exists only for an agent that will not read the file
+    /// without one, and it carries the key that agent names.
+    ///
+    /// Copilot takes an `applyTo`; Cursor ignores a rule whose frontmatter does
+    /// not say when it applies, and a plain markdown file in `~/.cursor/rules`
+    /// is skipped for having none. Everybody else reads the block as it is.
     #[test]
-    fn only_a_new_instruction_file_gets_a_preamble() {
-        let copilot = REGISTRY
-            .iter()
-            .find(|adapter| adapter.slug == "vscode-copilot")
-            .expect("VS Code Copilot is in the registry");
-        assert!(copilot.new_instruction_file.contains("applyTo"));
+    fn a_preamble_exists_only_where_the_agent_demands_one() {
+        const PREAMBLES: [(&str, &str); 2] = [
+            ("vscode-copilot", "applyTo"),
+            ("cursor", "alwaysApply: true"),
+        ];
+        for (slug, key) in PREAMBLES {
+            let adapter = REGISTRY
+                .iter()
+                .find(|adapter| adapter.slug == slug)
+                .unwrap_or_else(|| panic!("{slug} is in the registry"));
+            assert!(
+                adapter.new_instruction_file.contains(key),
+                "{slug} reads the file only when its preamble names {key}"
+            );
+        }
         for adapter in REGISTRY {
-            if adapter.slug != "vscode-copilot" {
+            if !PREAMBLES.iter().any(|(slug, _)| *slug == adapter.slug) {
                 assert_eq!(
                     adapter.new_instruction_file, "",
                     "{} grew a preamble nobody asked for",

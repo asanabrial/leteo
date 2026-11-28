@@ -1,15 +1,16 @@
-//! Captures kept beside the store when it is too busy to take them.
+//! Texts kept beside the store when it is too busy to take them.
 //!
 //! A hook runs on the agent's critical path and gives up on a locked store
-//! before the agent kills it. Every event it loses is bookkeeping except one: a
-//! `subagent-stop` capture is the text a subagent finished with, and its context
-//! is discarded as it stops, so a lost capture is gone. When the store is busy
-//! past the budget the text is written here instead — one JSON file per capture,
-//! under `<database parent>/hooks/spool/` beside the reminder files — and a
-//! later session start, subagent stop or session end, or the next start of the
-//! MCP server, replays it through the same [`Store::passive_capture`] door the
-//! hook would have used. The prompt and compaction hooks leave it alone, because
-//! a person is waiting behind them.
+//! before the agent kills it. Every event it loses is bookkeeping except two:
+//! a `subagent-stop` capture is the text a subagent finished with, and its
+//! context is discarded as it stops; a `user-prompt-submit` prompt is what a
+//! person typed. When the store is busy past the budget the text is written
+//! here instead — one JSON file per entry, under `<database parent>/hooks/spool/`
+//! beside the reminder files — and a later session start, subagent stop or
+//! session end, or the next start of the MCP server, replays it through the same
+//! door the hook would have used. A prompt does not replay on the prompt hook
+//! itself, and a compaction does not replay at all: a person is waiting behind
+//! those, and the replay costs about 2 ms per entry.
 //!
 //! The shape is one file per entry rather than one growing log because a drain
 //! has to claim work without a lock of its own. A claim renames the entry to a
@@ -43,9 +44,9 @@ pub const SPOOL_CAP: usize = 1_000;
 
 /// Days after which an entry is dropped without being replayed.
 ///
-/// Past this the capture is not worth keeping: a subagent's learnings belong to
-/// the conversation that produced them, and replaying one a week later files it
-/// into a store that has moved on.
+/// Past this the text is not worth keeping: a subagent's learnings belong to
+/// the conversation that produced them, and so does a prompt; replaying either
+/// a week later files it into a store that has moved on.
 pub const SPOOL_RETENTION_DAYS: i64 = 7;
 
 const RETENTION_MILLIS: i64 = SPOOL_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
@@ -61,13 +62,32 @@ pub(crate) fn directory(data_dir: &Path) -> PathBuf {
     data_dir.join("hooks").join("spool")
 }
 
-/// One capture waiting to be stored.
+/// What kind of text an entry holds.
+///
+/// A capture is a subagent's learnings, which the store takes through
+/// `passive_capture`; a prompt is one question, which it takes through
+/// `add_prompt`. Both are lost the same way when the store is busy, so both
+/// are kept the same way and the replay only differs in the door it calls.
+///
+/// The default is the capture, so an entry written before this field existed —
+/// and every entry the old builds wrote — still reads as what it was.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Kind {
+    #[default]
+    Capture,
+    Prompt,
+}
+
+/// One piece of text waiting to be stored.
 ///
 /// Plain fields rather than a nested [`PassiveCapture`], so the on-disk shape
 /// does not move when the model type does and the timestamp can be read without
 /// deserialising a subagent's whole turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
+    #[serde(default)]
+    kind: Kind,
     event: String,
     at: String,
     session_id: String,
@@ -76,6 +96,7 @@ struct Entry {
     /// the busy-open path never got to create.
     directory: String,
     content: String,
+    #[serde(default)]
     source: String,
     /// Whether `project` is a detection the busy-open path could not check
     /// against a store. A replay finishes the resolution with the store in hand
@@ -120,13 +141,14 @@ pub struct DrainReport {
     /// store keeps a replayed learning once whoever replays it, so `stored`
     /// cannot say it.
     pub returned: usize,
-    /// Learnings that reached the store across those entries.
+    /// Texts that reached the store across those entries: a capture's
+    /// learnings, or a kept prompt.
     pub stored: usize,
     /// Entries removed because replay failed for a reason a retry cannot mend.
     pub dropped: usize,
     /// Why those were dropped, and how many went each way, keyed by the reason.
     ///
-    /// `doctor --repair` is the command somebody runs when a capture has gone
+    /// `doctor --repair` is the command somebody runs when an entry has gone
     /// missing, and a count without a reason tells them only that it did. The
     /// map is kept in step with `dropped` by [`DrainReport::drop_entry`], so the
     /// two cannot disagree about how many entries were lost.
@@ -191,21 +213,62 @@ pub(crate) fn spool_unsettled(
     session_directory: &str,
     unsettled: Unsettled,
 ) -> std::io::Result<()> {
+    write_entry(
+        data_dir,
+        Entry {
+            kind: Kind::Capture,
+            event: event.to_owned(),
+            at: chrono::Utc::now().to_rfc3339(),
+            session_id: capture.session_id.clone(),
+            project: capture.project.clone(),
+            directory: session_directory.to_owned(),
+            content: normalize::strip_private(&capture.content),
+            source: capture.source.clone(),
+            guessed: unsettled.guessed,
+            derived_session: unsettled.derived_session,
+        },
+    )
+}
+
+/// Writes one prompt beside the database.
+///
+/// Called when `add_prompt` answered busy: the words were typed by a person and
+/// the hook's copy of them is the only one, exactly as a subagent's learnings
+/// are. The replay takes the same `add_prompt` door the live path would have,
+/// and the store's echo window keeps a replay filed twice from becoming two
+/// rows when the two happen within seconds of each other.
+pub(crate) fn spool_prompt(
+    data_dir: &Path,
+    event: &str,
+    session_id: &str,
+    project: &str,
+    content: &str,
+    session_directory: &str,
+    unsettled: Unsettled,
+) -> std::io::Result<()> {
+    write_entry(
+        data_dir,
+        Entry {
+            kind: Kind::Prompt,
+            event: event.to_owned(),
+            at: chrono::Utc::now().to_rfc3339(),
+            session_id: session_id.to_owned(),
+            project: project.to_owned(),
+            directory: session_directory.to_owned(),
+            content: normalize::strip_private(content),
+            source: String::new(),
+            guessed: unsettled.guessed,
+            derived_session: unsettled.derived_session,
+        },
+    )
+}
+
+/// The one place an entry reaches the directory.
+fn write_entry(data_dir: &Path, entry: Entry) -> std::io::Result<()> {
     let dir = directory(data_dir);
     fs::create_dir_all(&dir)?;
     sweep(&dir, now_millis());
 
-    let entry = Entry {
-        event: event.to_owned(),
-        at: chrono::Utc::now().to_rfc3339(),
-        session_id: capture.session_id.clone(),
-        project: capture.project.clone(),
-        directory: session_directory.to_owned(),
-        content: normalize::strip_private(&capture.content),
-        source: capture.source.clone(),
-        guessed: unsettled.guessed,
-        derived_session: unsettled.derived_session,
-    };
     let body = serde_json::to_vec(&entry).map_err(std::io::Error::other)?;
     let name = entry_name(now_millis());
     let temporary = dir.join(temporary_name(&name));
@@ -219,7 +282,7 @@ pub(crate) fn spool_unsettled(
 /// The name `spool` writes before renaming it into place.
 ///
 /// It ends `.tmp` and not `.json`, because [`entries`] treats every `.json` name
-/// as a capture: a temporary that ended in `.json` would be enumerated by a
+/// as an entry: a temporary that ended in `.json` would be enumerated by a
 /// concurrent drain, claimed, and read before the writer had finished it, which
 /// is the half-a-turn read the rename exists to prevent.
 pub(super) fn temporary_name(name: &str) -> String {
@@ -238,7 +301,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
     let dir = directory(store.data_dir());
     let mut report = DrainReport::default();
     sweep(&dir, now_millis());
-    // Before listing: a claim whose owner died is not a capture in progress,
+    // Before listing: a claim whose owner died is not an entry in progress,
     // and `entries` cannot see it under the name the dead process left.
     release_abandoned_claims(&dir);
     for path in entries_or_report(&dir) {
@@ -258,15 +321,15 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
         {
             Some(entry) => entry,
             None => {
-                // A file that cannot be read is not a capture to keep waiting
+                // A file that cannot be read is not an entry to keep waiting
                 // for; it is litter, and keeping it would make `doctor` report
                 // a spool that can never drain.
                 let _ = fs::remove_file(&claimed);
-                report.drop_entry("the entry could not be read as a capture");
+                report.drop_entry("the entry could not be read as hook text");
                 continue;
             }
         };
-        // The capture can name a session that does not exist yet: the busy-open
+        // The entry can name a session that does not exist yet: the busy-open
         // path spools before `ensure_session` could run, and a fresh store has
         // no session row at all. Ensure it from the entry, exactly as a live
         // `subagent-stop` does, so the replay stores the learnings instead of
@@ -303,24 +366,45 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
         // was filed under the payload's guess while its session stayed under
         // the project the conversation had always used.
         let project = super::session_project(store, &session_id, project);
-        match store
-            .passive_capture_from(entry.capture(&session_id, &project), Some(&entry.directory))
-        {
-            Ok(result) => {
-                report.stored += result.saved;
-                let _ = fs::remove_file(&claimed);
-            }
-            Err(failure) if failure.error.is_busy() => {
-                // Put the name back, so the next drain finds the entry where it
-                // left it rather than in a claimed file nothing looks at.
-                let _ = fs::rename(&claimed, &path);
-                report.returned += 1;
-                break;
-            }
-            Err(failure) => {
-                let _ = fs::remove_file(&claimed);
-                report.drop_entry(format!("the capture was refused: {}", failure.error));
-            }
+        match entry.kind {
+            Kind::Capture => match store
+                .passive_capture_from(entry.capture(&session_id, &project), Some(&entry.directory))
+            {
+                Ok(result) => {
+                    report.stored += result.saved;
+                    let _ = fs::remove_file(&claimed);
+                }
+                Err(failure) if failure.error.is_busy() => {
+                    // Put the name back, so the next drain finds the entry where
+                    // it left it rather than in a claimed file nothing looks at.
+                    let _ = fs::rename(&claimed, &path);
+                    report.returned += 1;
+                    break;
+                }
+                Err(failure) => {
+                    let _ = fs::remove_file(&claimed);
+                    report.drop_entry(format!("the capture was refused: {}", failure.error));
+                }
+            },
+            Kind::Prompt => match store.add_prompt(crate::AddPrompt {
+                session_id: session_id.clone(),
+                content: entry.content.clone(),
+                project: Some(project.clone()),
+            }) {
+                Ok(_) => {
+                    report.stored += 1;
+                    let _ = fs::remove_file(&claimed);
+                }
+                Err(error) if error.is_busy() => {
+                    let _ = fs::rename(&claimed, &path);
+                    report.returned += 1;
+                    break;
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&claimed);
+                    report.drop_entry(format!("the prompt was refused: {error}"));
+                }
+            },
         }
     }
     report.remaining = entries_or_report(&dir).len();
@@ -329,7 +413,7 @@ pub(crate) fn drain(store: &mut Store, deadline: Instant) -> DrainReport {
 
 /// The entries waiting in `dir`, oldest first, with the oldest entry's age.
 ///
-/// A claim in progress counts. It is one of the two states a capture is in
+/// A claim in progress counts. It is one of the two states an entry is in
 /// between its write and its replay, and `doctor` reads this number to say
 /// whether anything is waiting: a claim whose owner was killed sits here until
 /// the next drain releases it, and a report of zero would be the silence the
@@ -372,7 +456,7 @@ pub(crate) fn describe_age(age: Duration) -> String {
 /// A directory that does not exist is an empty spool, which is what every store
 /// that never met a busy hook has. Any other failure is an error and not an
 /// empty list: a spool nobody could read was reported by `doctor` as nothing
-/// waiting, with captures sitting in it.
+/// waiting, with entries sitting in it.
 ///
 /// A claimed file is not one, and neither is a claim's marker: the first is a
 /// name this directory made up for an entry already being replayed, ending in
@@ -404,7 +488,7 @@ fn entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 fn entries_or_report(dir: &Path) -> Vec<PathBuf> {
     entries(dir).unwrap_or_else(|error| {
         eprintln!(
-            "leteo hook: the capture spool {} could not be read, so nothing was replayed from it: {error}",
+            "leteo hook: the hook spool {} could not be read, so nothing was replayed from it: {error}",
             dir.display()
         );
         Vec::new()
@@ -462,7 +546,7 @@ fn claims(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// Returns the entries a dead drainer left claimed.
 ///
 /// The claim is a rename and the marker that fences it is removed afterwards,
-/// so a hook killed between them leaves the capture under a name only that
+/// so a hook killed between them leaves the entry under a name only that
 /// process would ever look for. The entry is the subagent's only copy and
 /// `doctor` counted it as nothing waiting. Returning it to its own name is what
 /// the next drain needs; a live owner's claim is left exactly where it is.
@@ -482,7 +566,7 @@ fn release_abandoned_claims(dir: &Path) {
             continue;
         };
         let old = claimed_at.is_some_and(|at| now.saturating_sub(at) > CLAIM_STALE_MILLIS);
-        // The release can never replace a capture with another one: a claim
+        // The release can never replace an entry with another one: a claim
         // takes the entry's only name, and an entry name is unique to its
         // write, so once the original is taken it is either this entry
         // returned by another drain — in which case this call's source is gone
@@ -505,7 +589,7 @@ fn release_abandoned_claims(dir: &Path) {
 /// nothing at all for one that does not, in every locale and for a process the
 /// caller does not own. Its messages are never read: only the empty output is.
 /// A probe that cannot run at all answers "alive", because taking a live
-/// drainer's claim back would replay one capture twice — worse than the age
+/// drainer's claim back would replay one entry twice — worse than the age
 /// bound below, which releases a claim no drain could still be holding.
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {

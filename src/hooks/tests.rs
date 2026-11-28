@@ -2892,6 +2892,18 @@ fn a_hook_gives_up_early_enough_that_the_overshoot_still_fits() {
             "{event:?}: waiting {:?} can take {worst:?} against {patience:?} of patience",
             event.store_wait()
         );
+        if event == HookEvent::UserPromptSubmit {
+            // The one event whose text survives a refusal: the hook keeps it
+            // beside the store, so it does not wait out the patience that the
+            // ladder exists to spend. It still waits long enough to ride a
+            // normal write rather than giving up at once.
+            assert_eq!(event.store_wait(), crate::hooks::PROMPT_STORE_WAIT);
+            assert!(
+                event.store_wait() >= std::time::Duration::from_millis(250),
+                "a prompt hook must still ride a write that takes a moment"
+            );
+            continue;
+        }
         // And it still waits for most of what it is allowed, or the ladder
         // would be trading a killed hook for one that gives up at once.
         assert!(
@@ -3459,11 +3471,29 @@ fn a_hook_warning_says_a_busy_store_can_be_tried_again() {
     };
     let outcome = run(&mut store, HookEvent::UserPromptSubmit, &asking).unwrap();
     assert!(!outcome.warnings.is_empty(), "a held store has to warn");
+    // The prompt is the event that no longer waits: its words go to the spool,
+    // and its warning says so instead of asking to try again.
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("kept beside it")),
+        "the prompt is kept rather than dropped: {:?}",
+        outcome.warnings
+    );
+    assert_eq!(
+        crate::hooks::spool::pending(&crate::hooks::spool::directory(store.data_dir()))
+            .unwrap()
+            .entries,
+        1,
+        "and it is beside the store, not only in a sentence"
+    );
     for warning in &outcome.warnings {
         assert!(
-            warning.ends_with(crate::store::StoreError::BUSY_ADVICE),
-            "a warning about a store in use must carry the one sentence the three surfaces share: \
-             {warning:?}"
+            warning.ends_with(crate::store::StoreError::BUSY_ADVICE)
+                || warning.contains("kept beside it"),
+            "a warning about a store in use must carry the one sentence the three surfaces share \
+             or say what was kept instead: {warning:?}"
         );
         assert!(
             !warning.contains("database is locked"),
@@ -4578,7 +4608,7 @@ fn doctor_counts_the_spool() {
 /// An entry nothing can read is dropped, and the report says how many went and
 /// why.
 ///
-/// `doctor --repair` is the command somebody runs when a capture has gone
+/// `doctor --repair` is the command somebody runs when an entry has gone
 /// missing, and `dropped: 1` with no reason tells them only that it did. The
 /// count and the map move together through the same call, so a report cannot
 /// say one was dropped and name reasons for none.
@@ -4590,7 +4620,7 @@ fn a_drain_reports_the_entries_it_dropped_and_why() {
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(
         directory.join("00000000000000000001.json"),
-        b"not a capture",
+        b"not hook text",
     )
     .unwrap();
 
@@ -4600,7 +4630,7 @@ fn a_drain_reports_the_entries_it_dropped_and_why() {
     assert_eq!(
         report
             .dropped_reasons
-            .get("the entry could not be read as a capture"),
+            .get("the entry could not be read as hook text"),
         Some(&1),
         "{report:?}"
     );
@@ -5271,4 +5301,111 @@ fn a_hint_whose_caveat_lookup_failed_says_so_once_and_still_names_the_memory() {
         "{hint}"
     );
     assert!(hint.contains(&format!("- #{}", listed.id)), "{hint}");
+}
+
+/// A prompt the store is too busy for is kept, not dropped.
+///
+/// The issue measured three prompts sent while an import held the write lock
+/// and two stored: the hook waited out its patience, warned, and the words were
+/// gone. They are the person's text, so a busy failure writes them beside the
+/// database and the next event that replays the spool stores them through the
+/// same `add_prompt` door the live path would have used.
+#[test]
+fn a_prompt_that_meets_a_held_store_is_kept_once_it_is_free() {
+    let (temp, mut store) = store();
+    let directory = temp.path().to_path_buf();
+    run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
+    let database = store.database_path().to_path_buf();
+    let data_dir = store.data_dir().to_path_buf();
+    drop(store);
+
+    let holder = rusqlite::Connection::open(&database).unwrap();
+    holder
+        .busy_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let mut store = Store::open(StoreConfig {
+        busy_timeout: std::time::Duration::from_millis(50),
+        ..StoreConfig::new(&database)
+    })
+    .unwrap();
+    let asking = HookInput {
+        prompt: "a question the import was still holding the store for".to_owned(),
+        ..input(&directory)
+    };
+    // The busy-open path in the CLI works the same description out without a
+    // store; it has to name the same session and project the live path used.
+    let pending = crate::hooks::pending_prompt(&asking).expect("a prompt to keep");
+    assert_eq!(pending.0, "agent-session");
+    assert_eq!(pending.1, "hook-project");
+    let refused = run(&mut store, HookEvent::UserPromptSubmit, &asking).unwrap();
+    assert!(!refused.prompt_saved, "{refused:?}");
+    let spool_dir = spool::directory(&data_dir);
+    assert_eq!(
+        spool::pending(&spool_dir).unwrap().entries,
+        1,
+        "the prompt is kept beside the store"
+    );
+
+    holder.execute_batch("ROLLBACK").unwrap();
+
+    // The next event that replays the spool stores it, through `add_prompt`.
+    run(&mut store, HookEvent::SessionStart, &input(&directory)).unwrap();
+    assert_eq!(
+        spool::pending(&spool_dir).unwrap().entries,
+        0,
+        "and the replay drains the spool once the store can take it"
+    );
+    let prompts = store
+        .recent_distinct_prompts(Some("hook-project"), Some(10), None)
+        .unwrap();
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.content.contains("a question the import")),
+        "with the person's words in the store: {prompts:?}"
+    );
+}
+
+/// A message the harness wrote is not a prompt and is not spooled.
+///
+/// The live path refuses one before it stores it; the busy path has to refuse
+/// it before it keeps it, or a replay would file a machine's words as somebody
+/// asking.
+#[test]
+fn a_harness_message_is_not_spooled_as_a_prompt() {
+    let (temp, store) = store();
+    let directory = temp.path().to_path_buf();
+    let database = store.database_path().to_path_buf();
+    let data_dir = store.data_dir().to_path_buf();
+    drop(store);
+
+    let holder = rusqlite::Connection::open(&database).unwrap();
+    holder
+        .busy_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let mut store = Store::open(StoreConfig {
+        busy_timeout: std::time::Duration::from_millis(50),
+        ..StoreConfig::new(&database)
+    })
+    .unwrap();
+    let asking = HookInput {
+        prompt: "<task-notification>a subagent finished</task-notification>".to_owned(),
+        ..input(&directory)
+    };
+    assert!(
+        crate::hooks::pending_prompt(&asking).is_none(),
+        "the busy-open path refuses it too, before it writes anything"
+    );
+    run(&mut store, HookEvent::UserPromptSubmit, &asking).unwrap();
+    assert_eq!(
+        spool::pending(&spool::directory(&data_dir))
+            .unwrap()
+            .entries,
+        0,
+        "a harness message is neither stored nor kept"
+    );
+    holder.execute_batch("ROLLBACK").unwrap();
 }

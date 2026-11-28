@@ -213,7 +213,7 @@ test("what the per-prompt hook named reaches the model on every step of that tur
   })
 })
 
-test("the hook is told the hint lasts one turn, and the opening block it keeps is not", async () => {
+test("the hook is told the hint and the opening block both last one request", async () => {
   await withFakeLeteo(async (calls) => {
     const hooks = (await Leteo({ directory: HERE } as any)) as Record<string, any>
     await hooks.event({ event: { type: "session.created", properties: { info: { id: "s1" } } } })
@@ -224,7 +224,11 @@ test("the hook is told the hint lasts one turn, and the opening block it keeps i
     const [prompt] = calls().filter((call) => call.event === "user-prompt-submit")
     assert.equal(prompt.payload.transient_hints, true)
     const [opening] = calls().filter((call) => call.event === "session-start")
-    assert.equal(opening.payload.transient_hints, undefined, "OpenCode keeps the opening block for the session")
+    assert.equal(
+      opening.payload.transient_hints,
+      true,
+      "the block reaches one model request, so the hook must not record it as read",
+    )
   })
 })
 
@@ -292,7 +296,11 @@ test("a compaction runs the post-compaction hook and hands its context over on t
     await hooks.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } })
     const compactions = calls().filter((call) => call.event === "post-compaction")
     assert.equal(compactions.length, 1)
-    assert.deepEqual(compactions[0].payload, { session_id: "s1", cwd: HERE })
+    assert.deepEqual(compactions[0].payload, {
+      session_id: "s1",
+      cwd: HERE,
+      transient_hints: true,
+    })
 
     assert.ok(
       (await system()).includes("Context was compacted. MEMORY BLOCK"),

@@ -230,10 +230,18 @@ export const Leteo: Plugin = async (ctx) => {
     // Without the directive, because this plugin injects the protocol on every
     // turn and the opening would say it twice. What is left is the language,
     // the memory, and any verdicts waiting, which is what a fresh session needs.
+    //
+    // `transient_hints`, because the block below reaches exactly one model
+    // request: OpenCode runs the system transform immediately before each agent
+    // model request and keeps the system prompt out of the conversation, so the
+    // next request is built without it. Recorded as shown, those memories were
+    // withheld from every later hint the session could have had — the thirty
+    // the block chose were the thirty it would never name again.
     const output = await runHook("session-start", {
       session_id: sessionID,
       cwd: directory,
       without_directive: true,
+      transient_hints: true,
     })
     const opening = additionalContext(output)
     if (opening) openings.set(sessionID, opening)
@@ -278,13 +286,18 @@ export const Leteo: Plugin = async (ctx) => {
       // held for the next system prompt rather than injected here: this event
       // has nowhere to put text in front of the agent. The hook also clears the
       // list of memories it has named, which is why it has to run even when
-      // the answer turns out empty.
+      // the answer turns out empty. The recovered block takes the same one
+      // request the opening does, so the hook is not told it was read either.
       if (event.type === "session.compacted") {
         const sessionID: string | undefined = (event.properties as any)?.sessionID
         if (!sessionID || subAgentSessions.has(sessionID)) return
         await ensureSession(sessionID)
         const recovered = additionalContext(
-          await runHook("post-compaction", { session_id: sessionID, cwd: directory }),
+          await runHook("post-compaction", {
+            session_id: sessionID,
+            cwd: directory,
+            transient_hints: true,
+          }),
         )
         if (recovered) {
           openings.set(sessionID, recovered)

@@ -833,16 +833,17 @@ fn consolidating_from_the_drifted_folder_keeps_the_work_under_the_name_that_hold
 ///
 /// Resemblance alone is not a rename: `leteo` and `leteo-old` would fold on
 /// their names, but they share no folder and each holds work, so the fold would
-/// move one of them out of the place it belongs with no undo. The group is
-/// still reported, with the reason, because a silent empty answer reads as a
-/// store that has nothing to fold.
+/// move one of them out of the place it belongs with no undo. The bigger
+/// project is the canonical the fold would use; the smaller is listed under
+/// `skipped`, because a silent empty answer reads as a store with nothing to
+/// fold.
 #[test]
 fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let database = temp.path().join("consolidate-refusal.db");
-    for (session, project, folder) in [
-        ("leteo-session", "leteo", "leteo"),
-        ("old-session", "leteo-old", "leteo-old"),
+    for (session, project, folder, notes) in [
+        ("leteo-session", "leteo", "leteo", &["one", "two"][..]),
+        ("old-session", "leteo-old", "leteo-old", &["one"][..]),
     ] {
         let directory = temp.path().join(folder);
         std::fs::create_dir_all(&directory).expect("create project folder");
@@ -855,14 +856,16 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
                 .arg("--directory")
                 .arg(&directory),
         );
-        run_json(
-            leteo(&database)
-                .arg("save")
-                .arg(format!("A memory of {project}"))
-                .arg("work that belongs to this folder")
-                .arg("--session")
-                .arg(session),
-        );
+        for note in notes {
+            run_json(
+                leteo(&database)
+                    .arg("save")
+                    .arg(format!("A memory of {project}, {note}"))
+                    .arg("work that belongs to this folder")
+                    .arg("--session")
+                    .arg(session),
+            );
+        }
     }
 
     let preview = run_json(
@@ -872,10 +875,20 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
             .arg("--all"),
     );
     let group = &preview["groups"][0];
-    assert_eq!(group["canonical"], json!("leteo"));
-    assert_eq!(group["sources"], json!(["leteo-old"]));
-    let reason = group["skipped"].as_str().expect("the refusal is stated");
-    assert!(reason.contains("leteo-old"), "{reason}");
+    assert_eq!(
+        group["canonical"],
+        json!("leteo"),
+        "the project holding two memories keeps the name"
+    );
+    assert_eq!(
+        group["sources"],
+        json!([]),
+        "the refused source is not listed as moving"
+    );
+    let refusal = &group["skipped"][0];
+    assert_eq!(refusal["project"], json!("leteo-old"));
+    let reason = refusal["reason"].as_str().expect("the refusal is stated");
+    assert!(reason.contains("/leteo-old"), "{reason}");
     assert!(reason.contains("mem_merge_projects"), "{reason}");
 
     let applied = run_json(
@@ -889,18 +902,30 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
         applied["groups"][0]["skipped"], preview["groups"][0]["skipped"],
         "the apply answers what the preview promised"
     );
-    assert_eq!(applied["groups"][0]["result"], Value::Null);
+    assert_eq!(
+        applied["groups"][0]["result"]["observations_updated"],
+        json!(0)
+    );
+    assert_eq!(applied["groups"][0]["result"]["sources_merged"], json!([]));
 
     let projects = run_json(leteo(&database).arg("projects").arg("list"));
     let projects = projects.as_array().expect("project list");
     assert_eq!(projects.len(), 2, "nothing was folded: {projects:?}");
-    for project in projects {
-        assert_eq!(
-            project["observation_count"],
-            json!(1),
-            "each project still holds its own memory: {project}"
-        );
-    }
+    let counts = projects
+        .iter()
+        .map(|project| {
+            (
+                project["name"].as_str().expect("a name").to_owned(),
+                project["observation_count"].clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        counts["leteo"],
+        json!(2),
+        "each project keeps its own memories"
+    );
+    assert_eq!(counts["leteo-old"], json!(1));
 }
 
 #[test]

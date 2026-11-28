@@ -34,9 +34,25 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
                     "canonical": group.canonical,
                     "sources": sources,
                 });
-                if let Some(reason) = &group.refused {
-                    entry["skipped"] = serde_json::Value::String(reason.clone());
-                } else if apply {
+                if !group.skipped.is_empty() {
+                    // One entry per source rather than one for the group: a
+                    // source refused here is the only thing that does not
+                    // move, and the source the remedy exists to fold still
+                    // goes with the others.
+                    entry["skipped"] = serde_json::Value::Array(
+                        group
+                            .skipped
+                            .iter()
+                            .map(|refused| {
+                                serde_json::json!({
+                                    "project": refused.project,
+                                    "reason": refused.reason,
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+                if apply {
                     entry["result"] =
                         serde_json::to_value(store.merge_projects(&sources, &group.canonical)?)?;
                 }
@@ -85,11 +101,18 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ProjectGroup {
     pub(super) canonical: String,
+    /// The sources this run would move, after the refusals below.
     pub(super) sources: Vec<String>,
-    /// Why this fold is refused, when the evidence says these are two projects
-    /// rather than one name twice. Nothing moves, and the preview and the
-    /// apply both say so.
-    pub(super) refused: Option<String>,
+    /// Sources that would be moved out of a folder they belong to, with the
+    /// reason. Nothing in this list moves, and the preview and the apply both
+    /// say so.
+    pub(super) skipped: Vec<RefusedSource>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct RefusedSource {
+    pub(super) project: String,
+    pub(super) reason: String,
 }
 
 /// The group a named project belongs to: the same one `--all` reports for it.
@@ -101,14 +124,13 @@ pub(super) struct ProjectGroup {
 /// project in no group has nothing to fold, which is what an empty answer says.
 fn groups_naming(stats: &[ProjectStats], named: &str) -> Vec<ProjectGroup> {
     let named = crate::memory::normalize::project(named);
+    let names = |project: &str| crate::memory::normalize::project(project) == named;
     similar_project_groups(stats)
         .into_iter()
         .filter(|group| {
-            crate::memory::normalize::project(&group.canonical) == named
-                || group
-                    .sources
-                    .iter()
-                    .any(|source| crate::memory::normalize::project(source) == named)
+            names(&group.canonical)
+                || group.sources.iter().any(|source| names(source))
+                || group.skipped.iter().any(|refused| names(&refused.project))
         })
         .collect()
 }
@@ -204,20 +226,28 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
         if taken.is_empty() {
             continue;
         }
-        let refused = taken
-            .iter()
-            .find_map(|other| two_projects(&stats[index], &stats[*other]));
         let mut sources = Vec::with_capacity(taken.len());
+        let mut skipped = Vec::new();
         for other in taken {
             claimed[other] = true;
-            sources.push(stats[other].name.clone());
+            // Judged one source at a time: a source that is a project of its
+            // own is not folded, and the empty name the remedy exists for still
+            // goes with the others.
+            match two_projects(&stats[index], &stats[other]) {
+                Some(reason) => skipped.push(RefusedSource {
+                    project: stats[other].name.clone(),
+                    reason,
+                }),
+                None => sources.push(stats[other].name.clone()),
+            }
         }
         claimed[index] = true;
         sources.sort();
+        skipped.sort_by(|left, right| left.project.cmp(&right.project));
         groups.push(ProjectGroup {
             canonical: stats[index].name.clone(),
             sources,
-            refused,
+            skipped,
         });
     }
     groups.sort_by(|left, right| left.canonical.cmp(&right.canonical));
@@ -247,7 +277,7 @@ fn two_projects(canonical: &ProjectStats, source: &ProjectStats) -> Option<Strin
     Some(format!(
         "{:?} holds {} memories and records {:?}, which {:?} does not: these are two projects, \
          not one name twice, and folding them would move work out of the folder it belongs to. \
-         Nothing is merged; use `mem_merge_projects` with both names if they really are one",
+         It is left where it is; use `mem_merge_projects` with both names if they really are one",
         source.name, source.observation_count, own, canonical.name
     ))
 }
@@ -559,7 +589,7 @@ mod tests {
         let expected = vec![ProjectGroup {
             canonical: "beta".to_owned(),
             sources: vec!["alpha".to_owned()],
-            refused: None,
+            skipped: Vec::new(),
         }];
         assert_eq!(similar_project_groups(&stats), expected, "under `--all`");
         assert_eq!(
@@ -571,6 +601,15 @@ mod tests {
             groups_naming(&stats, "beta"),
             expected,
             "naming the other side answers the same group"
+        );
+        assert_eq!(
+            groups_naming(&stats, " ALPHA "),
+            expected,
+            "a name reaches its group however the store spelled it"
+        );
+        assert!(
+            groups_naming(&stats, "something-else").is_empty(),
+            "a project in no group has nothing to fold"
         );
     }
 
@@ -590,14 +629,95 @@ mod tests {
         let groups = similar_project_groups(&stats);
         assert_eq!(groups.len(), 1, "{groups:?}");
         assert_eq!(groups[0].canonical, "leteo");
-        assert_eq!(groups[0].sources, vec!["leteo-old".to_owned()]);
+        assert!(
+            groups[0].sources.is_empty(),
+            "nothing moves: {:?}",
+            groups[0].sources
+        );
         let refusal = groups[0]
-            .refused
-            .as_deref()
+            .skipped
+            .first()
             .expect("a source with a home of its own is refused");
-        assert!(refusal.contains("leteo-old"), "{refusal}");
-        assert!(refusal.contains("/work/leteo-old"), "{refusal}");
-        assert!(refusal.contains("mem_merge_projects"), "{refusal}");
+        assert_eq!(refusal.project, "leteo-old");
+        assert!(refusal.reason.contains("/work/leteo-old"), "{refusal:?}");
+        assert!(refusal.reason.contains("mem_merge_projects"), "{refusal:?}");
+    }
+
+    /// One refused source does not stop the fold the remedy exists for.
+    ///
+    /// A group can hold the empty name a merge left behind and a second project
+    /// that only resembles the canonical. Judged together, the second one would
+    /// call the fold off and leave the drift in place; judged one at a time,
+    /// only it stays.
+    #[test]
+    fn a_refused_source_does_not_call_off_the_rest_of_the_group() {
+        let stats = vec![
+            project("beta", 11, &["/work/alpha", "/work/beta"]),
+            project("beta-old", 4, &["/work/beta-old"]),
+            project("alpha", 0, &["/work/alpha"]),
+        ];
+        let groups = similar_project_groups(&stats);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].canonical, "beta");
+        assert_eq!(groups[0].sources, vec!["alpha".to_owned()]);
+        assert_eq!(groups[0].skipped.len(), 1);
+        assert_eq!(groups[0].skipped[0].project, "beta-old");
+    }
+
+    /// A source with memories but no recorded folder is a name variant.
+    ///
+    /// The refusal needs a home to protect. A project whose sessions recorded
+    /// no absolute directory — or only `.` — has no folder to be moved out of,
+    /// and folding it by its name is the ordinary rename.
+    #[test]
+    fn a_source_with_memories_and_no_folder_of_its_own_is_folded() {
+        let stats = vec![
+            project("leteo", 9, &["/work/leteo"]),
+            project("leteo-old", 3, &["."]),
+        ];
+        let groups = similar_project_groups(&stats);
+        assert_eq!(
+            groups,
+            vec![ProjectGroup {
+                canonical: "leteo".to_owned(),
+                sources: vec!["leteo-old".to_owned()],
+                skipped: Vec::new(),
+            }]
+        );
+    }
+
+    /// Two spellings of one folder are one folder.
+    ///
+    /// The session matcher has always folded a trailing separator and, on
+    /// Windows, case. The consolidation reads the same fold, so a project whose
+    /// folder arrived with a trailing slash is still the project that already
+    /// records that folder rather than a second one to refuse.
+    #[test]
+    fn two_spellings_of_one_folder_are_one_folder() {
+        let stats = vec![
+            project("alpha-service", 10, &["/work/shared"]),
+            project("omega-worker", 5, &["/work/shared/"]),
+        ];
+        assert_eq!(
+            similar_project_groups(&stats),
+            vec![ProjectGroup {
+                canonical: "alpha-service".to_owned(),
+                sources: vec!["omega-worker".to_owned()],
+                skipped: Vec::new(),
+            }]
+        );
+
+        // And the same fold decides the refusal: a source whose only folder is
+        // the canonical's, spelled differently, has no home of its own.
+        let stats = vec![
+            project("leteo", 9, &["/work/leteo"]),
+            project("leteo-old", 3, &["/work/leteo/"]),
+        ];
+        assert_eq!(
+            similar_project_groups(&stats)[0].sources,
+            vec!["leteo-old".to_owned()],
+            "one folder under two spellings is not a second home"
+        );
     }
 
     /// `.` is not a place. Two projects that both recorded it share no
@@ -622,7 +742,7 @@ mod tests {
             vec![ProjectGroup {
                 canonical: "alpha-service".to_owned(),
                 sources: vec!["omega-worker".to_owned()],
-                refused: None,
+                skipped: Vec::new(),
             }],
             "an absolute shared directory still does"
         );
@@ -651,7 +771,7 @@ mod tests {
             vec![ProjectGroup {
                 canonical: "nombre-nuevo".to_owned(),
                 sources: vec!["nombre-viejo".to_owned()],
-                refused: None,
+                skipped: Vec::new(),
             }]
         );
     }

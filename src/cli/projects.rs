@@ -109,12 +109,13 @@ pub(super) struct ProjectGroup {
     pub(super) skipped: Vec<RefusedSource>,
 }
 
+/// A source a fold leaves where it is, because folding it would move a project
+/// out of the folder that folder belongs to.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct RefusedSource {
     pub(super) project: String,
     pub(super) reason: String,
 }
-
 /// The group a named project belongs to: the same one `--all` reports for it.
 ///
 /// `--project` used to name the canonical itself, so the two forms of the
@@ -151,6 +152,12 @@ fn groups_naming(stats: &[ProjectStats], named: &str) -> Vec<ProjectGroup> {
 /// which is what the single-project form has always done, and each project is
 /// claimed once — the largest claimant first, so a small project cannot pull a
 /// large one into its own group.
+///
+/// A source the refusal below leaves in place is claimed too, but only as a
+/// source: it is reported once, in the first group that asked, and it is still
+/// free to be the canonical of its own group. That is the difference between a
+/// project that belongs to someone else's fold and one that owns spellings of
+/// its own.
 ///
 /// A directory shared by more than two projects is also no longer evidence of
 /// anything. `H:\REPO` on that store is the parent folder of every repository
@@ -213,6 +220,11 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
     });
 
     let mut claimed = vec![false; stats.len()];
+    // A source judged and left where it is. Reported once, in the first group
+    // that asked, and free to be a canonical later: the fold it was refused
+    // from is not the whole store, and a project of its own can still own a
+    // spelling that shares its folder.
+    let mut refused = vec![false; stats.len()];
     let mut groups = Vec::new();
     for index in order {
         if claimed[index] {
@@ -221,7 +233,7 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
         let taken = related[index]
             .iter()
             .copied()
-            .filter(|other| !claimed[*other])
+            .filter(|other| !claimed[*other] && !refused[*other])
             .collect::<Vec<_>>();
         if taken.is_empty() {
             continue;
@@ -229,16 +241,21 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
         let mut sources = Vec::with_capacity(taken.len());
         let mut skipped = Vec::new();
         for other in taken {
-            claimed[other] = true;
             // Judged one source at a time: a source that is a project of its
             // own is not folded, and the empty name the remedy exists for still
             // goes with the others.
             match two_projects(&stats[index], &stats[other]) {
-                Some(reason) => skipped.push(RefusedSource {
-                    project: stats[other].name.clone(),
-                    reason,
-                }),
-                None => sources.push(stats[other].name.clone()),
+                Some(reason) => {
+                    refused[other] = true;
+                    skipped.push(RefusedSource {
+                        project: stats[other].name.clone(),
+                        reason,
+                    });
+                }
+                None => {
+                    claimed[other] = true;
+                    sources.push(stats[other].name.clone());
+                }
             }
         }
         claimed[index] = true;
@@ -641,6 +658,36 @@ mod tests {
         assert_eq!(refusal.project, "leteo-old");
         assert!(refusal.reason.contains("/work/leteo-old"), "{refusal:?}");
         assert!(refusal.reason.contains("mem_merge_projects"), "{refusal:?}");
+
+        // Naming the refused side reaches the same group, so the person who
+        // asked to fold it is told why nothing happened.
+        assert_eq!(groups_naming(&stats, "leteo-old"), groups);
+    }
+
+    /// A source left where it is can still lead a fold of its own.
+    ///
+    /// `gamma` is a project of its own, so folding it into `beta` is refused.
+    /// That must not also stop `gamma` from folding the spelling that shares
+    /// its folder: the two questions are independent, and answering the first
+    /// by claiming the project for the run would leave the second unreachable.
+    #[test]
+    fn a_refused_source_is_reported_once_and_can_still_lead_a_fold() {
+        let stats = vec![
+            project("beta", 11, &["/work/alpha", "/work/shared"]),
+            project("gamma", 7, &["/work/shared", "/work/gamma"]),
+            project("gamma-old", 5, &["/work/gamma"]),
+        ];
+        let groups = similar_project_groups(&stats);
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups[0].canonical, "beta");
+        assert!(groups[0].sources.is_empty());
+        assert_eq!(groups[0].skipped[0].project, "gamma");
+        assert_eq!(groups[1].canonical, "gamma");
+        assert_eq!(groups[1].sources, vec!["gamma-old".to_owned()]);
+        assert!(
+            groups[1].skipped.is_empty(),
+            "the spelling that shares gamma's folder moves: {groups:?}"
+        );
     }
 
     /// One refused source does not stop the fold the remedy exists for.

@@ -32,6 +32,9 @@ const NOT_READS: &[&str] = &[
     // so a command run there sees a project. Nothing opens the checkout's — in a
     // worktree that one is a file, which is why the literal is seen at all.
     ".git",
+    // The same fixture writes that `.git/config`; the path reaches this scanner
+    // as one joined path, which the `.git` entry above does not excuse.
+    ".git/config",
 ];
 
 fn include_patterns(manifest: &str) -> Vec<String> {

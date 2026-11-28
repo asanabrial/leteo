@@ -785,6 +785,11 @@ fn consolidating_from_the_drifted_folder_keeps_the_work_under_the_name_that_hold
             .arg("consolidate"),
     );
     assert_eq!(
+        named["groups"].as_array().expect("groups").len(),
+        1,
+        "{named}"
+    );
+    assert_eq!(
         named["groups"][0]["canonical"],
         json!("beta"),
         "the folder's own name holds one empty session, and beta holds the work"
@@ -842,8 +847,13 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
     let temp = tempfile::tempdir().expect("create CLI test directory");
     let database = temp.path().join("consolidate-refusal.db");
     for (session, project, folder, notes) in [
-        ("leteo-session", "leteo", "leteo", &["one", "two"][..]),
-        ("old-session", "leteo-old", "leteo-old", &["one"][..]),
+        (
+            "leteo-session",
+            "leteo",
+            "leteo-folder",
+            &["one", "two"][..],
+        ),
+        ("old-session", "leteo-old", "old-folder", &["one"][..]),
     ] {
         let directory = temp.path().join(folder);
         std::fs::create_dir_all(&directory).expect("create project folder");
@@ -874,6 +884,11 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
             .arg("consolidate")
             .arg("--all"),
     );
+    assert_eq!(
+        preview["groups"].as_array().expect("groups").len(),
+        1,
+        "{preview}"
+    );
     let group = &preview["groups"][0];
     assert_eq!(
         group["canonical"],
@@ -888,7 +903,9 @@ fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
     let refusal = &group["skipped"][0];
     assert_eq!(refusal["project"], json!("leteo-old"));
     let reason = refusal["reason"].as_str().expect("the refusal is stated");
-    assert!(reason.contains("/leteo-old"), "{reason}");
+    // The folder, not the joined path: a tempdir spells its separator
+    // differently on Windows, and this assertion has to hold there too.
+    assert!(reason.contains("old-folder"), "{reason}");
     assert!(reason.contains("mem_merge_projects"), "{reason}");
 
     let applied = run_json(

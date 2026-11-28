@@ -350,6 +350,9 @@ pub(super) struct ReviewOutput {
     /// exist. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
+    /// The limits this answer had to change from what the caller asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) clamped: Vec<ClampedLimit>,
 }
 
 impl ReviewOutput {
@@ -377,6 +380,7 @@ impl ReviewOutput {
             observations,
             observation: None,
             hint: None,
+            clamped: Vec::new(),
         }
     }
 
@@ -391,6 +395,7 @@ impl ReviewOutput {
             observations: Vec::new(),
             observation: Some(WrittenMemory::new(value, caveats)),
             hint: None,
+            clamped: Vec::new(),
         }
     }
 }
@@ -442,6 +447,9 @@ pub(super) struct TimelineOutput {
     /// Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
+    /// The limits this answer had to change from what the caller asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) clamped: Vec<ClampedLimit>,
 }
 
 impl TimelineOutput {
@@ -492,6 +500,7 @@ impl TimelineOutput {
             before_total: value.before_total,
             after_total: value.after_total,
             hint: None,
+            clamped: Vec::new(),
         }
     }
 }
@@ -1021,6 +1030,42 @@ pub(crate) fn no_match_here_hint(
     )
 }
 
+/// A limit the caller sent and the value the store actually applied.
+///
+/// The schemas publish their maxima, and every one of them was enforced by
+/// quietly reducing the number: `limit: 21` became twenty, `before: 21` became
+/// twenty, `byte_limit: 49001` became the setting's ceiling. A caller comparing
+/// counts had no way to tell a short answer from a shortened request, and a
+/// number the tool chose for itself is one it has to say. Structured rather
+/// than a hint sentence, because a hint carries one line of advice and the
+/// search's own is already spoken for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(super) struct ClampedLimit {
+    /// The argument, as the schema names it.
+    pub(super) field: String,
+    /// What the caller asked for.
+    pub(super) requested: usize,
+    /// What the store applied.
+    pub(super) applied: usize,
+}
+
+/// Every limit the answer had to change, in argument order.
+///
+/// `requested != applied` rather than `>`: the published minimums are floors
+/// too, and `limit: 0` on a page was raised to one without a word, which is the
+/// same silent substitution at the other end of the range.
+pub(super) fn clamped_limits(asked: &[(&str, usize, usize)]) -> Vec<ClampedLimit> {
+    asked
+        .iter()
+        .filter(|(_, requested, applied)| requested != applied)
+        .map(|(field, requested, applied)| ClampedLimit {
+            field: (*field).to_owned(),
+            requested: *requested,
+            applied: *applied,
+        })
+        .collect()
+}
+
 /// What to say when the caller's own limit is what ended the list.
 ///
 /// A full page and an exhausted one are the same shape, and the reply only ever
@@ -1108,6 +1153,54 @@ pub(crate) fn corrected_terms_hint(corrections: &[crate::store::Correction]) -> 
     )
 }
 
+/// One row of a search page, cut the way both doors show it.
+///
+/// The first three rows carry a 400-byte preview and the rest carry the title,
+/// type and id only. The rule lived inside `SearchOutput::new` while
+/// `leteo search` printed the whole body of every row — a measured 55,529-byte
+/// reply for one memory where the tool sent 400 — so it moved here and both
+/// surfaces read it.
+fn search_row(
+    result: SearchResult,
+    rank: usize,
+    envelope_project: Option<&str>,
+) -> (SearchHit, bool, bool) {
+    let (partial, semantic) = (result.partial, result.semantic);
+    let mut observation = ObservationOutput::from(result.observation);
+    if rank < crate::mcp::SEARCH_PREVIEW_ROWS {
+        observation = observation.preview();
+    } else {
+        observation.content = String::new();
+        observation.content_truncated = false;
+    }
+    (
+        SearchHit::new(observation, envelope_project),
+        partial,
+        semantic,
+    )
+}
+
+/// The page `leteo search` prints: the tool's rows, as JSON.
+///
+/// As JSON rather than as [`SearchHit`] so the terminal and the tool cannot
+/// drift apart without a test failing, and so the CLI does not have to grow a
+/// second copy of the preview rule.
+pub(crate) fn search_page(results: Vec<SearchResult>) -> Vec<serde_json::Value> {
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(rank, result)| {
+            let (observation, partial, semantic) = search_row(result, rank, None);
+            serde_json::to_value(SearchResultOutput {
+                observation,
+                partial,
+                semantic,
+            })
+            .unwrap_or(serde_json::Value::Null)
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SearchOutput {
     #[serde(flatten)]
@@ -1127,6 +1220,10 @@ pub(super) struct SearchOutput {
     /// link arrives there as brackets around a name that resolves to nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) hint: Option<String>,
+    /// The limits this answer had to change from what the caller asked for:
+    /// a value above the published maximum, or below its minimum.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) clamped: Vec<ClampedLimit>,
 }
 
 impl SearchOutput {
@@ -1167,17 +1264,11 @@ impl SearchOutput {
                     .get(&result.observation.sync_id)
                     .cloned()
                     .unwrap_or_default();
-                let (partial, semantic) = (result.partial, result.semantic);
-                let mut observation = ObservationOutput::from(result.observation);
-                if rank < crate::mcp::SEARCH_PREVIEW_ROWS {
-                    observation = observation.preview();
-                } else {
-                    observation.content = String::new();
-                    observation.content_truncated = false;
-                }
+                let (mut observation, partial, semantic) =
+                    search_row(result, rank, Some(&envelope_project));
                 observation.caveats = said.into_iter().map(Into::into).collect();
                 SearchResultOutput {
-                    observation: SearchHit::new(observation, &envelope_project),
+                    observation,
                     partial,
                     semantic,
                 }
@@ -1216,6 +1307,7 @@ impl SearchOutput {
             count: results.len(),
             hint,
             results,
+            clamped: Vec::new(),
         }
     }
 }
@@ -1298,15 +1390,27 @@ pub(super) struct SearchHit {
 }
 
 impl SearchHit {
-    fn new(value: ObservationOutput, envelope_project: &str) -> Self {
+    /// `envelope_project` is the project the reply names, when the reply names
+    /// one. A row from it omits the project and the default scope, because the
+    /// envelope already carries them; `None` keeps both, for the terminal,
+    /// which prints an array with no envelope above it.
+    fn new(value: ObservationOutput, envelope_project: Option<&str>) -> Self {
+        let project = match envelope_project {
+            Some(envelope) => value.project.filter(|project| project != envelope),
+            None => value.project,
+        };
+        let scope = match envelope_project {
+            Some(_) => Some(value.scope).filter(|scope| scope != "project"),
+            None => Some(value.scope),
+        };
         Self {
             id: value.id,
             kind: value.kind,
             title: value.title,
             content: value.content,
             tool_name: value.tool_name,
-            project: value.project.filter(|project| project != envelope_project),
-            scope: Some(value.scope).filter(|scope| scope != "project"),
+            project,
+            scope,
             topic_key: value.topic_key,
             revision_count: value.revision_count,
             duplicate_count: value.duplicate_count,
@@ -1520,6 +1624,9 @@ pub(super) struct ContextOutput {
     /// than reporting a bound it did not keep.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) byte_limit_unmet: bool,
+    /// The limits this answer had to change from what the caller asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) clamped: Vec<ClampedLimit>,
 }
 
 /// The bytes a `mem_context` answer carries before it holds any memory, session
@@ -1671,6 +1778,7 @@ impl ContextOutput {
             prompts_omitted: 0,
             sessions_omitted: 0,
             byte_limit_unmet: false,
+            clamped: Vec::new(),
         }
     }
 

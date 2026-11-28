@@ -41,6 +41,9 @@ pub enum Command {
         r#type: String,
         #[arg(long)]
         session: Option<String>,
+        /// Project to file under. A name the store does not hold is created by
+        /// this command; `mem_save` refuses one until `mem_session_start` has
+        /// opened it, so a script that swaps doors must create it first.
         #[arg(long)]
         project: Option<String>,
         #[arg(long, default_value = "project")]
@@ -80,8 +83,16 @@ pub enum Command {
         r#type: Option<String>,
         #[arg(long)]
         scope: Option<String>,
+        /// Maximum number of results. Twenty is the store's ceiling for one
+        /// search; a larger value is reduced to it and the command says so.
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Print every row's whole body instead of the page the tool answers
+        /// with: a 400-byte preview on the first rows and titles only after
+        /// them. A body over 400 bytes is cut by default so one memory cannot
+        /// fill a context window.
+        #[arg(long)]
+        full: bool,
         #[arg(long, value_enum, default_value_t = MatchMode::All)]
         match_mode: MatchMode,
     },
@@ -141,6 +152,8 @@ pub enum Command {
         all_projects: bool,
         #[arg(long)]
         scope: Option<String>,
+        /// Maximum number of recent memories. Zero leaves them out; the
+        /// setting's own ceiling applies and a larger value is reduced to it.
         #[arg(long)]
         limit: Option<usize>,
     },

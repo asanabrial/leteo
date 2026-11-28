@@ -515,6 +515,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             let prompt_sync_id =
                 store.prompt_behind_a_save(&session.id, &session.project, session.named);
             let project = Some(session.project);
+            let asked_scope = scope.clone();
             let saved = store.add_observation_from(
                 AddObservation {
                     session_id: session.id,
@@ -536,6 +537,16 @@ pub async fn run(cli: Cli) -> Result<()> {
                 eprintln!(
                     "leteo save: {}",
                     crate::memory::model::shrink_hint(replaced.bytes)
+                );
+            }
+            // The same sentence `mem_save` answers with. `normalize::scope`
+            // folds an unknown scope onto `project`, so the value the caller
+            // wrote is gone and the memory will not come back from a read
+            // narrowed to it — worth saying on the channel a person reads.
+            if !crate::memory::normalize::SCOPES.contains(&asked_scope.as_str()) {
+                eprintln!(
+                    "leteo save: {}",
+                    crate::mcp::refiled_scope_hint(&asked_scope)
                 );
             }
             print_json(&saved)?;
@@ -589,6 +600,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             r#type,
             scope,
             limit,
+            full,
             match_mode,
         } => {
             let scoped = read_scope(project, all_projects);
@@ -607,6 +619,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             let cap_asked = store.effective_search_limit(options.limit);
             let (found, more, corrections) =
                 store.search_with_more_and_corrections(&query, options.clone())?;
+            let mut said_cap = false;
             // The same sentence the MCP tool answers with, on the channel a
             // person reads rather than the one a script parses.
             //
@@ -673,10 +686,36 @@ pub async fn run(cli: Cli) -> Result<()> {
                 // ended the list. Asked of what came back rather than of what
                 // was requested, for the reason `mem_search` gives.
                 eprintln!("leteo search: {}", crate::mcp::clamped_hint(cap));
+                // The same fact in the caller's own terms, already said.
+                said_cap = true;
             } else if more {
                 eprintln!("leteo search: {}", crate::mcp::MORE_MATCHED_HINT);
             }
-            print_json(&found)?;
+            // A limit the caller asked past, said even when the page came back
+            // shorter than it. The branch above speaks only when the cap is
+            // what ended a full page; a request of a hundred thousand rows
+            // answered with three still applied a number the caller did not
+            // choose, and that is the fact this line reports. Zero is the other
+            // end of the same range and gets its own sentence, because a
+            // minimum reported as "this store's maximum" is untrue.
+            if !said_cap && limit > cap_asked {
+                eprintln!(
+                    "leteo search: --limit {limit} was reduced to {cap_asked}, this store's maximum for one search."
+                );
+            } else if !said_cap && limit < cap_asked {
+                eprintln!(
+                    "leteo search: --limit {limit} was raised to {cap_asked}, this store's minimum for one search."
+                );
+            }
+            if full {
+                print_json(&found)?;
+            } else {
+                // The same page `mem_search` answers with: a 400-byte preview on
+                // the leading rows and titles only after them. `--full` is the
+                // one way to ask for every body whole, because a single memory
+                // can be 50,000 bytes and a terminal is a context window too.
+                print_json(&crate::mcp::search_page(found))?;
+            }
         }
         Command::Prompt {
             content,

@@ -263,7 +263,7 @@ pub(super) fn memory_context(
                             project,
                             held as usize,
                             crate::mcp::ELSEWHERE_CAP,
-                            "--all-projects",
+                            "all_projects",
                         )
                     ),
                     Listed::default(),

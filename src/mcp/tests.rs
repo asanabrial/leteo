@@ -8865,16 +8865,27 @@ fn mem_context_does_not_grow_past_the_size_setting() {
         answer
     };
 
-    let asked = context(Some(crate::settings::ContextSize::Deep.tool_bytes()));
+    let mut asked = context(Some(crate::settings::ContextSize::Deep.tool_bytes()));
     let natural = context(None);
     assert!(
         natural.memories_omitted > 0,
         "the fixture has to exceed the setting, or a ceiling above it would not show"
     );
+    // The answer is the same one, and the only difference is the report that
+    // the bound it asked for was reduced to the setting: the setting is a
+    // number a person chose for this store, and a call above it is a clamp.
+    let clamped = std::mem::take(&mut asked.clamped);
+    assert_eq!(clamped.len(), 1, "{clamped:?}");
+    assert_eq!(clamped[0].field, "byte_limit");
+    assert_eq!(
+        clamped[0].applied,
+        crate::settings::ContextSize::Full.tool_bytes(),
+        "the applied value is the setting's own budget"
+    );
     assert_eq!(
         serde_json::to_string(&asked).unwrap(),
         serde_json::to_string(&natural).unwrap(),
-        "a byte_limit above the size setting changes nothing"
+        "a byte_limit above the size setting changes nothing but the report"
     );
 }
 

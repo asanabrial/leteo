@@ -1185,7 +1185,13 @@ impl Store {
         // Blank is absent — see `Store::search`, where the same fold narrowed
         // an answer to project scope without saying so.
         let scope = normalize::optional(scope).as_deref().map(normalize::scope);
-        let limit = limit.max(1) as i64;
+        // Zero is a request for none of this section, which is what
+        // `mem_context` documents and `leteo context --limit 0` did not get:
+        // the floor of one here put a memory in the opening block a caller had
+        // asked to be empty, because the CLI renders this list directly while
+        // the tool truncated it again afterwards. A section is not a list's own
+        // page size — `recent_observations` keeps its floor for that reason.
+        let limit = limit as i64;
         let summary = crate::memory::model::SESSION_SUMMARY;
         let mut narrowing = Narrowing::new();
         narrowing.equals("project", project.as_ref());

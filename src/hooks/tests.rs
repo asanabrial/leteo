@@ -3417,7 +3417,11 @@ fn an_opening_block_with_nothing_in_it_says_whether_the_store_is_empty_too() {
         block.contains("elsewhere"),
         "an empty block has to say the store is not what is empty: {block:?}"
     );
-    assert!(block.contains("--all-projects"), "{block:?}");
+    assert!(block.contains("all_projects"), "{block:?}");
+    assert!(
+        !block.contains("--all-projects"),
+        "the block is read by an agent, whose tool argument has no dashes: {block:?}"
+    );
 }
 
 /// A busy store reads as busy, not as a broken one.

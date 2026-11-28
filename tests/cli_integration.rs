@@ -57,6 +57,21 @@ fn run_json_unhealthy(command: &mut Command) -> Value {
 /// about, and how the merge spells its rows is exactly what the consolidation
 /// then has to read.
 fn mcp_tool(database: &Path, name: &str, arguments: Value) -> Value {
+    let answer = mcp_answer(database, name, arguments);
+    assert_ne!(answer.get("isError"), Some(&json!(true)), "{answer}");
+    match answer.get("structuredContent") {
+        Some(structured) => structured.clone(),
+        None => serde_json::from_str(
+            answer["content"][0]["text"]
+                .as_str()
+                .expect("a text answer"),
+        )
+        .expect("the text answer is JSON"),
+    }
+}
+
+/// The same call, with the refusal left in place for the caller to read.
+fn mcp_answer(database: &Path, name: &str, arguments: Value) -> Value {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_leteo"))
         .arg("--database")
         .arg(database)
@@ -84,24 +99,14 @@ fn mcp_tool(database: &Path, name: &str, arguments: Value) -> Value {
     drop(child.stdin.take());
     let output = child.wait_with_output().expect("read MCP server output");
     let stdout = String::from_utf8(output.stdout).expect("MCP stdout is UTF-8");
-    let answer = stdout
+    stdout
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("each MCP line is JSON"))
         .find(|message| message.get("id") == Some(&json!(2)))
         .expect("the tool call answered")
         .get("result")
         .cloned()
-        .expect("the tool call carries a result");
-    assert_ne!(answer.get("isError"), Some(&json!(true)), "{answer}");
-    match answer.get("structuredContent") {
-        Some(structured) => structured.clone(),
-        None => serde_json::from_str(
-            answer["content"][0]["text"]
-                .as_str()
-                .expect("a text answer"),
-        )
-        .expect("the text answer is JSON"),
-    }
+        .expect("the tool call carries a result")
 }
 
 #[test]
@@ -2955,10 +2960,17 @@ fn the_search_command_says_which_limit_ended_the_list() {
             !capped.contains("higher limit"),
             "--limit {limit} must not advise the one thing that cannot work: {capped}"
         );
+        assert!(
+            !capped.contains("was reduced to"),
+            "--limit {limit} already learns the cap in the sentence above, and a second \
+             sentence about the same number is noise: {capped}"
+        );
     }
 
-    // And an answer that simply ran out explains nothing, however much was
-    // asked for.
+    // And an answer that simply ran out explains nothing about the match, however
+    // much was asked for. The limit itself was still changed — 50 cannot be
+    // answered by a store whose maximum is 20 — and that is the one fact the
+    // command reports for a complete page.
     let complete = hint_for("50");
     assert!(complete.contains("the most a single search"), "{complete}");
     let exhausted = leteo(&database)
@@ -2971,10 +2983,15 @@ fn the_search_command_says_which_limit_ended_the_list() {
         .success()
         .get_output()
         .clone();
+    let exhausted_stderr = String::from_utf8_lossy(&exhausted.stderr).to_string();
     assert!(
-        String::from_utf8_lossy(&exhausted.stderr).trim().is_empty(),
-        "a complete answer says nothing: {}",
-        String::from_utf8_lossy(&exhausted.stderr)
+        exhausted_stderr.contains("--limit 50 was reduced to 20"),
+        "the request was changed even though the answer fit: {exhausted_stderr}"
+    );
+    assert!(
+        !exhausted_stderr.contains("More matched")
+            && !exhausted_stderr.contains("the most a single search returns"),
+        "and nothing claims the match was cut short: {exhausted_stderr}"
     );
 }
 
@@ -4455,4 +4472,347 @@ fn a_semantic_scan_honours_since_and_refuses_apply() {
             "and the flag it is refusing: {stderr}"
         );
     }
+}
+
+/// The two save doors differ on one thing, and `--help` says which.
+///
+/// `leteo save --project nope` creates `nope`; `mem_save` answers
+/// `unknown_project` for the same name until `mem_session_start` has opened it.
+/// The difference is older than either refusal and scripts rely on it, so it is
+/// documented rather than removed — and the test holds both halves so the
+/// sentence cannot drift from the code.
+#[test]
+fn the_save_doors_differ_on_an_unknown_project_and_help_says_so() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let cli_database = temp.path().join("cli-created.db");
+    let mcp_database = temp.path().join("mcp-refused.db");
+
+    let saved = run_json(
+        leteo(&cli_database)
+            .arg("save")
+            .arg("made at a terminal")
+            .arg("a body")
+            .arg("--project")
+            .arg("made-by-cli"),
+    );
+    assert_eq!(
+        saved["observation"]["project"],
+        json!("made-by-cli"),
+        "the command line creates the project it names"
+    );
+
+    let answer = mcp_answer(
+        &mcp_database,
+        "mem_save",
+        json!({
+            "title": "made by an agent",
+            "content": "a body",
+            "project": "made-by-mcp",
+        }),
+    );
+    assert_eq!(
+        answer["structuredContent"]["error"]["code"],
+        json!("unknown_project"),
+        "the tool refuses the same shape of name: {answer}"
+    );
+
+    let help = leteo(&cli_database)
+        .arg("save")
+        .arg("--help")
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&help.get_output().stdout).to_string();
+    assert!(
+        text.contains("created by this command") && text.contains("mem_save"),
+        "the difference is in the help, not only in this test: {text}"
+    );
+}
+
+/// `leteo search` prints the page the tool answers with, and `--full` the rest.
+///
+/// A 50,000-byte body used to come back whole from the terminal — 55,529 bytes
+/// for one memory — while `mem_search` sent 400 and marked it `content_truncated`.
+/// One memory can fill a context window, and a terminal is one.
+#[test]
+fn cli_search_prints_the_page_a_tool_prints() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("search-page.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+    let body = format!("needle {}", "x".repeat(2_000));
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A long body")
+            .arg(&body)
+            .arg("--session")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha"),
+    );
+
+    let page = run_json(
+        leteo(&database)
+            .arg("search")
+            .arg("needle")
+            .arg("--project")
+            .arg("alpha"),
+    );
+    let rows = page.as_array().expect("an array of rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["content_truncated"], json!(true));
+    assert!(
+        rows[0]["content"].as_str().expect("a body").len() <= 400,
+        "the default page is a 400-byte preview: {}",
+        rows[0]["content"]
+    );
+
+    let whole = run_json(
+        leteo(&database)
+            .arg("search")
+            .arg("needle")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--full"),
+    );
+    assert_eq!(
+        whole[0]["content"],
+        json!(body),
+        "--full is the one way to ask for every body whole"
+    );
+}
+
+/// A zero memory limit empties the opening block, as it does on the tool.
+///
+/// `leteo context --limit 0` listed one memory, because `recent_memories`
+/// floors its limit at one while `mem_context` truncated the same list to zero
+/// afterwards. One rule, and zero means none.
+#[test]
+fn cli_context_with_a_zero_limit_lists_no_memories() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("context-zero.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory")
+            .arg("the body")
+            .arg("--session")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha"),
+    );
+
+    let none = run_json(
+        leteo(&database)
+            .arg("context")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--limit")
+            .arg("0"),
+    );
+    assert_eq!(none["context"], json!(""));
+
+    let one = run_json(
+        leteo(&database)
+            .arg("context")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--limit")
+            .arg("1"),
+    );
+    assert!(
+        one["context"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("A memory"),
+        "the control: a limit of one lists the one memory: {one}"
+    );
+}
+
+/// An unknown scope is refiled quietly by the store, so the command says so.
+#[test]
+fn cli_save_says_when_the_scope_it_was_given_does_not_exist() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("scope.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+
+    let saved = leteo(&database)
+        .arg("save")
+        .arg("A scoped memory")
+        .arg("the body")
+        .arg("--session")
+        .arg("s1")
+        .arg("--project")
+        .arg("alpha")
+        .arg("--scope")
+        .arg("team")
+        .assert()
+        .success();
+    let stderr = String::from_utf8_lossy(&saved.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("team") && stderr.contains("filed as project"),
+        "the command names what was asked for and what happened instead: {stderr}"
+    );
+}
+
+/// A limit the caller asked past is reported, on every surface that has one.
+///
+/// The schemas publish their maxima and every tool enforced them by quietly
+/// reducing the number, so a caller comparing counts could not tell a short
+/// answer from a shortened request.
+#[test]
+fn a_clamped_limit_is_reported_on_every_surface() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("clamped.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+    let saved = run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory")
+            .arg("the body")
+            .arg("--session")
+            .arg("s1")
+            .arg("--project")
+            .arg("alpha"),
+    );
+    let id = saved["observation"]["id"].as_i64().expect("an id");
+
+    let search = mcp_tool(
+        &database,
+        "mem_search",
+        json!({"query": "body", "project": "alpha", "limit": 21}),
+    );
+    assert_eq!(
+        search["clamped"],
+        json!([{"field": "limit", "requested": 21, "applied": 20}]),
+        "{search}"
+    );
+
+    let context = mcp_tool(
+        &database,
+        "mem_context",
+        json!({"project": "alpha", "byte_limit": 49001}),
+    );
+    assert_eq!(
+        context["clamped"][0]["field"],
+        json!("byte_limit"),
+        "{context}"
+    );
+    assert_eq!(context["clamped"][0]["requested"], json!(49001));
+
+    let timeline = mcp_tool(
+        &database,
+        "mem_timeline",
+        json!({"observation_id": id, "before": 21, "after": 0}),
+    );
+    assert_eq!(
+        timeline["clamped"],
+        json!([{"field": "before", "requested": 21, "applied": 20}]),
+        "{timeline}"
+    );
+
+    let review = mcp_tool(
+        &database,
+        "mem_review",
+        json!({"action": "list", "project": "alpha", "limit": 30}),
+    );
+    assert_eq!(
+        review["clamped"],
+        json!([{"field": "limit", "requested": 30, "applied": 20}]),
+        "{review}"
+    );
+
+    // The command line has no structured field to put it in, so it says it on
+    // the channel a person reads — at both ends of the range, because a
+    // minimum reported as "this store's maximum" would be untrue.
+    let stderr_of = |limit: &str| {
+        let output = leteo(&database)
+            .arg("search")
+            .arg("body")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--limit")
+            .arg(limit)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        String::from_utf8_lossy(&output.stderr).to_string()
+    };
+    assert!(
+        stderr_of("21").contains("--limit 21 was reduced to 20"),
+        "{}",
+        stderr_of("21")
+    );
+    assert!(
+        stderr_of("0").contains("--limit 0 was raised to 1"),
+        "{}",
+        stderr_of("0")
+    );
+}
+
+/// A caller's bad arguments come back with a code, not bare text.
+#[test]
+fn a_parameter_refusal_carries_a_code() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("parameter-code.db");
+
+    let answer = mcp_answer(
+        &database,
+        "mem_search",
+        json!({"query": "anything", "limit": "ten"}),
+    );
+    assert_eq!(answer["isError"], json!(true), "{answer}");
+    let payload = &answer["structuredContent"];
+    assert_eq!(
+        payload["error"]["code"],
+        json!("invalid_params"),
+        "a type error is the caller's, and carries the code every other refusal does: {answer}"
+    );
+    assert!(
+        payload["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("expected usize"),
+        "the message still names the field and the type: {answer}"
+    );
+
+    let unknown = mcp_answer(&database, "mem_search", json!({"query": "x", "nope": 1}));
+    assert_eq!(
+        unknown["structuredContent"]["error"]["code"],
+        json!("invalid_params"),
+        "an unknown field is refused the same way: {unknown}"
+    );
 }

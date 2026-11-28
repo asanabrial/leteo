@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -5,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -961,10 +961,14 @@ fn sync_payload_is_deleted(deleted: bool, hard_delete: bool, deleted_at: Option<
 
 fn normalize_comparable_timestamp(value: &str) -> String {
     let value = value.trim();
-    chrono::DateTime::parse_from_rfc3339(value).map_or_else(
-        |_| value.to_owned(),
-        |timestamp| crate::timestamp::format(timestamp.with_timezone(&Utc).naive_utc()),
-    )
+    // One parser for every timestamp this store reads. What it knows is
+    // compared as the instant it names — a zone-less `T` included, which used
+    // to stay raw and beat a tombstone on the same day because `'T' > ' '`;
+    // what it does not know stays raw, and the comparison is then the text one
+    // it always was.
+    crate::timestamp::parse(value)
+        .map(crate::timestamp::format)
+        .unwrap_or_else(|| value.to_owned())
 }
 
 fn ensure_session_tx(tx: &Transaction<'_>, id: &str) -> Result<(), StoreError> {

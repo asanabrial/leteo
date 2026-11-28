@@ -27,10 +27,17 @@ pub fn now() -> String {
 /// RFC 3339 is accepted alongside the native format because rows have arrived
 /// from Engram adoption and from the cloud, and both have written it that way.
 /// Rejecting those would lose real data for a difference in spelling.
+///
+/// A `T` with no zone is accepted too, read as UTC. A peer that spells an
+/// instant that way was compared as *text* everywhere a raw column met a
+/// tombstone, and `T` sorts after the space of every timestamp this store
+/// writes: on the same day an older `2026-11-24T22:05:00` counted as newer than
+/// `2026-11-24 22:06:00`, and a deleted prompt came back (#469).
 pub fn parse(value: &str) -> Option<NaiveDateTime> {
     let value = value.trim();
     NaiveDateTime::parse_from_str(value, FORMAT)
         .ok()
+        .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok())
         .or_else(|| {
             chrono::DateTime::parse_from_rfc3339(value)
                 .ok()
@@ -107,6 +114,14 @@ mod tests {
     #[test]
     fn surrounding_space_does_not_defeat_it() {
         assert!(parse("  2026-07-29 14:21:42  ").is_some());
+    }
+
+    #[test]
+    fn a_zone_less_t_is_read_as_utc() {
+        let parsed = parse("2026-07-29T14:21:42").expect("a T with no zone names an instant");
+        assert_eq!(format(parsed), "2026-07-29 14:21:42");
+        let fractional = parse("2026-07-29T14:21:42.500").expect("the fraction does not defeat it");
+        assert_eq!(format(fractional), "2026-07-29 14:21:42");
     }
 
     #[test]

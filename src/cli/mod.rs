@@ -1640,21 +1640,14 @@ async fn run_cloud_admin(command: &CloudAdminCommand) -> Result<()> {
             project,
         } => {
             let hasher = crate::cloud::ManagedTokenHasher::new(&config.token_pepper)?;
-            let principal_id = store.create_principal("human", name, "admin").await?;
-            store
-                .create_user(principal_id, name, email.as_deref())
-                .await?;
             let token = crate::cloud::ManagedToken::generate(environment);
             let verifier = hasher.hash(&token.raw)?;
-            let token_id = store
-                .store_managed_token(principal_id, &token, &verifier, "bootstrap")
+            let created = store
+                .bootstrap_admin(name, email.as_deref(), &token, &verifier, project)
                 .await?;
-            for project in project {
-                store.grant_project(principal_id, project).await?;
-            }
             print_json(&serde_json::json!({
-                "principal_id": principal_id,
-                "token_id": token_id,
+                "principal_id": created.principal_id,
+                "token_id": created.token_id,
                 "token": token.raw,
                 "token_prefix": token.prefix,
                 "projects": project,

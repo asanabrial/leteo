@@ -152,6 +152,7 @@ impl From<CloudStoreError> for ApiError {
     fn from(error: CloudStoreError) -> Self {
         match error {
             CloudStoreError::Invalid(message) => Self::bad_request(message),
+            CloudStoreError::PrincipalExists(_) => Self::bad_request(error.to_string()),
             CloudStoreError::ChunkConflict => Self::new(
                 StatusCode::CONFLICT,
                 "repairable",

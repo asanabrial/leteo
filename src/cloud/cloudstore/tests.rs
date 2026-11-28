@@ -1050,3 +1050,132 @@ async fn disabling_a_principal_refuses_every_token_it_holds_until_it_is_enabled(
         .await
         .unwrap();
 }
+
+/// A bootstrap writes the whole administrator or none of it, and a name
+/// already taken is refused before the first insert.
+///
+/// The half-written administrator is what this exists for: a rerun inserted a
+/// second principal and then failed on the duplicate username, leaving a
+/// principal with no user, token or grant that nothing listed and nothing
+/// could finish.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn a_bootstrap_is_one_transaction_and_a_taken_name_writes_nothing() {
+    let (store, stamp) = test_store().await;
+    let name = format!("bootstrap-{stamp}");
+    let hasher =
+        crate::cloud::ManagedTokenHasher::new("a-token-pepper-of-at-least-32-bytes-long").unwrap();
+    let token = crate::cloud::ManagedToken::generate("test");
+    let verifier = hasher.hash(&token.raw).unwrap();
+    let projects = vec![format!("boot-{stamp}"), "*".to_owned()];
+
+    let created = store
+        .bootstrap_admin(
+            &name,
+            Some("admin@example.test"),
+            &token,
+            &verifier,
+            &projects,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.find_principal_by_name(&name).await.unwrap(),
+        Some(created.principal_id)
+    );
+    let identity = store
+        .find_managed_token(&verifier)
+        .await
+        .unwrap()
+        .expect("the token the command prints is the token that was stored");
+    assert_eq!(identity.token_id, created.token_id);
+    assert_eq!(identity.role, "admin");
+    let mut granted = store
+        .list_principal_project_grants(created.principal_id)
+        .await
+        .unwrap();
+    granted.sort();
+    let mut wanted = projects.clone();
+    wanted.sort();
+    assert_eq!(granted, wanted);
+    let users: i64 =
+        sqlx::query("SELECT COUNT(*) AS users FROM cloud_human_users WHERE principal_id = $1")
+            .bind(created.principal_id)
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+            .try_get("users")
+            .unwrap();
+    assert_eq!(users, 1);
+
+    // A second run under the same name is refused before it writes, rather than
+    // failing halfway through a second administrator.
+    let again = crate::cloud::ManagedToken::generate("test");
+    let again_verifier = hasher.hash(&again.raw).unwrap();
+    let refused = store
+        .bootstrap_admin(&name, None, &again, &again_verifier, &projects)
+        .await
+        .expect_err("the name is taken");
+    assert!(
+        matches!(&refused, CloudStoreError::PrincipalExists(taken) if taken == &name),
+        "{refused:?}"
+    );
+    assert_eq!(
+        store.find_managed_token(&again_verifier).await.unwrap(),
+        None,
+        "the refused token was never stored"
+    );
+
+    // A project the store refuses takes the token it had already inserted with
+    // it, which is the half-written administrator the issue names.
+    let fresh = format!("boot-blank-{stamp}");
+    let blank = crate::cloud::ManagedToken::generate("test");
+    let blank_verifier = hasher.hash(&blank.raw).unwrap();
+    let refused = store
+        .bootstrap_admin(
+            &fresh,
+            None,
+            &blank,
+            &blank_verifier,
+            &[format!("boot-{stamp}"), "   ".to_owned()],
+        )
+        .await
+        .expect_err("a blank project is not a project");
+    assert!(
+        matches!(refused, CloudStoreError::Invalid(_)),
+        "{refused:?}"
+    );
+    assert_eq!(store.find_principal_by_name(&fresh).await.unwrap(), None);
+
+    // A failure after the first insert — here the duplicate username the old
+    // rerun produced — rolls the principal back with everything else.
+    let blocked = format!("boot-blocked-{stamp}");
+    let other = store
+        .create_principal("human", &format!("other-{stamp}"), "member")
+        .await
+        .unwrap();
+    store.create_user(other, &blocked, None).await.unwrap();
+    let doomed = crate::cloud::ManagedToken::generate("test");
+    let doomed_verifier = hasher.hash(&doomed.raw).unwrap();
+    store
+        .bootstrap_admin(&blocked, None, &doomed, &doomed_verifier, &[])
+        .await
+        .expect_err("the username is taken inside the transaction");
+    assert_eq!(
+        store.find_principal_by_name(&blocked).await.unwrap(),
+        None,
+        "a bootstrap that failed after its first insert left its principal behind"
+    );
+    assert_eq!(
+        store.find_managed_token(&doomed_verifier).await.unwrap(),
+        None
+    );
+
+    for id in [created.principal_id, other] {
+        sqlx::query("DELETE FROM cloud_principals WHERE id = $1")
+            .bind(id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+    }
+}

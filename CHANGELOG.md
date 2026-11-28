@@ -28,6 +28,12 @@ All notable changes to Leteo are documented in this file.
 
 ### Fixed
 
+- **A `find` whose occurrences overlap is refused as ambiguous.** `mem_update`
+  counts the spans a `find` names so that one naming more than one changes
+  nothing, and it counted with `str::matches`, which does not overlap: `111` in
+  `1111` counted once and the first was replaced, although the published
+  description promises the refusal. The count now advances one character past
+  each match's start, so `111` in `1111` is two and the edit is refused (#450).
 - **A fragment of a shouted Spanish word finds its title.** The substring stage
   — the last resort for the middle of a word somebody half-remembers — lowered
   the title with SQLite's `lower()`, which folds ASCII only, and compared it

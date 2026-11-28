@@ -1,4 +1,6 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
@@ -45,6 +47,61 @@ fn run_json(command: &mut Command) -> Value {
 fn run_json_unhealthy(command: &mut Command) -> Value {
     let output = command.assert().failure().get_output().stdout.clone();
     serde_json::from_slice(&output).expect("CLI stdout is JSON")
+}
+
+/// Runs one MCP tool against `database` through the real binary, the way an
+/// agent does, and returns its structured answer.
+///
+/// The first step of the issue is `mem_merge_projects`, which exists only on the
+/// MCP surface. A fixture written by hand would not be the store the report is
+/// about, and how the merge spells its rows is exactly what the consolidation
+/// then has to read.
+fn mcp_tool(database: &Path, name: &str, arguments: Value) -> Value {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_leteo"))
+        .arg("--database")
+        .arg(database)
+        .arg("mcp")
+        .env_remove("LETEO_DATABASE")
+        .env_remove("LETEO_DATA_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn leteo mcp");
+    let requests = [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-06-18","capabilities":{},
+            "clientInfo":{"name":"cli-integration","version":"1"}}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}}),
+    ];
+    {
+        let stdin = child.stdin.as_mut().expect("open stdin");
+        for request in &requests {
+            writeln!(stdin, "{request}").expect("write MCP request");
+        }
+    }
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("read MCP server output");
+    let stdout = String::from_utf8(output.stdout).expect("MCP stdout is UTF-8");
+    let answer = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("each MCP line is JSON"))
+        .find(|message| message.get("id") == Some(&json!(2)))
+        .expect("the tool call answered")
+        .get("result")
+        .cloned()
+        .expect("the tool call carries a result");
+    assert_ne!(answer.get("isError"), Some(&json!(true)), "{answer}");
+    match answer.get("structuredContent") {
+        Some(structured) => structured.clone(),
+        None => serde_json::from_str(
+            answer["content"][0]["text"]
+                .as_str()
+                .expect("a text answer"),
+        )
+        .expect("the text answer is JSON"),
+    }
 }
 
 #[test]
@@ -640,6 +697,364 @@ fn cli_consolidates_similar_projects_into_one_canonical_name() {
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0]["name"], json!("leteo"));
     assert_eq!(projects[0]["observation_count"], json!(2));
+}
+
+/// The remedy the drift warning names folds the name that holds the work into
+/// the one the folder resolves to, and the two previews say the same thing.
+///
+/// The three steps are the issue's. `mem_merge_projects` moves `alpha` into
+/// `beta`; a session then opens in the alpha repository, whose remote still
+/// says `alpha`, leaving the one empty session the report counts; and the
+/// remedy runs from that folder, so detection answers `alpha` too. Every one of
+/// beta's memories is beta's, and the run that followed the advice took them to
+/// `alpha` — four runs of four.
+///
+/// The empty session is opened by name because a hook joins the recorded name
+/// (that was #491), so this is the state a named session leaves rather than a
+/// hook's own doing.
+#[test]
+fn consolidating_from_the_drifted_folder_keeps_the_work_under_the_name_that_holds_it() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("consolidate-direction.db");
+    let alpha_repo = temp.path().join("alpha");
+    let beta_repo = temp.path().join("beta");
+    for (repo, remote) in [(&alpha_repo, "alpha"), (&beta_repo, "beta")] {
+        std::fs::create_dir_all(repo.join(".git")).expect("create .git");
+        std::fs::write(
+            repo.join(".git").join("config"),
+            format!("[remote \"origin\"]\n\turl = https://example.com/{remote}.git\n"),
+        )
+        .expect("record the remote");
+    }
+    for (session, project, repo, notes) in [
+        (
+            "alpha-session",
+            "alpha",
+            &alpha_repo,
+            &["Alpha one", "Alpha two"][..],
+        ),
+        (
+            "beta-session",
+            "beta",
+            &beta_repo,
+            &["Beta one", "Beta two", "Beta three"][..],
+        ),
+    ] {
+        run_json(
+            leteo(&database)
+                .arg("session-start")
+                .arg(session)
+                .arg("--project")
+                .arg(project)
+                .arg("--directory")
+                .arg(repo),
+        );
+        for note in notes {
+            run_json(
+                leteo(&database)
+                    .arg("save")
+                    .arg(note)
+                    .arg(format!("{note}, saved before the merge"))
+                    .arg("--session")
+                    .arg(session),
+            );
+        }
+    }
+    let merged = mcp_tool(
+        &database,
+        "mem_merge_projects",
+        json!({"from": "alpha", "to": "beta"}),
+    );
+    assert_eq!(merged["sources_merged"], json!(["alpha"]));
+    assert_eq!(merged["observations_updated"], json!(2));
+
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("alpha-reopened")
+            .arg("--project")
+            .arg("alpha")
+            .arg("--directory")
+            .arg(&alpha_repo),
+    );
+
+    let named = run_json(
+        leteo(&database)
+            .current_dir(&alpha_repo)
+            .arg("projects")
+            .arg("consolidate"),
+    );
+    assert_eq!(
+        named["groups"].as_array().expect("groups").len(),
+        1,
+        "{named}"
+    );
+    assert_eq!(
+        named["groups"][0]["canonical"],
+        json!("beta"),
+        "the folder's own name holds one empty session, and beta holds the work"
+    );
+    assert_eq!(named["groups"][0]["sources"], json!(["alpha"]));
+
+    let all = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--all"),
+    );
+    assert_eq!(
+        all["groups"][0]["canonical"], named["groups"][0]["canonical"],
+        "the previews disagree about direction on today's code: {all}"
+    );
+    assert_eq!(all["groups"][0]["sources"], named["groups"][0]["sources"]);
+
+    let applied = run_json(
+        leteo(&database)
+            .current_dir(&alpha_repo)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--apply"),
+    );
+    assert_eq!(
+        applied["groups"][0]["result"]["observations_updated"],
+        json!(0),
+        "alpha holds no memories to move"
+    );
+    assert_eq!(applied["groups"][0]["result"]["sessions_updated"], json!(1));
+
+    let projects = run_json(leteo(&database).arg("projects").arg("list"));
+    let projects = projects.as_array().expect("project list");
+    assert_eq!(projects.len(), 1, "one name is left: {projects:?}");
+    assert_eq!(projects[0]["name"], json!("beta"));
+    assert_eq!(
+        projects[0]["observation_count"],
+        json!(5),
+        "beta's three and the two that were already merged into it"
+    );
+}
+
+/// Two projects that each hold memories in a folder of their own are two
+/// projects, and the preview and the apply both say so.
+///
+/// Resemblance alone is not a rename: `leteo` and `leteo-old` would fold on
+/// their names, but they share no folder and each holds work, so the fold would
+/// move one of them out of the place it belongs with no undo. The bigger
+/// project is the canonical the fold would use; the smaller is listed under
+/// `skipped`, because a silent empty answer reads as a store with nothing to
+/// fold.
+#[test]
+fn a_fold_between_two_projects_that_each_hold_work_is_refused_and_says_why() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("consolidate-refusal.db");
+    for (session, project, folder, notes) in [
+        (
+            "leteo-session",
+            "leteo",
+            "leteo-folder",
+            &["one", "two"][..],
+        ),
+        ("old-session", "leteo-old", "old-folder", &["one"][..]),
+    ] {
+        let directory = temp.path().join(folder);
+        std::fs::create_dir_all(&directory).expect("create project folder");
+        run_json(
+            leteo(&database)
+                .arg("session-start")
+                .arg(session)
+                .arg("--project")
+                .arg(project)
+                .arg("--directory")
+                .arg(&directory),
+        );
+        for note in notes {
+            run_json(
+                leteo(&database)
+                    .arg("save")
+                    .arg(format!("A memory of {project}, {note}"))
+                    .arg("work that belongs to this folder")
+                    .arg("--session")
+                    .arg(session),
+            );
+        }
+    }
+
+    let preview = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--all"),
+    );
+    assert_eq!(
+        preview["groups"].as_array().expect("groups").len(),
+        1,
+        "{preview}"
+    );
+    let group = &preview["groups"][0];
+    assert_eq!(
+        group["canonical"],
+        json!("leteo"),
+        "the project holding two memories keeps the name"
+    );
+    assert_eq!(
+        group["sources"],
+        json!([]),
+        "the refused source is not listed as moving"
+    );
+    let refusal = &group["skipped"][0];
+    assert_eq!(refusal["project"], json!("leteo-old"));
+    let reason = refusal["reason"].as_str().expect("the refusal is stated");
+    // The folder, not the joined path: a tempdir spells its separator
+    // differently on Windows, and this assertion has to hold there too.
+    assert!(reason.contains("old-folder"), "{reason}");
+    assert!(reason.contains("mem_merge_projects"), "{reason}");
+
+    let applied = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--all")
+            .arg("--apply"),
+    );
+    assert_eq!(
+        applied["groups"][0]["skipped"], preview["groups"][0]["skipped"],
+        "the apply answers what the preview promised"
+    );
+    assert_eq!(
+        applied["groups"][0]["result"]["observations_updated"],
+        json!(0)
+    );
+    assert_eq!(applied["groups"][0]["result"]["sources_merged"], json!([]));
+
+    let projects = run_json(leteo(&database).arg("projects").arg("list"));
+    let projects = projects.as_array().expect("project list");
+    assert_eq!(projects.len(), 2, "nothing was folded: {projects:?}");
+    let counts = projects
+        .iter()
+        .map(|project| {
+            (
+                project["name"].as_str().expect("a name").to_owned(),
+                project["observation_count"].clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        counts["leteo"],
+        json!(2),
+        "each project keeps its own memories"
+    );
+    assert_eq!(counts["leteo-old"], json!(1));
+}
+
+/// A run scoped to a project the fold leaves alone changes nothing, and a run
+/// scoped to one it moves applies the fold whole.
+///
+/// The group here has both kinds of source: `alpha`, the empty name a merge left
+/// behind, and `beta-old`, which holds a memory in a folder of its own. Naming
+/// `beta-old` must not fold the other one, and naming `beta` must.
+#[test]
+fn a_scoped_consolidation_moves_nothing_when_the_name_it_asked_for_is_left_alone() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("consolidate-scope.db");
+    let alpha_repo = temp.path().join("alpha");
+    let beta_repo = temp.path().join("beta");
+    let old_repo = temp.path().join("beta-old");
+    for (repo, remote) in [(&alpha_repo, "alpha"), (&beta_repo, "beta")] {
+        std::fs::create_dir_all(repo.join(".git")).expect("create .git");
+        std::fs::write(
+            repo.join(".git").join("config"),
+            format!("[remote \"origin\"]\n\turl = https://example.com/{remote}.git\n"),
+        )
+        .expect("record the remote");
+    }
+    std::fs::create_dir_all(&old_repo).expect("create the older project's folder");
+
+    let open = |session: &str, project: &str, repo: &Path| {
+        run_json(
+            leteo(&database)
+                .arg("session-start")
+                .arg(session)
+                .arg("--project")
+                .arg(project)
+                .arg("--directory")
+                .arg(repo),
+        );
+    };
+    open("beta-in-alpha", "beta", &alpha_repo);
+    for note in ["Beta one", "Beta two"] {
+        run_json(
+            leteo(&database)
+                .arg("save")
+                .arg(note)
+                .arg("work that was merged into beta")
+                .arg("--session")
+                .arg("beta-in-alpha"),
+        );
+    }
+    open("beta-own", "beta", &beta_repo);
+    open("old-session", "beta-old", &old_repo);
+    run_json(
+        leteo(&database)
+            .arg("save")
+            .arg("A memory of beta-old")
+            .arg("work that belongs to the older folder")
+            .arg("--session")
+            .arg("old-session"),
+    );
+    open("alpha-reopened", "alpha", &alpha_repo);
+
+    let scoped = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--project")
+            .arg("beta-old")
+            .arg("--apply"),
+    );
+    assert_eq!(scoped["groups"][0]["canonical"], json!("beta"));
+    assert_eq!(
+        scoped["groups"][0]["sources"],
+        json!([]),
+        "a run scoped to the name it leaves alone moves nothing: {scoped}"
+    );
+    assert_eq!(
+        scoped["groups"][0]["skipped"][0]["project"],
+        json!("beta-old")
+    );
+
+    let projects = run_json(leteo(&database).arg("projects").arg("list"));
+    let projects = projects.as_array().expect("project list");
+    assert_eq!(projects.len(), 3, "nothing moved: {projects:?}");
+
+    let applied = run_json(
+        leteo(&database)
+            .arg("projects")
+            .arg("consolidate")
+            .arg("--project")
+            .arg("beta")
+            .arg("--apply"),
+    );
+    assert_eq!(applied["groups"][0]["canonical"], json!("beta"));
+    assert_eq!(applied["groups"][0]["sources"], json!(["alpha"]));
+    assert_eq!(
+        applied["groups"][0]["result"]["sessions_updated"],
+        json!(1),
+        "only the empty name's session moved"
+    );
+
+    let projects = run_json(leteo(&database).arg("projects").arg("list"));
+    let projects = projects.as_array().expect("project list");
+    assert_eq!(projects.len(), 2, "alpha is gone: {projects:?}");
+    let counts = projects
+        .iter()
+        .map(|project| {
+            (
+                project["name"].as_str().expect("a name").to_owned(),
+                project["observation_count"].clone(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(counts["beta"], json!(2));
+    assert_eq!(counts["beta-old"], json!(1));
 }
 
 #[test]

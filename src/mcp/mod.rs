@@ -668,25 +668,60 @@ fn requested_project(requested: Option<&str>) -> Option<String> {
         .filter(|project| !project.is_empty())
 }
 
+/// The envelope for a read, refusing a project the store does not hold.
+///
+/// A write has always been refused a name no project carries; a read answered
+/// as though the name were an empty project, so an agent that mistyped one was
+/// told the memories did not exist instead of that the project did not. The
+/// check is `project_exists`, the one the write path makes, without the drift
+/// and choice machinery a read has no field for.
+///
+/// Only a name the caller passed is checked. The detected project is not: a
+/// fresh store has no rows for the directory it is standing in, and a read that
+/// named no project has to answer that with nothing rather than an error.
+fn read_envelope(
+    store: &Store,
+    requested: Option<&str>,
+    fallback: Option<&(String, String)>,
+) -> Result<ProjectEnvelope, CallToolResult> {
+    let Some(project) = requested_project(requested) else {
+        return Ok(ProjectEnvelope::detected_or_all(fallback));
+    };
+    // The name the directory (or the process override) resolves to is accepted
+    // without a store lookup, exactly as the write path accepts it: a fresh
+    // store holds no rows for the directory it is standing in, and a caller
+    // that names that directory's own project has not invented one.
+    let named_here = fallback.is_some_and(|(detected, _)| detected == &project);
+    if named_here || store.project_exists(&project).map_err(store_error)? {
+        return Ok(ProjectEnvelope {
+            project,
+            project_source: SOURCE_REQUEST.to_owned(),
+            project_path: None,
+        });
+    }
+    let detected = fallback
+        .map(|(project, _)| project.as_str())
+        .unwrap_or_default();
+    Err(unknown_project_error(
+        &project,
+        detected,
+        store.list_project_names().unwrap_or_default(),
+    ))
+}
+
 impl ProjectEnvelope {
-    fn for_read(requested: Option<&str>, fallback: Option<&(String, String)>) -> Self {
-        match requested_project(requested) {
-            Some(project) => Self {
-                project,
-                project_source: SOURCE_REQUEST.to_owned(),
+    /// A read that names no project: the detected one, or the whole store.
+    fn detected_or_all(fallback: Option<&(String, String)>) -> Self {
+        match fallback {
+            Some((project, source)) => Self {
+                project: project.clone(),
+                project_source: source.clone(),
                 project_path: None,
             },
-            None => match fallback {
-                Some((project, source)) => Self {
-                    project: project.clone(),
-                    project_source: source.clone(),
-                    project_path: None,
-                },
-                None => Self {
-                    project: String::new(),
-                    project_source: SOURCE_ALL_PROJECTS.to_owned(),
-                    project_path: None,
-                },
+            None => Self {
+                project: String::new(),
+                project_source: SOURCE_ALL_PROJECTS.to_owned(),
+                project_path: None,
             },
         }
     }
@@ -1260,10 +1295,18 @@ fn unknown_project_error(
     detected: &str,
     known_projects: Vec<String>,
 ) -> CallToolResult {
+    // A read may name a project while standing nowhere a project was detected,
+    // and "this directory resolves to \"\"" is not a sentence. The rest of the
+    // refusal is the same one a write gives.
+    let where_from = if detected.is_empty() {
+        String::new()
+    } else {
+        format!("; this directory resolves to {detected:?}")
+    };
     structured_error_with(
         error_code::UNKNOWN_PROJECT,
         format!(
-            "project {requested:?} is unknown here; this directory resolves to {detected:?}. \
+            "project {requested:?} is unknown here{where_from}. \
              Pass an existing project, or create it with mem_session_start first."
         ),
         json!({

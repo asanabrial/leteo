@@ -2124,6 +2124,148 @@ fn the_override_is_reported_as_the_authority_on_reads() {
     );
 }
 
+/// The three reads refuse a project the store does not hold.
+///
+/// A write has always been refused one; a read answered as though the name were
+/// an empty project, so a mistyped project came back as "nothing matched" and
+/// sent the agent to rephrase a query that was never the problem. The refusal
+/// names the projects the store does hold, and a name that exists is still read.
+#[test]
+fn a_read_refuses_a_project_the_store_does_not_hold() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::open(crate::store::StoreConfig::new(temp.path().join("mcp.db"))).unwrap();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    store
+        .add_observation(crate::memory::model::AddObservation {
+            session_id: "s1".to_owned(),
+            kind: "decision".to_owned(),
+            title: "Chose SQLite".to_owned(),
+            content: "one writer, many readers".to_owned(),
+            tool_name: None,
+            project: Some("leteo".to_owned()),
+            scope: "project".to_owned(),
+            topic_key: None,
+            prompt_sync_id: None,
+        })
+        .unwrap();
+    let server = LeteoMcpServer::with_options(Arc::new(Mutex::new(store)), McpOptions::default());
+
+    let search = server.mem_search(Parameters(
+        serde_json::from_value(json!({"query": "sqlite", "project": "invented"})).unwrap(),
+    ));
+    let Err(search) = search else {
+        panic!("a read naming an unknown project answered about an empty one");
+    };
+    let payload = error_payload(&search);
+    assert_eq!(payload["error"]["code"], "unknown_project");
+    assert_eq!(
+        payload["available_projects"],
+        json!(["leteo"]),
+        "the refusal says what does exist: {payload}"
+    );
+
+    let context = server.mem_context(Parameters(
+        serde_json::from_value(json!({"project": "invented"})).unwrap(),
+    ));
+    let Err(context) = context else {
+        panic!("a context naming an unknown project answered about an empty one");
+    };
+    assert_eq!(error_payload(&context)["error"]["code"], "unknown_project");
+
+    let review = server.mem_review(Parameters(
+        serde_json::from_value(json!({"action": "list", "project": "invented"})).unwrap(),
+    ));
+    let Err(review) = review else {
+        panic!("a review naming an unknown project answered about an empty one");
+    };
+    assert_eq!(error_payload(&review)["error"]["code"], "unknown_project");
+
+    // And the name the store does hold is read, so this is the project that is
+    // refused and not the act of naming one.
+    let found = server
+        .mem_search(Parameters(
+            serde_json::from_value(json!({"query": "sqlite", "project": "leteo"})).unwrap(),
+        ))
+        .expect("a project the store holds is readable")
+        .0;
+    assert_eq!(found.count, 1);
+}
+
+/// A limit of zero is a request for none of a section, not a finding that the
+/// project is empty.
+///
+/// With all three at zero the store was never asked about this project, and the
+/// answer said "Nothing in proj-alpha … but 1 elsewhere" — telling a caller who
+/// had just switched the listing off to widen the project, which answers a
+/// question it never asked.
+#[test]
+fn a_zero_limit_is_not_reported_as_an_empty_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store =
+        Store::open(crate::store::StoreConfig::new(temp.path().join("mcp.db"))).unwrap();
+    store.create_session("s1", "eleven", "C:/eleven").unwrap();
+    for index in 0..12 {
+        store
+            .add_observation(crate::memory::model::AddObservation {
+                session_id: "s1".to_owned(),
+                kind: "discovery".to_owned(),
+                title: format!("Something in eleven {index}"),
+                content: format!("a memory in the project the caller asked about {index}"),
+                tool_name: None,
+                project: Some("eleven".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap();
+    }
+    store.create_session("s2", "twelve", "C:/twelve").unwrap();
+    store
+        .add_observation(crate::memory::model::AddObservation {
+            session_id: "s2".to_owned(),
+            kind: "discovery".to_owned(),
+            title: "Somewhere else".to_owned(),
+            content: "a memory in another project".to_owned(),
+            tool_name: None,
+            project: Some("twelve".to_owned()),
+            scope: "project".to_owned(),
+            topic_key: None,
+            prompt_sync_id: None,
+        })
+        .unwrap();
+    // The project is inferred rather than named, which is the shape the
+    // sentence about another project belongs to.
+    let server = LeteoMcpServer::with_options(
+        Arc::new(Mutex::new(store)),
+        McpOptions {
+            default_project: Some("empty-project".to_owned()),
+            ..McpOptions::default()
+        },
+    );
+
+    let answered = |value: serde_json::Value| {
+        server
+            .mem_context(Parameters(serde_json::from_value(value).unwrap()))
+            .expect("a context read is not refused for its limits")
+            .0
+            .hint
+            .unwrap_or_default()
+    };
+
+    let full = answered(json!({}));
+    assert!(
+        full.contains("elsewhere"),
+        "the control: an empty project with memories elsewhere says so: {full:?}"
+    );
+
+    let nothing_asked = answered(json!({"limit": 0, "session_limit": 0, "prompt_limit": 0}));
+    assert!(
+        !nothing_asked.contains("elsewhere"),
+        "a zero limit must not be read as an empty store: {nothing_asked:?}"
+    );
+}
+
 /// A blank project reads the project the reply names.
 ///
 /// Agents send `""` for an optional field. The envelope resolved it to the

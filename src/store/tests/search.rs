@@ -273,6 +273,79 @@ fn hostile_search_queries_never_reach_the_full_text_parser() {
         .expect("scanning survives hostile titles");
 }
 
+/// A query with no word in it is answered empty, not rewritten into a word.
+///
+/// `*`, `-`, `%`, an emoji and a run of punctuation are not tokens to the
+/// tokenizer. Quoted, they still looked like terms to the correction stage,
+/// which read each as the nearest one-character word the vocabulary held — so
+/// `*` on a real store answered with an unrelated memory and a hint saying it
+/// had searched for `0` instead. Nothing tokenizes, so nothing is asked and
+/// nothing is corrected.
+#[test]
+fn a_query_of_punctuation_finds_nothing_and_corrects_nothing() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    // A one-letter word on purpose: the correction stage can only rewrite `*`
+    // if the vocabulary holds a word one edit away, and an empty fixture would
+    // make this guard pass for the wrong reason.
+    store
+        .add_observation(observation("s1", "Injection probe", "a needle in a 0 body"))
+        .unwrap();
+
+    for symbols in ["*", "-", "%", "!!!", ":", "😀"] {
+        let (found, _, corrections) = store
+            .search_with_more_and_corrections(symbols, SearchOptions::default())
+            .unwrap();
+        assert!(
+            found.is_empty(),
+            "{symbols:?} is not a word and must find nothing: {found:?}"
+        );
+        assert!(
+            corrections.is_empty(),
+            "{symbols:?} must not be rewritten into a word: {corrections:?}"
+        );
+    }
+}
+
+/// A NUL is where SQLite ends a string, so a query of nothing but NUL is the
+/// empty query it always was — refused as such, not answered as no match.
+#[test]
+fn a_query_of_nuls_is_the_empty_query_it_always_was() {
+    let (_temp, store) = store();
+    for empty in ["\0", " \0\t ", "\0\0\0"] {
+        assert!(
+            matches!(
+                store.search(empty, SearchOptions::default()),
+                Err(StoreError::EmptySearch)
+            ),
+            "{empty:?} has nothing to search for"
+        );
+    }
+}
+
+/// A NUL between two words keeps them apart on the way in, so both are found.
+///
+/// Removing it joined them into one token: `before\0zebraword` was stored as
+/// `beforezebraword`, which no search for `zebraword` could reach.
+#[test]
+fn a_nul_between_two_words_keeps_them_apart() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    let saved = store
+        .add_observation(observation("s1", "Nul probe", "before\0zebraword"))
+        .unwrap()
+        .observation;
+
+    let hits = store.search("zebraword", SearchOptions::default()).unwrap();
+    assert_eq!(hits.len(), 1, "the word after the NUL is reachable");
+    assert_eq!(hits[0].observation.id, saved.id);
+    assert!(
+        hits[0].observation.content.contains("before zebraword"),
+        "and the boundary is stored as a space, not lost: {:?}",
+        hits[0].observation.content
+    );
+}
+
 /// A query longer than the cap is refused, and one at the cap is not.
 ///
 /// The raw string had no bound, so a pasted log was tokenised whole and the

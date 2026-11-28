@@ -856,6 +856,18 @@ pub struct PromptTombstone {
     pub deleted_at: String,
 }
 
+/// The prompts a harness wrote and an older build stored as if a person had.
+///
+/// Both numbers, because the count says how many rows nothing shows and the
+/// bytes say what they cost: on the store the issue measured, 7,183 rows held
+/// 37.5 MB of the 39.8 MB of prompt text. Bytes are UTF-8, which is what a file
+/// size is measured in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoredHarnessPrompts {
+    pub prompts: i64,
+    pub bytes: i64,
+}
+
 // No `Eq`: a relation carries a confidence, and a float has no total equality.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExportData {
@@ -1229,6 +1241,7 @@ impl DoctorCheck {
         "journal_mode",
         "busy_timeout",
         "orphan_versions",
+        "stored_harness_prompts",
         "hook_spool",
         Self::STALE_CITATIONS,
     ];

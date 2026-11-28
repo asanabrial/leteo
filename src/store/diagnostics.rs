@@ -1082,6 +1082,28 @@ impl Store {
                 ),
             });
         }
+        if want("stored_harness_prompts") {
+            // Messages the harness wrote, which older builds stored as prompts.
+            // Nothing shows them any more — the recent listing skips them and
+            // 0.5.0 stopped storing new ones — but no open removes them, so
+            // they stay indexed, replicated and read by every walk of the
+            // table. A warning rather than an error: the store works, and what
+            // it holds is text nobody wrote.
+            record(match self.stored_harness_prompts() {
+                Err(error) => could_not_run("stored_harness_prompts", "the stored prompts", &error),
+                Ok(stored) if stored.prompts == 0 => DoctorCheck::passed("stored_harness_prompts"),
+                Ok(stored) => DoctorCheck::warned(
+                    "stored_harness_prompts",
+                    format!(
+                        "{} prompt(s) are messages the harness wrote and an older build saved, \
+                         hidden from every listing and replicated as though somebody typed \
+                         them: {} of stored text; `leteo doctor --repair` removes them",
+                        stored.prompts,
+                        describe_bytes(stored.bytes)
+                    ),
+                ),
+            });
+        }
         if want("hook_spool") {
             // Captures a busy store could not take and no later open has
             // replayed. A busy store is not damage, and the check says so with
@@ -1740,4 +1762,22 @@ fn stale_hash_count(connection: &Connection) -> Result<i64, rusqlite::Error> {
 /// the same as having found a fault.
 fn could_not_run(code: &str, what: &str, error: &dyn std::fmt::Display) -> DoctorCheck {
     DoctorCheck::failed(code, format!("{what} could not be checked: {error}"))
+}
+
+/// Bytes as the unit somebody compares against a file size.
+///
+/// A mebibyte is called a megabyte here because that is what every file manager
+/// calls it, and the point of the number is to be recognised next to the size
+/// of the database.
+pub(super) fn describe_bytes(bytes: i64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    const KIB: f64 = 1024.0;
+    let bytes_as_float = bytes as f64;
+    if bytes_as_float >= MIB {
+        format!("{:.1} MB", bytes_as_float / MIB)
+    } else if bytes_as_float >= KIB {
+        format!("{:.1} KB", bytes_as_float / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
 }

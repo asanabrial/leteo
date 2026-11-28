@@ -2622,3 +2622,74 @@ fn a_row_whose_title_is_not_text_says_the_language_check_could_not_run() {
         report.checks
     );
 }
+
+/// The doctor says how many prompts the harness wrote and what they cost.
+///
+/// They are hidden and never shown, so nothing else in the store surfaces them:
+/// the count and the bytes are the only evidence a person has that a quarter of
+/// the prompt text is not theirs.
+#[test]
+fn the_doctor_names_the_prompts_a_harness_wrote_and_the_text_they_hold() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for content in [
+        "<task-notification>the job is done</task-notification>",
+        "<agent-message>hello from another session</agent-message>",
+        "what did we decide about the storage engine?",
+    ] {
+        store
+            .add_prompt(AddPrompt {
+                session_id: "s1".to_owned(),
+                content: content.to_owned(),
+                project: Some("leteo".to_owned()),
+            })
+            .unwrap();
+    }
+    let stored = store.stored_harness_prompts().unwrap();
+    assert_eq!(stored.prompts, 2);
+
+    let (report, _) = store
+        .doctor_scoped(Some("stored_harness_prompts"), None)
+        .unwrap();
+    assert_eq!(report.checks.len(), 1);
+    let check = &report.checks[0];
+    assert_eq!(check.code, "stored_harness_prompts");
+    assert!(!check.ok);
+    assert_eq!(
+        check.severity,
+        DoctorSeverity::Warning,
+        "the store works; what it holds is text nobody wrote"
+    );
+    let detail = check.detail.as_deref().expect("a warning says what it saw");
+    assert!(detail.contains("2 prompt(s)"), "{detail}");
+    assert!(
+        detail.contains(&format!("{} bytes of stored text", stored.bytes)),
+        "{detail}"
+    );
+    assert!(detail.contains("doctor --repair"), "{detail}");
+
+    // A warning is a finding and not a broken store.
+    let (full, _) = store.doctor_scoped(None, None).unwrap();
+    assert!(full.healthy, "{:?}", full.issues);
+
+    // Once the repair has run, the check passes rather than warning about 0.
+    store.remove_harness_prompts().unwrap();
+    let (report, _) = store
+        .doctor_scoped(Some("stored_harness_prompts"), None)
+        .unwrap();
+    assert!(report.checks[0].ok);
+    assert_eq!(report.checks[0].severity, DoctorSeverity::Info);
+}
+
+/// The figure reads in the unit a file size is read in, and the trunk is exact.
+#[test]
+fn the_byte_figure_reads_in_the_unit_a_file_is_measured_in() {
+    use crate::store::diagnostics::describe_bytes;
+
+    assert_eq!(describe_bytes(0), "0 bytes");
+    assert_eq!(describe_bytes(1023), "1023 bytes");
+    assert_eq!(describe_bytes(1024), "1.0 KB");
+    assert_eq!(describe_bytes(2048), "2.0 KB");
+    assert_eq!(describe_bytes(1024 * 1024), "1.0 MB");
+    assert_eq!(describe_bytes(39_958_700), "38.1 MB");
+}

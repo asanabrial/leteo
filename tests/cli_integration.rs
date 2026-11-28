@@ -1850,6 +1850,81 @@ fn an_unreadable_hook_payload_says_so_instead_of_pretending_it_was_empty() {
     );
 }
 
+/// Prompts older builds kept from messages the harness wrote are named by
+/// `doctor` and removed by `--repair`, through the path a delete takes.
+///
+/// They are hidden from every listing, so the report is the only place they
+/// surface; a question somebody typed that quotes the tag is not one of them.
+#[test]
+fn doctor_repairs_the_prompts_older_builds_stored_from_harness_messages() {
+    let temp = tempfile::tempdir().expect("create CLI test directory");
+    let database = temp.path().join("leteo-harness-prompts.db");
+    run_json(
+        leteo(&database)
+            .arg("session-start")
+            .arg("harness-session")
+            .arg("--project")
+            .arg("leteo")
+            .arg("--directory")
+            .arg(temp.path()),
+    );
+    for content in [
+        "<task-notification>the job finished</task-notification>",
+        "<agent-message>hello from another session</agent-message>",
+        "please read <task-notification> in the log and tell me what it says",
+    ] {
+        run_json(
+            leteo(&database)
+                .arg("prompt")
+                .arg(content)
+                .arg("--session")
+                .arg("harness-session"),
+        );
+    }
+
+    let named = run_json(
+        leteo(&database)
+            .arg("doctor")
+            .arg("--check")
+            .arg("stored_harness_prompts"),
+    );
+    assert_eq!(named["checks"][0]["code"], json!("stored_harness_prompts"));
+    assert_eq!(named["checks"][0]["ok"], json!(false));
+    assert_eq!(named["checks"][0]["severity"], json!("warning"));
+    let detail = named["checks"][0]["detail"]
+        .as_str()
+        .expect("the warning says what it found");
+    assert!(detail.contains("2 prompt(s)"), "{detail}");
+    assert!(detail.contains("doctor --repair"), "{detail}");
+    assert_eq!(named["prompts"], json!(3));
+
+    let repaired = run_json(
+        leteo(&database)
+            .arg("doctor")
+            .arg("--check")
+            .arg("stored_harness_prompts")
+            .arg("--repair"),
+    );
+    assert_eq!(repaired["removed_harness_prompts"]["prompts"], json!(2));
+    assert!(
+        repaired["removed_harness_prompts"]["bytes"]
+            .as_i64()
+            .expect("the bytes removed")
+            > 0
+    );
+    assert_eq!(
+        repaired["prompts"],
+        json!(1),
+        "the question that quotes the tag is a question somebody typed"
+    );
+    assert_eq!(
+        repaired["checks"][0]["ok"],
+        json!(true),
+        "the report describes the store after the repair"
+    );
+    assert_eq!(repaired["healthy"], json!(true));
+}
+
 /// A hook answers even when the store cannot be opened at all.
 ///
 /// The hook module says it plainly — a malformed payload or a store problem

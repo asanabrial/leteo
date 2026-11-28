@@ -21,8 +21,8 @@ use crate::{
         PassiveCaptureResult, PendingPair, PendingSide, ProjectStats, ProjectSyncStatus, Prompt,
         PruneResult, Relation, RelationListItem, RelationStats, ReplacedContent,
         ReplayDeferredResult, SaveRelationParams, ScanOptions, ScanResult, SearchMode,
-        SearchOptions, SearchResult, Session, SessionSummary, Stats, SyncMutation, SyncState,
-        TimelineEntry, TimelineResult, UpdateObservation, UpdateOutcome,
+        SearchOptions, SearchResult, Session, SessionSummary, Stats, StoredHarnessPrompts,
+        SyncMutation, SyncState, TimelineEntry, TimelineResult, UpdateObservation, UpdateOutcome,
     },
     memory::normalize,
 };

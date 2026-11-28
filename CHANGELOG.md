@@ -54,6 +54,13 @@ All notable changes to Leteo are documented in this file.
   hint in that session could name them again. `session-start` and
   `post-compaction` now pass `transient_hints`, as the Pi plugin already did
   (#502).
+- **A peer's older edit no longer revives a soft-deleted memory.** The
+  replicated upsert cleared `deleted_at` unconditionally, so an edit queued
+  before the delete brought the memory back — into search and into the opening
+  block — on the machine that deleted it, while the peer that had already
+  applied the delete went on holding it as gone. An arriving upsert whose
+  `updated_at` is not strictly newer than the local delete now leaves the row
+  alone, which is the answer the prompt tombstone already gives (#506).
 - **A `find` whose occurrences overlap is refused as ambiguous.** `mem_update`
   counts the spans a `find` names so that one naming more than one changes
   nothing, and it counted with `str::matches`, which does not overlap: `111` in

@@ -326,7 +326,8 @@ fn apply_observation_upsert_tx(
     }
     let existing = tx
         .query_row(
-            "SELECT id, revision_count, duplicate_count, last_seen_at, created_at, updated_at
+            "SELECT id, revision_count, duplicate_count, last_seen_at, created_at, updated_at,
+                    deleted_at
              FROM observations WHERE sync_id = ?1 ORDER BY id DESC LIMIT 1",
             [&payload.sync_id],
             |row| {
@@ -337,6 +338,7 @@ fn apply_observation_upsert_tx(
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
@@ -368,6 +370,23 @@ fn apply_observation_upsert_tx(
     } else {
         payload.updated_at
     };
+    // A soft delete is this store's decision, and a peer's edit queued before
+    // it does not outrank it. The update below clears `deleted_at`
+    // unconditionally, so such an edit brought the memory back to search and to
+    // the opening block on this machine only: the peer had already applied the
+    // delete, and the two stores disagreed from then on.
+    //
+    // `updated_at` is the delete's own clock — `delete_observation` writes the
+    // same value into both columns — so comparing the arriving edit with the
+    // local `deleted_at` is comparing the two writes. Only a strictly newer
+    // edit may revive the memory; equal is not newer, which is the answer
+    // `apply_prompt_upsert_tx` gives its tombstone and the one equality has to
+    // keep: two stores that clamp the same second must land on the same state.
+    if let Some((.., Some(deleted_at))) = &existing
+        && normalize_comparable_timestamp(&updated_at) <= normalize_comparable_timestamp(deleted_at)
+    {
+        return Ok(());
+    }
     // The same rules a local save goes through. This path used to normalise on
     // its own and had fallen behind on five of them, so a memory arriving over
     // the wire kept its private tags, ignored the length cap, and could put back

@@ -4895,17 +4895,22 @@ fn an_import_killed_between_batches_is_finished_by_the_next_run() {
     while std::time::Instant::now() < deadline && committed(&database) < 500 {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let killed_at = committed(&database);
+    let observed = committed(&database);
     assert!(
-        killed_at >= 500,
+        observed >= 500,
         "the import has to commit a batch before the kill gives this test something to resume"
     );
+    child.kill().expect("kill the import between batches");
+    child.wait().expect("reap the killed import");
+    // Read after the process is gone: the batch it was writing when the count
+    // above was taken may have committed, and only the final count is what the
+    // second run has to account for.
+    let killed_at = committed(&database);
+    assert!(killed_at >= observed, "the kill cannot uncommit a batch");
     assert!(
         killed_at < MEMORIES as i64,
         "the import finished before it could be interrupted, so nothing was resumed"
     );
-    child.kill().expect("kill the import between batches");
-    child.wait().expect("reap the killed import");
 
     let second = run_json(leteo(&database).arg("import").arg(&file));
     let written = second["observations_imported"]

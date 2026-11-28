@@ -2742,9 +2742,9 @@ fn export_with_observations(count: usize) -> ExportData {
 /// An import larger than one batch keeps every row and indexes the last one.
 ///
 /// The batches are invisible from outside except in what they must not change:
-/// the count is the file's, the row in the final chunk is findable after the
-/// one rebuild that closes the import, and the triggers are back. A batch
-/// boundary that dropped a row or skipped the rebuild would fail here.
+/// the count is the file's, the row in the final chunk is findable because the
+/// trigger indexed it as it landed, and every trigger is still there. A batch
+/// boundary that dropped a row would fail here.
 #[test]
 fn an_import_writes_more_rows_than_one_batch_and_indexes_them_all() {
     let (_temp, mut store) = store();
@@ -2848,4 +2848,89 @@ fn a_failed_batch_keeps_none_of_its_rows() {
         store.get_session("failed-batch").is_err(),
         "the row written inside the failed batch is gone"
     );
+}
+
+/// A row the file did not name is imported once, however often the file runs.
+///
+/// The export's `id` column is unique only within the store that wrote it, so a
+/// blank sync id is derived from the row and its place in the file. A random
+/// one — which is what this used to mint — made a resumed import insert every
+/// row the kill had already committed a second time, because the only guard
+/// against a duplicate is the sync id.
+#[test]
+fn an_import_of_rows_without_sync_ids_is_idempotent() {
+    let (_temp, mut store) = store();
+    let mut exported = export_with_observations(3);
+    for observation in &mut exported.observations {
+        observation.sync_id.clear();
+    }
+    exported.prompts.push(Prompt {
+        id: 1,
+        sync_id: String::new(),
+        session_id: "batch-session".to_owned(),
+        content: "a prompt the file did not name".to_owned(),
+        project: "leteo".to_owned(),
+        created_at: "2026-07-28 17:00:39".to_owned(),
+    });
+
+    // What a kill after the first batch would leave.
+    let mut partial = exported.clone();
+    partial.observations.truncate(2);
+    partial.prompts.clear();
+    let first = store.import(&partial).unwrap();
+    assert_eq!(first.observations_imported, 2, "{first:?}");
+
+    let rest = store.import(&exported).unwrap();
+    assert_eq!(
+        rest.observations_imported, 1,
+        "only the row the kill left: {rest:?}"
+    );
+    assert_eq!(rest.prompts_imported, 1, "{rest:?}");
+    assert_eq!(store.export().unwrap().observations.len(), 3);
+    assert_eq!(store.export().unwrap().prompts.len(), 1);
+
+    // And the whole file again changes nothing.
+    let again = store.import(&exported).unwrap();
+    assert_eq!(again.observations_imported, 0, "{again:?}");
+    assert_eq!(again.prompts_imported, 0, "{again:?}");
+    assert_eq!(store.export().unwrap().observations.len(), 3);
+}
+
+/// An unusable session id is refused before the first batch commits.
+///
+/// With one transaction the refusal could happen anywhere and roll everything
+/// back. Batches make the order visible: the ids are read before any transaction
+/// opens, so a file with a good session first and a bad one second still leaves
+/// nothing, rather than a store whose first five hundred rows are committed.
+#[test]
+fn an_unusable_session_id_refuses_the_import_before_the_first_batch() {
+    let (_temp, mut store) = store();
+    let unusable = "s".repeat(crate::memory::normalize::SESSION_ID_MAX_BYTES + 1);
+    let export = serde_json::json!({
+        "version": "0.1.0",
+        "exported_at": "2026-07-28 17:00:39",
+        "sessions": [
+            {"id": "good-session", "project": "leteo", "directory": "/repo",
+             "started_at": "2026-07-28 17:00:39"},
+            {"id": unusable, "project": "leteo", "directory": "/repo",
+             "started_at": "2026-07-28 17:00:39"}
+        ],
+        "observations": [
+            {"id": 1, "sync_id": "obs-before-the-refusal", "session_id": "good-session",
+             "type": "discovery", "title": "A memory", "content": "a body",
+             "project": "leteo", "scope": "project", "revision_count": 1,
+             "duplicate_count": 1, "created_at": "2026-07-28 17:00:39",
+             "updated_at": "2026-07-28 17:00:39"}
+        ]
+    })
+    .to_string();
+
+    let refused = store.import_json(&export);
+    assert!(
+        matches!(refused, Err(StoreError::InvalidParameter(_))),
+        "{refused:?}"
+    );
+    let exported = store.export().unwrap();
+    assert!(exported.sessions.is_empty(), "no session landed");
+    assert!(exported.observations.is_empty(), "and no memory");
 }

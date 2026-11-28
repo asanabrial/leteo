@@ -1,5 +1,7 @@
 //! Counting, checking and moving the store as a whole.
 
+use sha2::{Digest, Sha256};
+
 use super::*;
 
 /// How many rows one import transaction writes before it commits.
@@ -93,14 +95,14 @@ impl Store {
         if dry_run {
             self.import_batch(true, |tx| {
                 import_sessions(tx, &data.sessions, max_length, &mut result)?;
-                import_observations(tx, &data.observations, max_length, &mut result)?;
+                import_observations(tx, &data.observations, 0, max_length, &mut result)?;
                 import_observation_versions(
                     tx,
                     &data.observation_versions,
                     max_length,
                     &mut result,
                 )?;
-                import_prompts(tx, &data.prompts, max_length, &mut result)?;
+                import_prompts(tx, &data.prompts, 0, max_length, &mut result)?;
                 import_prompt_tombstones(tx, &data.prompt_tombstones, &mut result)?;
                 import_relations(tx, &data.relations, max_length, &mut result)
             })?;
@@ -114,9 +116,15 @@ impl Store {
             yield_after_batch(batch.len());
         }
 
-        for batch in data.observations.chunks(IMPORT_BATCH_ROWS) {
+        for (batch_index, batch) in data.observations.chunks(IMPORT_BATCH_ROWS).enumerate() {
             self.import_batch(false, |tx| {
-                import_observations(tx, batch, max_length, &mut result)
+                import_observations(
+                    tx,
+                    batch,
+                    batch_index * IMPORT_BATCH_ROWS,
+                    max_length,
+                    &mut result,
+                )
             })?;
             yield_after_batch(batch.len());
         }
@@ -132,9 +140,15 @@ impl Store {
             yield_after_batch(batch.len());
         }
 
-        for batch in data.prompts.chunks(IMPORT_BATCH_ROWS) {
+        for (batch_index, batch) in data.prompts.chunks(IMPORT_BATCH_ROWS).enumerate() {
             self.import_batch(false, |tx| {
-                import_prompts(tx, batch, max_length, &mut result)
+                import_prompts(
+                    tx,
+                    batch,
+                    batch_index * IMPORT_BATCH_ROWS,
+                    max_length,
+                    &mut result,
+                )
             })?;
             yield_after_batch(batch.len());
         }
@@ -1622,6 +1636,25 @@ pub(super) fn describe_bytes(bytes: i64) -> String {
     }
 }
 
+/// The id an import gives a row the file did not name.
+///
+/// A random id would make a resumed import write the row again: the only guard
+/// against a duplicate is the sync id, so a row committed before a kill would
+/// come back under a new one. Deriving it from the row and its place in the
+/// file gives the same file the same ids on every run — and not from the
+/// export's `id` column, which is unique only within the store that wrote it.
+fn imported_sync_id(prefix: &str, position: usize, fields: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for field in fields {
+        hasher.update(field.as_bytes());
+        // A separator no field can contain, so `("ab", "c")` and `("a", "bc")`
+        // are not one row.
+        hasher.update([0_u8]);
+    }
+    hasher.update(position.to_le_bytes());
+    format!("{prefix}-import-{}", hex::encode(&hasher.finalize()[..8]))
+}
+
 /// Leaves the write lock free after a batch that filled, because another follows.
 ///
 /// SQLite has no lock queue: it hands the lock to whichever connection retries
@@ -1686,12 +1719,22 @@ fn import_sessions(
 fn import_observations(
     tx: &Transaction<'_>,
     observations: &[Observation],
+    offset: usize,
     max_length: usize,
     result: &mut ImportResult,
 ) -> Result<(), StoreError> {
-    for observation in observations {
+    for (index, observation) in observations.iter().enumerate() {
         let sync_id = if observation.sync_id.trim().is_empty() {
-            normalize::sync_id("obs")
+            imported_sync_id(
+                "obs",
+                offset + index,
+                &[
+                    &observation.session_id,
+                    &observation.title,
+                    &observation.content,
+                    observation.created_at.as_str(),
+                ],
+            )
         } else {
             observation.sync_id.trim().to_owned()
         };
@@ -1784,12 +1827,21 @@ fn import_observation_versions(
 fn import_prompts(
     tx: &Transaction<'_>,
     prompts: &[Prompt],
+    offset: usize,
     max_length: usize,
     result: &mut ImportResult,
 ) -> Result<(), StoreError> {
-    for prompt in prompts {
+    for (index, prompt) in prompts.iter().enumerate() {
         let sync_id = if prompt.sync_id.trim().is_empty() {
-            normalize::sync_id("prompt")
+            imported_sync_id(
+                "prompt",
+                offset + index,
+                &[
+                    &prompt.session_id,
+                    &prompt.content,
+                    prompt.created_at.as_str(),
+                ],
+            )
         } else {
             prompt.sync_id.trim().to_owned()
         };

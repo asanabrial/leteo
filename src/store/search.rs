@@ -1646,7 +1646,15 @@ impl Store {
         // about the sea` shares `the` with `The cache is invalidated on deploy`,
         // and the median of a store whose titles all begin "The" puts that
         // memory over a floor that was computed from nothing but that word.
+        //
+        // A prompt that is nothing but function words has no subject to match,
+        // so it is answered with nothing. That is the same rule rather than an
+        // exception to it: there is no word the hint is allowed to name a
+        // memory on.
         let content = content_words(&words);
+        if content.is_empty() {
+            return Ok(Vec::new());
+        }
         // Narrowed to the project inside the index rather than only after the
         // join: see `normalize::fts_within_project`. Every prompt used to be
         // scored against every memory of every project.
@@ -1722,15 +1730,14 @@ impl Store {
         // semantic check also adds a median 22.5 ms (p90 29.3) to a hook that
         // takes 10, because the hook never loads the model today.
         //
-        // And a candidate has to match a word the prompt is *about*. The floor
-        // stays computed over the whole match, function words included -- that
-        // is the median the shipped rule was measured with -- but a function
-        // word is no longer allowed to carry a memory over it alone. On the
+        // And a candidate has to match a word the prompt is *about*. A function
+        // word may still contribute to the score -- only to the score, never to
+        // whether a memory is named. On the
         // labelled set in `tools/memory-bench/session_cost_data/labels.hint.tsv`
         // -- 40 prompts in two languages against 16 memories -- that took the
         // prompts nothing bears on from 3 spoken to 1, with the 19 of 25
-        // related prompts named unchanged and the unrelated lines named down
-        // from 10 to 8.
+        // related prompts named unchanged and the lines named that were not a
+        // labelled memory down from 10 to 8.
         //
         // Dropping the function words from the query instead is a different
         // change and a worse one, measured in `normalize::prompt_terms`: it
@@ -1746,9 +1753,13 @@ impl Store {
             .collect();
         // The floor is computed over everything the prompt matched, function
         // words included, and that stays: it is the same query the store sizes
-        // the median from. What changes is only who may be *named*, so the
-        // filter is after the floor and nothing is backfilled from below it.
-        if !content.is_empty() && !named.is_empty() {
+        // the median from. What changes is only who may be named.
+        //
+        // A slot a function-word candidate no longer takes goes to the next
+        // candidate above the floor, which is not the backfill `prompt_recall`
+        // refuses: that one would reach below the floor, which is a memory the
+        // prompt did not earn. Everything `retain` keeps here earned its place.
+        if !named.is_empty() {
             let held = self.named_by_content(&content, &project, &named)?;
             named.retain(|memory| held.contains(&memory.id));
         }
@@ -1771,6 +1782,8 @@ impl Store {
     ) -> Result<std::collections::HashSet<i64>, StoreError> {
         let terms = normalize::fts_any_of(words);
         let terms = normalize::fts_within_project(&terms, project).unwrap_or(terms);
+        // `?1` is the terms and `?2` the project, in `prompt_match_clause`;
+        // the ids it will be asked about start at `?3`.
         let placeholders = (0..named.len())
             .map(|offset| format!("?{}", offset + 3))
             .collect::<Vec<_>>()
@@ -1820,8 +1833,8 @@ pub(crate) fn prompt_recall_sql() -> String {
 /// The words of a prompt that are not function words in any language the store
 /// knows, in the order they were written.
 ///
-/// Empty means the prompt was all function words, and then there is nothing for
-/// the rule to exclude and every candidate stands as it did.
+/// Empty means the prompt had no subject word at all, and `prompt_matches`
+/// answers that with nothing.
 fn content_words(words: &[String]) -> Vec<String> {
     words
         .iter()
@@ -1832,10 +1845,10 @@ fn content_words(words: &[String]) -> Vec<String> {
 
 /// The `FROM` and `WHERE` every read of the prompt hint shares.
 ///
-/// One statement rather than two because the second read — the one that asks
-/// whether a candidate matched a content word — must consider exactly the rows
-/// the first one did. A hand-written second copy is how these two stop agreeing
-/// when one of them gains a condition.
+/// Read by two statements: the one that ranks the sample, and the one that asks
+/// whether a named candidate matched a content word. They have to consider the
+/// same rows, and a hand-written second copy is how the two stop agreeing when
+/// one of them gains a condition.
 fn prompt_match_clause() -> String {
     let not_superseded = super::relations::not_superseded();
     format!(

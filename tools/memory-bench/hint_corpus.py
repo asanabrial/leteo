@@ -23,11 +23,11 @@ one. A set somebody labelled without knowing what was changed would be stronger
 evidence, and this does not pretend to be that.
 """
 
-A = "hint-lab"
+PROJECT = "hint-lab"
 
 
 def M(kind, title, content):
-    return dict(key=title, project=A, type=kind, title=title, content=content, topic=None)
+    return dict(key=title, project=PROJECT, type=kind, title=title, content=content, topic=None)
 
 
 MEMORIES = [

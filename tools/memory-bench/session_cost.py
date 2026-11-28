@@ -525,7 +525,7 @@ def read_labels(path):
     cut back to how it stood at `created_at` before the prompt; any other value
     replays against the store as it is.
     """
-    lines = pathlib.Path(path).read_text().splitlines()
+    lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
     out = []
     for line in lines[1:]:
         if not line.strip():
@@ -580,7 +580,7 @@ def score(res):
     neutral = [r for r in res if r["label"] == "neutral"]
     related = [r for r in res if r["label"] == "related"]
     ms = sorted(r["ms"] for r in res)
-    named = sum(len(r["injected"]) for r in res)
+    named = sum(len(set(r["injected"])) for r in res)
     named_right = sum(len(set(r["injected"]) & set(r["best"])) for r in res)
     return {
         "neutral": len(neutral),
@@ -591,7 +591,11 @@ def score(res):
         "related_spoke_wrong": sum(bool(r["injected"]) and not set(r["injected"]) & set(r["best"]) for r in related),
         "named": named,
         "named_right": named_right,
-        "precision": round(named_right / named, 3) if named else 0.0,
+        # `None` rather than zero when nothing was named: a silent run and one
+        # that named only the wrong memories are different results, and 0.0 says
+        # the second about the first. JSON keeps the distinction; the text says
+        # which one it is.
+        "precision": round(named_right / named, 3) if named else None,
         "tokens_neutral": sum(r["tokens"] for r in neutral),
         "tokens_total": sum(r["tokens"] for r in res),
         "bytes_neutral": sum(r["bytes"] for r in neutral),
@@ -615,11 +619,14 @@ def run_labels(args, count, unit, work):
     s = score(res)
     print(f"\nUnit: {unit}. {len(items)} labelled prompts, store copy of {args.leteo_store}\n")
     print(f"silent on neutral prompts : {s['neutral_silent']}/{s['neutral']}"
-          f" (spoke on {s['neutral_spoke']}, a false-speak rate of {s['neutral_spoke']}/{s['neutral']})")
+          f" (spoke on {s['neutral_spoke']})")
     print(f"named a right memory      : {s['related_named']}/{s['related']} related prompts"
           f" ({s['related_spoke_wrong']} spoke and named a wrong one)")
-    print(f"precision                 : {s['precision']} ({s['named_right']} of {s['named']} named)"
-          f", of which {s['named'] - s['named_right']} were unrelated")
+    if s["named"]:
+        print(f"precision                 : {s['precision']} ({s['named_right']} of {s['named']} named)"
+              f"; {s['named'] - s['named_right']} were not a labelled memory")
+    else:
+        print("precision                 : nothing named")
     print(f"tokens                    : {s['tokens_total']} total, {s['tokens_neutral']} on neutral prompts")
     print(f"bytes                     : {s['bytes_total']} total, {s['bytes_neutral']} on neutral prompts")
     print(f"hook latency              : median {s['ms_median']} ms, p90 {s['ms_p90']} ms"
@@ -634,13 +641,15 @@ def run_labels(args, count, unit, work):
 def build_fixture(args, work):
     """Write `--fixture-corpus`'s corpus to an empty Leteo store through mem_save.
 
-    Memory ids are assigned in write order, so `labels.example.tsv` can name
-    them, and a test holds the file's titles to the ids this produces. Timestamps
-    are then stamped to fixed values, one hour apart, so the time-cut rows of the
-    example labels cut the store at a known place.
+    Memory ids are assigned in write order, so the labels for the chosen corpus
+    can name them: `labels.example.tsv` with the comparison corpus, and
+    `labels.hint.tsv` with the hint one. A test holds each file's titles to the
+    ids this produces. Timestamps are then stamped to fixed values, one hour
+    apart, so the time-cut rows of the example labels cut the store at a known
+    place.
     """
     sys.path.insert(0, str(HERE))
-    corpus = importlib.import_module(args.fixture_corpus.replace("-", "_") + "_corpus").corpus()
+    corpus = importlib.import_module(f"{args.fixture_corpus}_corpus").corpus()
     eng = Engine("leteo", args.leteo_bin, args.build_fixture_seed or empty_store(work, args.leteo_bin), work, corpus[0]["project"])
     servers = {}
     for mem in corpus:

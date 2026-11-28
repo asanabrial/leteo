@@ -116,6 +116,14 @@ class Labels(unittest.TestCase):
         # line on every prompt, not only the prompts that had a right memory.
         self.assertEqual((s["named"], s["named_right"], s["precision"]), (4, 1, 0.25))
         self.assertEqual((s["bytes_neutral"], s["bytes_total"]), (100, 325))
+        # A run that named nothing has no precision, which is not zero: the
+        # whole point of the change is that silence and wrong lines are apart.
+        silent = sc.score([
+            dict(label="neutral", best=[], injected=[], tokens=0, bytes=0, rc=0, ms=1),
+            dict(label="related", best=[1], injected=[], tokens=0, bytes=0, rc=0, ms=1),
+        ])
+        self.assertIsNone(silent["precision"])
+        self.assertEqual((silent["named"], silent["named_right"]), (0, 0))
 
     def test_the_example_labels_name_the_memories_the_fixture_builder_writes(self):
         # The fixture is the comparison corpus in write order, so id N is the
@@ -137,7 +145,7 @@ class Labels(unittest.TestCase):
         # memories are code -- so this is what keeps an insert from renaming a
         # hit to the memory below it.
         titles = {i: m["title"] for i, m in enumerate(hint_corpus.corpus(), 1)}
-        rows = (HERE / "session_cost_data" / "labels.hint.tsv").read_text().splitlines()[1:]
+        rows = (HERE / "session_cost_data" / "labels.hint.tsv").read_text(encoding="utf-8").splitlines()[1:]
         self.assertEqual(len(rows), 40)
         labels = [line.split("\t")[5] for line in rows]
         self.assertEqual((labels.count("related"), labels.count("neutral")), (25, 15))

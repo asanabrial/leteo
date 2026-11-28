@@ -965,35 +965,33 @@ fn a_prompt_is_read_past_its_opening_words() {
 
 /// A function word alone is not evidence that a memory is about the prompt.
 ///
-/// The floor is relative to the median of what the prompt matched, and a
-/// store whose titles share a function word — every one of these begins "The"
-/// — has a median made of that word. `write a haiku about the sea` scored
-/// above it and was handed "The cache is invalidated on deploy": one content
-/// word in common with the store, none with the prompt.
+/// `for` is rare enough in a store of four memories to score better than the
+/// floor on its own, and `name for a cat` has nothing to do with paging. The
+/// first title is the one the issue's prompt reached; the other three share a
+/// subject word and keep their places, so the rule has to drop one candidate
+/// and not the set.
 ///
-/// The second half is the cost the rule is not allowed to have: a prompt that
-/// does share a subject word still gets its memory, and the floor is still
-/// computed from the whole match, not from the content words alone.
+/// The limit is asserted too: it still bounds what comes back.
 #[test]
 fn a_function_word_alone_is_not_evidence_of_a_subject() {
     let (_temp, mut store) = store();
     store.create_session("s1", "leteo", "C:/repo").unwrap();
     for (title, body) in [
         (
-            "The deploy freeze is the last Friday",
-            "no production deploy goes out on that day",
+            "Keyset pagination for the orders list",
+            "a (created_at, id) cursor makes page N cost the same as page 1",
         ),
         (
-            "The retry policy uses jitter",
-            "clients back off with jitter when a call fails",
+            "Naming a release",
+            "a release takes the name of the tag that published it",
         ),
         (
-            "The reports are written in Parquet",
-            "the monthly reports land in Parquet",
+            "The office cat",
+            "a cat sleeps on the keyboard and wakes when the build fails",
         ),
         (
-            "The cache is invalidated on deploy",
-            "a deploy clears the tagged cache entries",
+            "Suggesting a name in the review",
+            "the reviewer suggests a name and the cat is never consulted about it",
         ),
     ] {
         store
@@ -1002,19 +1000,66 @@ fn a_function_word_alone_is_not_evidence_of_a_subject() {
     }
 
     let named = store
-        .prompt_matches("write a haiku about the sea", "leteo", 3)
+        .prompt_matches("suggest a name for a cat", "leteo", 3)
+        .unwrap();
+    assert!(
+        !named.is_empty(),
+        "the subject words still name their memories"
+    );
+    assert!(
+        named.iter().all(|memory| !memory.title.contains("Keyset")),
+        "`for` is the only word the paging memory shares: {named:?}"
+    );
+
+    assert_eq!(
+        store
+            .prompt_matches("suggest a name for a cat", "leteo", 1)
+            .unwrap()
+            .len(),
+        1,
+        "the caller's limit still bounds what is named"
+    );
+}
+
+/// The function words are read from every language, not only English.
+///
+/// `para` is Spanish and Portuguese, which the exclusive map `detect` counts
+/// does not hold at all. Asking that map would make `para` a subject word, and
+/// a question about dinner would name the index over active orders: it is the
+/// only candidate the floor lets through, and the rule is what refuses it.
+#[test]
+fn a_spanish_function_word_alone_is_not_evidence_either() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for (title, body) in [
+        (
+            "Índice parcial para los pedidos activos",
+            "el 90% de las filas están archivadas y el índice bajó de 3 GB a 280 MB",
+        ),
+        (
+            "La receta de la cena de los viernes",
+            "una receta sencilla que se prepara en media hora",
+        ),
+        (
+            "La cena del equipo",
+            "la cena se paga con la tarjeta de la empresa y se apunta la receta",
+        ),
+        (
+            "Recetas que nadie cocina",
+            "una receta guardada y nunca probada, y una cena que se cancela",
+        ),
+    ] {
+        store
+            .add_observation(observation("s1", title, body))
+            .unwrap();
+    }
+
+    let named = store
+        .prompt_matches("receta para la cena", "leteo", 3)
         .unwrap();
     assert!(
         named.is_empty(),
-        "`the` is the only word in common, and it says nothing: {named:?}"
-    );
-
-    let named = store
-        .prompt_matches("when is the cache invalidated on deploy", "leteo", 3)
-        .unwrap();
-    assert!(
-        !named.is_empty() && named.iter().all(|memory| memory.title.contains("cache")),
-        "a shared subject word still names its memory: {named:?}"
+        "`para` is the only word the index memory shares, and it says nothing about dinner: {named:?}"
     );
 }
 

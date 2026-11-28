@@ -12,8 +12,9 @@ fn manifest_codec_has_stable_json() {
             memories: 3,
             prompts: 1,
         }],
+        ..Manifest::default()
     };
-    let golden = r#"{"version":1,"chunks":[{"id":"a3f8c1d2","created_by":"alice","created_at":"2026-07-27T12:00:00Z","sessions":2,"memories":3,"prompts":1}]}"#;
+    let golden = r#"{"version":1,"chunks":[{"id":"a3f8c1d2","created_by":"alice","created_at":"2026-07-27T12:00:00Z","sessions":2,"memories":3,"prompts":1}],"has_more":false}"#;
 
     assert_eq!(encode_manifest(&manifest).unwrap(), golden.as_bytes());
     assert_eq!(decode_manifest(golden.as_bytes()).unwrap(), manifest);

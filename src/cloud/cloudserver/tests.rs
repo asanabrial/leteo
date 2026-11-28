@@ -1711,3 +1711,119 @@ async fn a_revoked_token_and_a_disabled_principal_are_refused_on_their_next_requ
         "enabling is the way back for a token nobody revoked"
     );
 }
+
+/// The manifest route pages, and a cursor it cannot place is refused rather
+/// than answered as an empty page.
+///
+/// An empty page for an unknown cursor would read as "the project ended here",
+/// which is how a client that lost its place imports half a project and
+/// reports success.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to an isolated PostgreSQL database"]
+async fn the_manifest_route_pages_and_refuses_a_cursor_it_cannot_place() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    use crate::sync::{chunk_id, encode_chunk};
+
+    let stamp = unique_stamp();
+    let project = format!("manifest-route-{stamp}");
+    let name = format!("manifest-route-{stamp}");
+    let config = CloudConfig {
+        database_url: std::env::var("TEST_DATABASE_URL").unwrap(),
+        dashboard_secret: "a-dashboard-secret-of-at-least-32-bytes".to_owned(),
+        token_pepper: "a-token-pepper-of-at-least-32-bytes-long".to_owned(),
+        ..CloudConfig::default()
+    };
+    let server = CloudServer::from_config(config.clone()).await.unwrap();
+    let token = mint_admin(&server, &config.token_pepper, &name, &project).await;
+
+    let base = Utc::now() - chrono::Duration::seconds(10);
+    for n in 0..3 {
+        let chunk = ChunkData {
+            sessions: vec![crate::memory::model::Session {
+                id: format!("session-{n}-{stamp}"),
+                project: project.clone(),
+                directory: "/tmp/manifest-route".to_owned(),
+                started_at: base.to_rfc3339(),
+                ended_at: None,
+                summary: None,
+            }],
+            ..ChunkData::default()
+        };
+        let payload = encode_chunk(&chunk).unwrap();
+        let id = chunk_id(&payload);
+        server
+            .state
+            .store
+            .write_chunk(
+                &project,
+                &id,
+                "test",
+                Some(base + chrono::Duration::seconds(n)),
+                &payload,
+            )
+            .await
+            .unwrap();
+    }
+
+    let get = |uri: String| {
+        let router = server.router();
+        let token = token.clone();
+        async move {
+            let request = Request::builder()
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+            )
+        }
+    };
+
+    let (status, page) = get(format!("/sync/pull?project={project}&limit=2")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["chunks"].as_array().unwrap().len(), 2);
+    assert_eq!(page["has_more"], json!(true));
+    let next = page["next"].as_str().unwrap().to_owned();
+
+    let (status, page) = get(format!("/sync/pull?project={project}&limit=2&after={next}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["chunks"].as_array().unwrap().len(), 1);
+    assert_eq!(page["has_more"], json!(false));
+    assert!(
+        page.get("next").is_none(),
+        "a page that is the whole rest names no next page: {page}"
+    );
+
+    let (status, _) = get(format!("/sync/pull?project={project}&after=deadbeef")).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a cursor the project does not hold is refused, not answered empty"
+    );
+
+    for statement in [
+        "DELETE FROM cloud_chunks WHERE project_name = $1",
+        "DELETE FROM cloud_principals WHERE display_name = $1",
+    ] {
+        let value = if statement.contains("chunks") {
+            &project
+        } else {
+            &name
+        };
+        sqlx::query(statement)
+            .bind(value)
+            .execute(server.state.store.pool())
+            .await
+            .unwrap();
+    }
+}

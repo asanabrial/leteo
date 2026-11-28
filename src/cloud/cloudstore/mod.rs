@@ -13,9 +13,10 @@ use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use thiserror::Error;
 
 use crate::{
+    cloud::MANIFEST_PAGE_LIMIT,
     memory::model::SyncMutation,
     sync::{
-        ChunkData, Manifest, ManifestChunk, MutationEntry, StoredMutation,
+        ChunkData, MANIFEST_VERSION, Manifest, ManifestChunk, MutationEntry, StoredMutation,
         canonicalize_for_project, chunk_id, decode_chunk, encode_chunk,
     },
 };
@@ -203,17 +204,73 @@ impl CloudStore {
         Ok(())
     }
 
-    pub async fn read_manifest(&self, project: &str) -> Result<Manifest, CloudStoreError> {
+    /// One page of a project's chunk manifest, oldest first.
+    ///
+    /// `after` is the `next` a previous page answered, and the pair it names —
+    /// the display timestamp and the chunk id — is the same pair the order is
+    /// built on, so a page boundary cannot repeat or skip the chunk it stops
+    /// at. A limit above [`MANIFEST_PAGE_LIMIT`] is applied as the limit.
+    pub async fn read_manifest(
+        &self,
+        project: &str,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Manifest, CloudStoreError> {
         let project = require_project(project)?;
-        let rows = sqlx::query(
-            "SELECT chunk_id, created_by, COALESCE(client_created_at, created_at) AS manifest_at,
-                    sessions_count, observations_count, prompts_count
-             FROM cloud_chunks WHERE project_name = $1
-             ORDER BY created_at, chunk_id",
-        )
-        .bind(project)
-        .fetch_all(&self.pool)
-        .await?;
+        let limit = limit.clamp(1, MANIFEST_PAGE_LIMIT);
+        let cursor = match after.map(str::trim).filter(|after| !after.is_empty()) {
+            Some(after) => {
+                let row = sqlx::query(
+                    "SELECT COALESCE(client_created_at, created_at) AS manifest_at
+                     FROM cloud_chunks WHERE project_name = $1 AND chunk_id = $2",
+                )
+                .bind(project.as_str())
+                .bind(after)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    CloudStoreError::Invalid(format!("after names no chunk of project {project:?}"))
+                })?;
+                Some((
+                    row.try_get::<DateTime<Utc>, _>("manifest_at")?,
+                    after.to_owned(),
+                ))
+            }
+            None => None,
+        };
+        let rows = match &cursor {
+            Some((at, id)) => {
+                sqlx::query(
+                    "SELECT chunk_id, created_by,
+                            COALESCE(client_created_at, created_at) AS manifest_at,
+                            sessions_count, observations_count, prompts_count
+                     FROM cloud_chunks
+                     WHERE project_name = $1
+                       AND (COALESCE(client_created_at, created_at), chunk_id) > ($2, $3)
+                     ORDER BY manifest_at, chunk_id
+                     LIMIT $4",
+                )
+                .bind(project.as_str())
+                .bind(*at)
+                .bind(id)
+                .bind(i64_from_usize(limit + 1)?)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT chunk_id, created_by,
+                            COALESCE(client_created_at, created_at) AS manifest_at,
+                            sessions_count, observations_count, prompts_count
+                     FROM cloud_chunks WHERE project_name = $1
+                     ORDER BY manifest_at, chunk_id LIMIT $2",
+                )
+                .bind(project.as_str())
+                .bind(i64_from_usize(limit + 1)?)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
         let chunks = rows
             .into_iter()
             .map(|row| {
@@ -228,7 +285,18 @@ impl CloudStore {
                 })
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()?;
-        Ok(Manifest { version: 1, chunks })
+        let mut chunks = chunks;
+        let has_more = chunks.len() > limit;
+        chunks.truncate(limit);
+        let next = has_more
+            .then(|| chunks.last().map(|chunk| chunk.id.clone()))
+            .flatten();
+        Ok(Manifest {
+            version: MANIFEST_VERSION,
+            chunks,
+            has_more,
+            next,
+        })
     }
 
     pub async fn write_chunk(

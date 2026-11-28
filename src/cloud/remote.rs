@@ -7,6 +7,8 @@ use thiserror::Error;
 
 use crate::sync::{Manifest, MutationEntry, StoredMutation};
 
+use super::{MANIFEST_PAGE_LIMIT, MAX_MANIFEST_PAGES};
+
 const MAX_RESPONSE_BYTES: u64 = crate::sync::MAX_UNCOMPRESSED_CHUNK_BYTES;
 
 /// The enrolment entry that stands for every project.
@@ -131,10 +133,42 @@ impl RemoteClient {
         self.send_json(request, "health").await
     }
 
+    /// The whole manifest, following the pages the server answers with.
+    ///
+    /// `/sync/pull` stops at [`MANIFEST_PAGE_LIMIT`] entries and says so, and a
+    /// caller that took the first page would import part of a project and
+    /// report success. The page cap turns a server that keeps naming the same
+    /// cursor into an error instead of a loop.
     pub async fn pull_manifest(&self, project: &str) -> Result<Manifest, RemoteError> {
-        let url = self.endpoint_with_query("sync/pull", &[("project", project.to_owned())])?;
-        let request = self.authorized(self.client.get(url));
-        self.send_json(request, "pull manifest").await
+        let mut whole = Manifest::default();
+        let mut after: Option<String> = None;
+        for _ in 0..MAX_MANIFEST_PAGES {
+            let mut query = vec![
+                ("project", project.to_owned()),
+                ("limit", MANIFEST_PAGE_LIMIT.to_string()),
+            ];
+            if let Some(cursor) = &after {
+                query.push(("after", cursor.clone()));
+            }
+            let url = self.endpoint_with_query("sync/pull", &query)?;
+            let request = self.authorized(self.client.get(url));
+            let page: Manifest = self.send_json(request, "pull manifest").await?;
+            whole.version = page.version;
+            let next = page.next.clone();
+            whole.chunks.extend(page.chunks);
+            match next {
+                Some(cursor) if after.as_deref() != Some(cursor.as_str()) => after = Some(cursor),
+                Some(_) => {
+                    return Err(RemoteError::InvalidResponse(
+                        "the manifest cursor did not advance".to_owned(),
+                    ));
+                }
+                None => return Ok(whole),
+            }
+        }
+        Err(RemoteError::InvalidResponse(format!(
+            "the manifest was still answering after {MAX_MANIFEST_PAGES} pages"
+        )))
     }
 
     pub async fn push_chunk(
@@ -389,6 +423,92 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manifest_chunk(id: &str) -> Value {
+        serde_json::json!({
+            "id": id,
+            "created_by": "test",
+            "created_at": "2026-07-27T12:00:00Z",
+            "sessions": 1,
+            "memories": 0,
+            "prompts": 0,
+        })
+    }
+
+    async fn manifest_server(stuck: bool) -> std::net::SocketAddr {
+        use axum::{Json, Router, extract::Query, routing::get};
+
+        #[derive(Deserialize)]
+        struct Page {
+            after: Option<String>,
+        }
+
+        let app = Router::new().route(
+            "/sync/pull",
+            get(move |Query(page): Query<Page>| async move {
+                let Some(after) = page.after else {
+                    return Json(serde_json::json!({
+                        "version": 1,
+                        "chunks": [manifest_chunk("aaaa1111")],
+                        "has_more": true,
+                        "next": "bbbb2222",
+                    }));
+                };
+                if stuck {
+                    return Json(serde_json::json!({
+                        "version": 1,
+                        "chunks": [manifest_chunk("cccc3333")],
+                        "has_more": true,
+                        "next": after,
+                    }));
+                }
+                Json(serde_json::json!({
+                    "version": 1,
+                    "chunks": [manifest_chunk("cccc3333")],
+                    "has_more": false,
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn the_manifest_is_followed_until_the_page_that_says_it_is_whole() {
+        let address = manifest_server(false).await;
+        let client = RemoteClient::new(&format!("http://{address}"), "token").unwrap();
+
+        let manifest = client.pull_manifest("leteo").await.unwrap();
+
+        assert_eq!(
+            manifest
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["aaaa1111", "cccc3333"],
+            "a caller that took the first page would import part of a project"
+        );
+        assert!(!manifest.has_more);
+        assert_eq!(manifest.next, None);
+    }
+
+    #[tokio::test]
+    async fn a_manifest_cursor_that_does_not_advance_is_an_error() {
+        let address = manifest_server(true).await;
+        let client = RemoteClient::new(&format!("http://{address}"), "token").unwrap();
+
+        let error = client.pull_manifest("leteo").await.unwrap_err();
+
+        assert!(
+            matches!(error, RemoteError::InvalidResponse(ref message) if message.contains("cursor did not advance")),
+            "unexpected error: {error}"
+        );
+    }
 
     async fn chunk_server(bytes: usize) -> std::net::SocketAddr {
         use axum::{Router, routing::get};

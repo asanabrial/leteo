@@ -1259,6 +1259,35 @@ fn a_summary_the_recent_memories_no_longer_reach_is_still_found_by_its_session()
     );
 }
 
+/// A memory section asked for nothing lists nothing.
+///
+/// The floor of one here put a memory into `leteo context --limit 0`, while the
+/// tool truncated the same list to zero afterwards. A section is not a list's
+/// own page size: zero means leave it out.
+#[test]
+fn a_recent_memory_section_asked_for_nothing_lists_nothing() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "Leteo", "C:/repo").unwrap();
+    store
+        .add_observation(observation("s1", "One memory", "the body"))
+        .unwrap();
+
+    assert!(
+        store
+            .recent_memories(Some("leteo"), None, 0)
+            .unwrap()
+            .is_empty(),
+        "zero is a request for none of the section"
+    );
+    assert_eq!(
+        store.recent_memories(Some("leteo"), None, 1).unwrap().len(),
+        1,
+        "and one is still one"
+    );
+    let (pinned, omitted) = store.pinned_observations(Some("leteo"), None, 0).unwrap();
+    assert!(pinned.is_empty() && omitted == 0);
+}
+
 /// The opening block never spends its budget on a memory it lists separately.
 #[test]
 fn a_pinned_memory_does_not_also_take_a_place_among_the_recent_ones() {

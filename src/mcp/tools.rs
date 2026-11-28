@@ -280,11 +280,9 @@ impl LeteoMcpServer {
                 let store = self.lock_store()?;
                 let envelope = read_envelope(&store, params.project.as_deref(), fallback.as_ref())?;
                 let project = (!envelope.project.is_empty()).then_some(envelope.project);
+                let applied = params.limit.min(store.max_context_results());
                 let observations = store
-                    .observations_needing_review(
-                        project.as_deref(),
-                        Some(params.limit.min(store.max_context_results())),
-                    )
+                    .observations_needing_review(project.as_deref(), Some(applied))
                     .map_err(store_error)?;
                 let named: Vec<String> = observations
                     .iter()
@@ -297,6 +295,8 @@ impl LeteoMcpServer {
                     .max(0) as usize;
                 let mut listed = ReviewOutput::listing(observations, &caveats, due);
                 listed.hint = caveats_note;
+                listed.clamped =
+                    crate::mcp::output::clamped_limits(&[("limit", params.limit, applied)]);
                 Ok(Json(listed))
             }
             "mark_reviewed" => {
@@ -541,6 +541,12 @@ impl LeteoMcpServer {
             more,
             corrections,
         );
+        let applied = store.effective_search_limit(limit);
+        // A limit that is absent was never chosen by the caller, so there is
+        // nothing to report; one that was chosen and changed is, whether the
+        // store's maximum lowered it or the minimum of one raised it.
+        found.clamped =
+            crate::mcp::output::clamped_limits(&[("limit", limit.unwrap_or(applied), applied)]);
         crate::mcp::output::append_hint(&mut found.hint, caveats_note);
         Ok(Json(found))
     }
@@ -718,6 +724,16 @@ impl LeteoMcpServer {
             },
             &caveats,
         );
+        context.clamped = crate::mcp::output::clamped_limits(&[
+            ("limit", params.limit.unwrap_or(limit), limit),
+            ("session_limit", params.session_limit, session_limit),
+            ("prompt_limit", params.prompt_limit, prompt_limit),
+            (
+                "byte_limit",
+                params.byte_limit.unwrap_or(byte_budget),
+                byte_budget,
+            ),
+        ]);
         // Before `within`, so the bound is measured against the note too.
         crate::mcp::output::append_hint(&mut context.hint, caveats_note);
         // The ceiling above is the setting's own bytes or a caller's smaller
@@ -929,8 +945,9 @@ impl LeteoMcpServer {
         &self,
         Parameters(params): Parameters<TimelineParams>,
     ) -> Result<Json<TimelineOutput>, CallToolResult> {
-        let timeline = self
-            .lock_store()?
+        let store = self.lock_store()?;
+        let ceiling = store.max_context_results();
+        let timeline = store
             .timeline(
                 params.observation_id,
                 Some(params.before),
@@ -961,10 +978,13 @@ impl LeteoMcpServer {
                     .map(|entry| entry.sync_id.clone()),
             )
             .collect();
-        let (caveats, caveats_note) =
-            crate::mcp::output::read_caveats(&*self.lock_store()?, &named);
+        let (caveats, caveats_note) = crate::mcp::output::read_caveats(&store, &named);
         let mut output = TimelineOutput::new(timeline, &caveats);
         output.hint = caveats_note;
+        output.clamped = crate::mcp::output::clamped_limits(&[
+            ("before", params.before, params.before.min(ceiling)),
+            ("after", params.after, params.after.min(ceiling)),
+        ]);
         Ok(Json(output))
     }
 

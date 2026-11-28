@@ -894,7 +894,8 @@ impl ServerHandler for LeteoMcpServer {
         // revision guess, and a refusal carries its `error.code` in the text a
         // recovery flow can read.
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.router.call(tcc).await
+        let response = self.router.call(tcc).await?;
+        Ok(structured_parameter_refusal(response))
     }
 
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
@@ -1271,6 +1272,44 @@ fn structured_error(code: &str, message: impl Into<String>) -> CallToolResult {
     }))
 }
 
+/// rmcp's prefix for the one refusal it builds itself.
+///
+/// `Parameters<T>` deserialises inside the router, which turns its error into
+/// a bare `CallToolResult::error(vec![text])` — no `structuredContent`, so a
+/// caller that reads `error.code` has nothing to read. The prefix is not
+/// exported, so it is copied here and a test pins the result: a type error and
+/// an unknown field both come back with `invalid_params`.
+const PARAMETER_REFUSAL_PREFIX: &str = "failed to deserialize parameters:";
+
+/// Gives a caller's bad arguments the code every other refusal carries.
+///
+/// A parameter refusal is the caller's mistake, not the tool's, and the one
+/// surface that used to word it as bare text was the only place `error.code`
+/// went missing — 31 of 159 error replies on a measured run. The message is
+/// kept as rmcp wrote it, because it names the field and what was wrong with
+/// it, and that sentence is more useful than a code alone.
+fn structured_parameter_refusal(
+    response: rmcp::model::CallToolResponse,
+) -> rmcp::model::CallToolResponse {
+    let rmcp::model::CallToolResponse::Complete(result) = response else {
+        return response;
+    };
+    if result.is_error != Some(true) || result.structured_content.is_some() {
+        return rmcp::model::CallToolResponse::Complete(result);
+    }
+    let message = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text())
+        .map(|text| text.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !message.starts_with(PARAMETER_REFUSAL_PREFIX) {
+        return rmcp::model::CallToolResponse::Complete(result);
+    }
+    structured_error(error_code::INVALID_PARAMS, message).into()
+}
+
 fn structured_error_with(
     code: &str,
     message: impl Into<String>,
@@ -1358,6 +1397,7 @@ use output::*;
 pub(crate) use output::{
     CONTEXT_ENVELOPE_FLOOR, ELSEWHERE_CAP, MORE_MATCHED_HINT, NO_MATCH_HINT, PARTIAL_MATCH_HINT,
     SEMANTIC_MATCH_HINT, clamped_hint, corrected_terms_hint, no_match_here_hint,
+    refiled_scope_hint, search_page,
 };
 use params::*;
 

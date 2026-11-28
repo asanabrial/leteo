@@ -212,16 +212,11 @@ fn an_unknown_revision_falls_back_to_the_ceiling_and_gets_no_cache_fields() {
     );
 }
 
-/// A refusal the parameters never got past keeps its text and has no structured
-/// half, at every revision.
-///
-/// rmcp refuses a call whose arguments do not match the tool's schema before
-/// any tool runs, as a tool-level error whose only content is the message. It
-/// has no `structuredContent` to repeat, so the reply shape has nothing to
-/// duplicate or replace — and a regression that swapped every text block for a
-/// pointer would leave the caller with the pointer and no message at all.
+/// A refusal the parameters never got past carries the same code as any other:
+/// a caller's bad arguments are a refusal, and a caller that reads `error.code`
+/// had nothing to read when rmcp worded it as bare text.
 #[test]
-fn a_refusal_with_no_structured_half_keeps_its_text() {
+fn a_parameter_refusal_carries_the_code_every_refusal_does() {
     for revision in ["2024-11-05", "2025-06-18", "2025-11-25", "2026-07-28"] {
         let reply = call_tool_at(revision, "mem_doctor", json!({"bogus": 1}));
         assert_eq!(
@@ -229,9 +224,20 @@ fn a_refusal_with_no_structured_half_keeps_its_text() {
             Some(true),
             "{revision} should refuse parameters the tool does not take: {reply}"
         );
+        let structured = reply.get("structuredContent").unwrap_or_else(|| {
+            panic!("{revision} refused parameters without a structured half: {reply}")
+        });
+        assert_eq!(
+            structured["error"]["code"],
+            json!("invalid_params"),
+            "{revision} gave a parameter refusal a different code: {reply}"
+        );
+        let message = structured["error"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{revision} dropped the refusal message: {reply}"));
         assert!(
-            reply.get("structuredContent").is_none(),
-            "{revision} answered a schema refusal with a structured half: {reply}"
+            message.contains("unknown field `bogus`"),
+            "{revision} replaced the refusal message with a pointer: {message}"
         );
         let text = reply["content"][0]["text"]
             .as_str()

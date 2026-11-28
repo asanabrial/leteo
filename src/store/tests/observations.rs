@@ -647,6 +647,13 @@ fn recent_sessions_and_timeline_follow_activity_and_session_boundaries() {
     assert_eq!(timeline.before_total + timeline.after_total + 1, 3);
     assert_eq!(timeline.session_info.unwrap().id, "s1");
 
+    // The listing is the sessions with a summary; without one there is no line
+    // to print, whatever the session recorded.
+    store
+        .end_session("s1", Some("The session both memories were written in"))
+        .unwrap();
+    store.end_session("s2", Some("The other session")).unwrap();
+
     let sessions = store.recent_sessions(None, Some(10)).unwrap();
     assert_eq!(sessions[0].id, "s1");
     assert_eq!(sessions[0].observation_count, 3);

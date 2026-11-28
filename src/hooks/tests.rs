@@ -499,7 +499,81 @@ fn post_compaction_recovers_context_without_the_full_protocol() {
     assert!(!context.contains("### Save important work"));
 }
 
-/// Pi stores the compaction summary before it runs the hook, and was then told
+/// A store whose reads fail, and the connection holding it that way.
+///
+/// WAL lets a reader through a writer's lock, so the journal goes back to a
+/// rollback one and the holder takes the exclusive lock that stops reads. The
+/// store's wait is short so the test is about the answer, not the budget.
+fn unreadable_store(database: &Path) -> (Store, rusqlite::Connection) {
+    let store = Store::open(StoreConfig {
+        busy_timeout: Duration::from_millis(50),
+        ..StoreConfig::new(database)
+    })
+    .unwrap();
+    store
+        .connection()
+        .execute_batch("PRAGMA journal_mode = DELETE")
+        .unwrap();
+    let holder = rusqlite::Connection::open(database).unwrap();
+    holder.busy_timeout(Duration::from_secs(30)).unwrap();
+    holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    (store, holder)
+}
+
+/// A store that cannot be read is not an empty project.
+///
+/// The post-compaction block answered a read failure with "No previous memory
+/// found for this project." — the same sentence as a project nobody has saved
+/// under. An agent told there is nothing proceeds as if starting fresh, when
+/// the memories it needed may be there and the store simply could not answer.
+#[test]
+fn a_store_that_cannot_be_read_says_so_after_a_compaction() {
+    let (temp, mut store) = store();
+    run(&mut store, HookEvent::SessionStart, &input(temp.path())).unwrap();
+    let database = store.database_path().to_path_buf();
+    drop(store);
+
+    let (mut store, holder) = unreadable_store(&database);
+    let said = run(&mut store, HookEvent::PostCompaction, &input(temp.path()))
+        .expect("a store that cannot be read is an answer, not a failed hook")
+        .additional_context
+        .unwrap();
+    holder.execute_batch("ROLLBACK").unwrap();
+
+    assert!(
+        said.contains("could not read its store"),
+        "a read failure has to say so: {said}"
+    );
+    assert!(
+        !said.contains("No previous memory found"),
+        "and must not be reported as an empty project: {said}"
+    );
+}
+
+/// The session opening says it too, rather than leaving the section out.
+///
+/// A missing section reads exactly like a fresh install, and it is the first
+/// thing an agent learns about the store.
+#[test]
+fn a_store_that_cannot_be_read_says_so_when_the_session_opens() {
+    let (temp, store) = store();
+    let database = store.database_path().to_path_buf();
+    drop(store);
+
+    let (mut store, holder) = unreadable_store(&database);
+    let said = run(&mut store, HookEvent::SessionStart, &input(temp.path()))
+        .expect("a store that cannot be read is an answer, not a failed hook")
+        .additional_context
+        .unwrap();
+    holder.execute_batch("ROLLBACK").unwrap();
+
+    assert!(
+        said.contains("could not read its store"),
+        "the opening has to say the store could not be read: {said}"
+    );
+}
+
+/// Pi stores the compaction summary before it runs the hook, and was then told/// Pi stores the compaction summary before it runs the hook, and was then told
 /// to persist it again. A host that says it already did gets a recovery that
 /// leaves the instruction out and keeps everything else.
 #[test]

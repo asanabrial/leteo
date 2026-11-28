@@ -2246,6 +2246,11 @@ fn context_includes_recent_sessions_and_prompts() {
                 project: Some("leteo".to_owned()),
             })
             .unwrap();
+        // The session line prints a summary; a session without one has no line
+        // and does not take a row of the section.
+        store
+            .end_session("context", Some("What the context was for"))
+            .unwrap();
     }
 
     let params: ContextParams = serde_json::from_value(json!({ "project": "leteo" })).unwrap();
@@ -5392,6 +5397,9 @@ fn the_opening_context_dates_a_session_by_its_activity_and_quotes_a_prompt_plain
                 project: Some("leteo".to_owned()),
             })
             .unwrap();
+        store
+            .end_session("old", Some("Why the widened stage costs so much"))
+            .unwrap();
     }
 
     let context = server
@@ -7141,6 +7149,9 @@ fn zero_leaves_a_section_out_and_the_schema_says_which_zero_it_is() {
                 project: Some("leteo".to_owned()),
             })
             .unwrap();
+        store
+            .end_session("s1", Some("Para que servia la sesion"))
+            .unwrap();
     }
     let context = |value: serde_json::Value| {
         server
@@ -7347,6 +7358,10 @@ fn every_list_mem_context_returns_stops_at_the_ceiling_it_publishes() {
                 })
                 .unwrap();
         }
+        // The section prints a line per session, and the line is the summary.
+        store
+            .end_session(&id, Some(&format!("What session {session} was for")))
+            .unwrap();
     }
     let server = LeteoMcpServer::with_options(Arc::new(Mutex::new(store)), McpOptions::default());
 

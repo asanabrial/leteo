@@ -387,22 +387,29 @@ impl Store {
         get_session_row(&self.connection, id)
     }
 
-    /// The recent sessions that recorded something, for a context to name.
+    /// The recent sessions with something to say, for a context to name.
     ///
     /// A session row is created the moment a conversation starts, because it is
-    /// what anything saved later hangs off. A conversation that then saves
-    /// nothing and writes no summary leaves a row carrying no information at
-    /// all — same project, no summary, nothing recorded — and listing it says
-    /// only that somebody opened a terminal.
+    /// what anything saved later hangs off. The block prints one line per
+    /// session — its summary — so a session without one has no line to print,
+    /// whether it recorded nothing at all or recorded memories that are listed
+    /// under their own headings.
     ///
-    /// They crowd out the ones worth naming, which is what this section is for.
-    /// On a real store 59 sessions of 483 were empty that way, and of the five
-    /// most recent for one project, four were: the part of the opening context
-    /// meant to say what has been worked on lately listed four conversations
-    /// that did nothing and one that did.
+    /// The ones with nothing to print crowd out the ones worth naming. On a
+    /// real store 59 sessions of 483 were empty that way, and of the five most
+    /// recent for one project, four were: the part of the opening context meant
+    /// to say what has been worked on lately listed four conversations that did
+    /// nothing and one that did. The filter used to run after this limit,
+    /// against the five rows this returned — so those four took the places and
+    /// the block printed one line where it had room for five.
     ///
-    /// Filtered here rather than deleted anywhere: an empty session is still
-    /// the anchor a later save needs, and still a row the dashboard can show.
+    /// A summary is the row's own column or a `session_summary` memory the
+    /// caller folds onto it, so both count here; a memory the graph has
+    /// superseded does not, because the fold will not use it.
+    ///
+    /// Filtered here rather than deleted anywhere: a session without a summary
+    /// is still the anchor a later save needs, and still a row the dashboard can
+    /// show.
     pub fn recent_sessions(
         &self,
         project: Option<&str>,
@@ -416,6 +423,11 @@ impl Store {
         let mut narrowing = Narrowing::new();
         narrowing.equals("s.project", project.as_ref());
         let limit = narrowing.bind(&limit);
+        // The `EXISTS` reads the same rows `fold_session_summaries` will: an
+        // unsuperseded summary of this session. Spelled with the `o` alias the
+        // relation guard expects, re-scoped inside the subquery.
+        let summary = crate::memory::model::SESSION_SUMMARY;
+        let unsuperseded = super::relations::not_superseded();
         let mut statement = self.connection.prepare(&format!(
             "SELECT s.id, s.project, s.started_at, s.ended_at, s.summary, COUNT(o.id),
                     MAX(datetime(COALESCE(o.created_at, s.started_at)))
@@ -423,7 +435,12 @@ impl Store {
              LEFT JOIN observations o ON o.session_id = s.id AND o.deleted_at IS NULL
              WHERE 1 = 1{}
              GROUP BY s.id
-             HAVING COUNT(o.id) > 0 OR trim(ifnull(s.summary, '')) <> ''
+             HAVING trim(ifnull(s.summary, '')) <> ''
+                 OR EXISTS (SELECT 1 FROM observations o
+                             WHERE o.session_id = s.id
+                               AND o.deleted_at IS NULL
+                               AND o.type = '{summary}'
+                               AND {unsuperseded})
              ORDER BY MAX(datetime(COALESCE(o.created_at, s.started_at))) DESC, s.id DESC
              LIMIT ?{limit}",
             narrowing.clauses()

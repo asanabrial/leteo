@@ -188,6 +188,30 @@ pub(super) struct Recall {
     pub(super) caveats: Vec<String>,
 }
 
+/// What the opening block found.
+///
+/// "Nothing" and "could not read" are two different answers and used to be one
+/// `None`. An agent told there is no memory of the project proceeds as if
+/// starting fresh; one told the store could not be read knows the memory may be
+/// there and that nothing here says otherwise.
+pub(super) enum Recalled {
+    /// The block, and the memories it names.
+    Found(String, Listed),
+    /// The read succeeded and the project holds nothing to open with.
+    Empty,
+    /// The read failed; the cause is already in the outcome's warnings.
+    Unreadable,
+}
+
+/// What the block says when the store could not be read.
+///
+/// A hook cannot stop the turn it is answering, so the sentence is the whole
+/// remedy: it has to name the failure, and it has to say the failure is not an
+/// empty project, or the agent reads it as one.
+pub(super) const UNREADABLE_BLOCK: &str = "## Memory from Previous Sessions\n\n\
+     Leteo could not read its store just now, so earlier memories are not shown here. \
+     That is not the same as none: try again once the store is free.\n";
+
 /// The opening block, and what it lists. See [`crate::recall::Listed`] for why
 /// the ids come out of the renderer rather than from asking again.
 pub(super) fn memory_context(
@@ -195,7 +219,7 @@ pub(super) fn memory_context(
     project: &str,
     settings: &crate::settings::Settings,
     outcome: &mut HookOutcome,
-) -> Option<(String, Listed)> {
+) -> Recalled {
     // How many, from the setting rather than from a constant: the block is
     // what a session costs before anybody has asked anything, and the curve
     // that decides the sizes is in `ContextSize`.
@@ -228,12 +252,9 @@ pub(super) fn memory_context(
         // One line, and only when both halves are true: this project holds
         // nothing and some other one holds something. Somebody with a single
         // project never sees it.
-        Ok((context, _)) if context.trim().is_empty() => store
-            .memories_outside(project, crate::mcp::ELSEWHERE_CAP)
-            .ok()
-            .filter(|held| *held > 0)
-            .map(|held| {
-                (
+        Ok((context, _)) if context.trim().is_empty() => {
+            match store.memories_outside(project, crate::mcp::ELSEWHERE_CAP) {
+                Ok(held) if held > 0 => Recalled::Found(
                     format!(
                         "## Memory from Previous Sessions\n\n{}\n",
                         crate::mcp::no_match_here_hint(
@@ -244,12 +265,18 @@ pub(super) fn memory_context(
                         )
                     ),
                     Listed::default(),
-                )
-            }),
-        Ok(counted) => Some(counted),
+                ),
+                // A failed count is not a count of zero, but the block it would
+                // have produced is the one that says another project holds
+                // something. Saying nothing is the answer that cannot be wrong
+                // about the project in front of the agent.
+                _ => Recalled::Empty,
+            }
+        }
+        Ok((context, listed)) => Recalled::Found(context, listed),
         Err(error) => {
             outcome.warnings.push(super::said("memory context", &error));
-            None
+            Recalled::Unreadable
         }
     }
 }

@@ -276,10 +276,9 @@ impl LeteoMcpServer {
                 // names this tool as the way to read them, so a listing that
                 // answered about the whole store disagreed with the sentence
                 // that sent the agent here.
-                let project = params
-                    .project
-                    .clone()
-                    .or_else(|| self.read_project().map(|(detected, _source)| detected));
+                let fallback = self.read_project();
+                let project = requested_project(params.project.as_deref())
+                    .or_else(|| fallback.map(|(detected, _source)| detected));
                 let store = self.lock_store()?;
                 let observations = store
                     .observations_needing_review(
@@ -484,14 +483,6 @@ impl LeteoMcpServer {
         let fallback = (!params.all_projects)
             .then(|| self.read_project())
             .flatten();
-        let project = if params.all_projects {
-            None
-        } else {
-            params
-                .project
-                .clone()
-                .or_else(|| fallback.as_ref().map(|(project, _)| project.clone()))
-        };
         let envelope = if params.all_projects {
             ProjectEnvelope {
                 project_source: SOURCE_ALL_PROJECTS.to_owned(),
@@ -500,6 +491,11 @@ impl LeteoMcpServer {
         } else {
             ProjectEnvelope::for_read(params.project.as_deref(), fallback.as_ref())
         };
+        // The name the store narrows by is the name the reply reports, read
+        // from the envelope rather than resolved a second time. The two used to
+        // disagree on a blank project: the envelope named the detected one and
+        // the store searched the empty one.
+        let project = (!envelope.project.is_empty()).then(|| envelope.project.clone());
         let store = self.lock_store()?;
         let cap = store.max_search_results();
         let limit = params.limit;
@@ -522,7 +518,8 @@ impl LeteoMcpServer {
             .map(|result| result.observation.sync_id.clone())
             .collect();
         let (caveats, caveats_note) = crate::mcp::output::read_caveats(&store, &named);
-        let inferred = params.project.is_none() && !params.all_projects;
+        let inferred =
+            requested_project(params.project.as_deref()).is_none() && !params.all_projects;
         let elsewhere = match (results.is_empty() && inferred, fallback.as_ref()) {
             (true, Some((project, _))) => store
                 .strict_matches_unnarrowed(
@@ -624,14 +621,11 @@ impl LeteoMcpServer {
         } else {
             ProjectEnvelope::for_read(params.project.as_deref(), fallback.as_ref())
         };
-        let inferred = params.project.is_none() && !params.all_projects;
-        let project = if params.all_projects {
-            None
-        } else {
-            params
-                .project
-                .or_else(|| fallback.as_ref().map(|(project, _)| project.clone()))
-        };
+        let inferred =
+            requested_project(params.project.as_deref()).is_none() && !params.all_projects;
+        // The same name the envelope reports, for the reason search reads it
+        // there: a blank project must not narrow the store to an empty one.
+        let project = (!envelope.project.is_empty()).then(|| envelope.project.clone());
         let store = self.lock_store()?;
         // One read of the settings file for the two answers that come out of
         // it, rather than one each. Read on each call rather than captured at

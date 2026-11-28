@@ -2124,6 +2124,100 @@ fn the_override_is_reported_as_the_authority_on_reads() {
     );
 }
 
+/// A blank project reads the project the reply names.
+///
+/// Agents send `""` for an optional field. The envelope resolved it to the
+/// detected project and the reply said so, but the project handed to the store
+/// was `Some("")`: the read narrowed to a project named nothing, found nothing,
+/// and answered that nothing matched. The search, the context and the review
+/// list each took that path.
+#[test]
+fn a_blank_project_reads_the_project_the_reply_names() {
+    let (_temp, server) = test_server(McpOptions {
+        default_project: Some("leteo".to_owned()),
+        ..McpOptions::default()
+    });
+    let memory = {
+        let mut store = server.lock_store().unwrap();
+        store
+            .create_session("blank", "leteo", "C:/workspace")
+            .unwrap();
+        store
+            .add_observation(AddObservation {
+                session_id: "blank".to_owned(),
+                kind: "decision".to_owned(),
+                title: "The caching decision".to_owned(),
+                content: "cache sentinel".to_owned(),
+                tool_name: None,
+                project: Some("leteo".to_owned()),
+                scope: "project".to_owned(),
+                topic_key: None,
+                prompt_sync_id: None,
+            })
+            .unwrap()
+            .observation
+    };
+
+    let searched = server
+        .mem_search(Parameters(
+            serde_json::from_value(json!({ "query": "caching", "project": "" })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(searched.project_context.project, "leteo");
+    // Blank is not a request: the envelope says the project came from where an
+    // absent field would have taken it.
+    assert_eq!(
+        searched.project_context.project_source,
+        crate::project::SOURCE_PROCESS_OVERRIDE
+    );
+    assert_eq!(
+        searched
+            .results
+            .iter()
+            .map(|result| result.observation.id)
+            .collect::<Vec<_>>(),
+        vec![memory.id],
+        "a blank project is the detected one, not an empty one: {:?}",
+        searched.hint
+    );
+
+    let context = server
+        .mem_context(Parameters(
+            serde_json::from_value(json!({ "project": "" })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(context.project_context.project, "leteo");
+    assert!(
+        context
+            .observations
+            .iter()
+            .any(|observation| observation.id == memory.id),
+        "the context narrowed to the empty name"
+    );
+
+    make_due(&server, memory.id);
+    let due = server
+        .mem_review(Parameters(
+            serde_json::from_value(json!({ "action": "list", "project": "" })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(due.count, 1);
+    assert_eq!(due.observations[0].id, memory.id);
+
+    // A whitespace-only project is the same field sent blank.
+    let spaced = server
+        .mem_search(Parameters(
+            serde_json::from_value(json!({ "query": "caching", "project": "  " })).unwrap(),
+        ))
+        .unwrap()
+        .0;
+    assert_eq!(spaced.project_context.project, "leteo");
+    assert_eq!(spaced.results.len(), 1);
+}
+
 #[test]
 fn context_includes_recent_sessions_and_prompts() {
     let (_temp, server) = test_server(McpOptions::default());

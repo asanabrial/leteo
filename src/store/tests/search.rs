@@ -963,6 +963,109 @@ fn a_prompt_is_read_past_its_opening_words() {
     );
 }
 
+/// A function word alone is not evidence that a memory is about the prompt.
+///
+/// `for` is rare enough in a store of four memories to score better than the
+/// floor on its own: asking for a name for a cat named the paging decision
+/// until this rule existed. The limit is ten, well past the four memories, so
+/// nothing here is excluded by how many were asked for — the paging memory is
+/// absent because the rule refused it, and the naming memory is present because
+/// the prompt is about it.
+#[test]
+fn a_function_word_alone_is_not_evidence_of_a_subject() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for (title, body) in [
+        (
+            "Keyset pagination for the orders list",
+            "a (created_at, id) cursor makes page N cost the same as page 1",
+        ),
+        (
+            "Naming a release",
+            "a release takes the name of the tag that published it",
+        ),
+        (
+            "The office cat",
+            "a cat sleeps on the keyboard and wakes when the build fails",
+        ),
+        (
+            "Suggesting a name in the review",
+            "the reviewer suggests a name and the cat is never consulted about it",
+        ),
+    ] {
+        store
+            .add_observation(observation("s1", title, body))
+            .unwrap();
+    }
+
+    let named = store
+        .prompt_matches("suggest a name for a cat", "leteo", 10)
+        .unwrap();
+    let titles: Vec<&str> = named.iter().map(|memory| memory.title.as_str()).collect();
+    assert!(
+        titles.contains(&"Suggesting a name in the review"),
+        "the memory the prompt is about is named: {titles:?}"
+    );
+    assert!(
+        !titles.contains(&"Keyset pagination for the orders list"),
+        "`for` is the only word the paging memory shares: {titles:?}"
+    );
+
+    assert_eq!(
+        store
+            .prompt_matches("suggest a name for a cat", "leteo", 1)
+            .unwrap()
+            .len(),
+        1,
+        "the caller's limit still bounds what is named"
+    );
+}
+
+/// The function words are read from every language, not only English.
+///
+/// `para` is Spanish and Portuguese and `que` is Spanish, French and Catalan,
+/// so the exclusive map `detect` counts holds neither: asking that map this
+/// question answers no for both. Then `que para como` carries content, the
+/// index memory matches two of those words strongly enough to clear the floor,
+/// and it is named. With the lists read as a union, the prompt has no subject
+/// word and is answered with nothing.
+///
+/// The named-memory side of the rule is the English test beside this one; the
+/// only difference between them is which lists a word is looked up in.
+#[test]
+fn a_spanish_function_word_alone_is_not_evidence_either() {
+    let (_temp, mut store) = store();
+    store.create_session("s1", "leteo", "C:/repo").unwrap();
+    for (title, body) in [
+        (
+            "Índice parcial para los pedidos activos",
+            "el 90% de las filas están archivadas y el índice bajó de 3 GB a 280 MB",
+        ),
+        (
+            "El nombre del gato",
+            "el gato se llama Miso y el nombre que le pusieron consta en la libreta",
+        ),
+        (
+            "Sugerir un nombre",
+            "cuando alguien sugiere un nombre, el gato decide y nadie discute",
+        ),
+        (
+            "Nombres en la revisión",
+            "el revisor apunta el nombre para el gato del equipo",
+        ),
+    ] {
+        store
+            .add_observation(observation("s1", title, body))
+            .unwrap();
+    }
+
+    let named = store.prompt_matches("que para como", "leteo", 10).unwrap();
+    assert!(
+        named.is_empty(),
+        "`que` and `para` reach the memories and say nothing about the prompt: {named:?}"
+    );
+}
+
 /// Search reads two indexes, and each rescues what the other loses.
 ///
 /// The stemmed index is what lets a question asked with a different ending

@@ -34,9 +34,16 @@ pub(super) const RECALL_LIMIT: usize = 3;
 /// can see the session or the clock.
 ///
 /// What the choosing is: one relevance floor relative to the median of the
-/// candidates, `RECALL_MARGIN`, the same for every memory. It used to be looser
-/// for a memory outside the session's opening block, and that looser bar was
-/// worth thirty-three prompts of silence for one hit.
+/// candidates, `RECALL_MARGIN`, the same for every memory; and a candidate has
+/// to share a word with the prompt that is not a function word. It used to be
+/// looser for a memory outside the session's opening block, and that looser bar
+/// was worth thirty-three prompts of silence for one hit.
+///
+/// The function-word rule is the one the labelled set in
+/// `tools/memory-bench/session_cost_data/labels.hint.tsv` was checked in for: it
+/// takes a neutral
+/// prompt sharing only `the` with a store of titles that all begin "The" out of
+/// the hint, without costing a related prompt.
 ///
 /// Most of what is still missed is missed by full-text search rather than by
 /// the threshold: a third of the failures are a question asked in Spanish

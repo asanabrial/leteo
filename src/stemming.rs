@@ -292,6 +292,23 @@ const MINIMUM_HITS: usize = 3;
 const LEAD_NUMERATOR: usize = 3;
 const LEAD_DENOMINATOR: usize = 2;
 
+/// Whether `word` is a function word in any language this store knows.
+///
+/// The lists are [`STOP_WORDS`], the same ones [`detect`] counts: a word on one
+/// of them is a word that language's detector uses to *recognise* the language
+/// rather than to say what the text is about, which is exactly the standing that
+/// keeps it from being evidence of a subject on its own.
+///
+/// Membership in any list, not the exclusive map beside this: `para` is Spanish
+/// and Portuguese, `el` is Spanish and Catalan, and a prompt needs no more than
+/// one language to have used it as a preposition either way.
+pub fn is_function_word(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    STOP_WORDS
+        .iter()
+        .any(|(_, words)| words.contains(&lower.as_str()))
+}
+
 /// Each word that names exactly one language, with that language's position in
 /// [`STOP_WORDS`].
 fn recognised_words() -> &'static HashMap<&'static str, usize> {
@@ -582,6 +599,20 @@ mod tests {
             detect("", "de que de que de que de que de que"),
             Interface::English
         );
+    }
+
+    /// A word two languages share is still a function word.
+    ///
+    /// The map `detect` counts keeps only the words that name one language, and
+    /// asking it this question would answer no for `para` and `el`, which are
+    /// exactly the words a Spanish prompt is held together by.
+    #[test]
+    fn a_shared_function_word_is_still_a_function_word() {
+        assert!(is_function_word("the"));
+        assert!(is_function_word("para"));
+        assert!(is_function_word("el"));
+        assert!(is_function_word("THE"), "the prompt's words are lowercased");
+        assert!(!is_function_word("cache"));
     }
 
     #[test]

@@ -16,7 +16,8 @@ store and read what the model would read:
   Labels (--labels TSV). Replays the per-prompt hook once per hand-labelled
   prompt, in a fresh session each time, and scores it: silent on a prompt that
   needs nothing, naming a memory the labeller marked as the right one on a
-  prompt that has one.
+  prompt that has one, the precision of every line named, and the tokens and
+  bytes the hint cost.
 
 Nothing here touches the store it is given. Every store is copied into a
 temporary directory with SQLite's backup API first and every engine runs with
@@ -37,6 +38,7 @@ must not be set beside a tiktoken run.
 """
 
 import argparse
+import importlib
 import json
 import math
 import os
@@ -523,7 +525,7 @@ def read_labels(path):
     cut back to how it stood at `created_at` before the prompt; any other value
     replays against the store as it is.
     """
-    lines = pathlib.Path(path).read_text().splitlines()
+    lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
     out = []
     for line in lines[1:]:
         if not line.strip():
@@ -569,7 +571,8 @@ def replay(eng, items, count):
         so, se, rc, ms = eng.hook("prompt", str(uuid.uuid4()), prompt=it["prompt"], permission_mode="default")
         vis = visible_hook_text(so)
         res.append({**{k: it[k] for k in ("id", "label", "best", "source")}, "rc": rc,
-                    "injected": [int(x) for x in NAMED.findall(vis)], "tokens": count(vis), "ms": ms, "visible": vis})
+                    "injected": [int(x) for x in NAMED.findall(vis)], "tokens": count(vis),
+                    "bytes": len(vis.encode("utf-8")), "ms": ms, "visible": vis})
     return res
 
 
@@ -577,14 +580,26 @@ def score(res):
     neutral = [r for r in res if r["label"] == "neutral"]
     related = [r for r in res if r["label"] == "related"]
     ms = sorted(r["ms"] for r in res)
+    named = sum(len(set(r["injected"])) for r in res)
+    named_right = sum(len(set(r["injected"]) & set(r["best"])) for r in res)
     return {
         "neutral": len(neutral),
         "neutral_silent": sum(not r["injected"] for r in neutral),
+        "neutral_spoke": sum(bool(r["injected"]) for r in neutral),
         "related": len(related),
         "related_named": sum(bool(set(r["injected"]) & set(r["best"])) for r in related),
         "related_spoke_wrong": sum(bool(r["injected"]) and not set(r["injected"]) & set(r["best"]) for r in related),
+        "named": named,
+        "named_right": named_right,
+        # `None` rather than zero when nothing was named: a silent run and one
+        # that named only the wrong memories are different results, and 0.0 says
+        # the second about the first. JSON keeps the distinction; the text says
+        # which one it is.
+        "precision": round(named_right / named, 3) if named else None,
         "tokens_neutral": sum(r["tokens"] for r in neutral),
         "tokens_total": sum(r["tokens"] for r in res),
+        "bytes_neutral": sum(r["bytes"] for r in neutral),
+        "bytes_total": sum(r["bytes"] for r in res),
         "hook_failures": sum(r["rc"] != 0 for r in res),
         "ms_median": round(statistics.median(ms)) if ms else 0,
         "ms_p90": round(ms[min(len(ms) - 1, int(0.9 * len(ms)))]) if ms else 0,
@@ -603,10 +618,17 @@ def run_labels(args, count, unit, work):
     eng.refuse_failed_measurement()
     s = score(res)
     print(f"\nUnit: {unit}. {len(items)} labelled prompts, store copy of {args.leteo_store}\n")
-    print(f"silent on neutral prompts : {s['neutral_silent']}/{s['neutral']}")
+    print(f"silent on neutral prompts : {s['neutral_silent']}/{s['neutral']}"
+          f" (spoke on {s['neutral_spoke']})")
     print(f"named a right memory      : {s['related_named']}/{s['related']} related prompts"
           f" ({s['related_spoke_wrong']} spoke and named a wrong one)")
+    if s["named"]:
+        print(f"precision                 : {s['precision']} ({s['named_right']} of {s['named']} named)"
+              f"; {s['named'] - s['named_right']} were not a labelled memory")
+    else:
+        print("precision                 : nothing named")
     print(f"tokens                    : {s['tokens_total']} total, {s['tokens_neutral']} on neutral prompts")
+    print(f"bytes                     : {s['bytes_total']} total, {s['bytes_neutral']} on neutral prompts")
     print(f"hook latency              : median {s['ms_median']} ms, p90 {s['ms_p90']} ms"
           f"; non-zero exits: {s['hook_failures']}")
     if args.json:
@@ -617,16 +639,17 @@ def run_labels(args, count, unit, work):
 # --- fixture ----------------------------------------------------------------
 
 def build_fixture(args, work):
-    """Write `comparison_corpus.corpus()` to an empty Leteo store through mem_save.
+    """Write `--fixture-corpus`'s corpus to an empty Leteo store through mem_save.
 
-    Memory ids are assigned in write order, so `labels.example.tsv` can name
-    them, and a test holds the file's titles to the ids this produces. Timestamps
-    are then stamped to fixed values, one hour apart, so the time-cut rows of the
-    example labels cut the store at a known place.
+    Memory ids are assigned in write order, so the labels for the chosen corpus
+    can name them: `labels.example.tsv` with the comparison corpus, and
+    `labels.hint.tsv` with the hint one. A test holds each file's titles to the
+    ids this produces. Timestamps are then stamped to fixed values, one hour
+    apart, so the time-cut rows of the example labels cut the store at a known
+    place.
     """
     sys.path.insert(0, str(HERE))
-    import comparison_corpus
-    corpus = comparison_corpus.corpus()
+    corpus = importlib.import_module(f"{args.fixture_corpus}_corpus").corpus()
     eng = Engine("leteo", args.leteo_bin, args.build_fixture_seed or empty_store(work, args.leteo_bin), work, corpus[0]["project"])
     servers = {}
     for mem in corpus:
@@ -703,6 +726,9 @@ def parser():
     p.add_argument("--raw-dir", help="write each engine's captured model-visible text here")
     p.add_argument("--build-fixture", metavar="OUT.db",
                    help="write the synthetic fixture store to OUT.db with --leteo-bin and exit")
+    p.add_argument("--fixture-corpus", choices=("comparison", "hint"), default="comparison",
+                   help="which corpus --build-fixture writes: the held-out comparison one (labels.example.tsv) "
+                        "or the bilingual store the hint is labelled against (labels.hint.tsv)")
     p.add_argument("--build-fixture-seed", help=argparse.SUPPRESS)
     return p
 

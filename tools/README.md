@@ -392,9 +392,15 @@ most of its bytes and is not sent to the model.
 `--labels FILE.tsv` replays the per-prompt hint instead: once per labelled
 prompt, in a fresh session, over the store as it is (`source` other than `real`)
 or cut back to how it stood at the prompt's `created_at` (`source` `real`). It
-reports how often the hook is silent on prompts labelled `neutral` and how often
-it names a memory from `best_memory_ids` on prompts labelled `related`, with the
-tokens it cost. `--only real|synthetic` replays one source. The columns are
+reports how often the hook is silent on prompts labelled `neutral`, how often it
+names a memory from `best_memory_ids` on prompts labelled `related`, the
+precision of every line it names, and the tokens and bytes it cost.
+`session_cost_data/labels.hint.tsv` is the set the hint is tuned against: 40
+prompts in English and Spanish over `hint_corpus.py`, 25 related and 15 neutral,
+the paella prompt the hint was caught answering with database memories among
+them. `--build-fixture OUT.db --fixture-corpus hint` writes the store it is
+labelled against; a test holds each labelled id to the memory the file at that
+position holds. `--only real|synthetic` replays one source. The columns are
 `id, created_at, project, source, prompt, label, best_memory_ids`, and later
 columns are ignored. `session_cost_data/labels.example.tsv` is a synthetic
 example; `--build-fixture OUT.db` writes the store it was labelled against, the

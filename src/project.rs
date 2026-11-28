@@ -1156,7 +1156,13 @@ pub(crate) fn session_directory<'a>(
 }
 
 /// The fold two directory spellings are compared under.
-fn comparable(value: &str) -> String {
+///
+/// Shared with the consolidation, which asks whether two projects' folders are
+/// the same place before it decides that one of them is a project of its own:
+/// a second comparison written beside this one would answer that question
+/// differently on Windows, where the same folder can reach the store as
+/// `H:\REPO` and as `h:/repo`.
+pub(crate) fn comparable(value: &str) -> String {
     let value = value
         .trim()
         .trim_end_matches(['/', '\\'])

@@ -473,7 +473,10 @@ leteo obsidian-export --vault C:\Vaults\Notes --project leteo
 
 **Projects.** A project is worked out from the directory, so the same work can
 end up filed under two names. `consolidate` folds a group of them into one name,
-`prune` drops the ones holding no memories at all:
+`prune` drops the ones holding no memories at all. The name that survives is the
+one holding the memories, whichever side `--project` names; and two projects that
+each hold memories in a folder of their own are two projects, so they are
+reported and not folded:
 
 ```powershell
 leteo projects list

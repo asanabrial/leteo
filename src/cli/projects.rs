@@ -9,32 +9,36 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
             apply,
         } => {
             let stats = store.list_projects_with_stats()?;
+            // One grouping answers both flags: `--all` shows every group it
+            // found, `--project` shows the group that names this project. It
+            // used to be two, and they disagreed about the same store — the
+            // flag made the project named on the command line the canonical
+            // whatever the memories said, so running the remedy from the
+            // directory that needed it folded the project that held the work
+            // into the name that held an empty session.
             let groups = if all {
                 similar_project_groups(&stats)
             } else {
-                let canonical = resolve_project(project)?;
-                let sources = similar_projects(&canonical, &stats);
-                if sources.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![(canonical, sources)]
-                }
+                let named = resolve_project(project)?;
+                groups_naming(&stats, &named)
             };
             let mut merges = Vec::new();
-            for (canonical, candidates) in &groups {
+            for group in &groups {
                 // The preview and the merge read the same scope, so what the
                 // dry run lists is what the answer will name. Passing the
                 // scope back to the merge also keeps the fold closed: asking
                 // to merge the names the preview showed moves the same set
                 // again and no more.
-                let sources = store.project_merge_scope(candidates, canonical)?;
+                let sources = store.project_merge_scope(&group.sources, &group.canonical)?;
                 let mut entry = serde_json::json!({
-                    "canonical": canonical,
+                    "canonical": group.canonical,
                     "sources": sources,
                 });
-                if apply {
+                if let Some(reason) = &group.refused {
+                    entry["skipped"] = serde_json::Value::String(reason.clone());
+                } else if apply {
                     entry["result"] =
-                        serde_json::to_value(store.merge_projects(&sources, canonical)?)?;
+                        serde_json::to_value(store.merge_projects(&sources, &group.canonical)?)?;
                 }
                 merges.push(entry);
             }
@@ -76,35 +80,37 @@ pub(super) fn run_projects(store: &mut Store, command: ProjectsCommand) -> Resul
     }
 }
 
-/// Returns the projects that should be consolidated into `canonical`: those
-/// with similar names and those recorded under one of its directories.
-fn similar_projects(canonical: &str, stats: &[ProjectStats]) -> Vec<String> {
-    let names = stats
-        .iter()
-        .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
-    let mut sources = crate::project::find_similar(canonical, &names, 3)
+/// One fold the store's own evidence proposes: the name that keeps the work and
+/// the names that would move into it.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ProjectGroup {
+    pub(super) canonical: String,
+    pub(super) sources: Vec<String>,
+    /// Why this fold is refused, when the evidence says these are two projects
+    /// rather than one name twice. Nothing moves, and the preview and the
+    /// apply both say so.
+    pub(super) refused: Option<String>,
+}
+
+/// The group a named project belongs to: the same one `--all` reports for it.
+///
+/// `--project` used to name the canonical itself, so the two forms of the
+/// preview could disagree about one store: `--all` chose the name holding the
+/// memories and the flag chose the argument. Naming a project that turns out to
+/// be a source therefore means its group, whose canonical keeps the work. A
+/// project in no group has nothing to fold, which is what an empty answer says.
+fn groups_naming(stats: &[ProjectStats], named: &str) -> Vec<ProjectGroup> {
+    let named = crate::memory::normalize::project(named);
+    similar_project_groups(stats)
         .into_iter()
-        .map(|matched| matched.name)
-        .collect::<Vec<_>>();
-    let directories = stats
-        .iter()
-        .find(|entry| entry.name == canonical)
-        .map(|entry| entry.directories.clone())
-        .unwrap_or_default();
-    for entry in stats {
-        if entry.name == canonical || sources.contains(&entry.name) {
-            continue;
-        }
-        // A relative directory is every directory at once, so two projects that
-        // both recorded `.` are not thereby the same project.
-        if entry.directories.iter().any(|directory| {
-            crate::project::is_absolute_spelling(directory) && directories.contains(directory)
-        }) {
-            sources.push(entry.name.clone());
-        }
-    }
-    sources
+        .filter(|group| {
+            crate::memory::normalize::project(&group.canonical) == named
+                || group
+                    .sources
+                    .iter()
+                    .any(|source| crate::memory::normalize::project(source) == named)
+        })
+        .collect()
 }
 
 /// Groups projects around the one they each resemble, biggest first.
@@ -129,7 +135,7 @@ fn similar_projects(canonical: &str, stats: &[ProjectStats]) -> Vec<String> {
 /// on the machine and three projects had a session there; a folder people work
 /// in says nothing about what a project is, while a directory two projects
 /// share is the ordinary shape of one project renamed.
-fn similar_project_groups(stats: &[ProjectStats]) -> Vec<(String, Vec<String>)> {
+fn similar_project_groups(stats: &[ProjectStats]) -> Vec<ProjectGroup> {
     let names = stats
         .iter()
         .map(|entry| entry.name.clone())
@@ -151,10 +157,20 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<(String, Vec<String>)> 
             }
         }
     }
-    let mut by_directory: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut by_directory: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, entry) in stats.iter().enumerate() {
         for directory in &entry.directories {
-            by_directory.entry(directory).or_default().push(index);
+            // A relative directory is every directory at once, so two projects
+            // that both recorded `.` are not thereby the same project. The
+            // single-project form has always refused that evidence; `--all`
+            // did not read it the same way, and folded the two.
+            if !crate::project::is_absolute_spelling(directory) {
+                continue;
+            }
+            by_directory
+                .entry(crate::project::comparable(directory))
+                .or_default()
+                .push(index);
         }
     }
     for indexes in by_directory.values() {
@@ -185,20 +201,55 @@ fn similar_project_groups(stats: &[ProjectStats]) -> Vec<(String, Vec<String>)> 
             .copied()
             .filter(|other| !claimed[*other])
             .collect::<Vec<_>>();
+        if taken.is_empty() {
+            continue;
+        }
+        let refused = taken
+            .iter()
+            .find_map(|other| two_projects(&stats[index], &stats[*other]));
         let mut sources = Vec::with_capacity(taken.len());
         for other in taken {
             claimed[other] = true;
             sources.push(stats[other].name.clone());
         }
-        if sources.is_empty() {
-            continue;
-        }
         claimed[index] = true;
         sources.sort();
-        groups.push((stats[index].name.clone(), sources));
+        groups.push(ProjectGroup {
+            canonical: stats[index].name.clone(),
+            sources,
+            refused,
+        });
     }
-    groups.sort_by(|left, right| left.0.cmp(&right.0));
+    groups.sort_by(|left, right| left.canonical.cmp(&right.canonical));
     groups
+}
+
+/// Why folding `source` into `canonical` would move a project out of its home.
+///
+/// A name is a spelling of another when the folder or the memories are shared:
+/// a repository that gained a remote, or a project renamed without moving,
+/// keeps one of the two. A source that holds memories *and* records a directory
+/// the canonical does not is neither — it is a second project that happens to
+/// resemble the first. A merge has no undo, and the issue that produced this
+/// rule is a session-start warning whose advice emptied a project in four runs
+/// out of four. `mem_merge_projects` remains the deliberate door: it names both
+/// sides and the direction, which is what a person who means it can answer.
+fn two_projects(canonical: &ProjectStats, source: &ProjectStats) -> Option<String> {
+    if source.observation_count == 0 {
+        return None;
+    }
+    let own = source.directories.iter().find(|directory| {
+        crate::project::is_absolute_spelling(directory)
+            && !canonical.directories.iter().any(|shared| {
+                crate::project::comparable(shared) == crate::project::comparable(directory)
+            })
+    })?;
+    Some(format!(
+        "{:?} holds {} memories and records {:?}, which {:?} does not: these are two projects, \
+         not one name twice, and folding them would move work out of the folder it belongs to. \
+         Nothing is merged; use `mem_merge_projects` with both names if they really are one",
+        source.name, source.observation_count, own, canonical.name
+    ))
 }
 
 /// Which project a listing answers about: the one named, the one this
@@ -468,8 +519,8 @@ mod tests {
         let canonical_of = |name: &str| {
             groups
                 .iter()
-                .find(|(_, sources)| sources.iter().any(|source| source == name))
-                .map(|(canonical, _)| canonical.clone())
+                .find(|group| group.sources.iter().any(|source| source == name))
+                .map(|group| group.canonical.clone())
         };
         assert_eq!(
             canonical_of(r"h:\repo\nas.archive").as_deref(),
@@ -482,13 +533,71 @@ mod tests {
             "and so does the other one"
         );
         assert!(
-            !groups.iter().any(|(canonical, _)| canonical == "almanac"),
+            !groups.iter().any(|group| group.canonical == "almanac"),
             "nothing is folded into a project that only shares a parent folder: {groups:?}"
         );
         assert!(
             canonical_of("nas.archive").is_none(),
             "a project with 46 memories is not somebody else's source: {groups:?}"
         );
+    }
+
+    /// The memories decide which name survives, whatever was asked for.
+    ///
+    /// The shape the issue reports, from the store after `mem_merge_projects`
+    /// moved `alpha` into `beta`: `beta` holds all the work and records the
+    /// folder it was moved from, and `alpha` holds one session and no memories.
+    /// The remedy run from that folder used to name `alpha` the canonical,
+    /// because that is what the directory resolves to, and `--all` named
+    /// `beta`. Both forms now read the same group.
+    #[test]
+    fn the_name_holding_the_work_is_the_one_that_survives() {
+        let stats = vec![
+            project("beta", 11, &["/work/alpha", "/work/beta"]),
+            project("alpha", 0, &["/work/alpha"]),
+        ];
+        let expected = vec![ProjectGroup {
+            canonical: "beta".to_owned(),
+            sources: vec!["alpha".to_owned()],
+            refused: None,
+        }];
+        assert_eq!(similar_project_groups(&stats), expected, "under `--all`");
+        assert_eq!(
+            groups_naming(&stats, "alpha"),
+            expected,
+            "and when the directory's own name is the one named"
+        );
+        assert_eq!(
+            groups_naming(&stats, "beta"),
+            expected,
+            "naming the other side answers the same group"
+        );
+    }
+
+    /// Two projects that each hold memories in a folder of their own are not
+    /// one project spelled twice.
+    ///
+    /// `leteo` and `leteo-old` resemble each other, and folding either would
+    /// move real work out of the folder it belongs to with no undo. The group
+    /// is still reported, so the preview says why nothing happens instead of
+    /// looking like a store with nothing to fold.
+    #[test]
+    fn a_source_with_memories_in_a_folder_of_its_own_is_refused() {
+        let stats = vec![
+            project("leteo", 9, &["/work/leteo"]),
+            project("leteo-old", 3, &["/work/leteo-old"]),
+        ];
+        let groups = similar_project_groups(&stats);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].canonical, "leteo");
+        assert_eq!(groups[0].sources, vec!["leteo-old".to_owned()]);
+        let refusal = groups[0]
+            .refused
+            .as_deref()
+            .expect("a source with a home of its own is refused");
+        assert!(refusal.contains("leteo-old"), "{refusal}");
+        assert!(refusal.contains("/work/leteo-old"), "{refusal}");
+        assert!(refusal.contains("mem_merge_projects"), "{refusal}");
     }
 
     /// `.` is not a place. Two projects that both recorded it share no
@@ -500,14 +609,21 @@ mod tests {
             project("alpha-service", 10, &["."]),
             project("omega-worker", 5, &["."]),
         ];
-        assert!(similar_projects("alpha-service", &stats).is_empty());
+        assert!(
+            similar_project_groups(&stats).is_empty(),
+            "the grouped preview reads the same rule as the single one"
+        );
         let stats = vec![
             project("alpha-service", 10, &["/work/shared"]),
             project("omega-worker", 5, &["/work/shared"]),
         ];
         assert_eq!(
-            similar_projects("alpha-service", &stats),
-            vec!["omega-worker".to_owned()],
+            similar_project_groups(&stats),
+            vec![ProjectGroup {
+                canonical: "alpha-service".to_owned(),
+                sources: vec!["omega-worker".to_owned()],
+                refused: None,
+            }],
             "an absolute shared directory still does"
         );
     }
@@ -532,7 +648,11 @@ mod tests {
         ];
         assert_eq!(
             similar_project_groups(&renamed),
-            vec![("nombre-nuevo".to_owned(), vec!["nombre-viejo".to_owned()])]
+            vec![ProjectGroup {
+                canonical: "nombre-nuevo".to_owned(),
+                sources: vec!["nombre-viejo".to_owned()],
+                refused: None,
+            }]
         );
     }
 
